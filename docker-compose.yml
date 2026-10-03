@@ -1,0 +1,123 @@
+# Log Monitor — 기본(운영 기준) 구성
+#   개발:  docker compose up --build             (docker-compose.override.yml 자동 병합)
+#   운영:  docker compose -f docker-compose.yml up -d --build
+#   폐쇄망: 빌드하지 않고 반입한 이미지로 기동 — deploy/airgap/install.sh (docs/AIRGAP.md)
+#   syslog 수신기 포함:  --profile syslog 추가
+# 설정값은 .env 파일로 덮어쓴다 (.env.example 참고)
+
+name: log-monitor
+
+# 컨테이너 로그(docker logs) 로테이션: 파일당 50MB × 5개까지만 (기본값은 무제한으로 쌓인다)
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-wlm}
+      POSTGRES_USER: ${POSTGRES_USER:-wlm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wlm-dev-password}
+      TZ: UTC
+    # 성능 설정 (docs/PERFORMANCE.md). 서버 메모리에 맞게 .env 로 조정: shared_buffers ≈ 메모리의 25%
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${WLM_PG_SHARED_BUFFERS:-1GB}
+      - -c
+      - effective_cache_size=${WLM_PG_EFFECTIVE_CACHE_SIZE:-3GB}
+      - -c
+      - work_mem=${WLM_PG_WORK_MEM:-32MB}
+      - -c
+      - maintenance_work_mem=${WLM_PG_MAINTENANCE_WORK_MEM:-256MB}
+      - -c
+      - max_parallel_workers_per_gather=${WLM_PG_PARALLEL_WORKERS:-4}
+      - -c
+      - random_page_cost=1.1      # SSD
+      - -c
+      - jit=off                   # 짧은 조회가 많아 JIT 컴파일 비용이 더 크다
+    shm_size: 1g                  # 병렬 조회가 쓰는 공유 메모리 (Docker 기본 64MB 는 부족)
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  api:
+    # 폐쇄망에서는 반입한 이미지(log-monitor-api:<버전>)를 그대로 쓴다. 없으면 build 로 만든다.
+    image: ${WLM_API_IMAGE:-log-monitor-api:latest}
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      WLM_DATABASE_URL: postgresql://${POSTGRES_USER:-wlm}:${POSTGRES_PASSWORD:-wlm-dev-password}@db:5432/${POSTGRES_DB:-wlm}
+      WLM_INGEST_API_KEYS: ${WLM_INGEST_API_KEYS:-dev-ingest-key}
+      # 로그 로테이션: DB 에서 바로 검색 → (지나면) 압축 보관 파일 → (지나면) 삭제
+      WLM_DB_RETENTION_DAYS: ${WLM_DB_RETENTION_DAYS:-90}
+      WLM_RETENTION_DAYS: ${WLM_RETENTION_DAYS:-365}
+      WLM_HEARTBEAT_ONLINE_SEC: ${WLM_HEARTBEAT_ONLINE_SEC:-90}
+      WLM_HEARTBEAT_STALE_SEC: ${WLM_HEARTBEAT_STALE_SEC:-900}
+      WLM_LOG_LEVEL: ${WLM_LOG_LEVEL:-INFO}
+      # 알림 (Phase 2) — 링크 주소, 메일 서버
+      WLM_PUBLIC_URL: ${WLM_PUBLIC_URL:-http://localhost:8080}
+      WLM_DISPLAY_TZ: ${WLM_DISPLAY_TZ:-Asia/Seoul}
+      WLM_SMTP_HOST: ${WLM_SMTP_HOST:-}
+      WLM_SMTP_PORT: ${WLM_SMTP_PORT:-587}
+      WLM_SMTP_SECURITY: ${WLM_SMTP_SECURITY:-starttls}
+      WLM_SMTP_USER: ${WLM_SMTP_USER:-}
+      WLM_SMTP_PASSWORD: ${WLM_SMTP_PASSWORD:-}
+      WLM_SMTP_FROM: ${WLM_SMTP_FROM:-log-monitor@localhost}
+      # 환경설정 화면에서 저장하는 비밀번호(SMTP·Oracle·웹훅 토큰) 암호화 키 — 운영에서는 반드시 설정, 잃어버리지 말 것
+      WLM_SECRET_KEY: ${WLM_SECRET_KEY:-}
+      # 인증 (기본값은 docs/PROJECT.md 인증 절 참고)
+      WLM_SESSION_IDLE_MIN: ${WLM_SESSION_IDLE_MIN:-30}
+      WLM_SESSION_MAX_HOURS: ${WLM_SESSION_MAX_HOURS:-12}
+      WLM_LOGIN_MAX_FAILURES: ${WLM_LOGIN_MAX_FAILURES:-5}
+      WLM_LOGIN_LOCKOUT_MIN: ${WLM_LOGIN_LOCKOUT_MIN:-10}
+      WLM_PASSWORD_MAX_AGE_DAYS: ${WLM_PASSWORD_MAX_AGE_DAYS:-90}
+      WLM_COOKIE_SECURE: ${WLM_COOKIE_SECURE:-false}
+      WLM_ADMIN_INITIAL_PASSWORD: ${WLM_ADMIN_INITIAL_PASSWORD:-}
+      WLM_API_DOCS: ${WLM_API_DOCS:-true}
+    # alerts.yaml 의 ${변수} (Oracle 비밀번호, 웹훅 토큰 등)를 .env 에서 넘겨받기 위함
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "${WLM_PORT:-8080}:8000"
+    volumes:
+      - ./config:/app/config     # 대시보드·알림 규칙·tnsnames.ora (화면에서 저장하면 이 폴더에 기록됨)
+      - ./archive:/app/archive   # 로그 보관 파일 (*.jsonl.gz + SHA-256 메타). 백업·별도 보관 대상
+
+  # 네트워크 장비 / Linux 서버의 syslog 를 받아 api 로 전달하는 수신기 (선택)
+  collector:
+    image: fluent/fluent-bit:4.0
+    profiles: ["syslog"]
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      - api
+    environment:
+      WLM_INGEST_API_KEY: ${WLM_COLLECTOR_API_KEY:-dev-ingest-key}
+    command: ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/etc/collector.yaml"]
+    volumes:
+      - ./collector/collector.yaml:/fluent-bit/etc/collector.yaml:ro
+    ports:
+      - "${WLM_SYSLOG_PORT:-514}:5140/udp"        # RFC3164
+      - "${WLM_SYSLOG_PORT:-514}:5140/tcp"        # RFC3164
+      - "${WLM_SYSLOG_5424_PORT:-1514}:5141/tcp"  # RFC5424
+
+volumes:
+  pgdata:

@@ -1,0 +1,113 @@
+{
+  "title": "DB (MSSQL)",
+  "description": "SQL Server 의 응용 프로그램 이벤트 로그와 ERRORLOG. 로그인 실패·백업·디스크 I/O·로그 가득 참을 봅니다.",
+  "time_range": "24h",
+  "refresh_sec": 60,
+  "widgets": [
+    {
+      "type": "stat",
+      "title": "로그인 실패 (18456)",
+      "w": 3,
+      "metric": "count",
+      "query": {
+        "category": "mssql",
+        "event_id": "18456"
+      },
+      "up_is_good": false,
+      "color": "var(--warning)",
+      "icon_level": 3
+    },
+    {
+      "type": "stat",
+      "title": "오류 (심각+오류)",
+      "w": 3,
+      "metric": "count",
+      "query": {
+        "category": "mssql",
+        "level": "1,2"
+      },
+      "up_is_good": false,
+      "color": "var(--critical)"
+    },
+    {
+      "type": "stat",
+      "title": "백업 완료 (18264)",
+      "w": 3,
+      "metric": "count",
+      "query": {
+        "category": "mssql",
+        "event_id": "18264"
+      },
+      "up_is_good": true,
+      "color": "var(--s3)"
+    },
+    {
+      "type": "stat",
+      "title": "백업 실패 (3041)",
+      "w": 3,
+      "metric": "count",
+      "query": {
+        "category": "mssql",
+        "event_id": "3041"
+      },
+      "up_is_good": false,
+      "color": "var(--critical)",
+      "icon_level": 2
+    },
+    {
+      "type": "timeseries",
+      "title": "시간대별 이벤트 (수준별)",
+      "w": 12,
+      "group": "level",
+      "query": {
+        "category": "mssql"
+      }
+    },
+    {
+      "type": "top",
+      "title": "로그인 실패 계정",
+      "w": 4,
+      "field": "user",
+      "query": {
+        "category": "mssql",
+        "event_id": "18456"
+      }
+    },
+    {
+      "type": "top",
+      "title": "로그인 실패 출발지 IP",
+      "w": 4,
+      "field": "ip",
+      "query": {
+        "category": "mssql",
+        "event_id": "18456"
+      }
+    },
+    {
+      "type": "top",
+      "title": "자주 나는 오류 번호",
+      "w": 4,
+      "field": "event_id",
+      "query": {
+        "category": "mssql",
+        "level": "1,2,3"
+      }
+    },
+    {
+      "type": "events",
+      "title": "최근 오류·경고",
+      "w": 12,
+      "query": {
+        "category": "mssql",
+        "level": "1,2,3"
+      },
+      "limit": 12
+    },
+    {
+      "type": "text",
+      "title": "참고",
+      "w": 12,
+      "text": "SQL Server 는 로그인 실패(18456)와 심각한 오류(823·824 디스크 I/O, 9002 로그 가득 참, 3041 백업 실패)를 Windows 응용 프로그램 로그에 남기므로 에이전트만 설치하면 수집됩니다.\nERRORLOG 까지 받으려면 에이전트 설치 시 -MssqlErrorlog 를 붙입니다."
+    }
+  ]
+}

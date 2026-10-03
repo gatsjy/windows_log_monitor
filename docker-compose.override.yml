@@ -1,0 +1,36 @@
+# 개발용 설정 — `docker compose up` 하면 자동으로 병합된다.
+# 운영 배포 시에는 이 파일을 쓰지 않는다: docker compose -f docker-compose.yml up -d
+
+services:
+  db:
+    ports:
+      - "127.0.0.1:${WLM_DB_PORT:-15432}:5432"   # 로컬에서 psql / DBeaver 로 직접 조회 (기본 15432)
+
+  api:
+    image: log-monitor-api:dev   # 운영 이미지 태그(log-monitor-api:<버전>)와 섞이지 않게
+    build:
+      target: dev
+    environment:
+      # 개발: 메일은 실제로 나가지 않고 Mailpit 에 쌓인다 → http://localhost:8025
+      WLM_SMTP_HOST: mailpit
+      WLM_SMTP_PORT: "1025"
+      WLM_SMTP_SECURITY: none
+      # 개발용 고정 암호화 키 (운영에서는 .env 의 WLM_SECRET_KEY 로 별도 생성)
+      WLM_SECRET_KEY: dev-only-secret-key-change-in-production
+    volumes:
+      # 코드 / UI 를 컨테이너에 직접 연결 → 저장하면 바로 반영 (서버는 자동 재시작, UI 는 새로고침)
+      - ./server/app:/app/app
+      - ./server/migrations:/app/migrations
+      - ./server/tests:/app/tests
+      - ./server/pyproject.toml:/app/pyproject.toml
+      - ./web:/app/web
+      - ./tools:/app/tools        # 벤치마크 등 개발 도구 (tools/bench/bench.py)
+
+  # 개발용 메일 수신함 (Mailpit, MIT) — 보낸 알림 메일을 웹으로 확인
+  mailpit:
+    image: axllent/mailpit:latest
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "2" }
+    ports:
+      - "127.0.0.1:${WLM_MAILPIT_PORT:-8025}:8025"

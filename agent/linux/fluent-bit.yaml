@@ -1,0 +1,66 @@
+# Log Monitor - Linux agent (Fluent Bit)
+# install.sh 가 @SERVER_HOST@ / @SERVER_PORT@ / @API_KEY@ / @AGENT_HOST@ 를 바꿔서
+# /etc/wlm-agent/fluent-bit.yaml 로 복사한다.
+
+service:
+  flush: 2
+  log_level: info
+  storage.path: /var/lib/wlm-agent/buffer
+  storage.sync: normal
+  storage.backlog.mem_limit: 16M
+
+pipeline:
+  inputs:
+    # systemd journal (sshd, sudo, kernel, 서비스 로그 등 대부분이 여기에 있다)
+    - name: systemd
+      tag: journald
+      db: /var/lib/wlm-agent/systemd.db
+      read_from_tail: on
+      strip_underscores: off
+      storage.type: filesystem
+
+    # 하트비트 (조용한 서버도 '온라인'으로 보이게)
+    - name: dummy
+      tag: heartbeat
+      dummy: '{"type":"heartbeat","config_version":"0.1.0"}'
+      interval_sec: 30
+
+    # (선택) 텍스트 로그 파일. 앞의 '#' 을 지우면 활성화
+    # - name: tail
+    #   tag: file.nginx
+    #   path: /var/log/nginx/error.log
+    #   path_key: file
+    #   db: /var/lib/wlm-agent/tail-nginx.db
+    #   storage.type: filesystem
+
+  filters:
+    - name: modify
+      match: '*'
+      add: agent_host @AGENT_HOST@
+
+    - name: modify
+      match: journald
+      add: log_source journald
+
+    # (선택) 위 tail 입력용
+    # - name: modify
+    #   match: file.nginx
+    #   add:
+    #     - log_source file
+    #     - log_channel nginx
+
+  outputs:
+    - name: http
+      match: '*'
+      host: @SERVER_HOST@
+      port: @SERVER_PORT@
+      uri: /api/ingest
+      format: json
+      json_date_key: date
+      json_date_format: iso8601
+      compress: gzip
+      header: X-API-Key @API_KEY@
+      retry_limit: no_limits
+      # 서버 장애가 길어져도 버퍼 파일이 디스크를 다 쓰지 않게 상한 (넘치면 오래된 것부터 버림)
+      storage.total_limit_size: 1G
+      log_response_payload: false

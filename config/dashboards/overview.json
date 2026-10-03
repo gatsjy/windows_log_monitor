@@ -1,0 +1,94 @@
+{
+  "title": "전체 현황",
+  "description": "모든 PC·서버의 로그를 한눈에. 숫자·막대·카드를 누르면 해당 이벤트를 검색합니다.",
+  "time_range": "24h",
+  "refresh_sec": 60,
+  "widgets": [
+    {
+      "type": "stat",
+      "title": "온라인 PC",
+      "w": 3,
+      "metric": "agents"
+    },
+    {
+      "type": "stat",
+      "title": "전체 이벤트",
+      "w": 3,
+      "metric": "count"
+    },
+    {
+      "type": "stat",
+      "title": "오류 (심각+오류)",
+      "w": 3,
+      "metric": "count",
+      "query": {
+        "level": "1,2"
+      },
+      "up_is_good": false,
+      "color": "var(--critical)"
+    },
+    {
+      "type": "stat",
+      "title": "경고",
+      "w": 3,
+      "metric": "count",
+      "query": {
+        "level": "3"
+      },
+      "up_is_good": false,
+      "color": "var(--warning)"
+    },
+    {
+      "type": "timeseries",
+      "title": "시간대별 이벤트 (수준별)",
+      "w": 12,
+      "group": "level",
+      "buckets": 48
+    },
+    {
+      "type": "hosts",
+      "title": "PC 현황",
+      "w": 12
+    },
+    {
+      "type": "alerts",
+      "title": "최근 알림",
+      "w": 12,
+      "limit": 5
+    },
+    {
+      "type": "top",
+      "title": "오류가 많은 PC",
+      "w": 4,
+      "field": "host",
+      "query": {
+        "level": "1,2"
+      }
+    },
+    {
+      "type": "top",
+      "title": "자주 발생한 오류·경고 이벤트",
+      "w": 4,
+      "field": "event_id",
+      "query": {
+        "level": "1,2,3",
+        "source": "winevtlog"
+      }
+    },
+    {
+      "type": "top",
+      "title": "분류별",
+      "w": 4,
+      "field": "category"
+    },
+    {
+      "type": "events",
+      "title": "최근 오류",
+      "w": 12,
+      "query": {
+        "level": "1,2"
+      },
+      "limit": 10
+    }
+  ]
+}

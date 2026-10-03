@@ -1,0 +1,110 @@
+{
+  "title": "웹 서버 (IIS)",
+  "description": "IIS 접속 로그와 IIS 관련 Windows 이벤트. 5xx 는 오류, 401·403·429 는 경고로 분류됩니다.",
+  "time_range": "24h",
+  "refresh_sec": 60,
+  "widgets": [
+    {
+      "type": "stat",
+      "title": "요청 수",
+      "w": 3,
+      "metric": "count",
+      "query": {
+        "source": "iis"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "서버 오류 (5xx)",
+      "w": 3,
+      "metric": "count",
+      "query": {
+        "source": "iis",
+        "level": "2"
+      },
+      "up_is_good": false,
+      "color": "var(--critical)"
+    },
+    {
+      "type": "stat",
+      "title": "인증 실패·차단 (401·403·429)",
+      "w": 3,
+      "metric": "count",
+      "query": {
+        "source": "iis",
+        "level": "3"
+      },
+      "up_is_good": false,
+      "color": "var(--warning)"
+    },
+    {
+      "type": "stat",
+      "title": "IIS 관련 Windows 오류",
+      "w": 3,
+      "metric": "count",
+      "query": {
+        "category": "iis",
+        "source": "winevtlog",
+        "level": "1,2,3"
+      },
+      "up_is_good": false
+    },
+    {
+      "type": "timeseries",
+      "title": "시간대별 요청 (수준별)",
+      "w": 12,
+      "group": "level",
+      "query": {
+        "source": "iis"
+      }
+    },
+    {
+      "type": "top",
+      "title": "HTTP 상태 코드",
+      "w": 4,
+      "field": "event_id",
+      "query": {
+        "source": "iis"
+      }
+    },
+    {
+      "type": "top",
+      "title": "오류가 많은 경로 (5xx)",
+      "w": 4,
+      "field": "f.iis.uri_stem",
+      "query": {
+        "source": "iis",
+        "level": "2"
+      }
+    },
+    {
+      "type": "top",
+      "title": "요청이 많은 접속 IP",
+      "w": 4,
+      "field": "ip",
+      "query": {
+        "source": "iis"
+      }
+    },
+    {
+      "type": "top",
+      "title": "웹 서버별 오류",
+      "w": 12,
+      "field": "host",
+      "query": {
+        "source": "iis",
+        "level": "2,3"
+      }
+    },
+    {
+      "type": "events",
+      "title": "최근 서버 오류",
+      "w": 12,
+      "query": {
+        "source": "iis",
+        "level": "2"
+      },
+      "limit": 10
+    }
+  ]
+}

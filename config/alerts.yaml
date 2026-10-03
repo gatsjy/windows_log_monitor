@@ -1,0 +1,226 @@
+# 알림 규칙 — 저장하면 다음 평가 주기(30초) 안에 자동 반영됩니다 (재시작 불필요).
+# 웹 화면 '알림 > 규칙 편집' 에서 고쳐도 이 파일이 바뀝니다. 형식 설명: docs/PROJECT.md '알림'
+#
+# notify 에는 '환경설정' 화면에서 만든 이름을 씁니다:
+#   - 수신 그룹 (예: 운영팀, 보안팀) → 그룹에 속한 수신자들에게 메일
+#   - 외부 연동 (웹훅, Oracle DB)   → 사내 메신저 / 사내 DB 로 전송
+#
+# 보안 규칙은 Wazuh·Sigma 의 대표적인 Windows 탐지 항목을 참고했고, MITRE ATT&CK 기법과 ISMS-P 항목을 태그로 달았다.
+# 환경에 맞게 threshold(건수)와 window(기간)를 조정하세요. 오탐이 많으면 enabled: false.
+
+settings:
+  interval_sec: 30            # 규칙 평가 주기(초)
+
+# kind: count (기본)      — window 동안 '수신된' 이벤트 중 match 에 맞는 것이 threshold 건 이상이면 알림
+#        agent_silent      — PC 에서 silent_for 동안 아무것도(하트비트 포함) 안 들어오면 알림
+# match: 이벤트 검색과 같은 조건 — host, channel, provider, source, category, user, ip, level, event_id,
+#        q(메시지 포함, 'a|b' = 둘 중 하나), f.<원본 경로> (예: f.EventData.LogonType)
+# group_by: host(기본) | ip | user | none | category | event_id | ... — 이 값마다 따로 세고 따로 알림
+# cooldown: 같은 규칙·같은 대상은 이 시간 안에 다시 알리지 않음 (window 보다 짧으면 window 로 맞춤)
+# severity: critical | error | warning | info   (수신 그룹·연동의 '받을 최소 수준'과 비교됨)
+rules:
+  # ---------------------------------------------------------- 시스템·서비스
+  - name: 시스템 심각 오류
+    description: 비정상 재부팅(Kernel-Power 41) 등 '심각' 수준 이벤트
+    match: { level: "1" }
+    window: 5m
+    threshold: 1
+    cooldown: 30m
+    severity: critical
+    tags: [ISMS 2.9.2]
+    notify: [운영팀]
+
+  - name: 서비스 비정상 종료
+    description: Windows 서비스가 예기치 않게 종료됨 (7031, 7034)
+    match: { source: winevtlog, event_id: "7031,7034" }
+    window: 10m
+    threshold: 1
+    cooldown: 1h
+    severity: error
+    tags: [ISMS 2.9.2]
+    notify: [운영팀]
+
+  - name: 응용 프로그램 오류 다발
+    description: 응용 프로그램 충돌/예외가 짧은 시간에 반복됨
+    match: { category: application, level: "2" }
+    window: 10m
+    threshold: 5
+    cooldown: 1h
+    severity: warning
+    tags: [ISMS 2.9.2]
+    notify: [운영팀]
+
+  - name: 서버 응답 없음
+    description: 에이전트가 멈췄거나 서버가 꺼짐 (하트비트 끊김)
+    kind: agent_silent
+    silent_for: 10m
+    hosts: [WEB-01, WEB-02, APP-01, DB-01, DC-01, FILE-01]   # 서버만. 비우면 전체 (퇴근 시 꺼지는 PC 까지 알림)
+    severity: error
+    tags: [ISMS 2.9.2]
+    notify: [운영팀]
+
+  # ---------------------------------------------------------- 계정·인증 공격
+  - name: 로그온 실패 급증
+    description: 한 PC 에 로그온 실패가 몰림 — 계정·출발지 IP 는 상세의 원본 데이터 참고
+    match: { event_id: "4625" }
+    window: 10m
+    threshold: 20
+    cooldown: 1h
+    severity: warning
+    tags: [MITRE T1110, ISMS 2.11.3]
+    notify: [운영팀]
+
+  - name: 무차별 대입 (출발지 IP 기준)
+    description: 한 IP 가 여러 PC·계정에 로그온을 시도 (password spraying 포함)
+    match: { event_id: "4625,4771" }
+    group_by: ip
+    window: 10m
+    threshold: 20
+    cooldown: 1h
+    severity: error
+    tags: [MITRE T1110, ISMS 2.11.3]
+    notify: [운영팀]
+
+  - name: 원격 데스크톱 무차별 대입
+    description: 원격 데스크톱(로그온 유형 10) 로그온 실패가 한 IP 에서 반복됨
+    match: { event_id: "4625", f.EventData.LogonType: "10" }
+    group_by: ip
+    window: 10m
+    threshold: 10
+    cooldown: 1h
+    severity: error
+    tags: [MITRE T1110.001, MITRE T1021.001, ISMS 2.11.3]
+    notify: [운영팀]
+
+  - name: 계정 잠금
+    match: { event_id: "4740" }
+    group_by: user
+    window: 5m
+    threshold: 1
+    cooldown: 30m
+    severity: warning
+    tags: [MITRE T1110, ISMS 2.5.3]
+    notify: [운영팀]
+
+  # ---------------------------------------------------------- 권한·지속성
+  - name: 관리자 그룹에 구성원 추가
+    description: 로컬 Administrators 그룹(S-1-5-32-544)에 계정이 추가됨 — 권한 상승 의심
+    match: { event_id: "4732", f.EventData.TargetSid: "S-1-5-32-544" }
+    window: 5m
+    threshold: 1
+    cooldown: 5m
+    severity: critical
+    tags: [MITRE T1098, ISMS 2.5.5]
+    notify: [운영팀]
+
+  - name: 새 사용자 계정 생성
+    match: { event_id: "4720" }
+    window: 5m
+    threshold: 1
+    cooldown: 5m
+    severity: warning
+    tags: [MITRE T1136.001, ISMS 2.5.1]
+    notify: [운영팀]
+
+  - name: 새 서비스 설치
+    description: 서비스 설치(7045/4697) — 악성 코드의 지속성 확보에 자주 쓰임. 실행 파일 경로(ImagePath) 확인
+    match: { event_id: "7045,4697" }
+    window: 5m
+    threshold: 1
+    cooldown: 30m
+    severity: warning
+    tags: [MITRE T1543.003, ISMS 2.10.1]
+    notify: [운영팀]
+
+  - name: 예약 작업 생성
+    match: { event_id: "4698" }
+    window: 5m
+    threshold: 1
+    cooldown: 30m
+    severity: warning
+    tags: [MITRE T1053.005, ISMS 2.11.3]
+    notify: [운영팀]
+
+  # ---------------------------------------------------------- 흔적 삭제·감사 무력화
+  - name: 보안 감사 로그 삭제
+    description: 보안 로그(1102) 또는 다른 이벤트 로그(104)가 지워짐 — 흔적 삭제 시도일 수 있음
+    match: { event_id: "1102,104" }
+    window: 5m
+    threshold: 1
+    cooldown: 5m
+    severity: critical
+    tags: [MITRE T1070.001, ISMS 2.9.4]
+    notify: [운영팀]
+
+  - name: 감사 정책 변경
+    match: { event_id: "4719" }
+    window: 5m
+    threshold: 1
+    cooldown: 30m
+    severity: error
+    tags: [MITRE T1562.002, ISMS 2.9.4]
+    notify: [운영팀]
+
+  # ---------------------------------------------------------- 실행·악성 코드
+  - name: 의심스러운 PowerShell 실행
+    description: 원격 스크립트 내려받기·인코딩된 명령 등 공격 도구에서 흔한 패턴 (스크립트 블록 로깅 4104 필요)
+    match:
+      event_id: "4104"
+      q: "DownloadString|DownloadFile|FromBase64String|EncodedCommand|Invoke-Expression|IEX (|Net.WebClient|Invoke-Mimikatz"
+    window: 5m
+    threshold: 1
+    cooldown: 30m
+    severity: error
+    tags: [MITRE T1059.001, ISMS 2.11.3]
+    notify: [운영팀]
+
+  - name: 백신 악성 코드 탐지
+    description: Microsoft Defender 가 악성 코드를 찾았거나 조치함 (1116, 1117)
+    match: { category: defender, event_id: "1116,1117" }
+    window: 5m
+    threshold: 1
+    cooldown: 30m
+    severity: critical
+    tags: [ISMS 2.10.9]
+    notify: [운영팀]
+
+  # ---------------------------------------------------------- 웹·DB·Linux
+  - name: 웹 서버 오류 급증
+    description: IIS 5xx 응답이 짧은 시간에 몰림
+    match: { source: iis, level: "2" }
+    window: 5m
+    threshold: 20
+    cooldown: 30m
+    severity: warning
+    tags: [ISMS 2.9.2]
+    notify: [운영팀]
+
+  - name: SQL Server 로그인 실패 급증
+    match: { category: mssql, event_id: "18456" }
+    group_by: ip
+    window: 10m
+    threshold: 10
+    cooldown: 1h
+    severity: warning
+    tags: [MITRE T1110, ISMS 2.11.3]
+    notify: [운영팀]
+
+  - name: SQL Server 심각 오류
+    description: 디스크 I/O(823·824·825), 로그 가득 참(9002), 백업 실패(3041), 메모리 부족(701)
+    match: { category: mssql, event_id: "823,824,825,9002,3041,701" }
+    window: 10m
+    threshold: 1
+    cooldown: 1h
+    severity: error
+    tags: [ISMS 2.9.2, ISMS 2.9.3]
+    notify: [운영팀]
+
+  - name: Linux SSH 무차별 대입
+    match: { category: "syslog,linux", q: "Failed password|Invalid user" }
+    group_by: ip
+    window: 10m
+    threshold: 10
+    cooldown: 1h
+    severity: warning
+    tags: [MITRE T1110.004, ISMS 2.11.3]
+    notify: [운영팀]

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log Monitor</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/app.css">
+  <script>
+    // 저장된 테마를 먼저 적용 (깜빡임 방지)
+    try { const t = JSON.parse(localStorage.getItem('wlm.theme')); if (t) document.documentElement.dataset.theme = t; } catch {}
+  </script>
+  <script type="module" src="/js/main.js"></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5.5h14M5 12h2.6l1.7-3.4 2.9 6.8 1.7-3.4H19M5 18.5h7"/></svg></span>
+        <span>Log Monitor<small>통합 로그 모니터링</small></span>
+      </div>
+      <nav class="nav">
+        <a href="#/dashboard" data-nav="dashboard"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span>대시보드</span></a>
+        <a href="#/live" data-nav="live"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>실시간 로그</span></a>
+        <a href="#/events" data-nav="events"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><span>이벤트 검색</span></a>
+        <a href="#/alerts" data-nav="alerts" title="최근 24시간 알림 수"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg><span>알림</span><span class="nav-badge" id="alert-badge" hidden></span></a>
+        <a href="#/agents" data-nav="agents"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span>수집 PC</span></a>
+        <a href="#/fields" data-nav="fields"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h6"/></svg><span>필드 탐색</span></a>
+        <div class="nav-section" data-admin hidden>관리</div>
+        <a href="#/users" data-nav="users" data-admin hidden><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/></svg><span>사용자</span></a>
+        <a href="#/settings" data-nav="settings" data-admin hidden><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>환경설정</span></a>
+        <a href="#/audit" data-nav="audit" data-admin hidden><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg><span>감사 로그</span></a>
+      </nav>
+      <div class="sidebar-foot">
+        <div id="ingest-status" class="ingest-status"></div>
+        <div id="user-box" class="user-box"></div>
+        <div class="foot-links">
+          <button id="theme-toggle" class="btn ghost sm" type="button">다크 모드</button>
+          <a href="/docs" target="_blank" rel="noopener">API 문서</a>
+        </div>
+      </div>
+    </aside>
+    <main id="view" class="view"></main>
+  </div>
+  <div id="drawer-root"></div>
+  <div id="auth-root"></div>
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+</body>
+</html>

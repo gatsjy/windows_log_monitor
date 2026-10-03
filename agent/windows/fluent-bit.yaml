@@ -1,0 +1,100 @@
+# Log Monitor - Windows agent (Fluent Bit)
+# install.ps1 fills @SERVER_HOST@ / @SERVER_PORT@ / @API_KEY@ / @CHANNELS@ / @IIS_PATH@ / @MSSQL_PATH@,
+# uncomments the optional IIS / MSSQL blocks when requested, and writes the result to
+# C:\ProgramData\wlm-agent\fluent-bit.yaml
+# config_version (in the heartbeat below): bump when this file changes (shown on the "수집 PC" page).
+
+service:
+  flush: 2
+  log_level: info
+  # Buffer to disk while the server is unreachable (no log loss on network outage)
+  storage.path: C:\ProgramData\wlm-agent\buffer
+  storage.sync: normal
+  storage.backlog.mem_limit: 16M
+
+pipeline:
+  inputs:
+    # Windows Event Log. Missing channels are ignored. Other useful channels:
+    #   Microsoft-Windows-Sysmon/Operational, Microsoft-Windows-TaskScheduler/Operational
+    # SQL Server and IIS (WAS/W3SVC) also write their important errors here (Application/System).
+    - name: winevtlog
+      tag: winlog
+      channels: @CHANNELS@
+      interval_sec: 1
+      read_existing_events: false
+      ignore_missing_channels: true
+      # Named fields: EventData.TargetUserName, EventData.IpAddress, EventData.LogonType ...
+      # (StringInserts is still sent as well)
+      event_data_as_map: true
+      db: C:\ProgramData\wlm-agent\winevtlog.sqlite
+      storage.type: filesystem
+
+    # Heartbeat every 30s so the server knows this PC is alive even when it is quiet
+    - name: dummy
+      tag: heartbeat
+      dummy: '{"type":"heartbeat","config_version":"0.2.0"}'
+      interval_sec: 30
+
+    # @@IIS_BEGIN  IIS access logs (W3C). Enabled by: install.ps1 -Iis
+    # The server parses the lines (including the '#Fields:' header, so custom field sets work).
+    # - name: tail
+    #   tag: file.iis
+    #   path: @IIS_PATH@
+    #   path_key: file
+    #   exclude_path: '*.zip,*.gz'
+    #   refresh_interval: 30
+    #   db: C:\ProgramData\wlm-agent\tail-iis.sqlite
+    #   storage.type: filesystem
+    # @@IIS_END
+
+    # @@MSSQL_BEGIN  SQL Server ERRORLOG (UTF-16). Enabled by: install.ps1 -MssqlErrorlog
+    # Optional: SQL Server already writes login failures and serious errors to the Application event log.
+    # - name: tail
+    #   tag: file.mssql
+    #   path: @MSSQL_PATH@
+    #   path_key: file
+    #   unicode.encoding: UTF-16LE
+    #   refresh_interval: 30
+    #   db: C:\ProgramData\wlm-agent\tail-mssql.sqlite
+    #   storage.type: filesystem
+    # @@MSSQL_END
+
+  filters:
+    - name: modify
+      match: '*'
+      add: agent_host ${COMPUTERNAME}
+
+    - name: modify
+      match: winlog
+      add: log_source winevtlog
+
+    # @@IIS_BEGIN
+    # - name: modify
+    #   match: file.iis
+    #   add: log_source iis
+    # @@IIS_END
+
+    # @@MSSQL_BEGIN
+    # - name: modify
+    #   match: file.mssql
+    #   add: log_source mssql
+    # @@MSSQL_END
+
+  outputs:
+    - name: http
+      match: '*'
+      host: @SERVER_HOST@
+      port: @SERVER_PORT@
+      uri: /api/ingest
+      format: json
+      json_date_key: date
+      json_date_format: iso8601
+      compress: gzip
+      header: X-API-Key @API_KEY@
+      retry_limit: no_limits
+      # Cap the on-disk buffer during long outages (oldest chunks are dropped first)
+      storage.total_limit_size: 1G
+      log_response_payload: false
+      # For HTTPS (reverse proxy in front of the server):
+      # tls: on
+      # tls.verify: on

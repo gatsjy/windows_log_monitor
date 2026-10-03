@@ -1,0 +1,71 @@
+# syslog 수신기 (Fluent Bit) — docker compose --profile syslog 로 실행
+#
+#   호스트 514/udp, 514/tcp  → RFC3164 (대부분의 네트워크 장비, rsyslog 기본 포맷)
+#   호스트 1514/tcp          → RFC5424
+#
+# 받은 로그는 log_source=syslog 를 붙여 api 의 /api/ingest 로 보낸다.
+# 시각: RFC3164 는 연도/시간대가 없어서 '수신 시각'을 이벤트 시각으로 쓴다 (원문 시각은 raw.time 에 보존).
+
+service:
+  flush: 1
+  log_level: info
+  http_server: off
+
+parsers:
+  - name: wlm-syslog-rfc3164
+    format: regex
+    regex: '^\<(?<pri>[0-9]+)\>(?<time>[^ ]* {1,2}[^ ]* [^ ]*) (?<host>[^ ]*) (?<ident>[a-zA-Z0-9_\/\.\-]*)(?:\[(?<pid>[0-9]+)\])?(?:[^\:]*\:)? *(?<message>.*)$'
+
+  - name: wlm-syslog-rfc5424
+    format: regex
+    regex: '^\<(?<pri>[0-9]{1,5})\>1 (?<time>[^ ]+) (?<host>[^ ]+) (?<ident>[^ ]+) (?<pid>[-0-9]+) (?<msgid>[^ ]+) (?<extradata>(\[(.*?)\]|-)) (?<message>.+)$'
+
+pipeline:
+  inputs:
+    - name: syslog
+      tag: syslog.rfc3164.udp
+      mode: udp
+      listen: 0.0.0.0
+      port: 5140
+      parser: wlm-syslog-rfc3164
+      source_address_key: source_ip
+      raw_message_key: raw_message
+
+    - name: syslog
+      tag: syslog.rfc3164.tcp
+      mode: tcp
+      listen: 0.0.0.0
+      port: 5140
+      parser: wlm-syslog-rfc3164
+      source_address_key: source_ip
+      raw_message_key: raw_message
+
+    - name: syslog
+      tag: syslog.rfc5424.tcp
+      mode: tcp
+      listen: 0.0.0.0
+      port: 5141
+      parser: wlm-syslog-rfc5424
+      source_address_key: source_ip
+      raw_message_key: raw_message
+
+  filters:
+    - name: modify
+      match: 'syslog.*'
+      add: log_source syslog
+
+  outputs:
+    - name: http
+      match: '*'
+      host: api
+      port: 8000
+      uri: /api/ingest
+      format: json
+      json_date_key: date
+      json_date_format: iso8601
+      compress: gzip
+      header: X-API-Key ${WLM_INGEST_API_KEY}
+      retry_limit: no_limits
+      # 서버 장애가 길어져도 버퍼 파일이 디스크를 다 쓰지 않게 상한 (넘치면 오래된 것부터 버림)
+      storage.total_limit_size: 1G
+      log_response_payload: false

@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+.DS_Store
+*.tmp
+archive/
+config/oracle/
+dist/
+backups/
+deploy/airgap/agent-installers/*
+!deploy/airgap/agent-installers/README.md

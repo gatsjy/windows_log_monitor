@@ -1,0 +1,10 @@
+# 운영 의존성 (전부 오픈소스: FastAPI MIT, Uvicorn BSD-3, psycopg LGPL-3)
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+psycopg[binary,pool]>=3.2,<4
+# Phase 2 알림 (PyYAML MIT, python-oracledb Apache-2.0/UPL-1.0, tzdata Apache-2.0)
+pyyaml>=6,<7
+oracledb>=2.4,<4
+tzdata>=2024.1
+# 환경설정 비밀값 암호화 (cryptography Apache-2.0 / BSD-3)
+cryptography>=42

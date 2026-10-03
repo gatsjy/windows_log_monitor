@@ -1,0 +1,12 @@
+# 이미지 빌드에 보내지 않을 것 — 비밀값(.env), 로그 보관 파일, 반입 묶음 결과물, 캐시
+.env
+archive/
+dist/
+deploy/airgap/agent-installers/
+config/oracle/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+.DS_Store
