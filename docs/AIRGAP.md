@@ -370,3 +370,14 @@ sudo docker compose -f docker-compose.yml exec -T db sh -c 'pg_dump -U "$POSTGRE
 - 에이전트 설치 묶음: zip 구성(설정·Fluent Bit·설명서)과 입력 검증·감사 기록을 자동 테스트로 확인.
   - PowerShell(컨테이너)에서 `install.ps1` 문법 검사 통과, `settings.json` 읽기와 Fluent Bit zip 자동 설치까지 실행 확인
     (실제 서비스 등록은 Windows 가 필요해 사내 시험 PC 에서 확인 필요 — BACKLOG B-25).
+
+### 2026-10-05 설치 리허설 (0.5.0 묶음, 네트워크를 끊은 격리 Docker)
+
+- 변조 감지: 묶음 안 파일 하나를 바꾸면 설치 중단. 압축 해제 경고 없음(macOS 확장 속성 제거 확인).
+- 처음 설치: 이미지 로드 → 무작위 비밀값 `.env` → 기동(`python -m app.serve`, 8080·6976) → 첫 관리자 로그인·비밀번호 변경.
+- 포트: 8080·6976 `/healthz` 200, 6976 의 화면(`/`)·로그인 API 는 404.
+- 수집: 6976 으로 Windows·SQL Server 이벤트, 514/udp syslog(수신기 → 내부 8001) 저장 확인.
+- 에이전트 설치 묶음: Fluent Bit 4.0.14 zip 포함, `settings.json` 에 이 서버의 무작위 키·포트 6976·선택 항목.
+- 규칙 관리(추가·SID 자동·끄기·미리보기), 사용자 그룹(DB팀 → MSSQL 로그만, 규칙 변경 403), 감사 로그 기록 — 15개 항목 모두 통과.
+- 업그레이드: DB 백업 생성, 화면에서 추가한 규칙이 남은 `alerts.yaml` 보존 + `alerts.yaml.new`, 이벤트·그룹 유지.
+- 복원: 백업으로 DB 를 다시 만들어 이벤트·사용자·그룹·마이그레이션(8개) 복원, 정상 기동.
