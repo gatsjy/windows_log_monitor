@@ -6,7 +6,7 @@
 //      각 위젯의 live(body, cfg, ctx, events) 로 넘긴다 → 숫자/막대/표가 제자리에서 갱신된다.
 //   DB 를 몇 초마다 다시 조회하지 않으므로 화면을 여러 개 띄워도 부하가 거의 없다.
 import * as api from '../api.js';
-import { isAdmin } from '../auth.js';
+import { can } from '../auth.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
 import { levelIcon } from '../levels.js';
 import { matchesQuery } from '../livefilter.js';
@@ -140,7 +140,7 @@ export async function mount(root, params, sub) {
           <button class="live-badge" data-live type="button"></button>
           <button class="btn" data-refresh title="${refresh ? `${refresh}초마다 전체 동기화 (그 사이는 실시간 갱신)` : ''}">
             <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>새로고침</button>
-          ${isAdmin() ? html`<button class="btn" data-edit><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>편집</button>` : ''}
+          ${can('dashboards.edit') ? html`<button class="btn" data-edit><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>편집</button>` : ''}
         </div>
       </div>
       <div class="grid">${(doc.widgets || []).map((w, i) => html`

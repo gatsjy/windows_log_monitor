@@ -4,6 +4,8 @@
 import * as api from './api.js';
 import * as auth from './auth.js';
 import { closeDrawer } from './drawer.js';
+import { categoryLabel } from './levels.js';
+import { enhance } from './responsive.js';
 import { fmtNum, html, store } from './util.js';
 import * as agents from './views/agents.js';
 import * as alerts from './views/alerts.js';
@@ -16,7 +18,9 @@ import * as settingsView from './views/settings.js';
 import * as users from './views/users.js';
 
 const VIEWS = { dashboard, live, events, alerts, agents, fields, users, audit, settings: settingsView };
-const ADMIN_VIEWS = new Set(['users', 'audit', 'settings']);
+// 화면별 필요한 권한 ('admin' = 관리자만). 서버도 같은 권한으로 API 를 막는다
+const VIEW_PERMS = { users: 'admin', audit: 'audit.view', settings: 'settings.manage' };
+const allowedView = (name) => !VIEW_PERMS[name] || (VIEW_PERMS[name] === 'admin' ? auth.isAdmin() : auth.can(VIEW_PERMS[name]));
 const root = document.getElementById('view');
 let unmount = null;
 let seq = 0;
@@ -26,7 +30,7 @@ let statusTimer = null;
 function parseHash() {
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
   const [name, ...rest] = path.split('/');
-  const allowed = VIEWS[name] && (!ADMIN_VIEWS.has(name) || auth.isAdmin());
+  const allowed = VIEWS[name] && allowedView(name);
   return {
     name: allowed ? name : 'dashboard',
     sub: rest.join('/'),
@@ -47,6 +51,9 @@ async function route() {
   const my = seq;
   const { name, sub, params } = parseHash();
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === name));
+  const current = document.querySelector(`[data-nav="${name}"] span`);
+  document.getElementById('topbar-page').textContent = current ? current.textContent : '';
+  setNavOpen(false);
   root.innerHTML = '';
   window.scrollTo(0, 0);
   try {
@@ -81,8 +88,10 @@ function renderUser(me) {
   document.getElementById('user-box').innerHTML = html`
     <div class="user-name" title="마지막 로그인 ${me.last_login_ip || ''}">
       <span class="avatar">${(me.display_name || me.username).slice(0, 1).toUpperCase()}</span>
-      <span><b>${me.display_name || me.username}</b><small>${me.username} · ${me.role_label}</small></span>
+      <span><b>${me.display_name || me.username}</b><small>${me.username} · ${me.role_label}${me.groups?.length ? ` · ${me.groups.join(', ')}` : ''}</small></span>
     </div>
+    ${me.scope ? html`<div class="scope-note" title="사용자 그룹으로 정해진 조회 범위">볼 수 있는 범위: ${me.scope.map((s) => [
+      s.categories.map(categoryLabel).join('·'), s.hosts.join('·')].filter(Boolean).join(' / ')).join(' + ')}</div>` : ''}
     <div class="user-actions">
       <button class="btn ghost sm" type="button" data-pw>비밀번호 변경</button>
       <button class="btn ghost sm" type="button" data-logout>로그아웃</button>
@@ -90,7 +99,25 @@ function renderUser(me) {
   document.querySelector('#user-box [data-pw]').addEventListener('click', () => auth.showPasswordChange());
   document.querySelector('#user-box [data-logout]').addEventListener('click', () => auth.logout());
   document.querySelectorAll('[data-admin]').forEach((el) => { el.hidden = !auth.isAdmin(); });
+  document.querySelectorAll('[data-perm]').forEach((el) => { el.hidden = !auth.can(el.dataset.perm); });
+  const section = document.querySelector('[data-nav-section]');
+  section.hidden = ![...document.querySelectorAll('.nav [data-admin], .nav [data-perm]')].some((el) => !el.hidden);
 }
+
+// ------------------------------------------------- 좁은 화면 메뉴 (왼쪽 패널)
+const navToggle = document.getElementById('nav-toggle');
+function setNavOpen(open) {
+  document.body.classList.toggle('nav-open', open);
+  navToggle.setAttribute('aria-expanded', String(open));
+  if (open) document.querySelector('.sidebar .nav a.active, .sidebar .nav a')?.focus({ preventScroll: true });
+}
+navToggle.addEventListener('click', () => setNavOpen(!document.body.classList.contains('nav-open')));
+document.querySelectorAll('[data-nav-close]').forEach((el) => el.addEventListener('click', () => setNavOpen(false)));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.body.classList.contains('nav-open')) { setNavOpen(false); navToggle.focus(); }
+});
+// 넓은 화면으로 돌아가면 열린 상태를 정리
+matchMedia('(min-width: 1000px)').addEventListener('change', (e) => { if (e.matches) setNavOpen(false); });
 
 // ----------------------------------------------------------------- 테마
 function applyTheme(theme) {
@@ -109,6 +136,8 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 });
 
 applyTheme(store.get('wlm.theme'));
+enhance(root);
+enhance(document.getElementById('drawer-root'));
 window.addEventListener('hashchange', route);
 
 auth.init({

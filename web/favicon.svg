@@ -1,9 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- Log Monitor 아이콘: 로그 세 줄 + 가운데 줄의 실시간 신호 -->
-  <rect width="32" height="32" rx="8" fill="#2a78d6"/>
-  <g fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M8 9h16"/>
-    <path d="M8 16h3.5l2.2-4.4 3.8 8.8 2.2-4.4H24"/>
-    <path d="M8 23h9"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Log Monitor 로고: 로그 줄(흐린 선) 위로 지나가는 실시간 신호 + 수신 중 표시(초록 점) -->
+  <defs>
+    <linearGradient id="lm-bg" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4f8ef7"/>
+      <stop offset="1" stop-color="#2447c9"/>
+    </linearGradient>
+    <linearGradient id="lm-shine" x1="32" y1="0" x2="32" y2="34" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#lm-bg)"/>
+  <rect width="64" height="34" rx="16" fill="url(#lm-shine)"/>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M17 19h30M17 45h16" stroke-opacity=".5" stroke-width="4.5"/>
+    <path d="M13 32h9l4.5-9 9 18 4.5-9H51" stroke-width="5"/>
   </g>
+  <circle cx="45" cy="45" r="4.5" fill="#34d399" stroke="#fff" stroke-width="2"/>
 </svg>

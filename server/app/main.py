@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 
@@ -15,7 +17,7 @@ from .alerts.engine import engine as alert_engine
 from .auth import service as auth_service
 from .auth.deps import require_user
 from .config import settings
-from .routers import alerts, audit, auth, dashboards, ingest, query, users
+from .routers import agentpkg, alerts, audit, auth, dashboards, ingest, query, users
 from .routers import settings as settings_router
 
 logging.basicConfig(
@@ -57,6 +59,27 @@ async def lifespan(_: FastAPI):
         await db.close_pool()
 
 
+INGEST_PORT_PATHS = ("/api/ingest", "/healthz")
+
+
+class IngestPortGuard:
+    """수집 전용 포트로 들어온 요청은 수집·상태 확인만 허용한다 (화면·로그인·조회 API 는 404).
+    판단 기준은 서버 소켓의 포트(scope["server"])라 요청 헤더로 속일 수 없다."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            port = (scope.get("server") or (None, None))[1]
+            if port == settings.ingest_listen_port and scope.get("path") not in INGEST_PORT_PATHS:
+                if scope["type"] == "websocket":
+                    return await send({"type": "websocket.close", "code": 1008})
+                response = JSONResponse({"detail": "수집 전용 포트입니다. 화면은 WLM_PORT(기본 8080)로 접속하세요"}, 404)
+                return await response(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
 class SecurityHeaders:
     """기본 보안 헤더 (순수 ASGI 미들웨어 — SSE 스트리밍에 영향 없음)."""
 
@@ -78,13 +101,20 @@ class SecurityHeaders:
         await self.app(scope, receive, send_with_headers)
 
 
+# 슬림 이미지에는 글꼴 MIME 정보가 없어 octet-stream 으로 나간다
+mimetypes.add_type("font/woff2", ".woff2")
+mimetypes.add_type("image/svg+xml", ".svg")
+
+
 class UIStaticFiles(StaticFiles):
     """UI 파일은 브라우저에 캐시하지 않는다(no-store) → 파일 수정 후 새로고침만 하면 반영된다.
     (no-cache 만으로는 일부 브라우저가 메모리 캐시의 CSS/모듈을 재사용했다. 파일이 작아 비용은 미미)"""
 
-    def file_response(self, *args, **kwargs):
-        response = super().file_response(*args, **kwargs)
-        response.headers["Cache-Control"] = "no-store"
+    def file_response(self, full_path, *args, **kwargs):
+        response = super().file_response(full_path, *args, **kwargs)
+        # 글꼴은 크고(2MB) 바뀌지 않는다 → 하루 캐시. 나머지는 수정 즉시 반영되도록 no-store
+        is_font = str(full_path).endswith((".woff2", ".woff"))
+        response.headers["Cache-Control"] = "public, max-age=86400" if is_font else "no-store"
         return response
 
 
@@ -94,6 +124,7 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.api_docs else None,
 )
 app.add_middleware(SecurityHeaders)
+app.add_middleware(IngestPortGuard)
 # 공개: 수집(API 키로 보호), 로그인. 그 외 /api/* 는 로그인 필수, 변경 작업은 엔드포인트에서 관리자 확인
 app.include_router(ingest.router)
 app.include_router(auth.router)
@@ -103,6 +134,7 @@ app.include_router(alerts.router, dependencies=[Depends(require_user)])
 app.include_router(users.router)
 app.include_router(audit.router)
 app.include_router(settings_router.router)
+app.include_router(agentpkg.router)  # 관리자 전용 (엔드포인트에서 확인)
 
 
 @app.get("/healthz", tags=["ops"])

@@ -10,3 +10,4 @@ config/oracle/
 .ruff_cache/
 .venv/
 .DS_Store
+agent-installers/

@@ -26,6 +26,9 @@ class Settings:
     database_url: str = _env("DATABASE_URL", "postgresql://wlm:wlm@localhost:5432/wlm")
     # 에이전트(Fluent Bit)가 X-API-Key 헤더로 보내는 키. 콤마로 여러 개 (키 교체 기간용)
     ingest_api_keys: tuple[str, ...] = _list("INGEST_API_KEYS")
+    # 에이전트 수집 전용 포트 (컨테이너 안). compose 가 호스트의 WLM_INGEST_PORT(기본 6976)를 여기로 연결한다.
+    # 이 포트로는 /api/ingest 와 /healthz 만 열린다 → 화면(WLM_PORT)과 방화벽 정책을 나눌 수 있다
+    ingest_listen_port: int = _int("INGEST_LISTEN_PORT", 8001)
     # 로그 로테이션 (월 단위 파티션이라 실제로는 최대 +1개월 더 남는다)
     #   DB 보관(db_retention_days): 화면에서 바로 검색되는 기간. 지나면 압축 파일로 보관(archive) 후 DB 에서 삭제
     #   전체 보관(retention_days): 보관 파일까지 포함한 기간. 지나면 보관 파일도 삭제 (ISMS 접속기록 1년 이상)
@@ -39,6 +42,11 @@ class Settings:
     max_body_mb: int = _int("MAX_BODY_MB", 20)
     dashboard_dir: str = _env("DASHBOARD_DIR", "/app/config/dashboards")
     web_dir: str = _env("WEB_DIR", "/app/web")
+    # 에이전트 설치 묶음(수집 PC 화면 > 내려받기): 에이전트 스크립트 위치, Fluent Bit 설치 파일 위치(반입 묶음의 agent-installers)
+    agent_dir: str = _env("AGENT_DIR", "/app/agent")
+    agent_installers_dir: str = _env("AGENT_INSTALLERS_DIR", "/app/agent-installers")
+    # 에이전트가 접속할 호스트 쪽 수집 포트 (compose 의 WLM_INGEST_PORT). 설치 묶음의 settings.json 에 들어간다
+    ingest_public_port: int = _int("INGEST_PORT", 6976)
     partition_months_ahead: int = _int("PARTITION_MONTHS_AHEAD", 2)
     log_level: str = _env("LOG_LEVEL", "INFO")
 

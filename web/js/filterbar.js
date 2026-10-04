@@ -43,27 +43,35 @@ export async function filterBar(el, initial, { showTime = true, onChange }) {
     const levels = new Set((state.level || '').split(',').filter(Boolean));
     const custom = state.until || (state.since && !TIME_RANGES.some(([k]) => k === state.since));
     const fieldChips = Object.entries(state).filter(([k]) => k.startsWith('f.'));
+    const extras = [['provider', '공급자'], ['source', '소스'], ['user', '사용자'], ['ip', 'IP']].filter(([k]) => state[k]);
+    // 묶음 단위로 그린다 → 넓은 화면은 한 줄로 흐르고, 좁은 화면은 묶음마다 한 줄씩 쌓인다
     el.innerHTML = html`<div class="card filterbar">
-      ${showTime ? html`<select class="select" data-k="since" aria-label="기간">
-        ${custom ? html`<option value="" selected>사용자 지정 구간</option>` : ''}
-        ${TIME_RANGES.map(([v, label]) => html`<option value="${v}" ${!custom && state.since === v ? 'selected' : ''}>${label}</option>`)}
-      </select>` : ''}
-      <select class="select" data-k="host" aria-label="PC">${options(hosts, state.host, '전체 PC')}</select>
-      <select class="select" data-k="category" aria-label="분류">${options(Object.keys(meta.categories || {}), state.category, '전체 분류', categoryLabel)}</select>
-      <select class="select" data-k="channel" aria-label="채널">${options(channelNames, state.channel, '전체 채널')}</select>
-      <span class="divider"></span>
-      ${Object.entries(LEVELS).map(([lv, m]) => html`
-        <button type="button" class="chip ${levels.has(lv) ? 'on' : ''}" data-level="${lv}" aria-pressed="${levels.has(lv)}">${levelIcon(Number(lv))}${m.label}</button>`)}
-      <span class="divider"></span>
-      <input class="input" style="width:150px" data-text="event_id" placeholder="이벤트 ID (4625,4740)" value="${state.event_id ?? ''}">
-      <input class="input grow" data-text="q" placeholder="메시지 검색 (Enter, 여러 단어는 a|b)" value="${state.q ?? ''}">
-      ${custom && state.until ? html`<span class="chip on">${fmtTime(state.since, { seconds: false })} – ${fmtTime(state.until, { seconds: false, date: false })}
-        <button type="button" class="btn ghost sm x" data-clear-range aria-label="구간 해제">✕</button></span>` : ''}
-      ${[['provider', '공급자'], ['source', '소스'], ['user', '사용자'], ['ip', 'IP']].filter(([k]) => state[k]).map(([k, label]) =>
-        html`<span class="chip on">${label}: ${k === 'source' ? sourceLabel(state[k]) : state[k]}<button type="button" class="btn ghost sm x" data-remove="${k}" aria-label="해제">✕</button></span>`)}
-      ${fieldChips.map(([k, v]) => html`<span class="chip on" title="원본 필드 조건">${k.slice(2)} = ${v}
-        <button type="button" class="btn ghost sm x" data-remove="${k}" aria-label="해제">✕</button></span>`)}
-      <button type="button" class="btn ghost" data-reset>초기화</button>
+      <div class="fb-group fb-selects">
+        ${showTime ? html`<select class="select" data-k="since" aria-label="기간">
+          ${custom ? html`<option value="" selected>사용자 지정 구간</option>` : ''}
+          ${TIME_RANGES.map(([v, label]) => html`<option value="${v}" ${!custom && state.since === v ? 'selected' : ''}>${label}</option>`)}
+        </select>` : ''}
+        <select class="select" data-k="host" aria-label="PC">${options(hosts, state.host, '전체 PC')}</select>
+        <select class="select" data-k="category" aria-label="분류">${options(Object.keys(meta.categories || {}), state.category, '전체 분류', categoryLabel)}</select>
+        <select class="select" data-k="channel" aria-label="채널">${options(channelNames, state.channel, '전체 채널')}</select>
+      </div>
+      <div class="fb-group fb-levels" role="group" aria-label="수준">
+        ${Object.entries(LEVELS).map(([lv, m]) => html`
+          <button type="button" class="chip ${levels.has(lv) ? 'on' : ''}" data-level="${lv}" aria-pressed="${levels.has(lv)}">${levelIcon(Number(lv))}${m.label}</button>`)}
+      </div>
+      <div class="fb-group fb-inputs">
+        <input class="input fb-id" data-text="event_id" inputmode="numeric" placeholder="이벤트 ID (4625,4740)" aria-label="이벤트 ID" value="${state.event_id ?? ''}">
+        <input class="input grow" data-text="q" type="search" placeholder="메시지 검색 (Enter, 여러 단어는 a|b)" aria-label="메시지 검색" value="${state.q ?? ''}">
+      </div>
+      ${custom && state.until || extras.length || fieldChips.length ? html`<div class="fb-group fb-active">
+        ${custom && state.until ? html`<span class="chip on">${fmtTime(state.since, { seconds: false })} – ${fmtTime(state.until, { seconds: false, date: false })}
+          <button type="button" class="btn ghost sm x" data-clear-range aria-label="구간 해제">✕</button></span>` : ''}
+        ${extras.map(([k, label]) =>
+          html`<span class="chip on">${label}: ${k === 'source' ? sourceLabel(state[k]) : state[k]}<button type="button" class="btn ghost sm x" data-remove="${k}" aria-label="해제">✕</button></span>`)}
+        ${fieldChips.map(([k, v]) => html`<span class="chip on" title="원본 필드 조건">${k.slice(2)} = ${v}
+          <button type="button" class="btn ghost sm x" data-remove="${k}" aria-label="해제">✕</button></span>`)}
+      </div>` : ''}
+      <button type="button" class="btn ghost fb-reset" data-reset>초기화</button>
     </div>`;
 
     el.querySelectorAll('select[data-k]').forEach((s) => s.addEventListener('change', () => {

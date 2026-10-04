@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from .. import db
-from ..auth.deps import client_ip, require_admin
+from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
 from ..config import settings
 
@@ -70,7 +70,7 @@ async def get_dashboard(name: str):
 
 @router.put("/api/dashboards/{name}")
 async def save_dashboard(name: str, request: Request, doc: dict = Body(...),
-                         admin: User = Depends(require_admin)):
+                         admin: User = Depends(require_permission("dashboards.edit"))):
     path = _path(name)
     _validate(doc)
     text = json.dumps(doc, ensure_ascii=False, indent=2) + "\n"

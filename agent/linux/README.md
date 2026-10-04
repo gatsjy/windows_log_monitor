@@ -7,11 +7,12 @@ Linux 서버에 Fluent Bit(Apache 2.0)를 `wlm-agent` 서비스로 설치합니�
 
 ## 설치
 
+**권장 (폐쇄망 포함):** 화면 **수집 PC > 에이전트 설치** 에서 Linux 를 골라 설치 묶음을 받고, 압축을 푼 뒤 `sudo ./install-configured.sh`.
+서버 주소·수집 포트·API 키가 채워져 있고, `packages/` 에 Fluent Bit 패키지가 있으면 먼저 설치합니다.
+
 ```bash
-# 1) Fluent Bit 설치 (공식 스크립트 또는 배포판 패키지)
-#    https://docs.fluentbit.io/manual/installation/linux
-# 2) 이 폴더를 서버에 복사한 뒤
-sudo ./install.sh 10.0.0.10 8080 <수집 API 키>
+# 수동: 1) Fluent Bit 설치 (배포판 패키지)  2) 이 폴더를 서버에 복사한 뒤
+sudo ./install.sh 10.0.0.10 6976 <수집 API 키>     # 6976 = 서버의 수집 전용 포트 (WLM_INGEST_PORT)
 ```
 
 | 항목 | 위치 |

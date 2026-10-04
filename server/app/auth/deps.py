@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from fastapi import Depends, HTTPException, Request
 
-from . import service
+from . import groups, service
 from .service import User
 
 COOKIE_NAME = "wlm_session"
@@ -47,6 +47,7 @@ async def current_user(request: Request) -> User:
     if user is None:
         raise HTTPException(401, "로그인이 필요합니다", headers={"X-WLM-Reason": "login_required"})
     check_csrf(request)
+    await with_access(user)
     request.state.user = user
     request.state.session_token = token
     return user
@@ -63,3 +64,22 @@ async def require_admin(user: User = Depends(require_user)) -> User:
     if not user.is_admin:
         raise HTTPException(403, "관리자만 할 수 있는 작업입니다")
     return user
+
+
+async def with_access(user: User) -> User:
+    """사용자 그룹의 권한·조회 범위를 채운다. 관리자는 범위 제한이 없다."""
+    perms, scopes, names = await groups.access_for(user.id)
+    user.permissions, user.groups = perms, names
+    user.scopes = None if user.is_admin else scopes
+    return user
+
+
+def require_permission(permission: str):
+    """기능 권한이 있어야 하는 API (관리자 또는 그 권한을 가진 그룹의 구성원)."""
+
+    async def dependency(user: User = Depends(require_user)) -> User:
+        if not user.can(permission):
+            raise HTTPException(403, f"권한이 없습니다 ({groups.PERMISSIONS.get(permission, permission)})")
+        return user
+
+    return dependency

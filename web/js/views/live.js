@@ -28,7 +28,7 @@ export async function mount(root, params) {
     </div>
     <div data-filter></div>
     <section class="card">
-      <div class="table-wrap"><table class="table"><thead>${EVENT_HEAD}</thead><tbody data-rows></tbody></table></div>
+      <div class="table-wrap"><table class="table ev-table"><thead>${EVENT_HEAD}</thead><tbody data-rows></tbody></table></div>
       <div class="empty" data-empty>새 로그를 기다리는 중…</div>
     </section>`;
 

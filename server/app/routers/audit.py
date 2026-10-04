@@ -11,11 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from .. import db, repository
-from ..auth.deps import client_ip, require_admin
+from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
 from ..filters import FilterError, parse_time
 
-router = APIRouter(tags=["audit"], dependencies=[Depends(require_admin)])
+router = APIRouter(tags=["audit"], dependencies=[Depends(require_permission("audit.view"))])
 
 ACTION_LABELS = {
     "auth.login": "로그인",
@@ -28,11 +28,18 @@ ACTION_LABELS = {
     "user.create": "사용자 생성",
     "user.update": "사용자 변경",
     "user.reset_password": "비밀번호 초기화",
+    "user.delete": "사용자 삭제",
     "user.unlock": "잠금 해제",
     "events.search": "이벤트 검색",
     "events.view": "이벤트 상세 조회",
     "dashboard.save": "대시보드 저장",
-    "alerts.config.save": "알림 규칙 저장",
+    "alerts.config.save": "알림 규칙 파일 저장",
+    "alerts.rule.save": "알림 규칙 저장",
+    "alerts.rule.delete": "알림 규칙 삭제",
+    "alerts.rule.toggle": "알림 규칙 켜기/끄기",
+    "agents.package.download": "에이전트 설치 묶음 내려받기",
+    "user_group.save": "사용자 그룹 저장",
+    "user_group.delete": "사용자 그룹 삭제",
     "alerts.test": "알림 테스트 발송",
     "settings.smtp.save": "메일 서버 설정",
     "settings.smtp.test": "메일 서버 테스트",
@@ -69,7 +76,7 @@ async def list_audit(
     q: str | None = None,
     limit: int = Query(500, ge=1, le=10000),
     format: str = Query("json", pattern="^(json|csv)$"),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_permission("audit.view")),
 ):
     try:
         start = parse_time(since, datetime.now(UTC))

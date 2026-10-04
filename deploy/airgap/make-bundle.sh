@@ -6,6 +6,8 @@
 #   --platform  폐쇄망 서버의 CPU. 일반 서버는 linux/amd64(기본), ARM 서버는 linux/arm64.
 #               Apple Silicon Mac 에서 만들어도 이 값으로 빌드·다운로드한다 (그냥 빌드하면 arm64 가 되어 서버에서 안 뜬다).
 #   --out       결과 폴더 (기본 dist)
+#   --no-agent-download  Fluent Bit Windows 설치 파일을 자동으로 받지 않음 (agent-installers 에 직접 넣은 것만 사용)
+#   FLUENTBIT_VERSION=4.0.14  에이전트용 Fluent Bit 버전 (서버 수신기와 같은 4.0 계열 권장)
 #
 # 결과: <out>/log-monitor-<버전>-<arch>.tar.gz 와 .sha256
 #   안에: 컨테이너 이미지(images/images.tar.gz), 실행 파일(compose·설정·에이전트·문서·소스), SHA256SUMS, VERSION
@@ -15,11 +17,14 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 PLATFORM=linux/amd64
 OUT=dist
+AGENT_DOWNLOAD=1
+FLUENTBIT_VERSION=${FLUENTBIT_VERSION:-4.0.14}
 while [ $# -gt 0 ]; do
   case "$1" in
     --platform) PLATFORM=$2; shift 2 ;;
     --out) OUT=$2; shift 2 ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    --no-agent-download) AGENT_DOWNLOAD=0; shift ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "알 수 없는 옵션: $1 (--help 참고)" >&2; exit 2 ;;
   esac
 done
@@ -52,6 +57,20 @@ step "외부 이미지 내려받기 (${PLATFORM})"
 for image in $EXT_IMAGES; do
   docker pull --quiet --platform "$PLATFORM" "$image"
 done
+
+if [ "$AGENT_DOWNLOAD" = 1 ]; then
+  step "에이전트용 Fluent Bit Windows 설치 파일 (${FLUENTBIT_VERSION})"
+  # 폐쇄망 PC 에도 그대로 반입할 수 있게 묶음에 넣는다 → 서버 화면 '에이전트 설치 묶음' zip 에 자동 포함
+  FB_DIR=deploy/airgap/agent-installers
+  FB_ZIP="fluent-bit-${FLUENTBIT_VERSION}-win64.zip"
+  mkdir -p "$FB_DIR"
+  if [ ! -f "$FB_DIR/$FB_ZIP" ]; then
+    curl -fL --retry 3 -o "$FB_DIR/$FB_ZIP.part" "https://packages.fluentbit.io/windows/$FB_ZIP"
+    curl -fsSL --retry 3 -o "$FB_DIR/$FB_ZIP.sha256" "https://packages.fluentbit.io/windows/$FB_ZIP.sha256"
+    mv "$FB_DIR/$FB_ZIP.part" "$FB_DIR/$FB_ZIP"
+  fi
+  (cd "$FB_DIR" && sha256 -c "$FB_ZIP.sha256") || { echo "Fluent Bit 설치 파일 해시가 맞지 않습니다 — 지우고 다시 실행하세요" >&2; exit 1; }
+fi
 
 step "묶음 폴더 만들기: ${STAGE}"
 rm -rf "$STAGE"

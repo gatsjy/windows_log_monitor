@@ -21,11 +21,11 @@ from ..alerts import targets
 from ..alerts.engine import engine
 from ..alerts.message import AlertMessage
 from ..alerts.notifiers import ORACLE_BINDS, ORACLE_DEFAULT_SQL, ORACLE_DEFAULT_TABLE, EmailNotifier, NotifierError
-from ..auth.deps import client_ip, require_admin
+from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
 from ..config import settings
 
-router = APIRouter(tags=["settings"], dependencies=[Depends(require_admin)])
+router = APIRouter(tags=["settings"], dependencies=[Depends(require_permission("settings.manage"))])
 
 
 def _fail(exc: Exception, status: int | None = None) -> HTTPException:
@@ -79,7 +79,7 @@ async def get_smtp():
 
 
 @router.put("/api/settings/smtp")
-async def put_smtp(body: SmtpBody, request: Request, admin: User = Depends(require_admin)):
+async def put_smtp(body: SmtpBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     password: str | None = None if body.clear_password else (body.password or "")
     try:
         await targets.save_smtp(body.model_dump(), password, admin.username, client_ip(request))
@@ -93,7 +93,7 @@ class SmtpTestBody(BaseModel):
 
 
 @router.post("/api/settings/smtp/test")
-async def test_smtp(body: SmtpTestBody, request: Request, admin: User = Depends(require_admin)):
+async def test_smtp(body: SmtpTestBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     smtp, source = await targets.smtp_config()
     notifier = EmailNotifier("메일 서버 테스트", [body.to.strip()], smtp)
     try:
@@ -126,7 +126,7 @@ async def list_contacts():
 
 
 @router.post("/api/settings/contacts")
-async def create_contact(body: ContactBody, request: Request, admin: User = Depends(require_admin)):
+async def create_contact(body: ContactBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
         return {"id": await targets.save_contact(None, body.model_dump(exclude_none=True), admin.username,
                                                  client_ip(request))}
@@ -135,7 +135,7 @@ async def create_contact(body: ContactBody, request: Request, admin: User = Depe
 
 
 @router.put("/api/settings/contacts/{contact_id}")
-async def update_contact(contact_id: int, body: ContactBody, request: Request, admin: User = Depends(require_admin)):
+async def update_contact(contact_id: int, body: ContactBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
         await targets.save_contact(contact_id, body.model_dump(exclude_none=True), admin.username, client_ip(request))
     except targets.TargetError as exc:
@@ -144,7 +144,7 @@ async def update_contact(contact_id: int, body: ContactBody, request: Request, a
 
 
 @router.delete("/api/settings/contacts/{contact_id}")
-async def delete_contact(contact_id: int, request: Request, admin: User = Depends(require_admin)):
+async def delete_contact(contact_id: int, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
         await targets.delete_contact(contact_id, admin.username, client_ip(request))
     except targets.TargetError as exc:
@@ -171,7 +171,7 @@ async def list_groups():
 
 
 @router.post("/api/settings/groups")
-async def create_group(body: GroupBody, request: Request, admin: User = Depends(require_admin)):
+async def create_group(body: GroupBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
         return {"id": await targets.save_group(None, body.model_dump(exclude_none=True), _used(), admin.username,
                                                client_ip(request))}
@@ -180,7 +180,7 @@ async def create_group(body: GroupBody, request: Request, admin: User = Depends(
 
 
 @router.put("/api/settings/groups/{group_id}")
-async def update_group(group_id: int, body: GroupBody, request: Request, admin: User = Depends(require_admin)):
+async def update_group(group_id: int, body: GroupBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
         await targets.save_group(group_id, body.model_dump(exclude_none=True), _used(), admin.username,
                                  client_ip(request))
@@ -190,7 +190,7 @@ async def update_group(group_id: int, body: GroupBody, request: Request, admin: 
 
 
 @router.delete("/api/settings/groups/{group_id}")
-async def delete_group(group_id: int, request: Request, admin: User = Depends(require_admin)):
+async def delete_group(group_id: int, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
         await targets.delete_group(group_id, _used(), admin.username, client_ip(request))
     except targets.TargetError as exc:
@@ -234,7 +234,7 @@ async def list_channels():
 
 
 @router.post("/api/settings/channels")
-async def create_channel(body: ChannelBody, request: Request, admin: User = Depends(require_admin)):
+async def create_channel(body: ChannelBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
         return {"id": await targets.save_channel(None, body.model_dump(), _secret_updates(body), _used(),
                                                  admin.username, client_ip(request))}
@@ -243,7 +243,7 @@ async def create_channel(body: ChannelBody, request: Request, admin: User = Depe
 
 
 @router.put("/api/settings/channels/{channel_id}")
-async def update_channel(channel_id: int, body: ChannelBody, request: Request, admin: User = Depends(require_admin)):
+async def update_channel(channel_id: int, body: ChannelBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
         await targets.save_channel(channel_id, body.model_dump(), _secret_updates(body), _used(), admin.username,
                                    client_ip(request))
@@ -253,7 +253,7 @@ async def update_channel(channel_id: int, body: ChannelBody, request: Request, a
 
 
 @router.delete("/api/settings/channels/{channel_id}")
-async def delete_channel(channel_id: int, request: Request, admin: User = Depends(require_admin)):
+async def delete_channel(channel_id: int, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
         await targets.delete_channel(channel_id, _used(), admin.username, client_ip(request))
     except targets.TargetError as exc:
@@ -269,7 +269,7 @@ async def _channel(channel_id: int) -> dict:
 
 
 @router.post("/api/settings/channels/{channel_id}/test")
-async def test_channel(channel_id: int, request: Request, admin: User = Depends(require_admin)):
+async def test_channel(channel_id: int, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     """웹훅: 테스트 메시지 전송 / Oracle: 접속해서 DB 정보 조회."""
     row = await _channel(channel_id)
     try:
@@ -297,7 +297,7 @@ class OracleProbeBody(BaseModel):
 
 
 @router.post("/api/settings/oracle/test-connection")
-async def oracle_probe(body: OracleProbeBody, request: Request, admin: User = Depends(require_admin)):
+async def oracle_probe(body: OracleProbeBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     """저장하기 전에 입력한 값으로 연결 시험."""
     try:
         secret_enc = (await _channel(body.channel_id))["secret_enc"] if body.channel_id and not body.password else None
@@ -323,7 +323,7 @@ class DryRunBody(BaseModel):
 
 
 @router.post("/api/settings/channels/{channel_id}/oracle/dry-run")
-async def oracle_dry_run(channel_id: int, body: DryRunBody, request: Request, admin: User = Depends(require_admin)):
+async def oracle_dry_run(channel_id: int, body: DryRunBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     """알림 SQL 을 테스트 값으로 실행. commit=false 면 실행 후 되돌린다."""
     row = await _channel(channel_id)
     if row["type"] != "oracle":
@@ -352,7 +352,7 @@ class QueryBody(BaseModel):
 
 
 @router.post("/api/settings/channels/{channel_id}/oracle/query")
-async def oracle_query(channel_id: int, body: QueryBody, request: Request, admin: User = Depends(require_admin)):
+async def oracle_query(channel_id: int, body: QueryBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     """조회 전용 쿼리 실행 (SELECT/WITH, 읽기 전용 트랜잭션, 최대 500행). 실행한 SQL 은 감사로그에 남는다."""
     row = await _channel(channel_id)
     if row["type"] != "oracle":
@@ -390,7 +390,7 @@ async def retention_status():
 
 
 @router.post("/api/settings/retention/rotate")
-async def retention_rotate(request: Request, admin: User = Depends(require_admin)):
+async def retention_rotate(request: Request, admin: User = Depends(require_permission("settings.manage"))):
     """로그 로테이션 즉시 실행 (보통은 1시간마다 자동)."""
     await db.audit(admin.username, "retention.rotate_now", None, {}, actor_ip=client_ip(request))
     await partitions.run_maintenance()
@@ -403,7 +403,7 @@ class RestoreBody(BaseModel):
 
 
 @router.post("/api/settings/retention/restore")
-async def retention_restore(body: RestoreBody, admin: User = Depends(require_admin)):
+async def retention_restore(body: RestoreBody, admin: User = Depends(require_permission("settings.manage"))):
     """보관 파일을 DB 로 다시 불러와 검색할 수 있게 한다 (hold_days 동안 자동 정리 제외)."""
     try:
         rows = await archive.restore(body.partition, body.hold_days, admin.username)
@@ -413,7 +413,7 @@ async def retention_restore(body: RestoreBody, admin: User = Depends(require_adm
 
 
 @router.post("/api/settings/retention/verify")
-async def retention_verify(request: Request, admin: User = Depends(require_admin)):
+async def retention_verify(request: Request, admin: User = Depends(require_permission("settings.manage"))):
     results = [await asyncio.to_thread(archive.verify, a["partition"]) for a in archive.list_archives()]
     bad = [r["file"] for r in results if not r["ok"]]
     await db.audit(admin.username, "retention.verify_archives", None, {"files": len(results), "bad": bad},
@@ -435,7 +435,7 @@ async def get_tnsnames():
 
 
 @router.put("/api/settings/oracle/tnsnames")
-async def put_tnsnames(body: TnsBody, request: Request, admin: User = Depends(require_admin)):
+async def put_tnsnames(body: TnsBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     aliases = oracle.tns_aliases(body.text)
     if body.text.strip() and not aliases:
         raise HTTPException(422, "별칭을 하나도 찾지 못했습니다. 'ALIAS = (DESCRIPTION = ...)' 형식인지 확인하세요")

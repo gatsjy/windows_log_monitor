@@ -10,6 +10,8 @@ let screen = null; // 'login' | 'password' | null — 같은 화면을 여러 �
 
 export const currentUser = () => me;
 export const isAdmin = () => me?.role === 'admin';
+/** 기능 권한 (서버 auth/groups.py PERMISSIONS). 관리자는 전부 */
+export const can = (permission) => isAdmin() || (me?.permissions || []).includes(permission);
 
 const POLICY = '영문 대·소문자, 숫자, 특수문자 중 3종류 이상이면 8자 이상, 2종류면 10자 이상. 아이디 포함·같은 문자 4번 연속 불가.';
 
@@ -27,7 +29,7 @@ function shell(content) {
   document.body.classList.add('auth-open');
   root().innerHTML = html`<div class="auth-screen"><div class="auth-card">
     <div class="brand auth-brand">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5.5h14M5 12h2.6l1.7-3.4 2.9 6.8 1.7-3.4H19M5 18.5h7"/></svg></span>
+      <img class="brand-mark" src="/favicon.svg" width="40" height="40" alt="">
       <span>Log Monitor<small>통합 로그 모니터링</small></span>
     </div>${content}</div></div>`;
 }

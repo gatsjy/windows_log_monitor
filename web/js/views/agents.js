@@ -1,5 +1,6 @@
 // 수집 PC: 로그를 보내는 모든 PC/서버/장비의 수신 상태 + 에이전트 설치 안내.
 import * as api from '../api.js';
+import { can } from '../auth.js';
 import { sourceLabel, statusBadge } from '../levels.js';
 import { errorBox, fmtCompact, fmtDuration, fmtNum, fmtRelative, fmtTime, html, navigate, replaceParams } from '../util.js';
 
@@ -18,7 +19,7 @@ export async function mount(root, params) {
     </div>
     <div class="grid" data-summary style="margin-bottom:14px"></div>
     <section class="card" style="margin-bottom:14px"><div class="card-body flush" data-table><div class="skeleton"></div></div></section>
-    <section class="card"><div class="card-head"><h2 class="card-title">에이전트 설치 안내</h2></div>
+    <section class="card"><div class="card-head"><h2 class="card-title">에이전트 설치</h2></div>
       <div class="card-body" data-guide></div></section>`;
 
   root.querySelectorAll('[data-seg] button').forEach((b) => b.addEventListener('click', () => {
@@ -28,16 +29,78 @@ export async function mount(root, params) {
     load();
   }));
 
-  const server = location.hostname === 'localhost' ? '<서버IP>' : location.hostname;
-  const port = location.port || (location.protocol === 'https:' ? '443' : '80');
-  root.querySelector('[data-guide]').innerHTML = html`
-    <ol class="ref-list" style="padding-left:20px">
-      <li><b>Windows</b> — Fluent Bit(Apache 2.0) Windows 설치 파일을 설치한 뒤, 저장소의 <code>agent/windows</code> 폴더를 PC 에 복사하고 관리자 PowerShell 에서:
-        <pre class="message-box" style="margin:6px 0 10px">powershell -ExecutionPolicy Bypass -File .\\install.ps1 -ServerHost ${server} -ServerPort ${port} -ApiKey &lt;수집 API 키&gt;</pre></li>
-      <li><b>Linux</b> — Fluent Bit 패키지 설치 후 <code>agent/linux/install.sh ${server} ${port} &lt;수집 API 키&gt;</code> (journald + /var/log)</li>
-      <li><b>네트워크 장비 syslog</b> — 서버에서 <code>docker compose --profile syslog up -d</code> 후, 장비의 syslog 대상을 <code>${server}:514</code> (UDP/TCP) 로 지정</li>
-    </ol>
-    <p class="muted" style="font-size:12.5px;margin:8px 0 0">자세한 내용은 <code>agent/windows/README.md</code>, <code>agent/linux/README.md</code> 참고. API 키는 서버 <code>.env</code> 의 <code>WLM_INGEST_API_KEYS</code>.</p>`;
+  renderGuide();
+
+  // 폐쇄망 PC 배포용: 서버 주소·수집 포트·API 키가 채워진 설치 묶음(zip)을 내려받는다 (관리자)
+  async function renderGuide() {
+    const el = root.querySelector('[data-guide]');
+    if (!can('agents.deploy')) {
+      el.innerHTML = html`<p class="muted" style="margin:0">에이전트 설치 묶음은 관리자나 에이전트 배포 권한이 있는 그룹이 내려받아 배포합니다.</p>`;
+      return;
+    }
+    let info;
+    try {
+      info = await api.get('/api/agents/package/info');
+    } catch (err) {
+      el.innerHTML = errorBox(err);
+      return;
+    }
+    const opt = { os: 'windows', server: info.server && info.server !== 'localhost' ? info.server : '', port: info.port, iis: false, mssql: false };
+    const draw = () => {
+      const files = info.installers[opt.os] || [];
+      el.innerHTML = html`
+        <div class="pkg">
+          <div class="pkg-form">
+            <div class="field"><span>대상</span><div class="seg" data-os>
+              <button type="button" data-v="windows" class="${opt.os === 'windows' ? 'on' : ''}">Windows PC·서버</button>
+              <button type="button" data-v="linux" class="${opt.os === 'linux' ? 'on' : ''}">Linux 서버</button></div></div>
+            <div class="form-row">
+              <label class="field"><span>서버 주소 (PC 에서 보이는 이름·IP)</span><input class="input" data-server value="${opt.server}" placeholder="logmon.corp.local 또는 10.0.0.10"></label>
+              <label class="field" style="max-width:150px"><span>수집 포트</span><input class="input num" data-port type="number" value="${opt.port}"></label>
+            </div>
+            ${opt.os === 'windows' ? html`<div class="field"><span>함께 수집</span><div class="check-list">
+              <label><input type="checkbox" data-iis ${opt.iis ? 'checked' : ''}>IIS 접속 로그 (웹 서버)</label>
+              <label><input type="checkbox" data-mssql ${opt.mssql ? 'checked' : ''}>SQL Server ERRORLOG (DB 서버)</label></div></div>` : ''}
+            <div class="toolbar"><button class="btn primary" data-download><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>설치 묶음 내려받기 (.zip)</button></div>
+            <div data-msg></div>
+          </div>
+          <div class="pkg-info">
+            <div class="section-title" style="margin-top:0">묶음에 들어가는 것</div>
+            <ul class="ref-list">
+              <li>${opt.os === 'windows' ? html`<code>install.cmd</code> — 관리자 권한으로 실행 (여러 대: <code>install.cmd /quiet</code> 를 GPO·SCCM 으로)` : html`<code>install-configured.sh</code> — <code>sudo</code> 로 실행`}</li>
+              <li>서버 주소·수집 포트·<b>수집 API 키</b>가 채워진 설정 (${opt.os === 'windows' ? 'settings.json' : 'install-configured.sh'})</li>
+              <li>Fluent Bit 설치 파일: ${files.length ? html`<span class="tag-good">${files.join(', ')}</span>`
+                : html`<span class="tag-bad">없음</span> — 서버의 <code>agent-installers/</code> 에 넣으면 함께 들어갑니다 (docs/AIRGAP.md)`}</li>
+              <li><code>설치방법.txt</code></li>
+            </ul>
+            <p class="hint-box" style="margin:10px 0 0">PC 에서는 압축을 풀고 실행만 하면 됩니다. 인터넷이 필요 없습니다.
+              방화벽에서 PC → 서버 TCP <b>${opt.port}</b> 을 열어 두세요. 내려받기는 감사 로그에 남습니다.</p>
+          </div>
+        </div>
+        <details class="manual"><summary>네트워크 장비 syslog · 수동 설치</summary>
+          <ul class="ref-list">
+            <li>네트워크 장비: 서버에서 <code>docker compose --profile syslog up -d</code> 후, 장비의 syslog 대상을 <code>${opt.server || '<서버IP>'}:514</code> (UDP/TCP)</li>
+            <li>Windows 수동: <code>install.ps1 -ServerHost ${opt.server || '<서버IP>'} -ApiKey &lt;키&gt;</code> (포트 기본 ${opt.port})</li>
+            <li>Linux 수동: <code>sudo ./install.sh ${opt.server || '<서버IP>'} ${opt.port} &lt;키&gt;</code></li>
+          </ul></details>`;
+      el.querySelectorAll('[data-os] button').forEach((b) => b.addEventListener('click', () => { opt.os = b.dataset.v; draw(); }));
+      el.querySelector('[data-server]').addEventListener('input', (e) => { opt.server = e.target.value.trim(); });
+      el.querySelector('[data-port]').addEventListener('input', (e) => { opt.port = Number(e.target.value) || info.port; });
+      el.querySelector('[data-iis]')?.addEventListener('change', (e) => { opt.iis = e.target.checked; });
+      el.querySelector('[data-mssql]')?.addEventListener('change', (e) => { opt.mssql = e.target.checked; });
+      el.querySelector('[data-download]').addEventListener('click', () => {
+        const msg = el.querySelector('[data-msg]');
+        if (!opt.server) {
+          msg.innerHTML = html`<div class="error-box" style="margin-top:8px">서버 주소를 입력하세요. PC 에서 이 서버에 접속할 때 쓰는 이름이나 IP 입니다.</div>`;
+          return;
+        }
+        const q = new URLSearchParams({ os: opt.os, server: opt.server, port: String(opt.port), iis: String(opt.iis), mssql: String(opt.mssql) });
+        location.href = `/api/agents/package?${q}`; // 파일 내려받기 (쿠키 인증, 화면은 그대로)
+        msg.innerHTML = html`<div class="hint-box" style="margin-top:8px">내려받기를 시작했습니다. 설정 파일에 API 키가 들어 있으니 배포 후 지우세요.</div>`;
+      });
+    };
+    draw();
+  }
 
   async function load() {
     try {

@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
-  <img src="https://img.shields.io/badge/version-0.4.0-2a78d6" alt="version 0.4.0">
+  <img src="https://img.shields.io/badge/version-0.5.0-2a78d6" alt="version 0.5.0">
   <img src="https://img.shields.io/badge/PostgreSQL-17-336791" alt="PostgreSQL 17">
   <img src="https://img.shields.io/badge/Fluent%20Bit-4.0-49bda5" alt="Fluent Bit 4.0">
   <img src="https://img.shields.io/badge/UI-no%20build-lightgrey" alt="no build UI">
@@ -28,6 +28,8 @@
 - **대시보드:** 전체 현황·보안 감사·웹 서버·DB 기본 제공. 새 로그가 오면 숫자·막대·표가 **실시간**으로 바뀝니다.
   - 위젯 구성은 JSON 파일이고, 화면의 편집 버튼으로 바로 고칩니다.
 - **검색:** 기간·PC·분류·수준·이벤트 ID·사용자·IP·원본 필드(`f.EventData.LogonType=10`)·메시지(`timeout|refused`). 원본 JSON 은 그대로 보존합니다.
+- **알림 규칙 관리 (Snort 방식):** 규칙 묶음·SID·스위치로 관리하고, 입력 양식으로 고치면 Snort 식 규칙 문장이 바로 보입니다. 저장 전에 최근 24시간 기준 **예상 알림 횟수**를 미리 봅니다.
+- **사용자 그룹:** DB팀·보안팀·의료정보과처럼 묶어 기능 권한과 **볼 수 있는 로그 범위**(분류·PC)를 줍니다. 서버에서 적용됩니다.
 - **알림:** 기본 규칙 20개를 제공합니다.
   - 대상: 무차별 대입(출발지 IP 별), RDP 공격, 계정 잠금, 관리자 그룹 추가, 감사 로그 삭제, 의심 PowerShell, 악성 코드 탐지, IIS 5xx, SQL Server 로그인 실패·심각 오류, 서버 응답 없음 …
   - 규칙마다 MITRE ATT&CK·ISMS 항목 태그가 붙습니다.
@@ -35,6 +37,8 @@
 - **보안·감사 (ISMS-P 대비):** 개인 계정·역할(관리자/조회자), 비밀번호 정책·잠금·세션 만료, 수정·삭제할 수 없는 감사 로그, 비밀값 암호화 저장.
 - **로그 로테이션:** DB(90일, 빠른 검색) → 압축 보관 파일(SHA-256 무결성) → 365일 후 삭제. 필요하면 복원합니다.
 - **폐쇄망 배포:** 인터넷 PC에서 반입 묶음을 만들고, 서버에서 스크립트 하나로 설치·업그레이드합니다.
+  - 에이전트를 설치할 PC 도 폐쇄망이면, 서버 화면에서 **설정이 채워진 에이전트 설치 묶음(zip)** 을 받아 `install.cmd` 하나로 설치합니다.
+- **포트 분리:** 에이전트는 수집 전용 포트 **6976**, 사람은 화면 포트 8080 — 방화벽 정책을 나눌 수 있습니다.
 - **100% 오픈소스, 단순한 구성:** 컨테이너 3개(PostgreSQL, API, syslog 수신기). UI 는 빌드 도구 없는 순수 JS 입니다.
 
 ## 화면
@@ -42,14 +46,18 @@
 | 보안 감사 대시보드 | 실시간 로그 |
 |---|---|
 | ![보안 감사](docs/images/dashboard-security.jpg) | ![실시간 로그](docs/images/live.jpg) |
-| **이벤트 검색** | **알림** |
-| ![이벤트 검색](docs/images/events.jpg) | ![알림](docs/images/alerts.jpg) |
+| **이벤트 검색** | **알림 규칙 관리 (Snort 방식)** |
+| ![이벤트 검색](docs/images/events.jpg) | ![알림 규칙 관리](docs/images/alert-rules.jpg) |
+
+규칙 편집 패널 — 입력에 따라 Snort 식 규칙 문장과 우리말 요약이 바로 바뀌고, 최근 24시간 기준 예상 알림 횟수를 미리 봅니다.
+
+![규칙 편집](docs/images/rule-editor.jpg)
 
 ## 구성
 
 ```
 [Windows PC·서버]  Fluent Bit ─┐  이벤트 로그 + (선택) IIS 접속 로그, SQL Server ERRORLOG
-[Linux 서버]       Fluent Bit ─┼─ HTTP(gzip JSON, API 키) ─▶ [api: FastAPI] ─▶ [PostgreSQL 17]
+[Linux 서버]       Fluent Bit ─┼─ HTTP :6976 (수집 전용) ─▶ [api: FastAPI] ─▶ [PostgreSQL 17]
 [네트워크 장비] syslog ─▶ [collector: Fluent Bit] ─┘                │   월별 파티션, 원본 JSONB
                                            웹 UI · 실시간(SSE) · 알림 엔진 → 메일 / 웹훅 / Oracle
 ```
@@ -65,7 +73,7 @@ docker compose up -d --build      # db + api + 개발용 메일함 (코드 수�
 python3 tools/simulate.py         # 가짜 PC·웹 서버·DB 서버가 로그를 보냄 (과거 24시간치 + 실시간)
 ```
 
-- 브라우저에서 **http://localhost:8080** 을 엽니다.
+- 브라우저에서 **http://localhost:8080** 을 엽니다. (에이전트·시뮬레이터는 수집 전용 포트 6976 으로 보냅니다)
 - 개발 환경은 `.env` 없이 기본값으로 동작합니다. 운영에서는 반드시 `.env` 를 만듭니다(아래 운영 배포).
 - **첫 로그인:** `admin` 계정의 임시 비밀번호가 서버 로그에 한 번 출력됩니다. 첫 로그인 때 바꿉니다.
 
@@ -85,8 +93,10 @@ docker compose exec api python -m app.cli reset-password admin   # 놓쳤거나 
 | Linux | [agent/linux](agent/linux/README.md) — Fluent Bit 설치 후 `install.sh`, 또는 rsyslog 전달 |
 | 네트워크 장비 | syslog 대상을 `서버IP:514` 로 지정 (`--profile syslog` 필요) |
 
+- **권장:** 화면 **수집 PC > 에이전트 설치** 에서 설치 묶음(zip)을 받아 PC 에서 `install.cmd` 를 관리자 권한으로 실행 (서버 주소·포트·키·Fluent Bit 포함, 인터넷 불필요).
+
 ```powershell
-# Windows (관리자 PowerShell)
+# 수동 (관리자 PowerShell) — 로그는 서버의 수집 전용 포트 6976 으로
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -ApiKey <수집 API 키>
 ```
 
@@ -154,6 +164,7 @@ docker compose down                                          # 중지 (데이터
 | cryptography | 환경설정 비밀값 암호화 | Apache 2.0 / BSD |
 | python-oracledb | Oracle 알림 연동 (thin 모드, Oracle Client 불필요) | Apache 2.0 / UPL 1.0 |
 | Mailpit | 개발용 메일 수신함 (운영 미사용) | MIT |
+| Pretendard | 화면 글꼴 (저장소에 포함, 폐쇄망에서도 동일) | SIL OFL 1.1 |
 | 웹 UI | 순수 HTML/CSS/JS (외부 라이브러리 없음) | MIT (이 프로젝트) |
 
 - 연동 대상인 Oracle Database 자체는 사내 기존 자산이며 이 저장소에 포함되지 않습니다.

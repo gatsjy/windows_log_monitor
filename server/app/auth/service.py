@@ -42,10 +42,18 @@ class User:
     password_changed_at: datetime
     last_login_at: datetime | None = None
     last_login_ip: str | None = None
+    # 사용자 그룹에서 온 권한·조회 범위 (deps.current_user 가 요청마다 채운다, auth/groups.py)
+    permissions: frozenset[str] = frozenset()
+    scopes: tuple | None = None   # tuple[filters.Scope, ...] — None 이면 모든 로그
+    groups: tuple[str, ...] = ()
 
     @property
     def is_admin(self) -> bool:
         return self.role == "admin"
+
+    def can(self, permission: str) -> bool:
+        """기능 권한. 관리자는 전부."""
+        return self.is_admin or permission in self.permissions
 
     @property
     def password_expired(self) -> bool:
@@ -64,6 +72,11 @@ class User:
             "must_change_password": self.must_change_password, "password_expired": self.password_expired,
             "password_changed_at": self.password_changed_at, "last_login_at": self.last_login_at,
             "last_login_ip": self.last_login_ip,
+            "groups": list(self.groups),
+            "permissions": sorted(self.permissions),
+            # 관리자는 범위 제한 없음. 조회 범위가 있으면 화면에 '볼 수 있는 범위' 로 보여 준다
+            "scope": None if self.is_admin or self.scopes is None
+            else [{"categories": list(sc.categories), "hosts": list(sc.hosts)} for sc in self.scopes],
         }
 
 
@@ -72,7 +85,7 @@ _USER_COLUMNS = ("id, username, display_name, role, must_change_password, passwo
 
 
 def row_to_user(row: dict) -> User:
-    return User(**{k: row[k] for k in User.__dataclass_fields__})
+    return User(**{k: row[k] for k in User.__dataclass_fields__ if k in row})
 
 
 def _token_hash(token: str) -> str:

@@ -74,6 +74,36 @@ def raw_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
 
 
+def _host_regex(pattern: str) -> re.Pattern[str]:
+    """'MED-*' → 대소문자 무시 전체 일치. * 만 와일드카드."""
+    return re.compile("^" + ".*".join(re.escape(part) for part in pattern.split("*")) + "$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class Scope:
+    """사용자 그룹의 조회 범위 (auth/groups.py). 비어 있는 쪽은 제한하지 않는다."""
+
+    categories: tuple[str, ...] = ()
+    hosts: tuple[str, ...] = ()   # 'MED-*' 처럼 * 사용 가능, 대소문자 무시
+
+    @property
+    def unrestricted(self) -> bool:
+        return not self.categories and not self.hosts
+
+    def allows(self, category: str | None, host: str | None) -> bool:
+        if self.categories and category not in self.categories:
+            return False
+        return self.allows_host(host)
+
+    def allows_host(self, host: str | None) -> bool:
+        return not self.hosts or any(_host_regex(p).match(host or "") for p in self.hosts)
+
+
+def scopes_allow(scopes: tuple[Scope, ...] | None, category: str | None, host: str | None) -> bool:
+    """여러 그룹의 범위는 합집합. None = 제한 없음."""
+    return scopes is None or any(s.allows(category, host) for s in scopes)
+
+
 @dataclass
 class EventFilter:
     since: datetime | None = None
@@ -91,6 +121,8 @@ class EventFilter:
     fields: list[tuple[list[str], str]] = field(default_factory=list)
     # 내부용(URL 파라미터 아님): 서버 수신 시각 하한. 알림 규칙이 '최근 N분 동안 들어온' 이벤트를 셀 때 사용
     received_since: datetime | None = None
+    # 내부용: 로그인한 사용자의 조회 범위 (사용자 그룹). None 이면 제한 없음
+    scopes: tuple[Scope, ...] | None = None
 
     @classmethod
     def from_params(cls, params, *, default_since: str | None = "24h",
@@ -132,6 +164,8 @@ class EventFilter:
 
     def matches(self, event: dict) -> bool:
         """실시간 스트림용: 정규화된 이벤트(dict) 하나가 조건에 맞는지 (시간 조건은 무시)."""
+        if not scopes_allow(self.scopes, event.get("category"), event.get("host")):
+            return False
         if self.hosts and event.get("host") not in self.hosts:
             return False
         if self.channels and event.get("channel") not in self.channels:

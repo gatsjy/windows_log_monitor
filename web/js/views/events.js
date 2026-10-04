@@ -20,7 +20,7 @@ export async function mount(root, params) {
     <div data-filter></div>
     <section class="card" style="margin-bottom:14px"><div class="card-body" data-hist><div class="skeleton" style="height:150px"></div></div></section>
     <section class="card">
-      <div class="table-wrap"><table class="table"><thead>${EVENT_HEAD}</thead><tbody data-rows></tbody></table></div>
+      <div class="table-wrap"><table class="table ev-table"><thead>${EVENT_HEAD}</thead><tbody data-rows></tbody></table></div>
       <div data-foot style="padding:12px;text-align:center"></div>
     </section>`;
 

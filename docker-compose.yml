@@ -65,6 +65,7 @@ services:
     environment:
       WLM_DATABASE_URL: postgresql://${POSTGRES_USER:-wlm}:${POSTGRES_PASSWORD:-wlm-dev-password}@db:5432/${POSTGRES_DB:-wlm}
       WLM_INGEST_API_KEYS: ${WLM_INGEST_API_KEYS:-dev-ingest-key}
+      WLM_INGEST_PORT: ${WLM_INGEST_PORT:-6976}   # 에이전트 설치 묶음에 적어 줄 수집 포트
       # 로그 로테이션: DB 에서 바로 검색 → (지나면) 압축 보관 파일 → (지나면) 삭제
       WLM_DB_RETENTION_DAYS: ${WLM_DB_RETENTION_DAYS:-90}
       WLM_RETENTION_DAYS: ${WLM_RETENTION_DAYS:-365}
@@ -96,10 +97,12 @@ services:
       - path: .env
         required: false
     ports:
-      - "${WLM_PORT:-8080}:8000"
+      - "${WLM_PORT:-8080}:8000"          # 웹 화면 + API (관리자·사용자)
+      - "${WLM_INGEST_PORT:-6976}:8001"   # 에이전트 로그 수집 전용 (/api/ingest 만 열림)
     volumes:
       - ./config:/app/config     # 대시보드·알림 규칙·tnsnames.ora (화면에서 저장하면 이 폴더에 기록됨)
       - ./archive:/app/archive   # 로그 보관 파일 (*.jsonl.gz + SHA-256 메타). 백업·별도 보관 대상
+      - ./agent-installers:/app/agent-installers:ro   # Fluent Bit 설치 파일 → 에이전트 설치 묶음에 포함 (docs/AIRGAP.md)
 
   # 네트워크 장비 / Linux 서버의 syslog 를 받아 api 로 전달하는 수신기 (선택)
   collector:

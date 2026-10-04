@@ -25,6 +25,8 @@ services:
       - ./server/pyproject.toml:/app/pyproject.toml
       - ./web:/app/web
       - ./tools:/app/tools        # 벤치마크 등 개발 도구 (tools/bench/bench.py)
+      - ./agent:/app/agent        # 에이전트 스크립트 수정이 설치 묶음에 바로 반영
+      - ./deploy/airgap/agent-installers:/app/agent-installers:ro
 
   # 개발용 메일 수신함 (Mailpit, MIT) — 보낸 알림 메일을 웹으로 확인
   mailpit:

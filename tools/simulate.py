@@ -456,7 +456,7 @@ def run_live(sender: Sender, rate: float) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--url", default="http://localhost:8080")
+    parser.add_argument("--url", default="http://localhost:6976", help="수집 주소 (서버의 WLM_INGEST_PORT, 기본 6976)")
     parser.add_argument("--key", default="dev-ingest-key", help="WLM_INGEST_API_KEYS 중 하나")
     parser.add_argument("--backfill-hours", type=float, default=24)
     parser.add_argument("--per-hour", type=int, default=120, help="과거 데이터: PC 한 대당 시간당 이벤트 수")

@@ -3,28 +3,36 @@
 각 Windows PC/서버에 [Fluent Bit](https://fluentbit.io) (Apache 2.0)를 서비스로 설치해서 이벤트 로그를 서버로 보냅니다.
 웹 서버(IIS)·DB 서버(SQL Server)에서는 스위치 하나로 IIS 접속 로그와 SQL Server ERRORLOG 도 함께 보냅니다.
 
-## 설치
+## 설치 (권장: 서버에서 받은 설치 묶음 — 폐쇄망 PC 도 그대로)
 
-1. **Fluent Bit 설치**: 공식 사이트에서 Windows 설치 파일(64bit)을 받아 설치합니다.
-   기본 경로는 `C:\Program Files\fluent-bit\bin\fluent-bit.exe` 입니다.
-2. 이 폴더(`agent/windows`)를 PC로 복사합니다.
-3. **관리자 PowerShell**에서 실행합니다.
+1. Log Monitor 화면 **수집 PC > 에이전트 설치** 에서 설치 묶음(zip)을 내려받습니다 (관리자 또는 '에이전트 배포' 권한).
+   - 서버 주소·수집 포트(6976)·API 키가 `settings.json` 에, Fluent Bit 설치 파일이 `fluent-bit\` 에 들어 있습니다.
+2. PC 에 복사해서 압축을 풀고 `install.cmd` 를 **관리자 권한으로 실행**합니다.
+   - 여러 대: `install.cmd /quiet` 를 GPO 시작 스크립트·SCCM·사내 배포 도구로 실행합니다.
+   - Fluent Bit 이 없으면 묶음의 zip 을 `C:\Program Files\fluent-bit` 에 풀어 설치합니다. 인터넷이 필요 없습니다.
+3. 배포가 끝나면 묶음 복사본(API 키 포함)을 지웁니다.
+
+## 설치 (수동)
+
+1. Fluent Bit Windows 설치 파일(64bit, 4.0 계열)을 설치합니다. 기본 경로는 `C:\Program Files\fluent-bit\bin\fluent-bit.exe` 입니다.
+2. 이 폴더(`agent/windows`)를 PC로 복사하고 **관리자 PowerShell**에서 실행합니다.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -ServerPort 8080 -ApiKey <수집 API 키>
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -ApiKey <수집 API 키>
 ```
 
 | 옵션 | 기본값 | 설명 |
 |---|---|---|
-| `-ServerHost` | (필수) | Log Monitor 서버 주소 |
-| `-ServerPort` | 8080 | 서버 포트 (`.env` 의 `WLM_PORT`) |
-| `-ApiKey` | (필수) | 서버 `.env` 의 `WLM_INGEST_API_KEYS` 중 하나 |
+| `-ServerHost` | `settings.json` | Log Monitor 서버 주소 |
+| `-ServerPort` | **6976** | 서버의 **수집 전용 포트** (`.env` 의 `WLM_INGEST_PORT`). 화면 포트(8080)와 다릅니다 |
+| `-ApiKey` | `settings.json` | 서버 `.env` 의 `WLM_INGEST_API_KEYS` 중 하나 |
 | `-Channels` | System, Application, Security, PowerShell/Operational, Windows Defender/Operational, TerminalServices-LocalSessionManager/Operational | 수집할 이벤트 로그 채널 (콤마로 구분, 없는 채널은 무시) |
 | `-Iis` | 끔 | IIS W3C 접속 로그 수집 |
 | `-IisLogPath` | `C:\inetpub\logs\LogFiles\W3SVC*` 자동 탐색 | IIS 로그 파일 패턴 (콤마로 구분, 예: `D:\logs\W3SVC1\*.log`) |
 | `-MssqlErrorlog` | 끔 | SQL Server ERRORLOG 수집 (UTF-16) |
 | `-MssqlErrorlogPath` | `C:\Program Files\Microsoft SQL Server\**\ERRORLOG` 자동 탐색 | ERRORLOG 경로 (콤마로 구분, 이름 있는 인스턴스 여러 개 가능) |
 | `-FluentBitExe` | C:\Program Files\fluent-bit\bin\fluent-bit.exe | Fluent Bit 실행 파일 경로 |
+| `-Settings` | 스크립트 옆 `settings.json` | 설치 묶음의 설정 파일. 명령줄 값이 우선 |
 
 30초 안에 웹 화면의 **수집 PC** 목록에 나타납니다(하트비트 주기).
 
@@ -107,7 +115,8 @@ Stop-Service wlm-agent
 ```
 
 - 서버 쪽 로그 `[401]`: API 키가 틀렸습니다.
-- 연결 실패: 방화벽에서 서버 포트(8080) 아웃바운드를 허용합니다.
+- 연결 실패: 방화벽에서 서버 수집 포트(**6976**) 아웃바운드를 허용합니다. `Test-NetConnection <서버> -Port 6976` 으로 확인합니다.
+- 예전 설치(8080 으로 보내던 PC)도 계속 수집됩니다. 화면 포트와 방화벽을 나누려면 새 묶음으로 다시 설치합니다.
 
 ## 제거
 

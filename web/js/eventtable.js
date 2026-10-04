@@ -32,7 +32,7 @@ export function eventTable(el, items, { emptyText = '조건에 맞는 이벤트�
     el.innerHTML = html`<div class="empty">${emptyText}</div>`;
     return;
   }
-  el.innerHTML = html`<div class="table-wrap"><table class="table">
+  el.innerHTML = html`<div class="table-wrap"><table class="table ev-table">
     <thead>${EVENT_HEAD}</thead>
     <tbody>${items.map((ev, i) => eventRow(ev, i))}</tbody></table></div>`;
   bindRows(el, (k) => items[Number(k)]);

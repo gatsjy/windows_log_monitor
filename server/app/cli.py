@@ -39,6 +39,17 @@ async def _run(args: argparse.Namespace) -> None:
         elif args.command == "create-user":
             _, temp = await service.create_user(args.username, args.name or "", args.role, "cli", None)
             print(f"{args.username} 생성 ({args.role}) — 임시 비밀번호: {temp}  (첫 로그인 때 변경 필요)")
+        elif args.command == "delete-user":
+            # 퇴사자·점검용 계정 정리. 실수 방지를 위해 비활성 계정만 지운다 (먼저 화면에서 비활성화)
+            row = await db.fetch_one("SELECT id, username, is_active FROM users WHERE username = %s",
+                                     (service.normalize_username(args.username),))
+            if row is None:
+                raise SystemExit(f"사용자 없음: {args.username}")
+            if row["is_active"]:
+                raise SystemExit(f"{row['username']} 은(는) 활성 계정입니다. 먼저 비활성화하세요 (사용자 화면 > 수정)")
+            await db.fetch_one("DELETE FROM users WHERE id = %s RETURNING id", (row["id"],))
+            await db.audit("cli", "user.delete", row["username"], {"reason": args.reason})
+            print(f"{row['username']} 삭제 (세션·그룹 소속도 함께 삭제, 감사 로그 기록은 유지)")
         elif args.command == "retention-status":
             print(f"정책: DB {settings.db_retention_days}일 → 보관 파일 → 전체 {settings.retention_days}일 후 삭제"
                   f" (파일 보관 {'사용' if partitions.archiving_enabled() else '안 함'})")
@@ -81,6 +92,9 @@ def main() -> None:
     create.add_argument("username")
     create.add_argument("--role", choices=service.ROLES, default="viewer")
     create.add_argument("--name", default="")
+    delete = sub.add_parser("delete-user", help="비활성 사용자 삭제 (감사 로그에 기록)")
+    delete.add_argument("username")
+    delete.add_argument("--reason", default="", help="삭제 사유 (감사 로그에 남음)")
     sub.add_parser("retention-status", help="DB 파티션과 보관 파일 현황")
     sub.add_parser("verify-archives", help="보관 파일 SHA-256 무결성 확인")
     restore = sub.add_parser("restore-archive", help="보관 파일을 DB 로 다시 불러오기 (조사용)")

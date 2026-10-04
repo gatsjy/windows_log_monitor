@@ -21,12 +21,12 @@ export function deliveryChips(deliveries = []) {
   })}`;
 }
 
-const GROUP_LABELS = {
+export const GROUP_LABELS = {
   host: 'PC', channel: '채널', provider: '공급자', source: '소스', event_id: '이벤트 ID', level: '수준',
   category: '분류', user: '사용자', ip: '출발지 IP', none: '',
 };
 
-function matchText(match = {}) {
+export function matchText(match = {}) {
   const parts = Object.entries(match).map(([k, v]) => {
     if (k === 'level') return `수준 ${v.split(',').map((x) => levelLabel(Number(x))).join('·')}`;
     if (k === 'event_id') return `이벤트 ${v}`;
@@ -98,7 +98,7 @@ export async function openAlert(id) {
       </tr>`)}</tbody></table></div>
     ${samples.length ? html`
       <div class="section-title">알림에 포함된 최근 이벤트</div>
-      <div class="table-wrap"><table class="table"><thead>${EVENT_HEAD}</thead>
+      <div class="table-wrap"><table class="table ev-table"><thead>${EVENT_HEAD}</thead>
         <tbody data-samples>${samples.map((s, i) => eventRow(s, i))}</tbody></table></div>` : ''}`;
   const tbody = body.querySelector('[data-samples]');
   if (tbody) bindRows(tbody, (k) => samples[Number(k)]?.id && { id: samples[Number(k)].id });

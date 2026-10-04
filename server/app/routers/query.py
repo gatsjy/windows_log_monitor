@@ -17,7 +17,7 @@ from ..auth import service as auth_service
 from ..auth.deps import client_ip, require_user
 from ..auth.service import User
 from ..config import settings
-from ..filters import EventFilter, FilterError, parse_duration, parse_time
+from ..filters import EventFilter, FilterError, parse_duration, parse_time, scopes_allow
 from ..normalizers import BY_SOURCE
 from ..normalizers.base import LEVEL_NAMES
 from ..normalizers.categories import CATEGORIES
@@ -32,9 +32,12 @@ _MAX_SERIES = 7  # 이보다 많으면 나머지는 '__other__' 로 합친다 (�
 
 def _filter(request: Request, default_since: str | None = "24h") -> EventFilter:
     try:
-        return EventFilter.from_params(request.query_params, default_since=default_since)
+        f = EventFilter.from_params(request.query_params, default_since=default_since)
     except FilterError as exc:
         raise HTTPException(400, str(exc)) from exc
+    # 사용자 그룹의 조회 범위 — 검색·통계·대시보드·실시간 모두 이 필터를 거친다
+    user = getattr(request.state, "user", None)
+    return replace(f, scopes=user.scopes) if user is not None and user.scopes is not None else f
 
 
 def _check_field(field: str) -> str:
@@ -79,7 +82,7 @@ async def list_events(request: Request, limit: int = Query(100, ge=1, le=1000), 
 @router.get("/api/events/{event_id}")
 async def get_event(event_id: int, request: Request, user: User = Depends(require_user)):
     row = await repository.get_event(event_id)
-    if row is None:
+    if row is None or not scopes_allow(user.scopes, row.get("category"), row.get("host")):
         raise HTTPException(404, "이벤트를 찾을 수 없습니다")
     await db.audit(user.username, "events.view", str(event_id), {"host": row["host"], "event_id": row["event_id"]},
                    actor_ip=client_ip(request))
@@ -174,13 +177,13 @@ async def stats_summary():
 # ------------------------------------------------------------ agents/fields
 
 @router.get("/api/agents")
-async def list_agents(since: str = "24h"):
+async def list_agents(request: Request, since: str = "24h"):
     now = datetime.now(UTC)
     try:
         start = parse_time(since, now)
     except FilterError as exc:
         raise HTTPException(400, str(exc)) from exc
-    rows = await repository.agents(start)
+    rows = await repository.agents(start, request.state.user.scopes)
     for row in rows:
         row["status"] = agent_status(row["silent_sec"])
     return {
@@ -190,8 +193,13 @@ async def list_agents(since: str = "24h"):
 
 
 @router.get("/api/fields")
-async def list_fields():
-    return {"items": await repository.fields()}
+async def list_fields(request: Request):
+    items = await repository.fields()
+    if request.state.user.scopes is not None:
+        # 조회 범위가 있는 사용자에게는 다른 범위의 실제 값이 섞인 예시를 보여 주지 않는다
+        for item in items:
+            item["sample"] = None
+    return {"items": items}
 
 
 @router.get("/api/meta")

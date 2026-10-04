@@ -1,30 +1,37 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-  Installs the Log Monitor agent (Fluent Bit as a Windows service).
+  Installs the Log Monitor agent (Fluent Bit as a Windows service). Works offline (air-gapped PCs).
 
 .DESCRIPTION
-  1. Install Fluent Bit for Windows first (https://fluentbit.io, Apache-2.0).
-  2. Run this script as Administrator:
-       powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -ServerPort 8080 -ApiKey <key>
-     Web server (IIS access logs):       add  -Iis
-     SQL Server (ERRORLOG, optional):    add  -MssqlErrorlog
+  Offline package (downloaded from the Log Monitor server: Agents page > "Download agent package"):
+    right-click install.cmd > Run as administrator      (or: install.cmd /quiet  for GPO / SCCM)
+    -> server address, port and API key are read from settings.json next to this script,
+       Fluent Bit is installed from fluent-bit\*.zip (or *.exe) in the package if it is not installed yet.
 
-  Re-running the script updates the config and restarts the service.
+  Manual:
+    powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -ApiKey <key>   (log port 6976 by default)
+    Web server (IIS access logs):       add  -Iis
+    SQL Server (ERRORLOG, optional):    add  -MssqlErrorlog
+
+  Command line parameters override settings.json. Re-running the script updates the config and restarts the service.
   (Messages are in English on purpose: Windows PowerShell 5.1 misreads non-ASCII in BOM-less scripts.)
 #>
 param(
-    [Parameter(Mandatory = $true)] [string] $ServerHost,
-    [int] $ServerPort = 8080,
-    [Parameter(Mandatory = $true)] [string] $ApiKey,
-    [string] $Channels = "System,Application,Security,Microsoft-Windows-PowerShell/Operational,Microsoft-Windows-Windows Defender/Operational,Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+    [string] $ServerHost = "",
+    # Log Monitor ingest-only port (WLM_INGEST_PORT on the server, default 6976)
+    [int] $ServerPort = 0,
+    [string] $ApiKey = "",
+    [string] $Channels = "",
     [switch] $Iis,
     # Comma separated file patterns. Default: every site folder found under C:\inetpub\logs\LogFiles
     [string] $IisLogPath = "",
     [switch] $MssqlErrorlog,
     # Comma separated paths. Default: every ERRORLOG found under C:\Program Files\Microsoft SQL Server
     [string] $MssqlErrorlogPath = "",
-    [string] $FluentBitExe = "C:\Program Files\fluent-bit\bin\fluent-bit.exe"
+    [string] $FluentBitExe = "C:\Program Files\fluent-bit\bin\fluent-bit.exe",
+    # Settings file written by the server when the package is downloaded
+    [string] $Settings = (Join-Path $PSScriptRoot "settings.json")
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,9 +39,50 @@ $ServiceName = "wlm-agent"
 $DataDir = "C:\ProgramData\wlm-agent"
 $ConfigPath = Join-Path $DataDir "fluent-bit.yaml"
 
-if (-not (Test-Path $FluentBitExe)) {
-    throw "Fluent Bit not found at '$FluentBitExe'. Install Fluent Bit for Windows first, or pass -FluentBitExe."
+$DefaultChannels = "System,Application,Security,Microsoft-Windows-PowerShell/Operational,Microsoft-Windows-Windows Defender/Operational,Microsoft-Windows-TerminalServices-LocalSessionManager/Operational"
+
+# ---- settings.json (from the server's package download). Command line values win.
+if (Test-Path $Settings) {
+    Write-Host "Reading settings: $Settings"
+    $cfg = Get-Content -Raw -Encoding UTF8 $Settings | ConvertFrom-Json
+    if (-not $ServerHost -and $cfg.ServerHost) { $ServerHost = [string]$cfg.ServerHost }
+    if (-not $ServerPort -and $cfg.ServerPort) { $ServerPort = [int]$cfg.ServerPort }
+    if (-not $ApiKey -and $cfg.ApiKey) { $ApiKey = [string]$cfg.ApiKey }
+    if (-not $Channels -and $cfg.Channels) { $Channels = [string]$cfg.Channels }
+    if (-not $Iis -and $cfg.Iis) { $Iis = $true }
+    if (-not $MssqlErrorlog -and $cfg.MssqlErrorlog) { $MssqlErrorlog = $true }
 }
+if (-not $ServerPort) { $ServerPort = 6976 }
+if (-not $Channels) { $Channels = $DefaultChannels }
+if (-not $ServerHost -or -not $ApiKey) {
+    throw "Server address and API key are required: use the package from the server (settings.json) or pass -ServerHost and -ApiKey."
+}
+
+# ---- Fluent Bit: install from the package when missing (no internet needed)
+if (-not (Test-Path $FluentBitExe)) {
+    $pkgDir = Join-Path $PSScriptRoot "fluent-bit"
+    $zip = Get-ChildItem $pkgDir -Filter "fluent-bit-*-win64.zip" -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
+    $exe = Get-ChildItem $pkgDir -Filter "fluent-bit-*-win64.exe" -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
+    $target = Split-Path (Split-Path $FluentBitExe -Parent) -Parent
+    if ($zip) {
+        Write-Host "Installing Fluent Bit from $($zip.Name) to $target"
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("wlm-fluent-bit-" + [guid]::NewGuid())
+        Expand-Archive -Path $zip.FullName -DestinationPath $tmp -Force
+        $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
+        $source = if ($inner -and (Test-Path (Join-Path $inner.FullName "bin"))) { $inner.FullName } else { $tmp }
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        Copy-Item -Path (Join-Path $source "*") -Destination $target -Recurse -Force
+        Remove-Item $tmp -Recurse -Force
+    } elseif ($exe) {
+        Write-Host "Installing Fluent Bit from $($exe.Name) (silent)"
+        Start-Process -FilePath $exe.FullName -ArgumentList "/S" -Wait
+    }
+    if (-not (Test-Path $FluentBitExe)) {
+        throw "Fluent Bit not found at '$FluentBitExe'. Put fluent-bit-<version>-win64.zip in the 'fluent-bit' folder of this package, install it manually, or pass -FluentBitExe."
+    }
+}
+& $FluentBitExe --version | Select-Object -First 1
+Write-Host "Server: ${ServerHost}:$ServerPort"
 
 # Uncomment the lines between "# @@NAME_BEGIN" and "# @@NAME_END" (the markers themselves stay comments)
 function Enable-Block([string] $text, [string] $name) {

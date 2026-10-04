@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from .. import __version__
 from ..auth import service
-from ..auth.deps import COOKIE_NAME, check_csrf, client_ip, current_user
+from ..auth.deps import COOKIE_NAME, check_csrf, client_ip, current_user, with_access
 from ..auth.service import AuthError, User
 from ..config import settings
 
@@ -50,6 +50,7 @@ async def login(body: LoginBody, request: Request, response: Response):
                                           request.headers.get("user-agent"))
     except AuthError as exc:
         raise _error(exc) from exc
+    await with_access(user)
     response.set_cookie(
         COOKIE_NAME, token, httponly=True, samesite="strict", secure=settings.cookie_secure, path="/",
     )

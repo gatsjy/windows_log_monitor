@@ -6,7 +6,8 @@
 #
 #   --target DIR      설치 위치 (기본 /opt/log-monitor). 묶음 폴더와 달라도 된다.
 #   --public-url URL  사용자가 접속하는 주소 (알림 메일의 링크). 처음 설치 때 필요
-#   --port N          웹 화면·수집 API 포트 (기본 8080, 에이전트도 이 포트로 보낸다)
+#   --port N          웹 화면 포트 (기본 8080, 사용자가 접속)
+#   --ingest-port N   에이전트 로그 수집 전용 포트 (기본 6976, 수집 API 만 열림)
 #   --syslog          syslog 수신기(514/udp·tcp, 1514/tcp)도 기동
 #   --upgrade         기존 설치를 새 버전으로: DB 백업 → 이미지 → 프로그램 파일 교체 → 재기동
 #                     .env, config/(화면에서 고친 대시보드·규칙), archive/ 는 그대로 둔다.
@@ -18,6 +19,7 @@ BUNDLE=$(cd "$(dirname "$0")/../.." && pwd)
 TARGET=/opt/log-monitor
 PUBLIC_URL=""
 PORT=""
+INGEST_PORT=""
 SYSLOG=0
 UPGRADE=0
 while [ $# -gt 0 ]; do
@@ -25,9 +27,10 @@ while [ $# -gt 0 ]; do
     --target) TARGET=$2; shift 2 ;;
     --public-url) PUBLIC_URL=$2; shift 2 ;;
     --port) PORT=$2; shift 2 ;;
+    --ingest-port) INGEST_PORT=$2; shift 2 ;;
     --syslog) SYSLOG=1; shift ;;
     --upgrade) UPGRADE=1; shift ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "알 수 없는 옵션: $1 (--help 참고)" >&2; exit 2 ;;
   esac
 done
@@ -131,6 +134,7 @@ if [ "$UPGRADE" = 0 ]; then
 fi
 env_set WLM_API_IMAGE "$API_IMAGE"
 [ -z "$PORT" ] || env_set WLM_PORT "$PORT"
+[ -z "$INGEST_PORT" ] || env_set WLM_INGEST_PORT "$INGEST_PORT"
 chmod 600 "$TARGET/.env"
 LEFT=$(grep -E '^[A-Z_]+=change-me' "$TARGET/.env" | cut -d= -f1 | tr '\n' ' ' || true)
 [ -z "$LEFT" ] || echo "  [확인 필요] 아직 예시 값: ${LEFT}"
@@ -164,11 +168,14 @@ compose ps
 
 step "완료 — 버전 ${VERSION}"
 PORT=$(env_get WLM_PORT); PORT=${PORT:-8080}
-echo "  웹 화면: $(env_get WLM_PUBLIC_URL)  (서버 포트 ${PORT})"
+IPORT=$(env_get WLM_INGEST_PORT); IPORT=${IPORT:-6976}
+echo "  웹 화면: $(env_get WLM_PUBLIC_URL)  (포트 ${PORT}, 사용자·관리자 PC 에서만 접근하도록 방화벽 권장)"
+echo "  에이전트 수집 포트: ${IPORT}/tcp  (모든 PC·서버 → 이 서버)"
 if [ "$UPGRADE" = 0 ]; then
   echo "  첫 로그인: 아이디 admin, 임시 비밀번호는 아래 한 줄 (첫 로그인 때 변경)"
   compose logs api 2>/dev/null | grep -m1 -o '임시 비밀번호 [^ ]*' | sed 's/^/    /' \
     || echo "    (로그에서 찾지 못함) docker compose -f docker-compose.yml exec api python -m app.cli reset-password admin"
-  echo "  에이전트 설치에 쓸 수집 API 키: $TARGET/.env 의 WLM_INGEST_API_KEYS"
+  echo "  에이전트 배포: 화면 '수집 PC > 에이전트 설치' 에서 설정이 채워진 설치 묶음(zip)을 내려받아 PC 에 배포"
+  echo "                 (Fluent Bit 설치 파일 포함: $(ls "$TARGET/agent-installers" 2>/dev/null | grep -v -e README -e sha256 | tr '\n' ' '))"
 fi
 echo "  다음: docs/AIRGAP.md 5단계(에이전트 배포)·6단계(설치 확인)"

@@ -23,6 +23,8 @@ _tmp = tempfile.mkdtemp(prefix="wlm-test-")
 os.environ["WLM_ALERTS_FILE"] = os.path.join(_tmp, "alerts.yaml")
 os.environ["WLM_DASHBOARD_DIR"] = os.path.join(_tmp, "dashboards")
 os.environ["WLM_ARCHIVE_DIR"] = os.path.join(_tmp, "archive")
+os.environ["WLM_AGENT_INSTALLERS_DIR"] = os.path.join(_tmp, "agent-installers")
+os.environ["WLM_INGEST_PORT"] = "6976"
 os.environ["WLM_DB_RETENTION_DAYS"] = "90"
 os.environ["WLM_RETENTION_DAYS"] = "365"
 os.environ["WLM_SECRET_KEY"] = "test-secret-key-0123456789abcdef"

@@ -58,7 +58,7 @@ pipeline:
     - name: http
       match: '*'
       host: api
-      port: 8000
+      port: 8001        # 수집 전용 포트 (app/serve.py)
       uri: /api/ingest
       format: json
       json_date_key: date

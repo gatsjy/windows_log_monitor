@@ -71,3 +71,15 @@ def test_category_user_ip_filters():
     assert not f.matches({"category": "iis", "username": "lee", "src_ip": "10.0.0.5"})
     _, params = where_clause(f)
     assert params == [["iis"], ["kim"], ["10.0.0.5"]]
+
+
+def test_scope_matches_for_live_stream():
+    from dataclasses import replace
+
+    from app.filters import Scope
+
+    f = replace(EventFilter.from_params(Params(), default_since=None, now=NOW),
+                scopes=(Scope(categories=("mssql",)), Scope(hosts=("MED-*",))))
+    assert f.matches({"category": "mssql", "host": "DB-01"})
+    assert f.matches({"category": "security", "host": "med-07"})
+    assert not f.matches({"category": "security", "host": "WEB-01"})

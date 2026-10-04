@@ -43,6 +43,34 @@ _LIST_COLUMNS = sql.SQL(
 
 # ------------------------------------------------------------------ filter
 
+def _host_like(pattern: str) -> str:
+    escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped.replace("*", "%")
+
+
+def scope_clause(scopes, host_column: str | tuple[str, ...] = "host",
+                 category_column: str | None = "category") -> tuple[sql.Composable, list[Any]]:
+    """사용자 그룹 조회 범위 → (범위1) OR (범위2) … 각 범위 = 분류 AND PC 패턴."""
+    ors: list[sql.Composable] = []
+    params: list[Any] = []
+    for scope in scopes:
+        parts: list[sql.Composable] = []
+        if scope.categories:
+            if category_column is None:
+                continue  # 분류 정보가 없는 표(agents)는 PC 조건만으로 판단할 수 없다 → 이 범위는 건너뜀
+            parts.append(sql.SQL("{} = ANY(%s::text[])").format(sql.Identifier(category_column)))
+            params.append(list(scope.categories))
+        if scope.hosts:
+            host_id = sql.Identifier(*host_column) if isinstance(host_column, tuple) else sql.Identifier(host_column)
+            likes = [sql.SQL("{} ILIKE %s").format(host_id) for _ in scope.hosts]
+            params.extend(_host_like(h) for h in scope.hosts)
+            parts.append(sql.SQL("({})").format(sql.SQL(" OR ").join(likes)))
+        ors.append(sql.SQL("({})").format(sql.SQL(" AND ").join(parts)) if parts else sql.SQL("TRUE"))
+    if not ors:
+        return sql.SQL("FALSE"), []
+    return sql.SQL("({})").format(sql.SQL(" OR ").join(ors)), params
+
+
 def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
     clauses: list[sql.Composable] = []
     params: list[Any] = []
@@ -77,6 +105,10 @@ def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
     for path, value in f.fields:
         clauses.append(sql.SQL("raw #>> %s::text[] = %s"))
         params.extend([path, value])
+    if f.scopes is not None:
+        scope_sql, scope_params = scope_clause(f.scopes)
+        clauses.append(scope_sql)
+        params.extend(scope_params)
     if not clauses:
         return sql.SQL("TRUE"), []
     return sql.SQL(" AND ").join(clauses), params
@@ -252,8 +284,22 @@ async def top(f: EventFilter, field: str, limit: int) -> list[dict]:
     return await db.fetch_all(query, [*expr_params, *params, limit])
 
 
-async def agents(since: datetime) -> list[dict]:
-    return await db.fetch_all(
+async def agents(since: datetime, scopes=None) -> list[dict]:
+    """수집 PC 목록. scopes(사용자 그룹 범위)가 있으면 범위 안의 이벤트만 세고,
+    범위 안 이벤트가 있었거나 PC 이름 패턴에 맞는 PC 만 보여 준다."""
+    event_scope, params = sql.SQL("TRUE"), [since]
+    visible = sql.SQL("")
+    if scopes is not None:
+        event_scope, scope_params = scope_clause(scopes)
+        params += scope_params
+        conds = [sql.SQL("c.host IS NOT NULL")]
+        host_only = [s for s in scopes if s.hosts and not s.categories]
+        if host_only:
+            host_sql, host_params = scope_clause(host_only, host_column=("a", "host"), category_column=None)
+            conds.append(host_sql)
+            params += host_params
+        visible = sql.SQL(" WHERE ") + sql.SQL(" OR ").join(conds)
+    query = sql.SQL(
         "SELECT a.host, a.first_seen, a.last_seen, a.last_event_at, a.last_heartbeat_at, a.last_ip,"
         "       a.events_total, a.meta, EXTRACT(EPOCH FROM now() - a.last_seen)::bigint AS silent_sec,"
         "       COALESCE(c.total, 0) AS events, COALESCE(c.critical, 0) AS critical,"
@@ -266,11 +312,11 @@ async def agents(since: datetime) -> list[dict]:
         "              count(*) FILTER (WHERE level <= 2) AS errors,"
         "              count(*) FILTER (WHERE level = 3) AS warnings,"
         "              array_agg(DISTINCT source) AS sources"
-        "         FROM events WHERE ts >= %s GROUP BY host"
-        "  ) c ON c.host = a.host"
-        " ORDER BY a.host",
-        (since,),
-    )
+        "         FROM events WHERE ts >= %s AND {} GROUP BY host"
+        "  ) c ON c.host = a.host{}"
+        " ORDER BY a.host"
+    ).format(event_scope, visible)
+    return await db.fetch_all(query, params)
 
 
 async def agent_counts(online_sec: int, stale_sec: int) -> dict[str, int]:
@@ -306,6 +352,21 @@ async def alert_candidates(f: EventFilter, group_by: str, threshold: int) -> lis
         " FROM events WHERE {} GROUP BY 1 HAVING count(*) >= %s ORDER BY n DESC LIMIT 100"
     ).format(key_expr, where)
     return await db.fetch_all(query, [*key_params, *params, threshold])
+
+
+async def rule_preview(f: EventFilter, group_by: str, window_sec: int, threshold: int) -> list[dict]:
+    """규칙 미리보기: 조건에 맞는 이벤트를 (묶음 값, window 길이 구간)으로 세어 threshold 이상인 구간만.
+    엔진은 30초마다 '최근 window' 를 보지만, 미리보기는 겹치지 않는 구간으로 근사한다."""
+    if group_by == "none":
+        key_expr, key_params = sql.SQL("''"), []
+    else:
+        key_expr, key_params = _field_expr(group_by)
+    where, params = where_clause(f)
+    query = sql.SQL(
+        "SELECT {} AS key, floor(extract(epoch FROM received_at) / %s)::bigint AS bucket, count(*) AS n"
+        " FROM events WHERE {} GROUP BY 1, 2 HAVING count(*) >= %s ORDER BY 2 LIMIT 5000"
+    ).format(key_expr, where)
+    return await db.fetch_all(query, [*key_params, window_sec, *params, threshold])
 
 
 async def last_alert_at(rule: str, group_key: str) -> datetime | None:

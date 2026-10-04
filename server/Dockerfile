@@ -15,8 +15,11 @@ COPY server/app ./app
 COPY server/migrations ./migrations
 COPY web ./web
 COPY config ./config
+# 에이전트 스크립트 — 수집 PC 화면에서 설정이 채워진 설치 묶음(zip)으로 내려준다
+COPY agent ./agent
 RUN mkdir -p /app/archive && chown -R wlm:wlm /app/config /app/archive
-EXPOSE 8000
+# 8000 화면·API, 8001 에이전트 수집 전용 (app/serve.py)
+EXPOSE 8000 8001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"
 
@@ -27,11 +30,9 @@ RUN pip install -r requirements-dev.txt
 COPY server/tests ./tests
 COPY server/pyproject.toml ./pyproject.toml
 USER wlm
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--reload", "--reload-dir", "/app/app", "--timeout-graceful-shutdown", "2"]
+CMD ["watchfiles", "--filter", "python", "python -m app.serve", "/app/app"]
 
 # 운영용
 FROM base AS runtime
 USER wlm
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--timeout-graceful-shutdown", "5"]
+CMD ["python", "-m", "app.serve"]

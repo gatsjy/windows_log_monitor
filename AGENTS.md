@@ -41,7 +41,8 @@ Fluent Bit 에이전트가 보낸 Windows 이벤트 로그, IIS·SQL Server 로�
 
 ```
 server/app/
-  main.py            앱 진입점, 시작 시 마이그레이션·파티션 준비, 정적 UI 제공
+  main.py            앱 진입점, 시작 시 마이그레이션·파티션 준비, 정적 UI 제공, 수집 포트 제한(IngestPortGuard)
+  serve.py           운영 실행: 8000(화면·API) + 8001(수집 전용, 호스트 6976) 두 리스너를 한 프로세스에서
   config.py          환경변수(WLM_*) 설정
   db.py              연결 풀, 마이그레이션 실행기, audit()
   partitions.py      events 월별 파티션 생성 / 보관기간 만료 삭제
@@ -50,13 +51,13 @@ server/app/
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
-  alerts/            ★ 알림: rules(YAML 검증) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·재시도)
-  auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · deps(require_user/require_admin/CSRF)
+  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·재시도)
+  auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF)
   oracle.py          Oracle 접속(TNS/SID/서비스/접속문자열)·조회 전용 쿼리·SQL 실행
   secrets.py         환경설정 비밀값 암호화 (WLM_SECRET_KEY)
   archive.py         로그 보관 파일 만들기·검증·복원
   cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원)
-  routers/           ingest · query · dashboards · alerts · auth · users · audit · settings
+  routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음)
 server/migrations/   번호순 SQL
 server/tests/        pytest (DB 없이 도는 단위 테스트)
 web/js/
@@ -65,6 +66,8 @@ web/js/
   auth.js            로그인·비밀번호 변경 화면, 현재 사용자 (main.js 가 init)
   widgets/           ★ 대시보드 위젯: stat, timeseries, top, events, hosts, text, alerts (live() = 실시간 갱신)
   livefilter.js      서버 filters.py 와 같은 조건 판단 (대시보드 실시간 갱신용)
+  responsive.js      좁은 화면 보정: 표 칸에 data-label(모바일 카드), 카드 격자 줄 단위 재배치 (MutationObserver)
+  ruleform.js        알림 규칙 편집 패널 (Snort 식 규칙 문장·우리말 요약·미리보기)
   alertdetail.js     알림 상세 패널, 전송 상태 칩, 규칙 요약 문구
   charts.js          SVG 차트 (누적 막대, 가로 막대, 스파크라인)
   catalog.js         필드·이벤트 ID 한글 설명 사전
@@ -118,11 +121,16 @@ curl -s localhost:8080/healthz
 - 실시간 스트림은 프로세스 메모리 기반이라 **uvicorn 워커가 1개**여야 합니다(ADR-006).
 - jsonb는 `\u0000` 을, TEXT는 NUL 문자를 저장하지 못합니다. 정규화와 저장 단계에서 제거합니다.
 - 보안 로그 `Level` 은 대부분 0이라 정보(4)로 들어옵니다. Keywords의 감사 실패 비트가 있으면 경고(3)로 올립니다(ADR-008).
-- 개발 포트는 UI 8080, DB 15432(127.0.0.1), Mailpit 8025(127.0.0.1)입니다. 5432와 8000은 다른 로컬 프로젝트가 쓰고 있습니다.
+- 개발 포트는 UI 8080, **수집 6976**, DB 15432(127.0.0.1), Mailpit 8025(127.0.0.1)입니다. 5432와 8000은 다른 로컬 프로젝트가 쓰고 있습니다.
 - 개발 중 알림 메일은 밖으로 나가지 않습니다. Mailpit(http://localhost:8025)에서 확인합니다.
 - 필터 규칙을 바꾸면 `server/app/filters.py`(서버·알림)와 `web/js/livefilter.js`(대시보드 실시간)를 **둘 다** 고쳐야 합니다.
   - 검색 파라미터 `user`·`ip` 는 컬럼 `username`·`src_ip` 로 매핑됩니다(`repository.COLUMN_EXPR`, `livefilter.FIELD_OF`).
   - 상위 값 목록에서 `user`·`ip` 의 빈 값 제외도 두 곳입니다(`repository.TOP_SKIP_EMPTY`, `widgets/top.js` 의 `SKIP_EMPTY`).
+- **새 API 의 권한:** 관리자만이면 `require_admin`, 그룹으로 위임할 수 있는 기능이면 `require_permission("권한")`(auth/groups.py PERMISSIONS 에 추가). 화면은 `auth.can("권한")` 으로 버튼을 숨긴다.
+- **이벤트를 돌려주는 새 API 는 반드시 `routers/query._filter(request)` 로 필터를 만든다.** 그래야 사용자 그룹의 조회 범위(`scopes`)가 붙는다. 단건 조회는 `filters.scopes_allow` 로 확인.
+- 수집 포트(8001/6976)로는 `/api/ingest`·`/healthz` 만 열린다(`main.INGEST_PORT_PATHS`). 에이전트용 새 경로가 필요하면 거기에 추가.
+- 알림 규칙을 화면에서 저장하면 그 규칙 블록만 다시 쓴다(`ruleedit.py`). 블록 안의 주석은 그 규칙을 화면에서 저장하면 사라진다(켜기/끄기만은 보존).
+- UI 디자인 값은 `web/css/app.css` 의 토큰(`:root`)만 쓴다. 좁은 화면 기준: 1000px(상단 바), 700px(표→카드), 600px(휴대폰).
 - 정규화기는 `None` 을 돌려 레코드를 저장하지 않을 수 있습니다(IIS `#Fields:` 머리줄). 그 외에는 버리지 않습니다.
 - IIS 열 순서와 MSSQL `Error:` 머리줄은 프로세스 메모리에 기억합니다(워커 1개 전제). 테스트에서 순서에 의존하는 경우 같은 `host`·파일을 씁니다.
 - MSSQL ERRORLOG 의 `Error:` 머리줄은 번호 없이 '상세'(5)로 저장됩니다. 오류 번호로 세는 규칙·위젯은 본문 줄 기준입니다(이중 집계 방지).

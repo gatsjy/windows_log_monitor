@@ -41,6 +41,8 @@ class Rule:
     silent_for: timedelta = timedelta(minutes=10)
     hosts: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()   # 예: "MITRE T1110", "ISMS 2.11.3" (화면·알림 본문에 표시)
+    sid: int | None = None       # 규칙 번호 (Snort 의 sid 처럼 고유). 화면에서 만들면 자동 부여
+    group: str = "기타"          # 규칙 묶음 (화면 왼쪽 목록, 묶음 단위로 켜고 끄기)
 
     def event_filter(self) -> EventFilter:
         return EventFilter.from_params(self.match, default_since=None)
@@ -94,10 +96,14 @@ def _check_rule(index: int, raw: Any) -> Rule:
     if not notify:
         raise ConfigError(f"{where}.notify: 알림 대상(수신 그룹 또는 외부 연동 이름)이 필요합니다")
 
+    sid = raw.get("sid")
+    if sid is not None and (not isinstance(sid, int) or isinstance(sid, bool) or sid < 1):
+        raise ConfigError(f"{where}.sid 는 1 이상의 정수")
     common = {
         "name": name, "kind": kind, "severity": severity, "notify": notify,
         "description": str(raw.get("description") or ""), "enabled": bool(raw.get("enabled", True)),
         "tags": _str_list(raw.get("tags"), f"{where}.tags"),
+        "sid": sid, "group": str(raw.get("group") or "기타").strip() or "기타",
     }
 
     if kind == "agent_silent":
@@ -151,6 +157,10 @@ def parse(doc: Any) -> AlertConfig:
     duplicated = {n for n in names if names.count(n) > 1}
     if duplicated:
         raise ConfigError(f"규칙 이름이 중복됩니다: {sorted(duplicated)}")
+    sids = [r.sid for r in rules if r.sid is not None]
+    dup_sids = {s for s in sids if sids.count(s) > 1}
+    if dup_sids:
+        raise ConfigError(f"규칙 번호(sid)가 중복됩니다: {sorted(dup_sids)}")
     return AlertConfig(interval_sec=interval, rules=tuple(rules))
 
 

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SERVER_HOST=${1:?사용법: sudo ./install.sh <서버주소> <포트> <수집 API 키>}
-SERVER_PORT=${2:-8080}
+SERVER_PORT=${2:-6976}   # 서버의 수집 전용 포트 (WLM_INGEST_PORT)
 API_KEY=${3:?수집 API 키가 필요합니다}
 FLUENT_BIT=${FLUENT_BIT:-/opt/fluent-bit/bin/fluent-bit}
 AGENT_HOST=${AGENT_HOST:-$(hostname -s)}

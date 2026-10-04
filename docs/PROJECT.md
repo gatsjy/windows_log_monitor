@@ -1,6 +1,6 @@
 # Log Monitor 프로젝트 명세
 
-> 최종 갱신: 2026-10-04 · 버전 0.4.0 (Phase 1 + Phase 2 알림·인증·환경설정·로그 로테이션 + IIS·MSSQL 수집, 분류·공통 필드, 보안 규칙 팩)
+> 최종 갱신: 2026-10-04 · 버전 0.5.0 (… + 알림 규칙 관리 화면, 사용자 그룹·권한·조회 범위, 수집 전용 포트 6976, 폐쇄망 에이전트 설치 묶음, 반응형 화면)
 > 앞으로 개발할 내용은 [BACKLOG.md](BACKLOG.md), 다른 오픈소스 제품과의 비교는 [COMPARISON.md](COMPARISON.md) 에 있습니다.
 > 이 문서는 사람과 AI 에이전트가 함께 보는 **단일 기준 문서**입니다. 구현이 바뀌면 같은 변경에서 이 문서도 고칩니다.
 
@@ -40,11 +40,11 @@
 | 서비스 | 이미지 | 포트 | 비고 |
 |---|---|---|---|
 | `db` | postgres:17-alpine | (개발) 127.0.0.1:15432 | 볼륨 `pgdata` |
-| `api` | server/Dockerfile | 8080 → 8000 | UI + API. 비 root(uid 10001) |
+| `api` | server/Dockerfile | 8080 → 8000, **6976 → 8001** | 8000: UI + API, 8001: **에이전트 수집 전용**(`/api/ingest`·`/healthz` 만). 한 프로세스(`app/serve.py`). 비 root(uid 10001) |
 | `collector` | fluent/fluent-bit:4.0 | 514/udp·tcp, 1514/tcp | `--profile syslog` 일 때만 |
 | `mailpit` | axllent/mailpit | (개발) 127.0.0.1:8025 | **개발 전용.** 알림 메일을 실제로 보내지 않고 받아서 웹으로 보여줌 |
 
-- `docker-compose.override.yml` 은 개발용입니다. 코드 마운트, `--reload`, DB 포트 노출을 담당합니다.
+- `docker-compose.override.yml` 은 개발용입니다. 코드 마운트, 코드 변경 시 재시작(`watchfiles`), DB 포트 노출을 담당합니다.
 - 운영에서는 `-f docker-compose.yml` 만 씁니다.
 
 ## 3. 데이터 흐름과 형식
@@ -52,7 +52,7 @@
 ### 3.1 수집 API
 
 ```
-POST /api/ingest
+POST http://<서버>:6976/api/ingest      ← 에이전트는 수집 전용 포트(WLM_INGEST_PORT)로 보낸다 (8080 도 받음)
 Headers: X-API-Key: <WLM_INGEST_API_KEYS 중 하나>
          Content-Encoding: gzip (선택)
 Body:    JSON 배열 | JSON 객체 | NDJSON
@@ -184,6 +184,12 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/alerts/config` | 엔진 상태, 규칙(최근 발생 포함), 알림 대상(비밀값 제외), 원본 YAML |
 | `PUT /api/alerts/config` | 본문 = YAML. 검증 실패 시 422 + 오류 내용, 파일은 그대로 (저장은 audit_log 기록) |
 | `POST /api/alerts/test/{notifier}` | 알림 대상 연결 테스트 (audit_log 기록) |
+| `PUT /api/alerts/rules` | 규칙 한 개 추가·수정 (`{original?, rule}`), 그 규칙 블록만 바꿈 — `alerts.manage` |
+| `DELETE /api/alerts/rules/{이름}` · `POST /api/alerts/rules/enabled` | 삭제 · 켜기/끄기 (`{names, enabled}`, 묶음 단위 가능) — `alerts.manage` |
+| `POST /api/alerts/rules/preview` | 최근 N시간 데이터로 규칙 미리보기 (맞는 로그·예상 알림·대상별) — `alerts.manage` |
+| `GET /api/agents/package?os=&server=&port=&iis=&mssql=` | 에이전트 설치 묶음 zip (설정·API 키·Fluent Bit 포함) — `agents.deploy`, 감사로그 |
+| `GET /api/agents/package/info` | 내려받기 창 정보 (기본 서버 주소·포트, 들어갈 설치 파일) |
+| `GET/POST /api/user-groups`, `PUT/DELETE /api/user-groups/{id}` | 사용자 그룹 (관리자) |
 | `GET /api/meta`, `GET /healthz` | 메타 정보(소스·분류 목록 등), 상태 확인 |
 
 OpenAPI 문서는 `http://<서버>:8080/docs` 에 있습니다.
@@ -271,6 +277,8 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 | `cooldown` | `30m` | 같은 규칙과 같은 대상은 이 시간 안에 다시 알리지 않습니다. `window` 보다 짧으면 `window` 로 맞춥니다 |
 | `severity` | `warning` | `critical / error / warning / info` |
 | `notify` | (필수) | 알림 대상 이름 목록 |
+| `sid` | 자동 | 규칙 번호 (Snort 의 sid 처럼 고유, 100만 번대). 화면에서 만들면 다음 번호를 붙입니다 |
+| `group` | `기타` | 규칙 묶음 (규칙 관리 화면 왼쪽 목록, 묶음 단위 켜기/끄기) |
 | `tags` | `[]` | 분류 태그. 기본 규칙은 `MITRE T1110`, `ISMS 2.11.3` 처럼 공격 기법·ISMS 항목을 적습니다. 메시지와 화면에 표시 |
 | `silent_for`, `hosts` | `10m`, 전체 | (`agent_silent`) 끊김 판정 시간, 대상 PC 목록 |
 
@@ -309,9 +317,18 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 
 - 엔진 상태(마지막 평가, 설정 오류), 심각도별 수
 - 알림 이력: 행을 누르면 전송 상태·오류·포함 이벤트를 봅니다.
-- 규칙 목록: 조건 요약, 기간 내 발생 수
-- 알림 대상: 환경설정의 그룹·연동 목록, 규칙 사용 여부, **테스트 발송**(관리자)
-- **규칙 편집**(YAML): 검증 후 저장하며, 오류가 있으면 저장되지 않습니다.
+- 탭 3개: **알림 이력**(`#/alerts`) / **규칙 관리**(`#/alerts/rules`) / **알림 대상**(`#/alerts/targets`)
+- **규칙 관리 (Snort 방식):**
+  - 왼쪽 **규칙 묶음**(`group`) 목록 — 묶음 단위로 켜기/끄기(일부만 켜져 있으면 반쯤 켜진 스위치)
+  - 오른쪽 규칙 표 — 사용 스위치(바로 저장), **SID**, 심각도·이름·설명·태그, 조건·기준, 받는 곳, 발생 수. 검색(이름·SID·태그·조건), 사용/꺼짐 필터
+  - 행을 누르면 **편집 패널**(`web/js/ruleform.js`):
+    - 위쪽에 Snort 식 한 줄 규칙 문장과 우리말 요약이 입력에 따라 바로 바뀝니다 (보기 전용)
+      - 예: `alert error (msg:"원격 데스크톱 무차별 대입"; event_id:4625; field:EventData.LogonType="10"; threshold:type both, track by_src, count 10, seconds 600; cooldown:3600; notify:"운영팀"; reference:MITRE T1110.001; classtype:"계정·인증 공격"; sid:1000007;)`
+    - 입력: 이름·묶음·SID·설명·심각도·사용 / 감지 방식(로그 건수·PC 수신 끊김) / 어떤 로그를(분류·수준 칩, 이벤트 ID, PC, 사용자, 출발지 IP, 메시지, 원본 필드 조건) / 얼마나 자주면(기간·건수·묶음 기준·재알림 간격) / 누구에게(알림 대상 체크, 태그)
+    - **미리보기:** 최근 24시간 로그에 적용했다면 맞는 로그 수, 예상 알림 횟수(재알림 간격 반영, 겹치지 않는 구간으로 근사), 대상별 횟수
+  - 저장하면 서버가 `config/alerts.yaml` 에서 **그 규칙 블록만** 바꾸고(다른 규칙·주석 유지, `app/alerts/ruleedit.py`) 전체를 검증한 뒤 저장 — 감사로그 `alerts.rule.save/delete/toggle`
+  - 'YAML 편집'(고급)으로 파일 전체를 직접 고칠 수도 있습니다.
+- 알림 대상: 환경설정의 그룹·연동 목록, 규칙 사용 여부, **테스트 발송**
 - 사이드바 '알림' 옆 숫자는 최근 24시간 알림 수입니다.
 
 ### 6.5 검증 기록 (2026-10-03, 개발 환경)
@@ -327,7 +344,8 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 
 | 항목 | 동작 | 설정 (.env) |
 |---|---|---|
-| 계정 | 개인 계정(아이디 소문자). 역할: **관리자**(모든 작업) / **조회자**(보기만) | – |
+| 계정 | 개인 계정(아이디 소문자). 역할: **관리자**(모든 작업) / **조회자**(보기 + 속한 사용자 그룹의 권한) | – |
+| 사용자 그룹 | DB팀·보안팀처럼 묶어 **기능 권한**과 **볼 수 있는 범위**를 준다 (§7.1) | – |
 | 비밀번호 저장 | scrypt(N=2^17, r=8, p=1, 솔트 16바이트) — 표준 라이브러리 | `WLM_PASSWORD_HASH_N` |
 | 비밀번호 정책 | 3종 이상 8자 / 2종 이상 10자, 아이디 포함·같은 문자 4연속 금지 | – |
 | 임시 비밀번호 | 계정 생성·초기화 시 발급, 첫 로그인 때 변경 강제. 화면에 한 번만 표시 | – |
@@ -350,7 +368,8 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 - **권한:**
   - 공개: `/api/ingest`(API 키), `/api/auth/login`, `/api/auth/info`, `/healthz`
   - 그 외 `/api/*` 는 로그인 필수
-  - 관리자 전용: 대시보드 저장, 알림 규칙·테스트, 사용자, 감사로그, 환경설정
+  - 관리자 또는 해당 권한 그룹: 알림 규칙 관리(`alerts.manage`), 대시보드 편집(`dashboards.edit`), 환경설정(`settings.manage`), 감사로그(`audit.view`), 에이전트 설치 묶음(`agents.deploy`)
+  - 관리자만: 사용자·사용자 그룹 관리 (권한 상승 방지)
 - **감사로그(audit_log):**
   - 기록 대상: 로그인 성공·실패·잠금·로그아웃·세션 만료, 비밀번호 변경, 사용자 관리, 이벤트 검색 조건·상세 조회, 모든 설정 변경, Oracle 쿼리 실행, 보관·삭제
   - DB 트리거로 **수정·삭제·TRUNCATE 를 막습니다**(보관기간 만료 삭제만 예외).
@@ -361,7 +380,23 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 docker compose exec api python -m app.cli list-users
 docker compose exec api python -m app.cli reset-password admin      # 임시 비밀번호 + 잠금 해제
 docker compose exec api python -m app.cli create-user kim --role admin --name 김민수
+docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # 비활성 계정만, 감사 로그에 기록
 ```
+
+### 7.1 사용자 그룹 (`#/users/groups`, 관리자)
+
+| 항목 | 내용 |
+|---|---|
+| 기능 권한 | `alerts.manage` 알림 규칙 관리 · `dashboards.edit` 대시보드 편집 · `settings.manage` 환경설정 · `audit.view` 감사 로그 · `agents.deploy` 에이전트 설치 묶음 (`app/auth/groups.py` PERMISSIONS) |
+| 조회 범위 | 분류(예: DB(MSSQL)) 와 PC 이름(쉼표, `MED-*` 처럼 `*` 사용, 대소문자 무시). 둘 다 정하면 '그 분류이면서 그 PC' |
+| 여러 그룹 | 권한은 합치고, 범위는 합집합. 범위가 비어 있는 그룹에 속하거나 그룹이 없으면 전체 |
+| 관리자 | 그룹과 상관없이 모든 권한·모든 로그 |
+
+- **서버에서 적용:** 검색·통계(대시보드)·실시간 스트림·이벤트 상세·수집 PC 목록에 범위 조건을 붙입니다(`filters.Scope`, `repository.scope_clause`, `routers/query._filter`).
+  - 알림 이력: 규칙의 분류 조건이 범위와 겹치거나, 대상(PC)이 범위의 PC 패턴에 맞는 알림만 보입니다.
+  - 필드 탐색: 범위가 있는 사용자에게는 실제 값 예시를 숨깁니다.
+- 화면: 메뉴·버튼은 `auth.can(권한)` 으로 보이거나 숨기고, 사이드바에 '볼 수 있는 범위'를 표시합니다. 서버도 같은 권한으로 막습니다(`deps.require_permission`).
+- 감사로그: `user_group.save`(권한·범위·구성원 포함), `user_group.delete`.
 
 ## 8. 환경설정 화면 (관리자, `#/settings`)
 
@@ -474,6 +509,8 @@ docker compose exec api python -m app.cli create-user kim --role admin --name �
 
 ## 13. 운영
 
+- **포트:** 8080 화면(사용자·관리자), **6976 수집 전용**(에이전트·syslog 수신기). 방화벽에서 6976 은 모든 PC, 8080 은 관리 대역만 여는 것을 권장합니다.
+- **에이전트 배포:** 화면 '수집 PC > 에이전트 설치' 에서 서버 주소·포트·API 키·Fluent Bit 이 들어간 설치 묶음(zip)을 받아 배포합니다(`routers/agentpkg.py`). PC 가 폐쇄망이어도 됩니다.
 - **폐쇄망 배포·업그레이드·되돌리기:** [AIRGAP.md](AIRGAP.md) (`deploy/airgap/make-bundle.sh` → 반입 → `deploy/airgap/install.sh`)
   - 이미지 태그는 `WLM_API_IMAGE`(.env, 기본 `log-monitor-api:latest`)로 고정합니다. 개발은 `log-monitor-api:dev`.
 
@@ -506,6 +543,7 @@ docker compose exec api python -m app.cli create-user kim --role admin --name �
 | Phase 2 | **인증·권한·감사로그**, **환경설정**(수신자·그룹·최소 수준, 웹훅, Oracle TNS/SID/서비스·쿼리, 메일 서버), **로그 로테이션**(보관 파일·무결성·복원), 성능 측정 | **완료** (§7~§10) |
 | Phase 3 | 대용량: 시간별 집계 테이블(긴 기간 대시보드·1년 추세), 자주 쓰는 원본 필드 인덱스, 필요 시 ClickHouse 또는 OpenSearch (ADR-004) | 규모에 따라 (PERFORMANCE.md §5) |
 | 0.4 | IIS·MSSQL 수집, 분류·공통 필드(사용자·IP), EventData 이름 필드, 보안 규칙 팩(MITRE·ISMS 태그), 검색 OR | **완료** (§3.2, §6.1) |
+| 0.5 | 알림 규칙 관리 화면(Snort 방식·미리보기), 사용자 그룹(권한·조회 범위), 수집 전용 포트 6976, 에이전트 설치 묶음(폐쇄망 PC), 반응형·디자인 개편 | **완료** |
 | Phase 4 | Windows 성능 메트릭, 에이전트 설정 원격 배포 | 검토 |
 
 세부 항목·우선순위·완료 기준은 [BACKLOG.md](BACKLOG.md) 에서 관리합니다.
@@ -525,5 +563,7 @@ docker compose exec api python -m app.cli create-user kim --role admin --name �
 - IIS 열 순서(`#Fields:`)와 MSSQL 오류 머리줄은 프로세스 메모리에 기억합니다.
   - 서버 재시작 직후, 사용자 지정 열 순서의 IIS 파일은 다음 머리줄(새 파일·IIS 재시작)이 올 때까지 기본 순서로 읽힙니다. 원본은 `raw` 에 남습니다.
 - MSSQL ERRORLOG 의 여러 줄 메시지(스택 등)는 줄마다 따로 저장됩니다(BACKLOG 참고).
+- 사용자 그룹 범위는 이벤트 데이터 API 에 적용됩니다. 사이드바의 PC 온라인 수·분당 수집량·알림 수(요약)는 전체 기준입니다.
+- 알림 이력의 범위 판단은 규칙의 분류 조건과 대상(PC) 이름으로 합니다. 분류 조건이 없는 규칙(예: 수준만 보는 규칙)은 PC 범위가 맞을 때만 보입니다.
 - 대시보드 실시간 반영값은 다음 동기화 전까지 근사치일 수 있습니다.
   - 동기화 조회와 스트림이 겹치는 순간 1~2건 중복이 생길 수 있습니다.

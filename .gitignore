@@ -12,3 +12,4 @@ dist/
 backups/
 deploy/airgap/agent-installers/*
 !deploy/airgap/agent-installers/README.md
+agent-installers/
