@@ -166,9 +166,11 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; letter-spacing: 
   border-right: 1px solid var(--border);
   background: var(--surface);
 }
-.brand { display: flex; align-items: center; gap: 11px; padding: 2px 8px 20px; font-weight: 700; font-size: 15.5px; letter-spacing: -0.02em; }
+.brand { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 8px 20px; }
+.brand-link { display: flex; align-items: center; gap: 11px; font-weight: 700; font-size: 15.5px; letter-spacing: -0.02em; color: var(--ink); text-decoration: none; cursor: pointer; flex: 1; min-width: 0; }
+.brand-link:hover { text-decoration: none; color: var(--ink); }
 .brand-mark { width: 32px; height: 32px; border-radius: 9px; flex: none; display: block; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.28); }
-.brand small { display: block; font-weight: 500; font-size: 11.5px; color: var(--muted); letter-spacing: 0; margin-top: 1px; }
+.brand-link small, .brand small { display: block; font-weight: 500; font-size: 11.5px; color: var(--muted); letter-spacing: 0; margin-top: 1px; }
 
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav a {
@@ -264,7 +266,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; letter-spacing: 
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
   background-position: calc(100% - 9px) 50%; background-size: 13px 13px; background-repeat: no-repeat;
 }
-.select option { padding: 6px 10px; background: var(--surface); color: var(--ink); font-size: 13.5px; }
+.select option { background: var(--surface); color: var(--ink); font-size: 14px; }
 .input::placeholder { color: var(--muted); opacity: 0.85; }
 textarea.input { height: auto; padding: 10px 11px; line-height: 1.55; }
 
@@ -481,10 +483,10 @@ body.auth-open .app { visibility: hidden; }
 .auth-brand { padding: 0 0 26px; font-size: 17px; }
 .auth-brand .brand-mark { width: 40px; height: 40px; border-radius: 11px; }
 .auth-title { margin: 0 0 18px; font-size: 22px; font-weight: 750; letter-spacing: -0.03em; }
-.auth-form { display: flex; flex-direction: column; gap: 14px; }
-.auth-form label { display: flex; flex-direction: column; gap: 7px; font-size: 13px; color: var(--ink-2); font-weight: 550; }
-.auth-form .input { height: 44px; font-size: 15px; border-radius: 10px; }
-.auth-submit { height: 44px; justify-content: center; font-size: 15px; margin-top: 6px; border-radius: 10px; }
+.auth-form { display: flex; flex-direction: column; gap: 16px; }
+.auth-form label { display: flex; flex-direction: column; gap: 7px; font-size: 13.5px; color: var(--ink-2); font-weight: 600; }
+.auth-form .input, .auth-form .select { height: 44px; font-size: 15px; border-radius: 10px; width: 100%; }
+.auth-submit { height: 46px; justify-content: center; font-size: 15px; margin-top: 14px; border-radius: 10px; }
 .auth-form .btn.ghost { justify-content: center; }
 .auth-notice { font-size: 12.5px; color: var(--muted); line-height: 1.65; margin: 18px 0 0; }
 
@@ -592,6 +594,16 @@ body.auth-open .app { visibility: hidden; }
 .form-actions { position: sticky; bottom: -48px; display: flex; align-items: center; gap: 8px; margin: 8px -22px -48px; padding: 14px 22px 18px; background: var(--surface); border-top: 1px solid var(--border); }
 .btn.danger { color: var(--bad-ink); }
 .btn.danger:hover { background: color-mix(in srgb, var(--critical) 10%, transparent); }
+.btn.danger.primary, .btn.primary.danger {
+  background: var(--critical) !important;
+  color: #ffffff !important;
+  border-color: transparent !important;
+  box-shadow: 0 1px 3px rgba(220, 59, 59, 0.4) !important;
+}
+.btn.danger.primary:hover, .btn.primary.danger:hover {
+  background: color-mix(in srgb, var(--critical) 85%, #000) !important;
+  color: #ffffff !important;
+}
 
 /* ------------------------------------------------------------ 사용자 그룹 */
 .group-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
