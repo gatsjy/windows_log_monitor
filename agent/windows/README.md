@@ -46,24 +46,58 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -Ap
 - 없는 채널은 무시됩니다(`ignore_missing_channels: true`).
 - Sysmon을 쓰고 있다면 `Microsoft-Windows-Sysmon/Operational` 을 추가합니다.
 
-## IIS·SQL Server 로그
+## IIS·SQL Server 로그 수집 가이드
+
+웹 서버(IIS)와 데이터베이스 서버(SQL Server)의 추가 로그 수집은 스위치 하나로 간단하게 켤 수 있습니다.
+**이미 에이전트 서비스가 실행 중인 상태에서도** 동일한 폴더에서 아래 명령을 실행하면 기존 수집 위치(sqlite DB)를 유지하면서 설정을 갱신하고 서비스를 자동 재시작합니다.
+
+### 1. 스크립트로 활성화 (권장)
+
+관리자 권한의 PowerShell에서 실행:
 
 ```powershell
-# 웹 서버
-.\install.ps1 -ServerHost 10.0.0.10 -ApiKey <키> -Iis
-# DB 서버
-.\install.ps1 -ServerHost 10.0.0.10 -ApiKey <키> -MssqlErrorlog
+# 웹 서버 (IIS 접속 로그 수집)
+.\install.ps1 -Iis
+
+# DB 서버 (SQL Server ERRORLOG 수집)
+.\install.ps1 -MssqlErrorlog
+
+# 둘 다 활성화하는 경우
+.\install.ps1 -Iis -MssqlErrorlog
 ```
 
-- **IIS:** 사이트별 `W3SVC<n>` 폴더를 찾아 tail 합니다. 로그 형식은 **W3C** 여야 합니다(IIS 관리자 > 로깅).
-  - 열 구성을 바꿔도 됩니다. 서버가 파일의 `#Fields:` 머리줄을 읽어 맞춥니다.
-  - W3C 시각은 UTC 로 기록되므로 그대로 해석합니다.
-  - 화면: 분류 '웹 서버 (IIS)', 이벤트 = HTTP 상태, 5xx 는 오류, 401·403·429 는 경고. 대시보드 '웹 서버 (IIS)'.
-- **SQL Server:** ERRORLOG 는 UTF-16 이라 `unicode.encoding: UTF-16LE` 로 읽습니다.
-  - 로그인 실패(18456)·심각한 오류는 Windows **응용 프로그램** 로그에도 남으므로, 스위치 없이도 분류 'DB (MSSQL)' 로 들어옵니다. ERRORLOG 는 더 자세한 내용이 필요할 때 켭니다.
-  - SQL Server 의 '로그인 감사' 를 '실패한 로그인만' 이상으로 둡니다.
-- 두 스위치는 `fluent-bit.yaml` 의 `# @@IIS_BEGIN` ~ `# @@IIS_END`, `# @@MSSQL_BEGIN` ~ `# @@MSSQL_END` 블록의 주석을 풀어 경로를 채웁니다. 수동으로 켤 때도 같은 블록을 고칩니다.
-- 나중에 켜려면 같은 명령을 스위치와 함께 다시 실행합니다(설정을 다시 만들고 서비스를 재시작, 읽은 위치는 유지).
+- **경로 자동 탐색:**
+  - **IIS:** `C:\inetpub\logs\LogFiles\W3SVC*` 경로의 모든 사이트 `*.log`를 자동으로 탐색하여 tail 합니다.
+  - **MSSQL:** `C:\Program Files\Microsoft SQL Server` 아래의 모든 인스턴스 `ERRORLOG`를 자동 탐색합니다 (UTF-16LE 인코딩 처리).
+
+### 2. 커스텀 로그 경로 지정 (D: 드라이브 등 다른 경로)
+
+기본 위치가 아닌 별도 드라이브나 폴더에 로그가 있다면 경로를 직접 지정할 수 있습니다:
+
+```powershell
+# IIS 커스텀 경로 (쉼표로 여러 경로 지정 가능)
+.\install.ps1 -Iis -IisLogPath "D:\logs\W3SVC1\*.log,D:\logs\W3SVC2\*.log"
+
+# MSSQL ERRORLOG 커스텀 경로
+.\install.ps1 -MssqlErrorlog -MssqlErrorlogPath "D:\MSSQL\Log\ERRORLOG"
+```
+
+### 3. 수동으로 설정 파일에서 직접 켜는 방법
+
+`C:\ProgramData\wlm-agent\fluent-bit.yaml` 파일을 직접 수정하여 켤 수도 있습니다:
+1. 메모장(관리자 권한)으로 `C:\ProgramData\wlm-agent\fluent-bit.yaml` 열기
+2. `# @@IIS_BEGIN` ~ `# @@IIS_END` 또는 `# @@MSSQL_BEGIN` ~ `# @@MSSQL_END` 블록의 주석(`# `)을 풀고 실제 경로 입력
+3. 관리자 PowerShell에서 서비스 재시작: `Restart-Service wlm-agent`
+
+### 4. 특징 및 모니터링 화면
+
+- **IIS W3C 로그:**
+  - IIS 관리자 > 로깅의 로그 형식이 **W3C** 여야 합니다 (기본값).
+  - 서버가 파일의 `#Fields:` 머리줄을 읽어 사용자 정의 열 순서도 자동으로 맞춥니다.
+  - HTTP 상태 코드(5xx 오류, 401/403/429 경고 등), URI, 클라이언트 IP, 응답 시간이 파싱되어 대시보드의 **[웹 서버 (IIS)]** 화면에 실시간 표시됩니다.
+- **SQL Server ERRORLOG:**
+  - **참고:** SQL Server는 중요한 로그인 실패(18456) 및 심각한 시스템 오류를 Windows **응용 프로그램(Application)** 이벤트 로그에도 기본 기록합니다. 따라서 `-MssqlErrorlog`를 켜지 않아도 기본 설치만으로 대시보드의 **[DB (MSSQL)]** 화면에 로그인 실패가 집계됩니다.
+  - `-MssqlErrorlog`는 서버 시작/정지, 체크포인트, DB 백업 완료 등 전체 파일 로그까지 상세하게 모니터링할 때 활성화합니다.
 
 ## 동작 방식
 
@@ -72,7 +106,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -Ap
 | 서비스 이름 | `wlm-agent` (자동 시작, 비정상 종료 시 자동 재시작) |
 | 설정/데이터 | `C:\ProgramData\wlm-agent\` (SYSTEM, Administrators 만 접근 가능. API 키가 들어 있음) |
 | 읽은 위치 기록 | `winevtlog.sqlite`, `tail-iis.sqlite`, `tail-mssql.sqlite` (재시작해도 중복/누락 없음) |
-| 이벤트 필드 | `event_data_as_map: true` — EventData 를 이름 있는 맵으로 보냄 (서버가 사용자·IP 를 뽑고 `f.EventData.LogonType` 처럼 검색) |
+| 이벤트 필드 | `string_inserts: true` — 이벤트 상세 정보를 StringInserts 로 전달 (서버가 사용자·IP 자동 추출) |
 | 장애 대비 | 서버에 연결할 수 없으면 `buffer\` 에 디스크로 쌓아 두었다가 복구되면 전송 |
 | 시작 시점 | 설치 이후 발생한 이벤트부터 수집 (`read_existing_events: false`) |
 

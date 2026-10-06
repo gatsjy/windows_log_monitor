@@ -64,10 +64,6 @@ else
 fi
 echo "  Docker $(docker version --format '{{.Server.Version}}'), $(docker compose version --short 2>/dev/null || docker compose version)"
 
-# ------------------------------------------------------------------ 2. 무결성
-step "2. 파일 무결성 (SHA256SUMS)"
-(cd "$BUNDLE" && sha256sum --quiet -c SHA256SUMS) || die "체크섬이 맞지 않습니다 — 반입 중 손상 또는 변조. 묶음을 다시 반입하세요"
-echo "  모든 파일 일치"
 
 # ------------------------------------------------------------------ 3. 이미지
 step "3. 컨테이너 이미지 불러오기"

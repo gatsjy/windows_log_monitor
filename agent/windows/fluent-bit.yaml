@@ -23,9 +23,8 @@ pipeline:
       interval_sec: 1
       read_existing_events: false
       ignore_missing_channels: true
-      # Named fields: EventData.TargetUserName, EventData.IpAddress, EventData.LogonType ...
-      # (StringInserts is still sent as well)
-      event_data_as_map: true
+      # Event details via StringInserts
+      string_inserts: true
       db: C:\ProgramData\wlm-agent\winevtlog.sqlite
       storage.type: filesystem
 
