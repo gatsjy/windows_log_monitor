@@ -75,3 +75,30 @@ def test_rejects_bad_server_and_records_audit(client):
     assert client.get("/api/agents/package", params={"server": "a.b", "os": "mac"}, headers=CSRF).status_code == 422
     items = client.get("/api/audit", params={"since": "1h", "action": "agents.package.download"}, headers=CSRF).json()["items"]
     assert items and "test-key" not in json.dumps(items)
+
+
+def test_delete_agent(client):
+    # 1. 하트비트로 에이전트 등록
+    res = client.post("/api/ingest", json=[{"type": "heartbeat", "agent_host": "TEST-AGENT-DEL"}],
+                      headers={"X-API-Key": "test-key"})
+    assert res.status_code == 200
+    agents = client.get("/api/agents", headers=CSRF).json()["items"]
+    assert any(a["host"] == "TEST-AGENT-DEL" for a in agents)
+
+    # 2. CSRF 헤더 누락 시 거부
+    assert client.delete("/api/agents/TEST-AGENT-DEL").status_code == 403
+
+    # 3. 정상 삭제
+    del_res = client.delete("/api/agents/TEST-AGENT-DEL", headers=CSRF)
+    assert del_res.status_code == 200 and del_res.json() == {"ok": True}
+
+    # 4. 목록에서 제거되었는지 확인
+    agents_after = client.get("/api/agents", headers=CSRF).json()["items"]
+    assert not any(a["host"] == "TEST-AGENT-DEL" for a in agents_after)
+
+    # 5. 이미 삭제된 호스트 삭제 시 404
+    assert client.delete("/api/agents/TEST-AGENT-DEL", headers=CSRF).status_code == 404
+
+    # 6. 감사 로그 확인
+    audits = client.get("/api/audit", params={"since": "1h", "action": "agent.delete"}, headers=CSRF).json()["items"]
+    assert any(a["target"] == "TEST-AGENT-DEL" for a in audits)

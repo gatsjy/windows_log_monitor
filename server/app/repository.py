@@ -319,6 +319,13 @@ async def agents(since: datetime, scopes=None) -> list[dict]:
     return await db.fetch_all(query, params)
 
 
+async def delete_agent(host: str) -> bool:
+    """수집 PC 목록에서만 뺀다. 이벤트는 지우지 않는다 — 로그 삭제는 보관 정책(로테이션)만 한다(ISMS 접속기록 보관).
+    에이전트가 다시 보내면 목록에 다시 나타난다."""
+    row = await db.fetch_one("DELETE FROM agents WHERE host = %s RETURNING host", (host,))
+    return row is not None
+
+
 async def agent_counts(online_sec: int, stale_sec: int) -> dict[str, int]:
     row = await db.fetch_one(
         "SELECT count(*) AS total,"

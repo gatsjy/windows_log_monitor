@@ -1,8 +1,8 @@
 // 수집 PC: 로그를 보내는 모든 PC/서버/장비의 수신 상태 + 에이전트 설치 안내.
 import * as api from '../api.js';
-import { can } from '../auth.js';
+import { can, isAdmin } from '../auth.js';
 import { sourceLabel, statusBadge } from '../levels.js';
-import { errorBox, fmtCompact, fmtDuration, fmtNum, fmtRelative, fmtTime, html, navigate, replaceParams } from '../util.js';
+import { confirmModal, errorBox, fmtCompact, fmtDuration, fmtNum, fmtRelative, fmtTime, html, navigate, replaceParams, toast } from '../util.js';
 
 export async function mount(root, params) {
   let since = params.since || '24h';
@@ -118,9 +118,11 @@ export async function mount(root, params) {
         table.innerHTML = '<div class="empty">아직 로그를 보낸 PC 가 없습니다. 아래 설치 안내를 참고하세요.</div>';
         return;
       }
+      const admin = isAdmin();
       table.innerHTML = html`<div class="table-wrap"><table class="table">
         <thead><tr><th>상태</th><th>PC</th><th>소스</th><th>IP</th><th>마지막 수신</th><th>하트비트</th>
-          <th class="r">이벤트</th><th class="r">오류</th><th class="r">경고</th><th class="r">누적</th><th>최초 등록</th><th>설정 버전</th></tr></thead>
+          <th class="r">이벤트</th><th class="r">오류</th><th class="r">경고</th><th class="r">누적</th><th>최초 등록</th><th>설정 버전</th>
+          ${admin ? html`<th class="r">관리</th>` : ''}</tr></thead>
         <tbody>${items.map((a) => html`<tr class="clickable" data-host="${a.host}">
           <td>${statusBadge(a.status)}</td>
           <td class="nowrap"><b>${a.host}</b></td>
@@ -134,10 +136,33 @@ export async function mount(root, params) {
           <td class="r num muted">${fmtCompact(a.events_total)}</td>
           <td class="nowrap muted">${fmtTime(a.first_seen, { seconds: false })}</td>
           <td class="nowrap muted">${a.meta?.config_version ?? '–'}</td>
+          ${admin ? html`<td class="r nowrap"><button class="btn sm danger" data-del="${a.host}">삭제</button></td>` : ''}
         </tr>`)}</tbody></table></div>
         <p class="muted" style="font-size:12px;padding:0 16px">온라인: ${fmtDuration(thresholds.online_sec)} 이내 수신 · 지연: ${fmtDuration(thresholds.stale_sec)} 이내 · 그 이후 오프라인. 행을 누르면 해당 PC 의 이벤트를 검색합니다.</p>`;
       table.querySelectorAll('[data-host]').forEach((tr) =>
-        tr.addEventListener('click', () => navigate('events', { since, host: tr.dataset.host })));
+        tr.addEventListener('click', (e) => {
+          if (e.target.closest('[data-del]')) return;
+          navigate('events', { since, host: tr.dataset.host });
+        }));
+      table.querySelectorAll('[data-del]').forEach((btn) =>
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const host = btn.dataset.del;
+          const ok = await confirmModal({
+            title: 'PC 삭제',
+            message: `'${host}' PC를 수집 목록에서 삭제할까요?\n(기존 이벤트 로그는 유지되며, PC에서 다시 로그를 보내면 다시 등록됩니다)`,
+            danger: true,
+            confirmText: '삭제',
+          });
+          if (!ok) return;
+          try {
+            await api.send('DELETE', `/api/agents/${encodeURIComponent(host)}`);
+            await load();
+            toast(`'${host}' PC가 수집 목록에서 삭제되었습니다.`, { type: 'success' });
+          } catch (err) {
+            toast(err.message, { type: 'error' });
+          }
+        }));
     } catch (err) {
       const table = root.querySelector('[data-table]');
       if (table) table.innerHTML = errorBox(err); // 화면을 떠난 뒤 끝난 요청이면 무시

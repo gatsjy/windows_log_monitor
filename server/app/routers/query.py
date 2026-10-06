@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 
 from .. import __version__, db, live, repository
 from ..auth import service as auth_service
-from ..auth.deps import client_ip, require_user
+from ..auth.deps import client_ip, require_admin, require_user
 from ..auth.service import User
 from ..config import settings
 from ..filters import EventFilter, FilterError, parse_duration, parse_time, scopes_allow
@@ -190,6 +190,15 @@ async def list_agents(request: Request, since: str = "24h"):
         "items": rows,
         "thresholds": {"online_sec": settings.heartbeat_online_sec, "stale_sec": settings.heartbeat_stale_sec},
     }
+
+
+@router.delete("/api/agents/{host}")
+async def delete_agent(host: str, request: Request, admin: User = Depends(require_admin)):
+    """테스트로 생긴 PC·폐기한 PC 를 목록에서 뺀다 (이벤트는 남는다). 다시 보내면 다시 등록된다."""
+    if not await repository.delete_agent(host):
+        raise HTTPException(404, "목록에 없는 PC 입니다")
+    await db.audit(admin.username, "agent.delete", host, {}, actor_ip=client_ip(request))
+    return {"ok": True}
 
 
 @router.get("/api/fields")

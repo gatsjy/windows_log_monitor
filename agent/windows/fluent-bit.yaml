@@ -7,6 +7,8 @@
 service:
   flush: 2
   log_level: info
+  log_file: C:\ProgramData\wlm-agent\fluent-bit.log
+  scheduler.cap: 60
   # Buffer to disk while the server is unreachable (no log loss on network outage)
   storage.path: C:\ProgramData\wlm-agent\buffer
   storage.sync: normal
@@ -31,7 +33,7 @@ pipeline:
     # Heartbeat every 30s so the server knows this PC is alive even when it is quiet
     - name: dummy
       tag: heartbeat
-      dummy: '{"type":"heartbeat","config_version":"0.2.0"}'
+      dummy: '{"type":"heartbeat","config_version":"0.2.1"}'
       interval_sec: 30
 
     # @@IIS_BEGIN  IIS access logs (W3C). Enabled by: install.ps1 -Iis
@@ -91,6 +93,7 @@ pipeline:
       compress: gzip
       header: X-API-Key @API_KEY@
       retry_limit: no_limits
+      net.keepalive: off
       # Cap the on-disk buffer during long outages (oldest chunks are dropped first)
       storage.total_limit_size: 1G
       log_response_payload: false

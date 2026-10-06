@@ -24,6 +24,12 @@ export async function filterBar(el, initial, { showTime = true, onChange }) {
     api.get('/api/stats/top', { field: 'channel', since: '7d', limit: 30 }).catch(() => ({ items: [] })),
     api.get('/api/meta').catch(() => ({ sources: [] })),
   ]);
+  const agentStatusMap = new Map((agents.items || []).map((a) => [a.host, a.status]));
+  const hostLabel = (h) => {
+    const st = agentStatusMap.get(h);
+    const dot = st === 'online' ? '🟢 ' : st === 'stale' ? '🟡 ' : st === 'offline' ? '⚪ ' : '';
+    return dot + h;
+  };
   const hosts = agents.items.map((a) => a.host);
   const channelNames = channels.items.map((c) => c.value).filter(Boolean);
 
@@ -51,7 +57,7 @@ export async function filterBar(el, initial, { showTime = true, onChange }) {
           ${custom ? html`<option value="" selected>사용자 지정 구간</option>` : ''}
           ${TIME_RANGES.map(([v, label]) => html`<option value="${v}" ${!custom && state.since === v ? 'selected' : ''}>${label}</option>`)}
         </select>` : ''}
-        <select class="select" data-k="host" aria-label="PC">${options(hosts, state.host, '전체 PC')}</select>
+        <select class="select" data-k="host" aria-label="PC">${options(hosts, state.host, '전체 PC', hostLabel)}</select>
         <select class="select" data-k="category" aria-label="분류">${options(Object.keys(meta.categories || {}), state.category, '전체 분류', categoryLabel)}</select>
         <select class="select" data-k="channel" aria-label="채널">${options(channelNames, state.channel, '전체 채널')}</select>
       </div>

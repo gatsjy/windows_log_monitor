@@ -4,7 +4,7 @@ import * as api from '../api.js';
 import { currentUser } from '../auth.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
 import { categoryLabel } from '../levels.js';
-import { errorBox, fmtRelative, fmtTime, html } from '../util.js';
+import { confirmModal, errorBox, fmtRelative, fmtTime, html, toast } from '../util.js';
 
 const TABS = (on) => html`<div class="tabs" role="tablist">
   <a role="tab" href="#/users" class="${on === '' ? 'on' : ''}" aria-selected="${on === ''}">사용자</a>
@@ -78,15 +78,29 @@ export async function mount(root, params, sub) {
     root.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () =>
       openEditor(data.items.find((u) => u.id === Number(b.dataset.edit)))));
     root.querySelectorAll('[data-unlock]').forEach((b) => b.addEventListener('click', async () => {
-      try { await api.send('POST', `/api/users/${b.dataset.unlock}/unlock`); load(); } catch (err) { alert(err.message); }
+      try {
+        await api.send('POST', `/api/users/${b.dataset.unlock}/unlock`);
+        toast('계정 잠금을 해제했습니다.', { type: 'success' });
+        load();
+      } catch (err) {
+        toast(err.message, { type: 'error' });
+      }
     }));
     root.querySelectorAll('[data-reset]').forEach((b) => b.addEventListener('click', async () => {
-      if (!confirm(`${b.dataset.name} 의 비밀번호를 초기화할까요?\n지금 접속 중인 세션은 모두 끊기고, 임시 비밀번호가 발급됩니다.`)) return;
+      const okReset = await confirmModal({
+        title: '비밀번호 초기화',
+        message: `${b.dataset.name} 의 비밀번호를 초기화할까요?\n지금 접속 중인 세션은 모두 끊기고, 임시 비밀번호가 발급됩니다.`,
+        danger: true,
+        confirmText: '초기화',
+      });
+      if (!okReset) return;
       try {
         const res = await api.send('POST', `/api/users/${b.dataset.reset}/reset-password`);
         showTempPassword(openDrawer({ title: '비밀번호 초기화' }), res.username, res.temp_password, '비밀번호를 초기화했습니다.');
         load();
-      } catch (err) { alert(err.message); }
+      } catch (err) {
+        toast(err.message, { type: 'error' });
+      }
     }));
   }
 
@@ -270,10 +284,17 @@ async function mountGroups(root) {
       }
     });
     body.querySelector('[data-delete]')?.addEventListener('click', async () => {
-      if (!confirm(`'${group.name}' 그룹을 삭제할까요? 구성원의 권한·범위가 이 그룹만큼 줄어듭니다.`)) return;
+      const okDel = await confirmModal({
+        title: '사용자 그룹 삭제',
+        message: `'${group.name}' 그룹을 삭제할까요? 구성원의 권한·범위가 이 그룹만큼 줄어듭니다.`,
+        danger: true,
+        confirmText: '삭제',
+      });
+      if (!okDel) return;
       try {
         await api.send('DELETE', `/api/user-groups/${group.id}`);
         closeDrawer();
+        toast('사용자 그룹을 삭제했습니다.', { type: 'success' });
         load();
       } catch (err) {
         body.querySelector('[data-msg]').innerHTML = errorBox(err);

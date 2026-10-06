@@ -4,7 +4,7 @@ import * as api from './api.js';
 import { GROUP_LABELS, matchText } from './alertdetail.js';
 import { closeDrawer, openDrawer } from './drawer.js';
 import { CATEGORY_LABELS, LEVELS, SEVERITIES, categoryLabel, levelIcon, severityBadge } from './levels.js';
-import { errorBox, fmtNum, html } from './util.js';
+import { confirmModal, errorBox, fmtNum, html, toast } from './util.js';
 
 const UNITS = [['s', '초', 1], ['m', '분', 60], ['h', '시간', 3600], ['d', '일', 86400]];
 const GROUP_BY = [['host', 'PC'], ['ip', '출발지 IP'], ['user', '사용자'], ['category', '분류'], ['event_id', '이벤트 ID'],
@@ -311,13 +311,21 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
   }
 
   async function remove() {
-    if (!confirm(`'${rule.name}' 규칙을 삭제할까요? 되돌리려면 다시 만들어야 합니다. (끄기만 하려면 '규칙 사용'을 끄세요)`)) return;
+    const ok = await confirmModal({
+      title: '규칙 삭제',
+      message: `'${rule.name}' 규칙을 삭제할까요?\n되돌리려면 다시 만들어야 합니다. (끄기만 하려면 '규칙 사용'을 끄세요)`,
+      danger: true,
+      confirmText: '삭제',
+    });
+    if (!ok) return;
     try {
       await api.send('DELETE', `/api/alerts/rules/${encodeURIComponent(rule.name)}`);
       closeDrawer();
       onSaved?.();
+      toast(`'${rule.name}' 규칙이 삭제되었습니다.`, { type: 'success' });
     } catch (err) {
       body.querySelector('[data-msg]').innerHTML = errorBox(err);
+      toast(err.message, { type: 'error' });
     }
   }
 

@@ -3,7 +3,7 @@
 // 비밀값(비밀번호·웹훅 주소·헤더)은 서버가 돌려주지 않는다 → 입력란이 비어 있으면 '기존 값 유지'.
 import * as api from '../api.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
-import { errorBox, fmtNum, fmtRelative, fmtTime, html, navigate } from '../util.js';
+import { confirmModal, errorBox, fmtNum, fmtRelative, fmtTime, html, navigate, promptModal, toast } from '../util.js';
 
 const TABS = [
   ['contacts', '수신자'], ['groups', '수신 그룹'], ['channels', '외부 연동 (웹훅·Oracle)'], ['smtp', '메일 서버'],
@@ -124,8 +124,21 @@ async function contacts(body) {
       } catch (err) { form.querySelector('[data-error]').innerHTML = errorBox(err); }
     });
     form.querySelector('[data-delete]')?.addEventListener('click', async () => {
-      if (!confirm(`${c.name} 을(를) 삭제할까요? (그룹에서도 빠집니다)`)) return;
-      try { await api.send('DELETE', `/api/settings/contacts/${c.id}`); closeDrawer(); contacts(body); } catch (err) { alert(err.message); }
+      const ok = await confirmModal({
+        title: '수신자 삭제',
+        message: `'${c.name}' 수신자를 삭제할까요? (그룹에서도 빠집니다)`,
+        danger: true,
+        confirmText: '삭제',
+      });
+      if (!ok) return;
+      try {
+        await api.send('DELETE', `/api/settings/contacts/${c.id}`);
+        closeDrawer();
+        contacts(body);
+        toast(`'${c.name}' 수신자가 삭제되었습니다.`, { type: 'success' });
+      } catch (err) {
+        toast(err.message, { type: 'error' });
+      }
     });
   };
   body.querySelector('[data-add]').addEventListener('click', () => edit(null));
@@ -189,8 +202,21 @@ async function groups(body) {
       } catch (err) { form.querySelector('[data-error]').innerHTML = errorBox(err); }
     });
     form.querySelector('[data-delete]')?.addEventListener('click', async () => {
-      if (!confirm(`그룹 '${g.name}' 을(를) 삭제할까요? (수신자는 지워지지 않습니다)`)) return;
-      try { await api.send('DELETE', `/api/settings/groups/${g.id}`); closeDrawer(); groups(body); } catch (err) { alert(err.message); }
+      const ok = await confirmModal({
+        title: '수신 그룹 삭제',
+        message: `그룹 '${g.name}' 을(를) 삭제할까요? (수신자는 지워지지 않습니다)`,
+        danger: true,
+        confirmText: '삭제',
+      });
+      if (!ok) return;
+      try {
+        await api.send('DELETE', `/api/settings/groups/${g.id}`);
+        closeDrawer();
+        groups(body);
+        toast(`'${g.name}' 그룹이 삭제되었습니다.`, { type: 'success' });
+      } catch (err) {
+        toast(err.message, { type: 'error' });
+      }
     });
   };
   body.querySelector('[data-add]').addEventListener('click', () => edit(null));
@@ -258,8 +284,21 @@ async function saveChannel(c, data) {
 }
 
 async function deleteChannel(c, done) {
-  if (!confirm(`'${c.name}' 연동을 삭제할까요?`)) return;
-  try { await api.send('DELETE', `/api/settings/channels/${c.id}`); closeDrawer(); done(); } catch (err) { alert(err.message); }
+  const ok = await confirmModal({
+    title: '연동 삭제',
+    message: `'${c.name}' 연동을 삭제할까요?`,
+    danger: true,
+    confirmText: '삭제',
+  });
+  if (!ok) return;
+  try {
+    await api.send('DELETE', `/api/settings/channels/${c.id}`);
+    closeDrawer();
+    done();
+    toast(`'${c.name}' 연동이 삭제되었습니다.`, { type: 'success' });
+  } catch (err) {
+    toast(err.message, { type: 'error' });
+  }
 }
 
 function editWebhook(c, done) {
@@ -378,11 +417,17 @@ function editOracle(c, meta, aliases, done) {
     const r = await api.send('POST', `/api/settings/channels/${c.id}/oracle/dry-run`, { commit: false });
     out.innerHTML = ok(`실행 성공 (${r.rowcount}행) — 되돌렸으므로 DB 에는 남지 않습니다. 사용한 바인드: ${r.binds.join(', ')}. 저장된 SQL 기준`);
   }));
-  form.querySelector('[data-commit]')?.addEventListener('click', (e) => {
-    if (!confirm('테스트 알림 한 건을 실제로 Oracle 에 저장합니다. 계속할까요?')) return;
+  form.querySelector('[data-commit]')?.addEventListener('click', async (e) => {
+    const okCommit = await confirmModal({
+      title: 'Oracle 테스트 알림 저장',
+      message: '테스트 알림 한 건을 실제로 Oracle 에 저장합니다. 계속할까요?',
+      confirmText: '저장',
+    });
+    if (!okCommit) return;
     run(e.target, out, async () => {
       await api.send('POST', `/api/settings/channels/${c.id}/oracle/dry-run`, { commit: true });
       out.innerHTML = ok('테스트 알림을 저장했습니다 (규칙 이름 "테스트 알림", 대상 TEST-PC)');
+      toast('테스트 알림을 Oracle에 저장했습니다.', { type: 'success' });
     });
   });
   form.querySelector('[data-delete]')?.addEventListener('click', () => deleteChannel(c, done));
@@ -508,13 +553,19 @@ async function retention(body) {
     msg.innerHTML = bad.length ? errorBox(new Error(`문제 ${bad.length}건: ${bad.map((b) => `${b.file} (${b.problem})`).join(', ')}`))
       : ok(`보관 파일 ${items.length}개 모두 정상 (SHA-256 일치)`);
   }));
-  body.querySelectorAll('[data-restore]').forEach((b) => b.addEventListener('click', () => {
-    const days = prompt(`${b.dataset.restore} 를 DB 로 다시 불러옵니다. 며칠 동안 검색할 수 있게 둘까요?`, '14');
+  body.querySelectorAll('[data-restore]').forEach((b) => b.addEventListener('click', async () => {
+    const days = await promptModal({
+      title: '로그 보관 데이터 복원',
+      message: `${b.dataset.restore} 를 DB 로 다시 불러옵니다. 며칠 동안 검색할 수 있게 둘까요?`,
+      defaultValue: '14',
+      placeholder: '보관 유지 일수 (일)',
+      confirmText: '복원',
+    });
     if (!days) return;
     run(b, msg, async () => {
       const r = await api.send('POST', '/api/settings/retention/restore', { partition: b.dataset.restore, hold_days: Number(days) });
       retention(body);
-      alert(`${fmtNum(r.rows)}건을 불러왔습니다. 이벤트 검색에서 해당 기간을 조회하세요.`);
+      toast(`${fmtNum(r.rows)}건을 불러왔습니다. 이벤트 검색에서 해당 기간을 조회하세요.`, { type: 'success', duration: 4500 });
     });
   }));
 }

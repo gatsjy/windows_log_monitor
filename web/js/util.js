@@ -109,3 +109,5 @@ export const store = {
 export function errorBox(err) {
   return html`<div class="error-box">${err?.message || String(err)}</div>`;
 }
+
+export { alertModal, confirmModal, promptModal, toast } from './dialog.js';

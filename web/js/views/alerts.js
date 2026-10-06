@@ -8,7 +8,7 @@ import { GROUP_LABELS, deliveryChips, matchText, openAlert } from '../alertdetai
 import { closeDrawer, openDrawer } from '../drawer.js';
 import { SEVERITIES, severityBadge } from '../levels.js';
 import { openRuleEditor } from '../ruleform.js';
-import { errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html, replaceParams, store } from '../util.js';
+import { confirmModal, errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html, replaceParams, store, toast } from '../util.js';
 
 const TYPE_LABELS = { email: '수신 그룹 (메일)', webhook: '웹훅', oracle: 'Oracle DB', '-': '설정 오류' };
 const RANGES = [['24h', '24시간'], ['7d', '7일'], ['30d', '30일']];
@@ -196,10 +196,17 @@ export async function mount(root, params, sub) {
       const rule = config.rules.find((r) => r.name === sw.dataset.toggle);
       toggle([rule.name], !rule.enabled, sw);
     }));
-    el.querySelectorAll('[data-group-toggle]').forEach((sw) => sw.addEventListener('click', () => {
+    el.querySelectorAll('[data-group-toggle]').forEach((sw) => sw.addEventListener('click', async () => {
       const items = config.rules.filter((r) => r.group === sw.dataset.groupToggle);
       const turnOn = items.some((r) => !r.enabled);
-      if (!turnOn && !confirm(`'${sw.dataset.groupToggle}' 묶음의 규칙 ${items.length}개를 모두 끌까요?`)) return;
+      if (!turnOn) {
+        const ok = await confirmModal({
+          title: '규칙 묶음 끄기',
+          message: `'${sw.dataset.groupToggle}' 묶음의 규칙 ${items.length}개를 모두 끌까요?`,
+          confirmText: '모두 끄기',
+        });
+        if (!ok) return;
+      }
       toggle(items.map((r) => r.name), turnOn, sw);
     }));
   }
@@ -211,9 +218,10 @@ export async function mount(root, params, sub) {
       config.rules.forEach((r) => { if (names.includes(r.name)) r.enabled = enabled; });
       renderStatus();
       renderRules();
+      toast(names.length > 1 ? `규칙 ${names.length}개가 ${enabled ? '켜졌습니다' : '꺼졌습니다'}.` : `규칙이 ${enabled ? '켜졌습니다' : '꺼졌습니다'}.`, { type: 'success' });
     } catch (err) {
       sw.disabled = false;
-      alert(err.message);
+      toast(err.message, { type: 'error' });
     }
   }
 

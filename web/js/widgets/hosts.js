@@ -1,8 +1,9 @@
 // PC 현황 카드 격자. 오류가 많은 PC 가 앞에 온다. 카드를 누르면 그 PC 의 이벤트 검색.
 // 실시간: 로그가 들어온 PC 카드가 깜빡이고 오류/경고/전체 수와 '마지막 수신'이 바로 바뀐다.
 import * as api from '../api.js';
+import { isAdmin } from '../auth.js';
 import { levelIcon, sourceLabel, statusBadge } from '../levels.js';
-import { fmtCompact, fmtNum, fmtRelative, html } from '../util.js';
+import { confirmModal, fmtCompact, fmtNum, fmtRelative, html, toast } from '../util.js';
 
 const STATUS_ORDER = { online: 0, stale: 1, offline: 2 };
 
@@ -11,12 +12,19 @@ function draw(body, ctx, st, touched = new Set()) {
     body.innerHTML = html`<div class="empty">아직 로그를 보낸 PC 가 없습니다. '수집 PC' 화면의 설치 안내를 참고하세요.</div>`;
     return;
   }
+  const admin = isAdmin();
   const sorted = [...st.items].sort((a, b) =>
     b.errors - a.errors || b.warnings - a.warnings
     || STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || a.host.localeCompare(b.host));
   body.innerHTML = html`<div class="hosts">${sorted.map((a) => html`
-    <button type="button" class="host-card ${a.errors ? 'has-errors' : ''} ${touched.has(a.host) ? 'touched' : ''}" data-host="${a.host}">
-      <div class="host-top"><span class="host-name" title="${a.host}">${a.host}</span>${statusBadge(a.status)}</div>
+    <div role="button" tabindex="0" class="host-card ${a.errors ? 'has-errors' : ''} ${touched.has(a.host) ? 'touched' : ''}" data-host="${a.host}">
+      <div class="host-top">
+        <span class="host-name" title="${a.host}">${a.host}</span>
+        <span style="display:inline-flex;align-items:center;gap:6px">
+          ${statusBadge(a.status)}
+          ${admin ? html`<button type="button" class="host-del" data-del="${a.host}" title="${a.host} 삭제">✕</button>` : ''}
+        </span>
+      </div>
       <div class="host-sub">
         <span>${a.sources.length ? a.sources.map(sourceLabel).join(', ') : '이벤트 없음'}</span>
         <span title="마지막 수신">${fmtRelative(a.last_seen)}</span>
@@ -26,9 +34,41 @@ function draw(body, ctx, st, touched = new Set()) {
         <span title="경고">${levelIcon(3)}<b>${fmtNum(a.warnings)}</b></span>
         <span title="전체 이벤트">전체 <b>${fmtCompact(a.events)}</b></span>
       </div>
-    </button>`)}</div>`;
-  body.querySelectorAll('[data-host]').forEach((card) =>
-    card.addEventListener('click', () => ctx.drill({ host: card.dataset.host })));
+    </div>`)}</div>`;
+  body.querySelectorAll('[data-host]').forEach((card) => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('[data-del]')) return;
+      ctx.drill({ host: card.dataset.host });
+    });
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        if (e.target.closest('[data-del]')) return;
+        ctx.drill({ host: card.dataset.host });
+      }
+    });
+  });
+  body.querySelectorAll('[data-del]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const host = btn.dataset.del;
+      const ok = await confirmModal({
+        title: 'PC 삭제',
+        message: `'${host}' PC를 수집 목록에서 삭제할까요?\n(기존 이벤트 로그는 유지되며, PC에서 다시 로그를 보내면 다시 등록됩니다)`,
+        danger: true,
+        confirmText: '삭제',
+      });
+      if (!ok) return;
+      try {
+        await api.send('DELETE', `/api/agents/${encodeURIComponent(host)}`);
+        st.items = st.items.filter((item) => item.host !== host);
+        draw(body, ctx, st);
+        toast(`'${host}' PC가 수집 목록에서 삭제되었습니다.`, { type: 'success' });
+      } catch (err) {
+        toast(err.message, { type: 'error' });
+      }
+    });
+  });
 }
 
 export default {
