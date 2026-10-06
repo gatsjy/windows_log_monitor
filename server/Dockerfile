@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # 빌드 컨텍스트는 저장소 루트 (docker-compose.yml 참고)
 
 FROM python:3.13-slim AS base

@@ -100,8 +100,11 @@ services:
       - "${WLM_PORT:-8080}:8000"          # 웹 화면 + API (관리자·사용자)
       - "${WLM_INGEST_PORT:-6976}:8001"   # 에이전트 로그 수집 전용 (/api/ingest 만 열림)
     volumes:
-      - ./config:/app/config     # 대시보드·알림 규칙·tnsnames.ora (화면에서 저장하면 이 폴더에 기록됨)
-      - ./archive:/app/archive   # 로그 보관 파일 (*.jsonl.gz + SHA-256 메타). 백업·별도 보관 대상
+      - ./server/app:/app/app                         # 코드 변경 시 이미지 재빌드 없이 바로 반영 (폐쇄망 핫픽스 지원)
+      - ./server/migrations:/app/migrations           # DB 마이그레이션 자동 반영
+      - ./web:/app/web                                 # 웹 UI 변경 시 즉시 반영
+      - ./config:/app/config                           # 대시보드·알림 규칙·tnsnames.ora (화면에서 저장하면 이 폴더에 기록됨)
+      - ./archive:/app/archive                         # 로그 보관 파일 (*.jsonl.gz + SHA-256 메타). 백업·별도 보관 대상
       - ./agent-installers:/app/agent-installers:ro   # Fluent Bit 설치 파일 → 에이전트 설치 묶음에 포함 (docs/AIRGAP.md)
 
   # 네트워크 장비 / Linux 서버의 syslog 를 받아 api 로 전달하는 수신기 (선택)
