@@ -70,7 +70,9 @@ export async function mount(root, params) {
 
       items = page.items;
       cursor = page.next_cursor;
-      rowsEl.innerHTML = html`${items.map((ev, i) => eventRow(ev, i))}`;
+      rowsEl.innerHTML = items.length
+        ? html`${items.map((ev, i) => eventRow(ev, i))}`
+        : html`<tr><td colspan="6" class="empty" style="padding:48px 16px;">조건에 일치하는 이벤트가 없습니다. 상단 필터를 조정해보세요.</td></tr>`;
       renderFoot();
     } catch (err) {
       if (my !== token) return;

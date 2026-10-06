@@ -156,7 +156,16 @@ export async function mount(root, params, sub) {
       replaceParams(`dashboard/${name}`, { since });
       renderWidgets();
     });
-    root.querySelector('[data-refresh]').addEventListener('click', renderWidgets);
+    root.querySelector('[data-refresh]').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const svg = btn.querySelector('svg');
+      svg?.classList.add('spin');
+      try {
+        await renderWidgets();
+      } finally {
+        setTimeout(() => svg?.classList.remove('spin'), 450);
+      }
+    });
     root.querySelector('[data-edit]')?.addEventListener('click', openEditor);
     root.querySelector('[data-live]').addEventListener('click', () => {
       liveOn = !liveOn;

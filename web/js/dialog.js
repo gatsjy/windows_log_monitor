@@ -1,6 +1,6 @@
 // 모던 다이얼로그 & 토스트 알림 컴포넌트
 // 브라우저 기본 alert(), confirm() 대신 부드럽고 일관된 UI 제공
-import { html } from './util.js';
+import { html, raw } from './util.js';
 
 let toastContainer = null;
 
@@ -68,12 +68,19 @@ export function confirmModal(opt) {
   } = options;
 
   return new Promise((resolve) => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
+    const dangerIcon = danger
+      ? '<span class="modal-danger-badge" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.4L1.7 18.5A2 2 0 0 0 3.4 21.5h17.2a2 2 0 0 0 1.7-3L13.7 3.4a2 2 0 0 0-3.4 0z"/></svg></span>'
+      : '';
+
     overlay.innerHTML = html`
       <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div class="modal-head">
-          <div class="modal-title" id="modal-title">${title}</div>
+          <div class="modal-title" id="modal-title">${danger ? raw(dangerIcon) : ''}${title}</div>
           <button type="button" class="modal-close" data-cancel aria-label="닫기">✕</button>
         </div>
         <div class="modal-body">
@@ -87,6 +94,7 @@ export function confirmModal(opt) {
     `.s;
 
     const close = (result) => {
+      document.body.style.overflow = prevOverflow;
       document.removeEventListener('keydown', onKeyDown);
       overlay.classList.add('closing');
       overlay.addEventListener('animationend', () => overlay.remove(), { once: true });
@@ -100,14 +108,18 @@ export function confirmModal(opt) {
 
     overlay.querySelectorAll('[data-cancel]').forEach((b) => b.addEventListener('click', () => close(false)));
     overlay.querySelector('[data-confirm]').addEventListener('click', () => close(true));
+
+    let isMouseDownOnOverlay = false;
+    overlay.addEventListener('mousedown', (e) => {
+      isMouseDownOnOverlay = e.target === overlay;
+    });
     overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) close(false);
+      if (isMouseDownOnOverlay && e.target === overlay) close(false);
     });
 
     document.addEventListener('keydown', onKeyDown);
     document.body.appendChild(overlay);
 
-    // 기본 포커스 설정
     const btnToFocus = danger ? overlay.querySelector('[data-cancel]') : overlay.querySelector('[data-confirm]');
     setTimeout(() => btnToFocus?.focus(), 50);
   });
@@ -123,6 +135,9 @@ export function alertModal(opt) {
   const { title = '알림', message, confirmText = '확인' } = options;
 
   return new Promise((resolve) => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = html`
@@ -141,6 +156,7 @@ export function alertModal(opt) {
     `.s;
 
     const close = () => {
+      document.body.style.overflow = prevOverflow;
       document.removeEventListener('keydown', onKeyDown);
       overlay.classList.add('closing');
       overlay.addEventListener('animationend', () => overlay.remove(), { once: true });
@@ -152,8 +168,13 @@ export function alertModal(opt) {
     };
 
     overlay.querySelectorAll('[data-confirm]').forEach((b) => b.addEventListener('click', close));
+
+    let isMouseDownOnOverlay = false;
+    overlay.addEventListener('mousedown', (e) => {
+      isMouseDownOnOverlay = e.target === overlay;
+    });
     overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) close();
+      if (isMouseDownOnOverlay && e.target === overlay) close();
     });
 
     document.addEventListener('keydown', onKeyDown);
@@ -179,6 +200,9 @@ export function promptModal(opt) {
   } = options;
 
   return new Promise((resolve) => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = html`
@@ -203,6 +227,7 @@ export function promptModal(opt) {
     const input = overlay.querySelector('[data-input]');
 
     const close = (result) => {
+      document.body.style.overflow = prevOverflow;
       document.removeEventListener('keydown', onKeyDown);
       overlay.classList.add('closing');
       overlay.addEventListener('animationend', () => overlay.remove(), { once: true });
@@ -216,8 +241,13 @@ export function promptModal(opt) {
 
     overlay.querySelectorAll('[data-cancel]').forEach((b) => b.addEventListener('click', () => close(null)));
     overlay.querySelector('[data-confirm]').addEventListener('click', () => close(input.value));
+
+    let isMouseDownOnOverlay = false;
+    overlay.addEventListener('mousedown', (e) => {
+      isMouseDownOnOverlay = e.target === overlay;
+    });
     overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) close(null);
+      if (isMouseDownOnOverlay && e.target === overlay) close(null);
     });
 
     document.addEventListener('keydown', onKeyDown);
