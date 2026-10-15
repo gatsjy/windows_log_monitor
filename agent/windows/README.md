@@ -87,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -Ap
 `C:\ProgramData\wlm-agent\fluent-bit.yaml` 파일을 직접 수정하여 켤 수도 있습니다:
 1. 메모장(관리자 권한)으로 `C:\ProgramData\wlm-agent\fluent-bit.yaml` 열기
 2. `# @@IIS_BEGIN` ~ `# @@IIS_END` 또는 `# @@MSSQL_BEGIN` ~ `# @@MSSQL_END` 블록의 주석(`# `)을 풀고 실제 경로 입력
-3. 관리자 PowerShell에서 서비스 재시작: `Restart-Service wlm-agent`
+3. 관리자 PowerShell에서 서비스 재시작: `Restart-Service knuh-agent`
 
 ### 4. 특징 및 모니터링 화면
 
@@ -103,7 +103,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -Ap
 
 | 항목 | 내용 |
 |---|---|
-| 서비스 이름 | `wlm-agent` (자동 시작, 비정상 종료 시 자동 재시작) |
+| 서비스 이름 / 표시 이름 | `knuh-agent` / `knuh 윈도우 모니터링` (자동 시작, 비정상 종료 시 자동 재시작) |
 | 설정/데이터 | `C:\ProgramData\wlm-agent\` (SYSTEM, Administrators 만 접근 가능. API 키가 들어 있음) |
 | 읽은 위치 기록 | `winevtlog.sqlite`, `tail-iis.sqlite`, `tail-mssql.sqlite` (재시작해도 중복/누락 없음) |
 | 이벤트 필드 | `string_inserts: true` — 이벤트 상세 정보를 StringInserts 로 전달 (서버가 사용자·IP 자동 추출) |
@@ -142,9 +142,11 @@ wevtutil sl Security /ms:1073741824      # 1GB
 ## 문제 해결
 
 ```powershell
-Get-Service wlm-agent
+Get-Service knuh-agent
+# 또는 표시 이름으로 검색: Get-Service -DisplayName "*knuh*"
+
 # 콘솔에서 직접 실행해서 오류 보기 (서비스를 먼저 중지)
-Stop-Service wlm-agent
+Stop-Service knuh-agent
 & "C:\Program Files\fluent-bit\bin\fluent-bit.exe" -c C:\ProgramData\wlm-agent\fluent-bit.yaml
 ```
 

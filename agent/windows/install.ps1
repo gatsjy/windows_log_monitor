@@ -31,11 +31,17 @@ param(
     [string] $MssqlErrorlogPath = "",
     [string] $FluentBitExe = "C:\Program Files\fluent-bit\bin\fluent-bit.exe",
     # Settings file written by the server when the package is downloaded
-    [string] $Settings = (Join-Path $PSScriptRoot "settings.json")
+    [string] $Settings = (Join-Path $PSScriptRoot "settings.json"),
+    [string] $ServiceName = "knuh-agent",
+    [string] $DisplayName = ""
 )
 
 $ErrorActionPreference = "Stop"
-$ServiceName = "wlm-agent"
+if (-not $DisplayName) {
+    # Default display name is Korean ('knuh <Windows monitoring>'). Built from UTF-8 bytes because
+    # PS 5.1 reads BOM-less scripts in the ANSI code page, so this file must stay ASCII only.
+    $DisplayName = [System.Text.Encoding]::UTF8.GetString([byte[]]@(0x6b, 0x6e, 0x75, 0x68, 0x20, 0xec, 0x9c, 0x88, 0xeb, 0x8f, 0x84, 0xec, 0x9a, 0xb0, 0x20, 0xeb, 0xaa, 0xa8, 0xeb, 0x8b, 0x88, 0xed, 0x84, 0xb0, 0xeb, 0xa7, 0x81))
+}
 $DataDir = "C:\ProgramData\wlm-agent"
 $ConfigPath = Join-Path $DataDir "fluent-bit.yaml"
 
@@ -126,16 +132,26 @@ if ($MssqlErrorlog) {
 # The config contains the API key: only SYSTEM and Administrators may read it
 icacls $DataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
 
-Write-Host "[3/4] Registering service '$ServiceName'"
-$existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($existing) {
-    if ($existing.Status -ne "Stopped") { Stop-Service -Name $ServiceName -Force }
-    sc.exe delete $ServiceName | Out-Null
-    Start-Sleep -Seconds 2
+Write-Host "[3/4] Registering service '$ServiceName' ($DisplayName)"
+# Also remove the service name used before 0.2.2 so an upgrade does not leave two agents sending twice
+foreach ($svc in (@($ServiceName, "wlm-agent") | Select-Object -Unique)) {
+    $existing = Get-Service -Name $svc -ErrorAction SilentlyContinue
+    if ($existing) {
+        Write-Host "      Cleaning up existing service '$svc'"
+        if ($existing.Status -ne "Stopped") { Stop-Service -Name $svc -Force }
+        sc.exe delete $svc | Out-Null
+        # sc delete only marks the service; New-Service fails until SCM really removes it
+        for ($i = 0; $i -lt 30 -and (Get-Service -Name $svc -ErrorAction SilentlyContinue); $i++) {
+            Start-Sleep -Milliseconds 500
+        }
+        if (Get-Service -Name $svc -ErrorAction SilentlyContinue) {
+            throw "Service '$svc' is still marked for deletion. Close services.msc / Event Viewer and run again."
+        }
+    }
 }
 $binPath = "`"$FluentBitExe`" -c `"$ConfigPath`""
-New-Service -Name $ServiceName -BinaryPathName $binPath -DisplayName "Log Monitor Agent (Fluent Bit)" `
-    -Description "Sends Windows event logs (and optional IIS / SQL Server logs) to the Log Monitor server" -StartupType Automatic | Out-Null
+New-Service -Name $ServiceName -BinaryPathName $binPath -DisplayName $DisplayName `
+    -Description "KNUH Windows Log Monitor Agent (Fluent Bit)" -StartupType Automatic | Out-Null
 # Restart automatically if the agent crashes
 sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/30000 | Out-Null
 
