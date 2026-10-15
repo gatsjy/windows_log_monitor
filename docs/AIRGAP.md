@@ -53,7 +53,7 @@
 | CPU 종류 | **묶음과 같아야 합니다.** 일반 서버는 `amd64`(x86_64). `uname -m` 으로 확인 |
 | 사양 | PC 50대 기준 4코어 · 메모리 8GB · 디스크 100GB(SSD). 200대 이상은 8코어 · 16~32GB · 500GB+ ([PERFORMANCE.md](PERFORMANCE.md) §5) |
 | 디스크 배치 | Docker 데이터(`/var/lib/docker`, DB 포함)와 `/opt/log-monitor/archive`(보관 파일)를 넉넉한 볼륨에 |
-| 메모리 설정 | 8GB 가 아니면 설치 후 `.env` 의 `WLM_PG_*` 를 조정 (shared_buffers ≈ 메모리 25%) |
+| 메모리 설정 | 기본값은 4GB 서버 기준. 8GB 이상이면 `.env` 의 `WLM_PG_*`·`WLM_*_MEM_LIMIT` 를 올림 (docs/PERFORMANCE.md §4). 기존 서버의 `.env` 는 업그레이드해도 그대로이니 직접 고칠 것 |
 
 **포트 (방화벽):**
 

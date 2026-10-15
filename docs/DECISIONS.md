@@ -264,6 +264,12 @@
 - **결정:** Pretendard Variable(woff2, SIL OFL 1.1)을 `web/fonts/` 에 두고 서버가 제공합니다(하루 캐시). 색·간격은 `web/css/app.css` 의 토큰.
 - **이유:** Windows 기본 글꼴(맑은 고딕)보다 한글 가독성이 좋고, 폐쇄망에서도 같은 화면이 나와야 해서 CDN 을 쓰지 않습니다. OFL 은 OSI 승인 라이선스입니다.
 
+## ADR-027 메모리 기본값 4GB 서버 기준 + 컨테이너 상한
+- **상태:** 채택 (2026-10-15)
+- **결정:** compose 기본값을 4GB 서버에 맞춥니다(shared_buffers 512MB, 병렬 2, shm 512m). db·api 컨테이너에 `mem_limit`(1536m / 768m), api 에 `MALLOC_ARENA_MAX=2`. 에이전트는 `storage.max_chunks_up: 16` 으로 메모리 조각 수를 제한합니다.
+- **이유:** 이전 기본값(8GB 기준)으로 4GB 서버에서 db 가 2GB 가까이 차지했습니다. shared_buffers 는 돌려주지 않는 캐시이고 `docker stats` 는 페이지 캐시까지 세어 '정리가 안 되는' 것처럼 보입니다. 상한을 두면 커널이 캐시부터 비우고, 넘쳐도 그 컨테이너만 재시작됩니다(에이전트는 디스크 버퍼로 재전송).
+- **대가:** 큰 기간 검색이 8GB 설정보다 느릴 수 있습니다. 8GB 이상 서버는 `.env` 로 올립니다(docs/PERFORMANCE.md §4).
+
 ## ADR-028 수집 PC 삭제: 일괄 삭제, 지운 내용 감사 기록
 - **상태:** 채택 (2026-10-15)
 - **결정:** `POST /api/agents/delete {hosts}`(최대 500) 로 여러 PC 를 한 번에 지웁니다. 감사로그는 PC 마다 한 줄(`agent.delete`)에 지운 행 요약(IP·최초/마지막 수신·누적 건수·설정 버전)을 남깁니다. 아직 보내는 PC 는 응답 `still_online` 과 확인창으로 알립니다.
