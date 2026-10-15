@@ -90,7 +90,7 @@ def test_delete_agent(client):
 
     # 3. 정상 삭제
     del_res = client.delete("/api/agents/TEST-AGENT-DEL", headers=CSRF)
-    assert del_res.status_code == 200 and del_res.json() == {"ok": True}
+    assert del_res.status_code == 200 and del_res.json()["deleted"] == ["TEST-AGENT-DEL"]
 
     # 4. 목록에서 제거되었는지 확인
     agents_after = client.get("/api/agents", headers=CSRF).json()["items"]
@@ -102,3 +102,31 @@ def test_delete_agent(client):
     # 6. 감사 로그 확인
     audits = client.get("/api/audit", params={"since": "1h", "action": "agent.delete"}, headers=CSRF).json()["items"]
     assert any(a["target"] == "TEST-AGENT-DEL" for a in audits)
+
+    # 7. 감사로그에 지운 PC 의 요약(무엇을 지웠는지)이 남는다
+    entry = next(a for a in audits if a["target"] == "TEST-AGENT-DEL")
+    assert "events_total" in entry["detail"] and "last_seen" in entry["detail"]
+
+
+def test_delete_agents_bulk(client):
+    hosts = ["BULK-A", "BULK-B", "BULK/C"]  # '/' 가 든 syslog 장비 이름도 지울 수 있어야 한다
+    res = client.post("/api/ingest", json=[{"type": "heartbeat", "agent_host": h} for h in hosts],
+                      headers={"X-API-Key": "test-key"})
+    assert res.status_code == 200
+
+    assert client.post("/api/agents/delete", json={"hosts": ["BULK-A"]}).status_code == 403  # CSRF
+    assert client.post("/api/agents/delete", json={"hosts": []}, headers=CSRF).status_code == 422
+
+    res = client.post("/api/agents/delete", json={"hosts": ["BULK-A", "BULK-B", "NO-SUCH-PC"]}, headers=CSRF)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["deleted"] == ["BULK-A", "BULK-B"] and body["missing"] == ["NO-SUCH-PC"]
+    # 방금 하트비트를 보낸 PC 는 곧 다시 등록되므로 화면에 알릴 수 있게 돌려준다
+    assert body["still_online"] == ["BULK-A", "BULK-B"]
+
+    assert client.delete("/api/agents/BULK%2FC", headers=CSRF).status_code == 200
+    left = {a["host"] for a in client.get("/api/agents", headers=CSRF).json()["items"]}
+    assert not left & set(hosts)
+
+    audits = client.get("/api/audit", params={"since": "1h", "action": "agent.delete"}, headers=CSRF).json()["items"]
+    assert {"BULK-A", "BULK-B", "BULK/C"} <= {a["target"] for a in audits}

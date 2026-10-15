@@ -54,6 +54,7 @@
 - **권한 부여 내역:** 사용자 > 사용자 그룹 화면(권한·범위·구성원), 감사로그 `user_group.save/delete`
 - **규칙 변경 이력:** 감사로그 `alerts.rule.save/delete/toggle`(규칙 이름·SID·파일 해시)
 - **에이전트 배포 기록:** 감사로그 `agents.package.download`(대상·서버 주소, 키 값은 기록하지 않음)
+- **수집 PC 삭제 기록:** 감사로그 `agent.delete` — PC 마다 한 줄, 지운 행 요약(IP·최초/마지막 수신·누적 건수·설정 버전). 이벤트 로그는 지우지 않음(보관 정책으로만 삭제)
 - **통제 매핑:** 알림 화면의 규칙 목록에 규칙마다 `ISMS 2.x.x`, `MITRE Txxxx` 태그가 보입니다(`config/alerts.yaml` 의 `tags`).
 
 ### 알림 규칙과 ISMS 항목
