@@ -13,6 +13,8 @@ service:
   storage.path: C:\ProgramData\wlm-agent\buffer
   storage.sync: normal
   storage.backlog.mem_limit: 16M
+  # Max 2MB chunks kept in memory (default 128 = ~256MB). The rest waits on disk -> agent stays small
+  storage.max_chunks_up: 16
 
 pipeline:
   inputs:
@@ -29,11 +31,12 @@ pipeline:
       string_inserts: true
       db: C:\ProgramData\wlm-agent\winevtlog.sqlite
       storage.type: filesystem
+      mem_buf_limit: 32M
 
     # Heartbeat every 30s so the server knows this PC is alive even when it is quiet
     - name: dummy
       tag: heartbeat
-      dummy: '{"type":"heartbeat","config_version":"0.2.1"}'
+      dummy: '{"type":"heartbeat","config_version":"0.2.2"}'
       interval_sec: 30
 
     # @@IIS_BEGIN  IIS access logs (W3C). Enabled by: install.ps1 -Iis
@@ -46,6 +49,7 @@ pipeline:
     #   refresh_interval: 30
     #   db: C:\ProgramData\wlm-agent\tail-iis.sqlite
     #   storage.type: filesystem
+    #   mem_buf_limit: 32M
     # @@IIS_END
 
     # @@MSSQL_BEGIN  SQL Server ERRORLOG (UTF-16). Enabled by: install.ps1 -MssqlErrorlog
@@ -58,6 +62,7 @@ pipeline:
     #   refresh_interval: 30
     #   db: C:\ProgramData\wlm-agent\tail-mssql.sqlite
     #   storage.type: filesystem
+    #   mem_buf_limit: 32M
     # @@MSSQL_END
 
   filters:

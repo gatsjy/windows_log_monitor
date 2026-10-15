@@ -8,6 +8,8 @@ service:
   storage.path: /var/lib/wlm-agent/buffer
   storage.sync: normal
   storage.backlog.mem_limit: 16M
+  # 메모리에 올려 두는 2MB 조각 수 상한 (기본 128 = 약 256MB). 나머지는 디스크에서 대기 → 에이전트 메모리를 작게 유지
+  storage.max_chunks_up: 16
 
 pipeline:
   inputs:
@@ -22,7 +24,7 @@ pipeline:
     # 하트비트 (조용한 서버도 '온라인'으로 보이게)
     - name: dummy
       tag: heartbeat
-      dummy: '{"type":"heartbeat","config_version":"0.1.0"}'
+      dummy: '{"type":"heartbeat","config_version":"0.1.1"}'
       interval_sec: 30
 
     # (선택) 텍스트 로그 파일. 앞의 '#' 을 지우면 활성화

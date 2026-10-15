@@ -24,24 +24,29 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-wlm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wlm-dev-password}
       TZ: UTC
-    # 성능 설정 (docs/PERFORMANCE.md). 서버 메모리에 맞게 .env 로 조정: shared_buffers ≈ 메모리의 25%
+    # 성능 설정 (docs/PERFORMANCE.md §4). 기본값은 메모리 4GB 서버 기준 — 8GB 이상이면 .env 로 올린다.
+    # shared_buffers 는 기동 때 잡아 두고 돌려주지 않는 캐시라 '메모리가 안 줄어드는' 것처럼 보이는 게 정상이다.
     command:
       - postgres
       - -c
-      - shared_buffers=${WLM_PG_SHARED_BUFFERS:-1GB}
+      - shared_buffers=${WLM_PG_SHARED_BUFFERS:-512MB}
       - -c
-      - effective_cache_size=${WLM_PG_EFFECTIVE_CACHE_SIZE:-3GB}
+      - effective_cache_size=${WLM_PG_EFFECTIVE_CACHE_SIZE:-1536MB}
       - -c
-      - work_mem=${WLM_PG_WORK_MEM:-32MB}
+      - work_mem=${WLM_PG_WORK_MEM:-16MB}
       - -c
-      - maintenance_work_mem=${WLM_PG_MAINTENANCE_WORK_MEM:-256MB}
+      - maintenance_work_mem=${WLM_PG_MAINTENANCE_WORK_MEM:-128MB}
       - -c
-      - max_parallel_workers_per_gather=${WLM_PG_PARALLEL_WORKERS:-4}
+      - max_parallel_workers_per_gather=${WLM_PG_PARALLEL_WORKERS:-2}
+      - -c
+      - max_connections=${WLM_PG_MAX_CONNECTIONS:-40}   # api 풀 10개 + 관리·백업 여유. 연결마다 수 MB 를 쓴다
       - -c
       - random_page_cost=1.1      # SSD
       - -c
       - jit=off                   # 짧은 조회가 많아 JIT 컴파일 비용이 더 크다
-    shm_size: 1g                  # 병렬 조회가 쓰는 공유 메모리 (Docker 기본 64MB 는 부족)
+    shm_size: ${WLM_PG_SHM_SIZE:-512m}   # 병렬 조회가 쓰는 공유 메모리 (Docker 기본 64MB 는 부족)
+    # 컨테이너 상한: 넘으면 커널이 먼저 페이지 캐시를 비우므로, 한 컨테이너가 서버 메모리를 다 차지하지 못한다
+    mem_limit: ${WLM_DB_MEM_LIMIT:-1536m}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -59,10 +64,14 @@ services:
       target: runtime
     restart: unless-stopped
     logging: *logging
+    # 정상 사용은 200~400MB. 상한을 두면 큰 요청이 몰려도 서버 전체가 멈추지 않고 이 컨테이너만 재시작된다
+    mem_limit: ${WLM_API_MEM_LIMIT:-768m}
     depends_on:
       db:
         condition: service_healthy
     environment:
+      # glibc 는 스레드마다 메모리 영역(arena)을 따로 잡아 해제한 메모리를 OS 에 잘 돌려주지 않는다 → 2개로 제한
+      MALLOC_ARENA_MAX: "2"
       WLM_DATABASE_URL: postgresql://${POSTGRES_USER:-wlm}:${POSTGRES_PASSWORD:-wlm-dev-password}@db:5432/${POSTGRES_DB:-wlm}
       WLM_INGEST_API_KEYS: ${WLM_INGEST_API_KEYS:-dev-ingest-key}
       WLM_INGEST_PORT: ${WLM_INGEST_PORT:-6976}   # 에이전트 설치 묶음에 적어 줄 수집 포트

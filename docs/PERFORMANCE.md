@@ -82,17 +82,34 @@
 - 로그 로테이션으로 DB 파티션이 3~4개로 유지되어, 가지치기로 얻을 이득도 작습니다.
 - 그래서 되돌렸습니다.
 
-## 4. DB 설정 (docker-compose.yml, .env 로 조정)
+## 4. DB·메모리 설정 (docker-compose.yml, .env 로 조정)
 
-| 설정 | 기본값(여기) | 권장 |
-|---|---|---|
-| `WLM_PG_SHARED_BUFFERS` | 1GB | 서버 메모리의 25% |
-| `WLM_PG_EFFECTIVE_CACHE_SIZE` | 3GB | 서버 메모리의 50~75% |
-| `WLM_PG_WORK_MEM` | 32MB | 32~64MB |
-| `WLM_PG_MAINTENANCE_WORK_MEM` | 256MB | 512MB~1GB (인덱스 생성·VACUUM) |
-| `WLM_PG_PARALLEL_WORKERS` | 4 | CPU 코어 수의 절반 |
-| `random_page_cost` / `jit` | 1.1 / off | SSD 기준, 짧은 조회 위주 |
-| `shm_size` | 1g | 병렬 조회용 (Docker 기본 64MB 는 부족) |
+기본값은 **메모리 4GB 서버** 기준입니다(2026-10 변경, 이전 기본값은 8GB 기준이었음). 위 벤치마크는 8GB 값으로 쟀습니다.
+
+| 설정 | 4GB (기본) | 8GB | 설명 |
+|---|---|---|---|
+| `WLM_PG_SHARED_BUFFERS` | 512MB | 1GB | DB 캐시. 기동 때 잡고 돌려주지 않음 → '메모리가 안 줄어드는' 것처럼 보이는 게 정상 |
+| `WLM_PG_EFFECTIVE_CACHE_SIZE` | 1536MB | 3GB | 실제로 잡는 메모리 아님(실행 계획 추정치) |
+| `WLM_PG_WORK_MEM` | 16MB | 32MB | 정렬·집계 1단계당. 병렬 작업자 × 동시 조회만큼 곱해짐 |
+| `WLM_PG_MAINTENANCE_WORK_MEM` | 128MB | 256MB | 인덱스 생성·VACUUM |
+| `WLM_PG_PARALLEL_WORKERS` | 2 | 4 | CPU 코어 수의 절반 |
+| `WLM_PG_MAX_CONNECTIONS` | 40 | 40 | api 풀 최대 10 + 관리 여유 |
+| `WLM_PG_SHM_SIZE` | 512m | 1g | 병렬 조회용 공유 메모리 (Docker 기본 64MB 는 부족) |
+| `WLM_DB_MEM_LIMIT` | 1536m | 3g | db 컨테이너 상한. 넘으면 페이지 캐시부터 비움 |
+| `WLM_API_MEM_LIMIT` | 768m | 1g | api 컨테이너 상한. 넘으면 api 만 재시작(에이전트가 재전송하므로 유실 없음) |
+| `MALLOC_ARENA_MAX` | 2 | 2 | 고정. Python(glibc) 이 해제한 메모리를 OS 에 돌려주게 함 |
+| `random_page_cost` / `jit` | 1.1 / off | 같음 | SSD 기준, 짧은 조회 위주 |
+
+**메모리를 볼 때 주의:** `docker stats` 의 MEM USAGE 는 파일 캐시(페이지 캐시)를 포함합니다.
+캐시는 필요하면 커널이 바로 비우는 메모리라 '새는' 것이 아닙니다. 실제 사용량은 `free -m` 의 `available` 로 판단합니다.
+Windows + Docker Desktop(WSL2) 에서 돌리면 `vmmem` 이 캐시를 잘 돌려주지 않으므로 `%UserProfile%\.wslconfig` 에 상한을 둡니다:
+
+```ini
+[wsl2]
+memory=3GB
+[experimental]
+autoMemoryReclaim=gradual
+```
 
 ## 5. 용량 가이드
 
