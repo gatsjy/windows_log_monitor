@@ -18,6 +18,8 @@ from ..normalizers.categories import CATEGORIES
 # 관리자가 아닌 사용자에게 그룹으로 줄 수 있는 기능 권한. 사용자 관리는 관리자만 (권한 상승 방지)
 PERMISSIONS = {
     "alerts.manage": "알림 규칙 관리 (추가·수정·켜기/끄기, 알림 대상 테스트)",
+    # 확인·메모는 알림을 볼 수 있는 사람 누구나. 종료(해결)와 무음은 담당자만 (ADR-029)
+    "alerts.handle": "알림 처리 (해결·다시 열기·무음)",
     "dashboards.edit": "대시보드 편집",
     "settings.manage": "환경설정 (수신자·수신 그룹·외부 연동·메일 서버·로그 보관)",
     "audit.view": "감사 로그 보기·내려받기",

@@ -75,8 +75,9 @@ async function refreshStatus() {
         <span class="muted num">${fmtNum(Math.round(s.ingest_per_min))}건/분</span></div>
       <div class="row muted">PC ${s.agents.online}/${s.agents.total} 온라인</div>`;
     const badge = document.getElementById('alert-badge');
-    badge.hidden = !s.alerts_24h;
-    badge.textContent = s.alerts_24h > 99 ? '99+' : String(s.alerts_24h);
+    // 확인하지 않은 알림 수 (누가 '확인'하면 줄어든다). 메뉴는 그 목록(처리 안 됨)으로 연다
+    badge.hidden = !s.alerts_open;
+    badge.textContent = s.alerts_open > 99 ? '99+' : String(s.alerts_open);
   } catch (err) {
     if (err.status !== 401 && err.status !== 403) {
       el.innerHTML = html`<div class="row"><span class="pulse bad"></span>서버 연결 끊김</div>`;

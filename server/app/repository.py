@@ -384,11 +384,14 @@ async def rule_preview(f: EventFilter, group_by: str, window_sec: int, threshold
     return await db.fetch_all(query, [*key_params, window_sec, *params, threshold])
 
 
-async def last_alert_at(rule: str, group_key: str) -> datetime | None:
-    row = await db.fetch_one(
-        "SELECT max(fired_at) AS t FROM alerts WHERE rule = %s AND group_key = %s", (rule, group_key)
+async def last_alert(rule: str, group_key: str) -> dict | None:
+    """같은 규칙·대상의 마지막 알림: fired_at, silenced_until(무음으로 못 보냈으면 그 무음이 끝나는 시각)."""
+    return await db.fetch_one(
+        "SELECT a.fired_at, s.ends_at AS silenced_until FROM alerts a"
+        " LEFT JOIN alert_silences s ON s.id = a.silence_id"
+        " WHERE a.rule = %s AND a.group_key = %s ORDER BY a.fired_at DESC LIMIT 1",
+        (rule, group_key),
     )
-    return row["t"] if row else None
 
 
 async def silent_agents(cutoff: datetime, hosts: tuple[str, ...]) -> list[dict]:
@@ -399,20 +402,23 @@ async def silent_agents(cutoff: datetime, hosts: tuple[str, ...]) -> list[dict]:
     return await db.fetch_all("SELECT host, last_seen FROM agents WHERE last_seen < %s", (cutoff,))
 
 
-async def insert_alert(message: dict, notifiers: tuple[str, ...]) -> int:
-    """alerts 한 줄 + 알림 대상별 alert_deliveries(pending). 새 id 반환."""
+async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict | None = None) -> int:
+    """alerts 한 줄 + 알림 대상별 alert_deliveries 를 넣고 새 id 를 돌려준다.
+    무음(silence) 중이면 전송 상태를 처음부터 skipped(사유: 무음)로 둔다 — 발생 기록은 남기고 보내지만 않는다."""
+    status, reason = ("skipped", f"무음 #{silence['id']}: {silence['reason']}") if silence else ("pending", None)
     async with db.pool().connection() as conn:
         cur = await conn.execute(
-            "INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, first_event_at, last_event_at, payload)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb) RETURNING id",
+            "INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, first_event_at, last_event_at,"
+            " payload, silence_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING id",
             (message["fired_at"], message["rule"], message["severity"], message["group_key"],
-             message["event_count"], message["first_event_at"], message["last_event_at"], _json(message)),
+             message["event_count"], message["first_event_at"], message["last_event_at"], _json(message),
+             silence["id"] if silence else None),
         )
         alert_id = (await cur.fetchone())["id"]
         async with conn.cursor() as c:
             await c.executemany(
-                "INSERT INTO alert_deliveries (alert_id, notifier) VALUES (%s, %s)",
-                [(alert_id, name) for name in notifiers],
+                "INSERT INTO alert_deliveries (alert_id, notifier, status, last_error) VALUES (%s, %s, %s, %s)",
+                [(alert_id, name, status, reason) for name in notifiers],
             )
     return alert_id
 
@@ -452,27 +458,187 @@ async def failed_deliveries() -> list[dict]:
 
 _ALERT_COLUMNS = (
     "a.id, a.fired_at, a.rule, a.severity, a.group_key, a.event_count, a.first_event_at, a.last_event_at,"
+    " a.status, a.acked_by, a.acked_at, a.resolved_by, a.resolved_at, a.silence_id,"
+    " (SELECT count(*) FROM alert_notes n WHERE n.alert_id = a.id AND n.action = 'note') AS note_count,"
     " (SELECT COALESCE(json_agg(json_build_object('notifier', d.notifier, 'status', d.status,"
     "        'attempts', d.attempts, 'last_error', d.last_error, 'sent_at', d.sent_at) ORDER BY d.notifier), '[]')"
     "    FROM alert_deliveries d WHERE d.alert_id = a.id) AS deliveries"
 )
 
+# 처리 상태 필터: unresolved = 처리 안 됨 + 확인함 (아직 해결 안 된 것 전부)
+ALERT_STATUS_FILTERS = {
+    "open": "a.status = 'open'",
+    "acked": "a.status = 'acked'",
+    "resolved": "a.status = 'resolved'",
+    "unresolved": "a.status <> 'resolved'",
+}
 
-async def list_alerts(since: datetime, limit: int, rule: str | None = None,
-                      severity: str | None = None, group_key: str | None = None) -> list[dict]:
+
+async def list_alerts(since: datetime, limit: int, rule: str | None = None, severity: str | None = None,
+                      group_key: str | None = None, status: str | None = None,
+                      pairs: list[tuple[str, str]] | None = None) -> list[dict]:
+    """pairs: 조회 범위가 있는 사용자에게 보이는 (규칙, 대상) 목록. LIMIT 전에 걸러야 오래된 내 알림이 잘리지 않는다."""
+    if pairs is not None and not pairs:
+        return []
     clauses, params = ["a.fired_at >= %s"], [since]
     for column, value in (("rule", rule), ("severity", severity), ("group_key", group_key)):
         if value:
             clauses.append(f"a.{column} = %s")
             params.append(value)
+    if status:
+        clauses.append(ALERT_STATUS_FILTERS[status])
+    if pairs is not None:
+        clauses.append("(a.rule, a.group_key) IN (SELECT * FROM unnest(%s::text[], %s::text[]))")
+        params += [[p[0] for p in pairs], [p[1] for p in pairs]]
     return await db.fetch_all(
-        f"SELECT {_ALERT_COLUMNS} FROM alerts a WHERE {' AND '.join(clauses)} ORDER BY a.fired_at DESC LIMIT %s",
+        # 같은 평가 주기의 알림은 발생 시각이 같다 → id 로 순서를 고정 (새로고침 사이에 행이 뒤바뀌지 않게)
+        f"SELECT {_ALERT_COLUMNS} FROM alerts a WHERE {' AND '.join(clauses)} ORDER BY a.fired_at DESC, a.id DESC LIMIT %s",
         [*params, limit],
     )
 
 
 async def get_alert(alert_id: int) -> dict | None:
-    return await db.fetch_one(f"SELECT {_ALERT_COLUMNS}, a.payload FROM alerts a WHERE a.id = %s", (alert_id,))
+    """상세: 목록 칸 + payload + 처리 기록(notes) + 무음 정보 + 같은 규칙·대상의 해결 안 된 다른 알림 수."""
+    row = await db.fetch_one(f"SELECT {_ALERT_COLUMNS}, a.payload FROM alerts a WHERE a.id = %s", (alert_id,))
+    if row is None:
+        return None
+    row["notes"] = (await alert_notes_for([alert_id])).get(alert_id, [])
+    row["silence"] = await get_silence(row["silence_id"]) if row["silence_id"] else None
+    related = await db.fetch_one(
+        "SELECT count(*) AS n FROM alerts WHERE rule = %s AND group_key = %s AND status <> 'resolved' AND id <> %s",
+        (row["rule"], row["group_key"], alert_id),
+    )
+    row["related_unresolved"] = related["n"]
+    return row
+
+
+async def alert_refs(ids: list[int]) -> list[dict]:
+    """처리 권한 확인용 최소 정보."""
+    return await db.fetch_all("SELECT id, rule, group_key, status FROM alerts WHERE id = ANY(%s)", (ids,))
+
+
+async def alert_notes_for(ids: list[int]) -> dict[int, list[dict]]:
+    rows = await db.fetch_all(
+        "SELECT id, alert_id, at, author, action, text FROM alert_notes WHERE alert_id = ANY(%s) ORDER BY at, id", (ids,)
+    )
+    out: dict[int, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r.pop("alert_id"), []).append(r)
+    return out
+
+
+# 처리 동작 → (바꿀 칸, 바꿀 수 있는 지금 상태). 해결은 확인을 겸한다(확인한 사람이 없으면 해결한 사람으로).
+# 다시 열기는 확인함에서도 된다 — 누구나 할 수 있는 '확인'으로 알림을 대기열에서 치운 경우 담당자가 되돌릴 수 있게
+_HANDLE_SQL = {
+    "ack": ("status = 'acked', acked_by = %(actor)s, acked_at = now()", "status = 'open'"),
+    "resolve": (("status = 'resolved', resolved_by = %(actor)s, resolved_at = now(),"
+                 " acked_by = COALESCE(acked_by, %(actor)s), acked_at = COALESCE(acked_at, now())"),
+                "status <> 'resolved'"),
+    "reopen": ("status = 'open', acked_by = NULL, acked_at = NULL, resolved_by = NULL, resolved_at = NULL",
+               "status <> 'open'"),
+}
+
+
+async def handle_alerts(ids: list[int], action: str, actor: str, note: str = "", with_related: bool = False) -> list[int]:
+    """확인·해결·다시 열기. 지금 상태에서 할 수 있는 알림만 바꾸고(두 사람이 동시에 눌러도 한 번만) 바뀐 id 를 돌려준다.
+    with_related: 같은 규칙·대상의 다른 알림도 함께 (개수 제한 없이 서버에서 한 문장으로 — 재발이 많아도 실패하지 않게).
+    처리 기록(alert_notes)을 같은 트랜잭션에 남긴다 — 다시 열어도 이전 확인·해결 기록은 타임라인에 그대로 있다."""
+    set_sql, when = _HANDLE_SQL[action]
+    target = "id = ANY(%(ids)s)"
+    if with_related:
+        target = "(id = ANY(%(ids)s) OR (rule, group_key) IN (SELECT rule, group_key FROM alerts WHERE id = ANY(%(ids)s)))"
+    async with db.pool().connection() as conn, conn.transaction():
+        cur = await conn.execute(
+            f"UPDATE alerts SET {set_sql} WHERE {target} AND {when} RETURNING id", {"actor": actor, "ids": ids}
+        )
+        changed = sorted(r["id"] for r in await cur.fetchall())
+        if changed:
+            await conn.execute(
+                "INSERT INTO alert_notes (alert_id, author, action, text) SELECT unnest(%s::bigint[]), %s, %s, %s",
+                (changed, actor, action, note),
+            )
+    return changed
+
+
+async def add_alert_note(alert_id: int, author: str, text: str) -> dict:
+    return await db.fetch_one(
+        "INSERT INTO alert_notes (alert_id, author, action, text) VALUES (%s, %s, 'note', %s)"
+        " RETURNING id, at, author, action, text",
+        (alert_id, author, text),
+    )
+
+
+async def alert_group_counts(since: datetime | None = None, status: str | None = None) -> list[dict]:
+    """(규칙, 대상, 상태)별 알림 수. 조회 범위가 있는 사용자의 숫자는 라우터가 이 묶음 단위로 걸러서 센다."""
+    clauses, params = ["TRUE"], []
+    if since is not None:
+        clauses.append("a.fired_at >= %s")
+        params.append(since)
+    if status:
+        clauses.append(ALERT_STATUS_FILTERS[status])
+    return await db.fetch_all(
+        f"SELECT a.rule, a.group_key, a.status, count(*) AS n FROM alerts a WHERE {' AND '.join(clauses)}"
+        " GROUP BY 1, 2, 3",
+        params,
+    )
+
+
+# ------------------------------------------------------------------ alert silences (무음)
+
+_SILENCE_COLUMNS = (
+    "s.id, s.rule, s.group_key, s.starts_at, s.ends_at, s.reason, s.created_by, s.created_at, s.ended_by,"
+    " (SELECT count(*) FROM alerts a WHERE a.silence_id = s.id) AS suppressed"
+)
+
+
+async def active_silence(rule: str, group_key: str, at: datetime) -> dict | None:
+    """이 규칙·대상에 걸린 무음 (여러 개면 가장 늦게 끝나는 것). rule·group_key 가 NULL 인 무음은 전부에 걸린다."""
+    return await db.fetch_one(
+        "SELECT id, reason, ends_at FROM alert_silences WHERE starts_at <= %s AND ends_at > %s"
+        " AND (rule IS NULL OR rule = %s) AND (group_key IS NULL OR group_key = %s) ORDER BY ends_at DESC LIMIT 1",
+        (at, at, rule, group_key),
+    )
+
+
+async def list_silences(ended_since: datetime) -> list[dict]:
+    """적용 중·예정인 무음과 ended_since 이후에 끝난 무음."""
+    return await db.fetch_all(
+        f"SELECT {_SILENCE_COLUMNS} FROM alert_silences s WHERE s.ends_at >= %s ORDER BY s.starts_at DESC, s.id DESC"
+        " LIMIT 500",
+        (ended_since,),
+    )
+
+
+async def get_silence(silence_id: int) -> dict | None:
+    return await db.fetch_one(f"SELECT {_SILENCE_COLUMNS} FROM alert_silences s WHERE s.id = %s", (silence_id,))
+
+
+async def insert_silence(rule: str | None, group_key: str | None, starts_at: datetime, ends_at: datetime,
+                         reason: str, created_by: str) -> int:
+    row = await db.fetch_one(
+        "INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by)"
+        " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+        (rule, group_key, starts_at, ends_at, reason, created_by),
+    )
+    return row["id"]
+
+
+async def end_silence(silence_id: int, actor: str) -> bool:
+    """일찍 해제: 행은 남기고 끝 시각을 지금으로 (시작 전이면 길이 0 = 취소). 이미 끝났거나 취소됐거나 없으면 False.
+    길이 0 인 무음은 끝 시각이 아직 미래라도 끝난 것으로 본다 — 두 번 취소해 해제한 사람이 바뀌지 않게."""
+    row = await db.fetch_one(
+        "UPDATE alert_silences SET ends_at = GREATEST(starts_at, now()), ended_by = %s"
+        " WHERE id = %s AND ended_by IS NULL AND ends_at > now() AND ends_at > starts_at RETURNING id",
+        (actor, silence_id),
+    )
+    return row is not None
+
+
+async def active_silence_refs(at: datetime) -> list[dict]:
+    """지금 적용 중인 무음의 범위 (화면 상단 '무음 N개 적용 중' — 라우터가 조회 범위로 걸러서 센다)."""
+    return await db.fetch_all(
+        "SELECT rule, group_key FROM alert_silences WHERE starts_at <= %s AND ends_at > %s", (at, at)
+    )
 
 
 async def alert_stats(since: datetime) -> dict[str, Any]:
@@ -496,9 +662,18 @@ async def count_alerts(since: datetime) -> int:
     return row["n"]
 
 
-async def purge_alerts(cutoff: datetime) -> int:
-    rows = await db.fetch_all("DELETE FROM alerts WHERE fired_at < %s RETURNING id", (cutoff,))
-    return len(rows)
+async def count_open_alerts() -> int:
+    """아무도 확인하지 않은 알림 수 (사이드바 숫자)."""
+    row = await db.fetch_one("SELECT count(*) AS n FROM alerts WHERE status = 'open'")
+    return row["n"]
+
+
+async def purge_alerts(cutoff: datetime) -> tuple[int, int]:
+    """보관기간 만료 알림 삭제 (전송 상태·처리 기록은 함께 지워진다). 그 전에 끝난 무음도 정리한다.
+    (지운 알림 수, 지운 무음 수) — 무음도 증적이라 몇 개 지웠는지 감사로그에 남긴다."""
+    alerts = await db.fetch_all("DELETE FROM alerts WHERE fired_at < %s RETURNING id", (cutoff,))
+    silences = await db.fetch_all("DELETE FROM alert_silences WHERE ends_at < %s RETURNING id", (cutoff,))
+    return len(alerts), len(silences)
 
 
 # ---------------------------------------------------------------- audit log

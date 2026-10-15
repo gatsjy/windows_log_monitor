@@ -9,6 +9,7 @@
 Fluent Bit 에이전트가 보낸 Windows 이벤트 로그, IIS·SQL Server 로그, syslog, journald, 파일 로그를 FastAPI가 받아서 정규화(분류·사용자·IP 포함)한 뒤 PostgreSQL에 저장합니다. 빌드 없는 순수 JS UI가 이를 실시간으로 시각화합니다.
 
 - **알림:** 엔진이 규칙(`config/alerts.yaml`)에 맞으면 수신 그룹(메일), 웹훅, Oracle 로 보냅니다. 대상은 환경설정 화면(DB)에서 관리합니다.
+  - 알림마다 처리 상태(처리 안 됨 → 확인함 → 해결됨)와 고칠 수 없는 처리 기록이 남고, 점검 중에는 무음으로 전송만 건너뜁니다(ADR-029).
 - **인증:** 로그인·역할(관리자/조회자)·감사로그가 있습니다.
 - **로그 로테이션:** DB → 압축 보관 파일 → 삭제 순서로 정리합니다.
 
@@ -51,10 +52,11 @@ server/app/
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
-  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·재시도)
+  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·재시도·무음) · visibility(조회 범위)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF)
   oracle.py          Oracle 접속(TNS/SID/서비스/접속문자열)·조회 전용 쿼리·SQL 실행
   secrets.py         환경설정 비밀값 암호화 (WLM_SECRET_KEY)
+  csvexport.py       CSV 내려받기 공용 (BOM, 엑셀 수식 주입 방지) — 감사로그·알림 이력
   archive.py         로그 보관 파일 만들기·검증·복원
   cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원)
   routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음)
@@ -68,7 +70,7 @@ web/js/
   livefilter.js      서버 filters.py 와 같은 조건 판단 (대시보드 실시간 갱신용)
   responsive.js      좁은 화면 보정: 표 칸에 data-label(모바일 카드), 카드 격자 줄 단위 재배치 (MutationObserver)
   ruleform.js        알림 규칙 편집 패널 (Snort 식 규칙 문장·우리말 요약·미리보기)
-  alertdetail.js     알림 상세 패널, 전송 상태 칩, 규칙 요약 문구
+  alertdetail.js     알림 상세 패널(확인·해결·메모·무음), 전송·처리 상태 칩, 규칙 요약 문구
   charts.js          SVG 차트 (누적 막대, 가로 막대, 스파크라인)
   catalog.js         필드·이벤트 ID 한글 설명 사전
 config/dashboards/   대시보드 정의 JSON (UI 편집기로 저장하면 이 파일이 바뀜)
@@ -128,6 +130,10 @@ curl -s localhost:8080/healthz
   - 상위 값 목록에서 `user`·`ip` 의 빈 값 제외도 두 곳입니다(`repository.TOP_SKIP_EMPTY`, `widgets/top.js` 의 `SKIP_EMPTY`).
 - **새 API 의 권한:** 관리자만이면 `require_admin`, 그룹으로 위임할 수 있는 기능이면 `require_permission("권한")`(auth/groups.py PERMISSIONS 에 추가). 화면은 `auth.can("권한")` 으로 버튼을 숨긴다.
 - **이벤트를 돌려주는 새 API 는 반드시 `routers/query._filter(request)` 로 필터를 만든다.** 그래야 사용자 그룹의 조회 범위(`scopes`)가 붙는다. 단건 조회는 `filters.scopes_allow` 로 확인.
+  - 알림·무음을 돌려주거나 바꾸는 API 는 `alerts/visibility.py`(`alert_visible`·`silence_visible`·`count_by_status`)로 범위를 확인한다. 알림 수를 새로 셀 때도 마찬가지.
+- 알림 처리 기록(`alert_notes`)은 `audit_log` 처럼 트리거로 수정·삭제·TRUNCATE 를 막는다(알림이 보관기간 만료로 지워질 때만 함께 삭제). 테스트에서도 지울 수 없다.
+- **CSV 를 내보내는 새 API 는 `app/csvexport.csv_response` 를 쓴다.** 로그에서 온 값(syslog 호스트 이름 등)이 엑셀 수식으로 실행되지 않게 한다.
+- 무음은 행을 지우지 않는다. 해제 = `ends_at` 을 앞당김(시작 전이면 길이 0). 상태(적용 중·예정·끝남)는 `routers/alerts._silence_state` 가 정한다.
 - 수집 포트(8001/6976)로는 `/api/ingest`·`/healthz` 만 열린다(`main.INGEST_PORT_PATHS`). 에이전트용 새 경로가 필요하면 거기에 추가.
 - 알림 규칙을 화면에서 저장하면 그 규칙 블록만 다시 쓴다(`ruleedit.py`). 블록 안의 주석은 그 규칙을 화면에서 저장하면 사라진다(켜기/끄기만은 보존).
 - UI 디자인 값은 `web/css/app.css` 의 토큰(`:root`)만 쓴다. 좁은 화면 기준: 1000px(상단 바), 700px(표→카드), 600px(휴대폰).

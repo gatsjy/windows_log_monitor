@@ -118,11 +118,12 @@ async def purge_alerts(now: datetime | None = None) -> None:
     from . import repository  # 순환 import 방지
 
     cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.retention_days)
-    deleted = await repository.purge_alerts(cutoff)
-    if deleted:
-        log.warning("보관기간 만료 알림 이력 삭제: %s건", deleted)
+    deleted, silences = await repository.purge_alerts(cutoff)
+    if deleted or silences:
+        log.warning("보관기간 만료 알림 이력 삭제: 알림 %s건, 끝난 무음 %s건", deleted, silences)
         await db.audit("system", "retention.purge_alerts", "alerts",
-                       {"deleted": deleted, "retention_days": settings.retention_days, "cutoff": cutoff.isoformat()})
+                       {"deleted": deleted, "silences_deleted": silences, "retention_days": settings.retention_days,
+                        "cutoff": cutoff.isoformat()})
 
 
 async def purge_audit(now: datetime | None = None) -> None:

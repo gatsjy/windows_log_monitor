@@ -4,6 +4,8 @@
 - 알림 대상(수신 그룹·외부 연동·메일 서버)은 매 주기 환경설정(DB)에서 다시 만든다 → 화면에서 바꾸면 바로 반영.
   잘못된 파일이면 이전 설정을 유지하고 오류를 화면에 보여준다.
 - 같은 규칙·같은 대상(PC)은 cooldown 동안 다시 알리지 않는다.
+- 무음(alert_silences) 중이면 알림은 기록하되 보내지 않는다. 무음이 끝난 뒤에도 이벤트가 새로 들어오면
+  cooldown 과 상관없이 다음 평가에서 다시 알린다 (무음 중에 쌓인 이벤트만으로는 다시 울리지 않는다).
 - 여러 서버 인스턴스가 떠 있어도 PostgreSQL advisory lock 으로 한 곳에서만 평가한다.
 """
 
@@ -48,6 +50,25 @@ def _with_group(f: EventFilter, group_by: str, key: str) -> EventFilter:
     attr = {"host": "hosts", "channel": "channels", "provider": "providers", "source": "sources",
             "category": "categories", "user": "users", "ip": "ips"}[group_by]
     return replace(f, **{attr: [key]})
+
+
+def _silence_over(last: dict, now: datetime) -> bool:
+    """마지막 알림이 무음 때문에 전송되지 않았고, 그 무음이 이제 끝났는가."""
+    return last["silenced_until"] is not None and last["silenced_until"] <= now
+
+
+def _in_cooldown(last: dict | None, now: datetime, cooldown: timedelta) -> bool:
+    """재알림 간격 안인가. 무음으로 못 보낸 알림은 무음이 끝나면 간격을 기다리지 않는다
+    (점검이 끝났는데도 문제가 계속되면 바로 알아야 하므로)."""
+    if last is None or _silence_over(last, now):
+        return False
+    return now - last["fired_at"] < cooldown
+
+
+async def _resumed(base: EventFilter, rule: Rule, key: str, last: dict, since: datetime) -> bool:
+    """무음이 끝난 뒤에 이 묶음의 이벤트가 새로 들어왔는가 (문제가 계속되는가)."""
+    after = replace(base, received_since=max(since, last["silenced_until"]))
+    return (await repository.count(_with_group(after, rule.group_by, key)))["current"] > 0
 
 
 def _link_params(rule: Rule, key: str, since: datetime) -> dict[str, str]:
@@ -127,8 +148,10 @@ class AlertEngine:
         fired = []
         for row in await repository.alert_candidates(base, rule.group_by, rule.threshold):
             key = "" if row["key"] is None else str(row["key"])
-            last = await repository.last_alert_at(rule.name, key)
-            if last and now - last < rule.cooldown:
+            last = await repository.last_alert(rule.name, key)
+            if last is not None and _silence_over(last, now) and not await _resumed(base, rule, key, last, since):
+                last = {**last, "silenced_until": None}  # 무음 뒤 새 이벤트가 없으면 점검 중 잡음 → 보통 재알림 간격
+            if _in_cooldown(last, now, rule.cooldown):
                 continue
             scoped = _with_group(base, rule.group_by, key)
             samples = await repository.list_events(scoped, SAMPLE_COUNT)
@@ -146,9 +169,10 @@ class AlertEngine:
     async def _evaluate_silent(self, rule: Rule, now: datetime) -> list[int]:
         fired = []
         for row in await repository.silent_agents(now - rule.silent_for, rule.hosts):
-            last = await repository.last_alert_at(rule.name, row["host"])
-            # 한 번 끊긴 동안에는 한 번만. 다시 살아났다가(last_seen 갱신) 또 끊기면 다시 알린다
-            if last and last >= row["last_seen"]:
+            last = await repository.last_alert(rule.name, row["host"])
+            # 한 번 끊긴 동안에는 한 번만. 다시 살아났다가(last_seen 갱신) 또 끊기면 다시 알린다.
+            # 끊긴 알림이 무음으로 전송되지 않았는데 무음이 끝난 뒤에도 끊겨 있으면 다시 알린다
+            if last and last["fired_at"] >= row["last_seen"] and not _silence_over(last, now):
                 continue
             message = AlertMessage(
                 rule=rule.name, severity=rule.severity, kind=rule.kind, description=rule.description,
@@ -161,8 +185,12 @@ class AlertEngine:
 
     # ------------------------------------------------------------ 전송
     async def fire(self, message: AlertMessage, notify: tuple[str, ...]) -> int:
-        alert_id = await repository.insert_alert(message.to_dict(), notify)
+        silence = await repository.active_silence(message.rule, message.group_key, message.fired_at)
+        alert_id = await repository.insert_alert(message.to_dict(), notify, silence)
         message.alert_id = alert_id
+        if silence:
+            log.info("알림 발생 #%s %s — 무음 #%s 중이라 보내지 않음", alert_id, message.title(), silence["id"])
+            return alert_id
         log.warning("알림 발생 #%s %s", alert_id, message.title())
         await asyncio.gather(*(self.deliver(alert_id, name, message) for name in notify))
         return alert_id

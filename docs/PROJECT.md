@@ -135,8 +135,10 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `agents` | 로그 보낸 PC 목록 | `last_seen` 으로 상태 판정, `meta` = 하트비트 내용 |
 | `field_stats` | 원본 필드 카탈로그 | `(source, path)` 별 타입·횟수·예시. 중첩은 점 경로(3단계까지) |
 | `audit_log` | 시스템 감사 기록 | 대시보드·알림 설정 저장, 알림 테스트 발송, 보관기간 만료 삭제 |
-| `alerts` | 발생한 알림 (002) | 규칙, 심각도, 대상(group_key), 건수, `payload` = 보낸 메시지 전체 |
-| `alert_deliveries` | 알림 대상별 전송 상태 (002) | `pending/sent/failed/gave_up`, 시도 횟수, 마지막 오류 |
+| `alerts` | 발생한 알림 (002) | 규칙, 심각도, 대상(group_key), 건수, `payload` = 보낸 메시지 전체. 처리 상태 `status`(open/acked/resolved)·처리자·처리 시각, 무음 중 발생이면 `silence_id` (009) |
+| `alert_deliveries` | 알림 대상별 전송 상태 (002) | `pending/sent/failed/gave_up/skipped`, 시도 횟수, 마지막 오류(건너뛴 사유: 받을 최소 수준·무음) |
+| `alert_notes` | 알림 처리 기록 (009) | 확인·해결·다시 열기·메모 타임라인. **수정·삭제 불가 트리거**(알림이 보관기간 만료로 지워질 때만 함께 삭제) |
+| `alert_silences` | 알림 무음 (009) | 규칙·대상(NULL = 전체)·시작·끝·사유·만든 사람. 해제는 행을 지우지 않고 끝 시각만 앞당김 |
 | `schema_migrations` | 적용된 마이그레이션 | 자동 관리 |
 
 **events 인덱스:**
@@ -174,15 +176,20 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/stats/count?compare=true` | 건수 + 직전 같은 길이 기간 건수 |
 | `GET /api/stats/timeseries?group=&buckets=&interval=&tz_offset=` | 시간 구간별 건수. group 상위 6개 + `__other__` (level 은 전부) |
 | `GET /api/stats/top?field=&limit=` | 상위 값. field = 컬럼명 또는 `f.<경로>` |
-| `GET /api/stats/summary` | PC 상태 수, 분당 수집량, 최근 24시간 알림 수 |
+| `GET /api/stats/summary` | PC 상태 수, 분당 수집량, 최근 24시간 알림 수(`alerts_24h`), 확인하지 않은 알림 수(`alerts_open`, 조회 범위 반영) |
 | `GET /api/agents?since=` | PC 목록 + 기간 내 이벤트/오류/경고 수 + 상태 |
 | `DELETE /api/agents/{host}` | 수집 PC 목록에서 삭제 (관리자, audit_log 기록, 이벤트는 보존) |
 | `POST /api/agents/delete` | 여러 PC 를 목록에서 한 번에 삭제 `{hosts:[...]}` (최대 500, 관리자). 응답 `deleted`·`missing`·`still_online` |
 | `GET /api/fields` | 필드 카탈로그 |
 | `GET /api/live?<필터>` | SSE. `event: events` 로 배열 전송 (시간 필터 무시) |
 | `GET/PUT /api/dashboards/{name}` | 대시보드 JSON 읽기/저장 (저장은 audit_log 기록) |
-| `GET /api/alerts?since=&rule=&severity=&host=` | 알림 이력 (전송 상태 포함) |
-| `GET /api/alerts/{id}` | 알림 상세 (payload: 본문, 최근 이벤트 샘플) |
+| `GET /api/alerts?since=&rule=&severity=&host=&status=` | 알림 이력 (전송·처리 상태 포함) + `counts`(기간 안 처리 상태별 수). `status` = `open`·`acked`·`resolved`·`unresolved` |
+| `GET /api/alerts?format=csv` | 알림 이력 CSV (처리 상태·처리자·처리 시각·무음·전송·처리 기록, 최대 1만 건 — 넘으면 마지막 줄·`X-WLM-Truncated`·감사로그에 표시). 수식 주입 방지 — 감사로그 `alerts.export` |
+| `GET /api/alerts/{id}` | 알림 상세 (payload: 본문, 최근 이벤트 샘플, 처리 기록 `notes`, 무음 `silence`, 같은 규칙·대상의 해결 안 된 다른 알림 수 `related_unresolved`) |
+| `POST /api/alerts/handle` | `{ids, action, note, with_related?}` 확인(`ack`, 볼 수 있으면 누구나)·해결(`resolve`)·다시 열기(`reopen`: 확인함·해결됨 → 처리 안 됨, `alerts.handle`). 최대 1000건(`with_related` 면 같은 규칙·대상 전부), 결과 `changed/unchanged/missing` |
+| `POST /api/alerts/{id}/notes` | `{text}` 메모 (볼 수 있으면 누구나, 고칠 수 없음) |
+| `GET /api/alerts/silences?since=` | 무음 목록 (적용 중·예정 + 기간 안에 끝난 것, 보내지 않은 알림 수) |
+| `POST /api/alerts/silences` · `DELETE /api/alerts/silences/{id}` | 무음 걸기(`{rule?, group_key?, starts_at?, ends_at? 또는 duration_sec, reason}`, 끝 시각은 지금부터 30일 안) · 일찍 해제 — `alerts.handle` |
 | `GET /api/alerts/config` | 엔진 상태, 규칙(최근 발생 포함), 알림 대상(비밀값 제외), 원본 YAML |
 | `PUT /api/alerts/config` | 본문 = YAML. 검증 실패 시 422 + 오류 내용, 파일은 그대로 (저장은 audit_log 기록) |
 | `POST /api/alerts/test/{notifier}` | 알림 대상 연결 테스트 (audit_log 기록) |
@@ -263,7 +270,9 @@ OpenAPI 문서는 `http://<서버>:8080/docs` 에 있습니다.
 config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interval_sec 마다, advisory lock 으로 1곳에서만)
   규칙 평가: events(received_at ≥ now - window, match) GROUP BY group_by HAVING count ≥ threshold
     → cooldown 확인 → alerts + alert_deliveries(pending) 기록 → 알림 대상들로 동시에 전송
+    (무음 중이면 alerts 는 기록하고 alert_deliveries 는 skipped — 보내지 않음)
   실패 → failed (1분 → 5분 → 15분 → 1시간 간격 재시도, 5회 후 gave_up)
+처리: open(처리 안 됨) → acked(확인함) → resolved(해결됨) ⇄ 다시 열기. 기록은 alert_notes (ADR-029)
 ```
 
 ### 6.1 규칙 (`config/alerts.yaml` 의 `rules`)
@@ -317,9 +326,19 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 
 ### 6.4 화면 (`#/alerts`)
 
-- 엔진 상태(마지막 평가, 설정 오류), 심각도별 수
-- 알림 이력: 행을 누르면 전송 상태·오류·포함 이벤트를 봅니다.
-- 탭 3개: **알림 이력**(`#/alerts`) / **규칙 관리**(`#/alerts/rules`) / **알림 대상**(`#/alerts/targets`)
+- 엔진 상태(마지막 평가, 설정 오류, 적용 중인 무음 수), 심각도별 수
+- 탭 4개: **알림 이력**(`#/alerts?status=`) / **규칙 관리**(`#/alerts/rules`) / **알림 대상**(`#/alerts/targets`) / **무음**(`#/alerts/silences`)
+- **알림 이력 (처리, ADR-029):**
+  - 처리 상태 필터: 처리 안 됨 / 확인함 / 해결됨 / 전체 (각각 기간 안 건수). 기간은 24시간·7일·30일·1년·전체(보관기간 안 전부), 처리 안 됨·확인함은 기본이 '전체'입니다(사이드바 숫자와 같은 범위).
+  - 행마다 처리 상태 칩(누가·언제는 칩에 마우스), 무음 중 발생이면 '무음' 칩, 메모 수.
+  - 체크해서 **여러 건을 한 번에 확인·해결**(조치 내용 한 줄 함께 기록). 좁은 화면에서는 동작 막대가 화면 아래에 뜹니다.
+  - **CSV 내려받기**: 처리 상태·처리자·처리 시각·처리 기록 포함 (사고 대응 증적).
+- **알림 상세:** 처리 상자(확인 / 해결… / 다시 열기… / 무음…), 처리 기록 타임라인(발생 → 확인 → 해결 → 메모), 메모 입력, 전송 상태, 포함 이벤트.
+  - 다시 열기는 해결됨뿐 아니라 확인함에서도 됩니다(누구나 하는 '확인'으로 대기열에서 치운 알림을 담당자가 되돌림).
+  - 해결할 때 같은 규칙·대상의 해결 안 된 다른 알림을 함께 해결할 수 있습니다(재발은 합치지 않고 발생마다 따로 기록).
+  - 무음…: '이 규칙·이 대상' 또는 '이 규칙 전체', 1시간·4시간·하루·사흘, 사유(필수).
+- **무음 탭:** 적용 중·예정·끝난 무음(범위, 기간, 사유, 보내지 않은 알림 수, 만든 사람·일찍 해제한 사람), '무음 추가'(규칙·대상·시작·끝을 정하는 점검 시간대 예약), 해제.
+  - 무음 중에도 알림은 이력에 남고 전송만 건너뜁니다. 무음이 끝났는데 문제가 계속되면 재알림 간격을 기다리지 않고 다음 평가에서 다시 알립니다.
 - **규칙 관리 (Snort 방식):**
   - 왼쪽 **규칙 묶음**(`group`) 목록 — 묶음 단위로 켜기/끄기(일부만 켜져 있으면 반쯤 켜진 스위치)
   - 오른쪽 규칙 표 — 사용 스위치(바로 저장), **SID**, 심각도·이름·설명·태그, 조건·기준, 받는 곳, 발생 수. 검색(이름·SID·태그·조건), 사용/꺼짐 필터
@@ -331,7 +350,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
   - 저장하면 서버가 `config/alerts.yaml` 에서 **그 규칙 블록만** 바꾸고(다른 규칙·주석 유지, `app/alerts/ruleedit.py`) 전체를 검증한 뒤 저장 — 감사로그 `alerts.rule.save/delete/toggle`
   - 'YAML 편집'(고급)으로 파일 전체를 직접 고칠 수도 있습니다.
 - 알림 대상: 환경설정의 그룹·연동 목록, 규칙 사용 여부, **테스트 발송**
-- 사이드바 '알림' 옆 숫자는 최근 24시간 알림 수입니다.
+- 사이드바 '알림' 옆 숫자는 **확인하지 않은 알림 수**(조회 범위 반영)이고, 누르면 '처리 안 됨' 목록이 열립니다.
 
 ### 6.5 검증 기록 (2026-10-03, 개발 환경)
 
@@ -370,7 +389,8 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 - **권한:**
   - 공개: `/api/ingest`(API 키), `/api/auth/login`, `/api/auth/info`, `/healthz`
   - 그 외 `/api/*` 는 로그인 필수
-  - 관리자 또는 해당 권한 그룹: 알림 규칙 관리(`alerts.manage`), 대시보드 편집(`dashboards.edit`), 환경설정(`settings.manage`), 감사로그(`audit.view`), 에이전트 설치 묶음(`agents.deploy`)
+  - 로그인한 사용자 누구나: 볼 수 있는 알림의 확인·메모
+  - 관리자 또는 해당 권한 그룹: 알림 규칙 관리(`alerts.manage`), 알림 처리(`alerts.handle`: 해결·다시 열기·무음), 대시보드 편집(`dashboards.edit`), 환경설정(`settings.manage`), 감사로그(`audit.view`), 에이전트 설치 묶음(`agents.deploy`)
   - 관리자만: 사용자·사용자 그룹 관리 (권한 상승 방지)
 - **감사로그(audit_log):**
   - 기록 대상: 로그인 성공·실패·잠금·로그아웃·세션 만료, 비밀번호 변경, 사용자 관리, 이벤트 검색 조건·상세 조회, 모든 설정 변경, Oracle 쿼리 실행, 보관·삭제
@@ -389,13 +409,14 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 
 | 항목 | 내용 |
 |---|---|
-| 기능 권한 | `alerts.manage` 알림 규칙 관리 · `dashboards.edit` 대시보드 편집 · `settings.manage` 환경설정 · `audit.view` 감사 로그 · `agents.deploy` 에이전트 설치 묶음 (`app/auth/groups.py` PERMISSIONS) |
+| 기능 권한 | `alerts.manage` 알림 규칙 관리 · `alerts.handle` 알림 처리(해결·다시 열기·무음) · `dashboards.edit` 대시보드 편집 · `settings.manage` 환경설정 · `audit.view` 감사 로그 · `agents.deploy` 에이전트 설치 묶음 (`app/auth/groups.py` PERMISSIONS) |
 | 조회 범위 | 분류(예: DB(MSSQL)) 와 PC 이름(쉼표, `MED-*` 처럼 `*` 사용, 대소문자 무시). 둘 다 정하면 '그 분류이면서 그 PC' |
 | 여러 그룹 | 권한은 합치고, 범위는 합집합. 범위가 비어 있는 그룹에 속하거나 그룹이 없으면 전체 |
 | 관리자 | 그룹과 상관없이 모든 권한·모든 로그 |
 
 - **서버에서 적용:** 검색·통계(대시보드)·실시간 스트림·이벤트 상세·수집 PC 목록에 범위 조건을 붙입니다(`filters.Scope`, `repository.scope_clause`, `routers/query._filter`).
-  - 알림 이력: 규칙의 분류 조건이 범위와 겹치거나, 대상(PC)이 범위의 PC 패턴에 맞는 알림만 보입니다.
+  - 알림 이력: 규칙의 분류 조건이 범위와 겹치거나, 대상(PC)이 범위의 PC 패턴에 맞는 알림만 보입니다(`app/alerts/visibility.py`). 처리·메모·상태별 수·사이드바 숫자도 같은 기준입니다.
+  - 무음: 범위가 있는 사용자는 볼 수 있는 규칙·대상 한 개에만 무음을 걸고 풀 수 있습니다. 목록에는 자기 알림에 걸릴 수 있는 무음만 보입니다 — 모든 규칙·모든 대상, 내 PC 를 대상으로 한 무음, 내 분류의 규칙 무음. 넓은 무음의 '보내지 않은 알림 수'는 범위 밖 알림까지 센 숫자라 감춥니다.
   - 필드 탐색: 범위가 있는 사용자에게는 실제 값 예시를 숨깁니다.
 - 화면: 메뉴·버튼은 `auth.can(권한)` 으로 보이거나 숨기고, 사이드바에 '볼 수 있는 범위'를 표시합니다. 서버도 같은 권한으로 막습니다(`deps.require_permission`).
 - 감사로그: `user_group.save`(권한·범위·구성원 포함), `user_group.delete`.
@@ -565,7 +586,8 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 - IIS 열 순서(`#Fields:`)와 MSSQL 오류 머리줄은 프로세스 메모리에 기억합니다.
   - 서버 재시작 직후, 사용자 지정 열 순서의 IIS 파일은 다음 머리줄(새 파일·IIS 재시작)이 올 때까지 기본 순서로 읽힙니다. 원본은 `raw` 에 남습니다.
 - MSSQL ERRORLOG 의 여러 줄 메시지(스택 등)는 줄마다 따로 저장됩니다(BACKLOG 참고).
-- 사용자 그룹 범위는 이벤트 데이터 API 에 적용됩니다. 사이드바의 PC 온라인 수·분당 수집량·알림 수(요약)는 전체 기준입니다.
+- 사용자 그룹 범위는 이벤트 데이터 API 에 적용됩니다. 사이드바의 PC 온라인 수·분당 수집량은 전체 기준입니다(확인하지 않은 알림 수는 범위 반영).
+- 알림 화면의 심각도별 수와 규칙별 발생 수는 전체 기준입니다(처리 상태별 수는 범위 반영).
 - 알림 이력의 범위 판단은 규칙의 분류 조건과 대상(PC) 이름으로 합니다. 분류 조건이 없는 규칙(예: 수준만 보는 규칙)은 PC 범위가 맞을 때만 보입니다.
 - 대시보드 실시간 반영값은 다음 동기화 전까지 근사치일 수 있습니다.
   - 동기화 조회와 스트림이 겹치는 순간 1~2건 중복이 생길 수 있습니다.

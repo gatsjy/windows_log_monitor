@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import __version__, db, live, repository
+from ..alerts.visibility import count_by_status
 from ..auth import service as auth_service
 from ..auth.deps import client_ip, require_admin, require_user
 from ..auth.service import User
@@ -164,14 +165,20 @@ async def stats_top(request: Request, field: str = "host", limit: int = Query(10
 
 
 @router.get("/api/stats/summary")
-async def stats_summary():
-    """상단 상태 표시줄용: PC 상태 수 + 최근 수집 속도."""
+async def stats_summary(request: Request):
+    """상단 상태 표시줄용: PC 상태 수 + 최근 수집 속도 + 확인 안 된 알림 수(사이드바 숫자, 조회 범위 반영)."""
+    user = request.state.user
+    if user.scopes is None:
+        alerts_open = await repository.count_open_alerts()
+    else:
+        alerts_open = count_by_status(user, await repository.alert_group_counts(status="open"))["open"]
     return {
         "agents": await repository.agent_counts(settings.heartbeat_online_sec, settings.heartbeat_stale_sec),
         "ingest_per_min": live.ingest_rate.per_minute(60),
         "ingest_per_min_5m": live.ingest_rate.per_minute(300),
         "live_subscribers": live.broadcaster.subscriber_count,
         "alerts_24h": await repository.count_alerts(datetime.now(UTC) - timedelta(hours=24)),
+        "alerts_open": alerts_open,
         "server_time": datetime.now(UTC),
     }
 

@@ -1,5 +1,5 @@
-"""알림 API: 이력 조회, 규칙/알림 대상 현황, 규칙 관리(규칙 한 개 추가·수정·삭제·켜기/끄기·미리보기),
-설정 파일 직접 편집, 테스트 발송."""
+"""알림 API: 이력 조회(CSV), 처리(확인·해결·다시 열기·메모), 무음, 규칙/알림 대상 현황,
+규칙 관리(규칙 한 개 추가·수정·삭제·켜기/끄기·미리보기), 설정 파일 직접 편집, 테스트 발송."""
 
 from __future__ import annotations
 
@@ -10,18 +10,23 @@ import tempfile
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .. import db, repository
 from ..alerts import ruleedit, targets
 from ..alerts.engine import engine
-from ..alerts.notifiers import NotifierError
+from ..alerts.message import local
+from ..alerts.notifiers import SEVERITY_LABELS, NotifierError
 from ..alerts.rules import AlertConfig, ConfigError, Rule, parse, parse_text
+from ..alerts.visibility import alert_visible, count_by_status, scrub_silence, silence_visible
+from ..auth import groups
 from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
+from ..csvexport import csv_response
 from ..filters import FilterError, parse_time
 
 router = APIRouter(tags=["alerts"])
@@ -38,22 +43,9 @@ def _seconds(delta: timedelta) -> int:
     return int(delta.total_seconds())
 
 
-def _rule_categories(rule_name: str) -> set[str]:
-    rule = next((r for r in engine.config.rules if r.name == rule_name), None)
-    return set(rule.match.get("category", "").split(",")) - {""} if rule else set()
-
-
-def _alert_visible(user: User, alert: dict) -> bool:
-    """조회 범위가 있는 사용자: 그 범위의 분류를 감시하는 규칙이거나, 대상(PC)이 범위의 PC 패턴에 맞는 알림만."""
-    if user.scopes is None:
-        return True
-    cats = _rule_categories(alert["rule"])
-    for scope in user.scopes:
-        cat_ok = not scope.categories or bool(cats & set(scope.categories))
-        host_ok = scope.allows_host(alert["group_key"])
-        if cat_ok and host_ok:
-            return True
-    return False
+STATUS_LABELS = {"open": "처리 안 됨", "acked": "확인함", "resolved": "해결됨"}
+NOTE_LABELS = {"note": "메모", "ack": "확인", "resolve": "해결", "reopen": "다시 열기"}
+STATUS_PATTERN = "^(open|acked|resolved|unresolved)$"
 
 
 @router.get("/api/alerts")
@@ -63,11 +55,54 @@ async def list_alerts(
     rule: str | None = None,
     severity: str | None = None,
     host: str | None = None,
+    status: str | None = Query(None, pattern=STATUS_PATTERN),
     limit: int = Query(200, ge=1, le=1000),
+    format: str = Query("json", pattern="^(json|csv)$"),
 ):
-    items = await repository.list_alerts(_since(since), limit, rule=rule, severity=severity, group_key=host)
-    user = request.state.user
-    return {"items": [a for a in items if _alert_visible(user, a)]}
+    """알림 이력. counts = 기간 안의 처리 상태별 수(필터와 무관, 조회 범위 반영). format=csv 는 처리 기록 포함 증적."""
+    start, user = _since(since), request.state.user
+    groups = await repository.alert_group_counts(start)
+    # 조회 범위가 있으면 보이는 (규칙, 대상)만 SQL 에서 거른다 — LIMIT 뒤에 거르면 오래된 내 알림이 목록에서 빠진다
+    pairs = None if user.scopes is None else sorted({(g["rule"], g["group_key"]) for g in groups if alert_visible(user, g)})
+    filters = {"rule": rule, "severity": severity, "group_key": host, "status": status}
+    if format == "csv":
+        return await _alerts_csv(request, user, start, since, pairs, filters)
+    items = await repository.list_alerts(start, limit, pairs=pairs, **filters)
+    return {"items": items, "counts": count_by_status(user, groups)}
+
+
+CSV_LIMIT = 10000
+
+
+async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
+                      pairs: list[tuple[str, str]] | None, filters: dict[str, str | None]) -> Response:
+    rows = await repository.list_alerts(start, CSV_LIMIT + 1, pairs=pairs, **filters)
+    truncated = len(rows) > CSV_LIMIT  # 잘렸다는 사실을 파일·응답 머리글·감사로그에 모두 남긴다 (증적이 몰래 빠지지 않게)
+    rows = rows[:CSV_LIMIT]
+    notes = await repository.alert_notes_for([a["id"] for a in rows])
+    await db.audit(user.username, "alerts.export", "alerts",
+                   {"since": since, **filters, "rows": len(rows), "truncated": truncated}, actor_ip=client_ip(request))
+
+    def lines():
+        for a in rows:
+            history = " / ".join(
+                f"{local(n['at'])} {n['author']} [{NOTE_LABELS[n['action']]}]{' ' + n['text'] if n['text'] else ''}"
+                for n in notes.get(a["id"], []))
+            yield [
+                a["id"], local(a["fired_at"]), SEVERITY_LABELS.get(a["severity"], a["severity"]), a["rule"], a["group_key"],
+                a["event_count"], STATUS_LABELS[a["status"]], a["acked_by"] or "",
+                local(a["acked_at"]) if a["acked_at"] else "", a["resolved_by"] or "",
+                local(a["resolved_at"]) if a["resolved_at"] else "", f"#{a['silence_id']}" if a["silence_id"] else "",
+                "; ".join(f"{d['notifier']}:{d['status']}" for d in a["deliveries"]), history,
+            ]
+        if truncated:
+            yield [f"(최근 {CSV_LIMIT:,}건까지만 내보냈습니다. 기간을 나눠 다시 내려받으세요)"]
+
+    return csv_response(
+        ["번호", "발생 시각", "심각도", "규칙", "대상", "건수", "처리 상태", "확인한 사람", "확인 시각",
+         "해결한 사람", "해결 시각", "무음", "전송", "처리 기록"],
+        lines(), f"alerts_{datetime.now(UTC):%Y%m%d_%H%M%S}.csv",
+        headers={"X-WLM-Truncated": "1"} if truncated else None)
 
 
 @router.get("/api/alerts/config")
@@ -101,6 +136,7 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
     path = engine.path
     return {
         **engine.status(),
+        "silences_active": sum(silence_visible(user, r) for r in await repository.active_silence_refs(datetime.now(UTC))),
         "rules": rules,
         "notifiers": notifiers,
         "by_severity": stats["by_severity"],
@@ -329,9 +365,162 @@ async def test_notifier(name: str, request: Request, admin: User = Depends(requi
     return {"ok": True}
 
 
+# ------------------------------------------------------------ 처리 (확인·해결·다시 열기·메모) — ADR-029
+# 동작별로 필요한 권한. None = 그 알림을 볼 수 있으면 누구나 (인지 기록은 넓게, 종료는 담당자만)
+HANDLE_PERMISSION = {"ack": None, "resolve": "alerts.handle", "reopen": "alerts.handle"}
+
+
+class HandleBody(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=1000)
+    action: Literal["ack", "resolve", "reopen"]
+    note: str = Field(default="", max_length=2000)
+    with_related: bool = False  # 같은 규칙·대상의 다른 알림도 함께 (상세에서 '함께 해결')
+
+
+class NoteBody(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+def _ids_text(ids: list[int]) -> str:
+    return f"#{ids[0]}" if len(ids) == 1 else f"#{ids[0]} 외 {len(ids) - 1}건"
+
+
+@router.post("/api/alerts/handle")
+async def handle_alerts(body: HandleBody, request: Request, user: User = Depends(require_user)):
+    """알림 여러 개를 한 번에 확인·해결·다시 열기. 이미 그 상태인 알림은 건너뛴다(unchanged)."""
+    permission = HANDLE_PERMISSION[body.action]
+    if permission and not user.can(permission):
+        raise HTTPException(403, f"권한이 없습니다 ({groups.PERMISSIONS[permission]})")
+    ids = sorted(set(body.ids))
+    visible = [r["id"] for r in await repository.alert_refs(ids) if alert_visible(user, r)]
+    if not visible:
+        raise HTTPException(404, "알림을 찾을 수 없습니다")
+    note = body.note.strip()
+    # 같은 규칙·대상의 알림은 보이는지 여부도 같다 → 보이는 알림에서 넓혀도 범위를 벗어나지 않는다
+    changed = await repository.handle_alerts(visible, body.action, user.username, note, with_related=body.with_related)
+    unchanged = [i for i in visible if i not in changed]
+    if changed:
+        await db.audit(user.username, f"alerts.{body.action}", _ids_text(changed),
+                       {"ids": changed, "unchanged": unchanged, "note": note, "with_related": body.with_related},
+                       actor_ip=client_ip(request))
+    return {"ok": True, "changed": changed, "unchanged": unchanged, "missing": [i for i in ids if i not in visible]}
+
+
+@router.post("/api/alerts/{alert_id}/notes")
+async def add_note(alert_id: int, body: NoteBody, request: Request, user: User = Depends(require_user)):
+    """메모: 조사·조치 내용. 수정·삭제할 수 없다 (alert_notes 트리거)."""
+    refs = await repository.alert_refs([alert_id])
+    if not refs or not alert_visible(user, refs[0]):
+        raise HTTPException(404, "알림을 찾을 수 없습니다")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(422, "메모 내용을 입력하세요")
+    note = await repository.add_alert_note(alert_id, user.username, text)
+    await db.audit(user.username, "alerts.note", f"#{alert_id}", {"text": text}, actor_ip=client_ip(request))
+    return note
+
+
+# ------------------------------------------------------------ 무음 (silence) — ADR-029
+MAX_SILENCE = timedelta(days=30)  # 더 길게 끌 일이면 규칙을 끄는 것이 맞다 (규칙 관리 권한, 이력도 남음)
+
+
+class SilenceBody(BaseModel):
+    rule: str | None = Field(default=None, max_length=200)          # 없으면 모든 규칙
+    group_key: str | None = Field(default=None, max_length=500)     # 없으면 모든 대상
+    starts_at: datetime | None = None                               # 없으면 지금
+    ends_at: datetime | None = None
+    duration_sec: int | None = Field(default=None, ge=60, le=int(MAX_SILENCE.total_seconds()))
+    reason: str = Field(min_length=1, max_length=500)
+
+
+def _silence_state(s: dict[str, Any], now: datetime) -> str:
+    # 일찍 해제·취소한 무음(길이 0 포함)은 시작 전이라도 끝난 것
+    if s["ended_by"] is not None or s["ends_at"] <= s["starts_at"] or s["ends_at"] <= now:
+        return "ended"
+    if s["starts_at"] > now:
+        return "upcoming"
+    return "active" if s["ends_at"] > now else "ended"
+
+
+def _check_silence_scope(user: User, rule: str | None, group_key: str | None) -> None:
+    """조회 범위가 있는 사용자는 자기가 볼 수 있는 규칙·대상에만 무음을 걸고 풀 수 있다 (남의 알림까지 막지 않게)."""
+    if user.scopes is None:
+        return
+    if rule is None or group_key is None or not alert_visible(user, {"rule": rule, "group_key": group_key}):
+        raise HTTPException(403, "조회 범위가 정해진 사용자는 볼 수 있는 규칙·대상 한 개에만 무음을 걸 수 있습니다")
+
+
+@router.get("/api/alerts/silences")
+async def list_silences(request: Request, since: str = "7d"):
+    """적용 중·예정 무음 + 기간(since) 안에 끝난 무음. suppressed = 그 무음 때문에 보내지 않은 알림 수."""
+    now, user = datetime.now(UTC), request.state.user
+    rows = await repository.list_silences(_since(since))
+    return {
+        "items": [{**scrub_silence(user, r), "state": _silence_state(r, now)} for r in rows if silence_visible(user, r)],
+        "max_days": MAX_SILENCE.days,
+    }
+
+
+@router.post("/api/alerts/silences")
+async def create_silence(body: SilenceBody, request: Request, user: User = Depends(require_permission("alerts.handle"))):
+    rule = (body.rule or "").strip() or None
+    group_key = body.group_key.strip() if body.group_key is not None else None
+    if rule is not None and rule not in {r.name for r in engine.config.rules}:
+        raise HTTPException(422, f"없는 규칙입니다: {rule}")
+    _check_silence_scope(user, rule, group_key)
+    now = datetime.now(UTC)
+    for value in (body.starts_at, body.ends_at):
+        if value is not None and value.tzinfo is None:
+            raise HTTPException(422, "시각에 시간대가 없습니다 (예: 2026-10-14T09:00:00+09:00)")
+    starts_at = max(body.starts_at or now, now)  # 지난 시각부터 걸어도 이미 보낸 알림은 바뀌지 않는다
+    # 끝 시각을 '지금부터 30일 안'으로 묶는다. 길이만 묶으면 미래에 시작하는 무음을 이어 붙여 60일도 막을 수 있다.
+    # 시작 시각을 먼저 확인해야 아주 먼 시각 + 기간 계산이 넘치지(OverflowError → 500) 않는다
+    too_long = HTTPException(422, f"무음은 지금부터 {MAX_SILENCE.days}일 안에 끝나야 합니다. 더 길면 규칙을 끄세요")
+    if starts_at - now >= MAX_SILENCE:
+        raise too_long
+    if body.ends_at is not None:
+        ends_at = body.ends_at
+    elif body.duration_sec is not None:
+        ends_at = starts_at + timedelta(seconds=body.duration_sec)
+    else:
+        raise HTTPException(422, "끝나는 시각이나 기간을 정하세요")
+    if ends_at <= starts_at:
+        raise HTTPException(422, "끝나는 시각이 시작 시각보다 뒤여야 합니다")
+    if ends_at - now > MAX_SILENCE:
+        raise too_long
+    reason = body.reason.strip()
+    if not reason:
+        raise HTTPException(422, "무음 사유를 입력하세요")
+    silence_id = await repository.insert_silence(rule, group_key, starts_at, ends_at, reason, user.username)
+    target = f"{rule or '모든 규칙'} · {group_key if group_key is not None else '모든 대상'}"
+    await db.audit(user.username, "alerts.silence.create", target,
+                   {"id": silence_id, "rule": rule, "group_key": group_key, "starts_at": starts_at.isoformat(),
+                    "ends_at": ends_at.isoformat(), "reason": reason}, actor_ip=client_ip(request))
+    return {"ok": True, "id": silence_id, "starts_at": starts_at, "ends_at": ends_at}
+
+
+@router.delete("/api/alerts/silences/{silence_id}")
+async def end_silence(silence_id: int, request: Request, user: User = Depends(require_permission("alerts.handle"))):
+    """일찍 해제. 행은 남는다(언제까지 무음이었는지가 증적)."""
+    silence = await repository.get_silence(silence_id)
+    if silence is None or not silence_visible(user, silence):
+        raise HTTPException(404, "무음을 찾을 수 없습니다")
+    _check_silence_scope(user, silence["rule"], silence["group_key"])
+    if not await repository.end_silence(silence_id, user.username):
+        raise HTTPException(409, "이미 끝난 무음입니다")
+    await db.audit(user.username, "alerts.silence.end", f"무음 #{silence_id}",
+                   {"id": silence_id, "rule": silence["rule"], "group_key": silence["group_key"],
+                    "reason": silence["reason"]}, actor_ip=client_ip(request))
+    return {"ok": True}
+
+
+# 경로 변수 하나짜리 GET 이라 맨 마지막에 둔다 (/api/alerts/config, /api/alerts/silences 를 가리지 않게)
 @router.get("/api/alerts/{alert_id}")
 async def get_alert(alert_id: int, request: Request):
+    user = request.state.user
     row = await repository.get_alert(alert_id)
-    if row is None or not _alert_visible(request.state.user, row):
+    if row is None or not alert_visible(user, row):
         raise HTTPException(404, "알림을 찾을 수 없습니다")
-    return row
+    if row["silence"]:
+        row["silence"] = scrub_silence(user, row["silence"])
+    return row  # related_unresolved: 같은 규칙·대상의 해결 안 된 다른 알림 수 — 함께 해결할 수 있게 (재발은 따로 기록, ADR-029)

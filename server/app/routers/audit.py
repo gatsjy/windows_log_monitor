@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import Response
 
 from .. import db, repository
 from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
+from ..csvexport import csv_response
 from ..filters import FilterError, parse_time
 
 router = APIRouter(tags=["audit"], dependencies=[Depends(require_permission("audit.view"))])
@@ -41,6 +39,13 @@ ACTION_LABELS = {
     "user_group.save": "사용자 그룹 저장",
     "user_group.delete": "사용자 그룹 삭제",
     "alerts.test": "알림 테스트 발송",
+    "alerts.ack": "알림 확인",
+    "alerts.resolve": "알림 해결",
+    "alerts.reopen": "알림 다시 열기",
+    "alerts.note": "알림 메모",
+    "alerts.silence.create": "알림 무음 설정",
+    "alerts.silence.end": "알림 무음 해제",
+    "alerts.export": "알림 이력 내려받기",
     "settings.smtp.save": "메일 서버 설정",
     "settings.smtp.test": "메일 서버 테스트",
     "settings.contact.save": "수신자 저장",
@@ -89,14 +94,8 @@ async def list_audit(
     await db.audit(admin.username, "audit.export", "audit_log",
                    {"since": since, "actor": actor, "action": action, "q": q, "rows": len(rows)},
                    actor_ip=client_ip(request))
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["번호", "일시(UTC)", "사용자", "접속 IP", "행위 코드", "행위", "대상", "상세"])
-    for r in rows:
-        writer.writerow([r["id"], r["at"].isoformat(), r["actor"], r["actor_ip"] or "", r["action"],
-                         ACTION_LABELS.get(r["action"], ""), r["target"] or "",
-                         json.dumps(r["detail"], ensure_ascii=False, default=str)])
-    filename = f"audit_log_{datetime.now(UTC):%Y%m%d_%H%M%S}.csv"
-    # UTF-8 BOM: 엑셀에서 한글이 깨지지 않게
-    return Response("﻿" + buffer.getvalue(), media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    return csv_response(
+        ["번호", "일시(UTC)", "사용자", "접속 IP", "행위 코드", "행위", "대상", "상세"],
+        ([r["id"], r["at"].isoformat(), r["actor"], r["actor_ip"] or "", r["action"], ACTION_LABELS.get(r["action"], ""),
+          r["target"] or "", json.dumps(r["detail"], ensure_ascii=False, default=str)] for r in rows),
+        f"audit_log_{datetime.now(UTC):%Y%m%d_%H%M%S}.csv")

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app.alerts.engine import _link_params, _with_group
+from app.alerts.engine import _in_cooldown, _link_params, _with_group
 from app.alerts.message import AlertMessage
 from app.alerts.notifiers import EmailNotifier, NotifierError, SmtpConfig, WebhookNotifier, oracle_binds
 from app.alerts.rules import ConfigError, parse, parse_text
@@ -100,6 +100,18 @@ def test_link_params_include_group():
     rule = parse(BASE).rules[0]
     params = _link_params(rule, "WEB-01", NOW)
     assert params == {"since": NOW.isoformat(), "level": "1,2", "host": "WEB-01"}
+
+
+@pytest.mark.parametrize(("last", "expected"), [
+    (None, False),                                                                     # 처음
+    ({"fired_at": NOW - timedelta(minutes=10), "silenced_until": None}, True),        # 간격 안
+    ({"fired_at": NOW - timedelta(minutes=31), "silenced_until": None}, False),       # 간격 지남
+    ({"fired_at": NOW - timedelta(minutes=10), "silenced_until": NOW + timedelta(hours=1)}, True),  # 무음 중
+    ({"fired_at": NOW - timedelta(minutes=10), "silenced_until": NOW}, False),        # 무음이 막 끝남 → 바로 다시
+    ({"fired_at": NOW - timedelta(minutes=10), "silenced_until": NOW - timedelta(minutes=5)}, False),
+])
+def test_cooldown_releases_when_silence_is_over(last, expected):
+    assert _in_cooldown(last, NOW, timedelta(minutes=30)) is expected
 
 
 # --------------------------------------------------------------- message
