@@ -177,6 +177,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/stats/summary` | PC 상태 수, 분당 수집량, 최근 24시간 알림 수 |
 | `GET /api/agents?since=` | PC 목록 + 기간 내 이벤트/오류/경고 수 + 상태 |
 | `DELETE /api/agents/{host}` | 수집 PC 목록에서 삭제 (관리자, audit_log 기록, 이벤트는 보존) |
+| `POST /api/agents/delete` | 여러 PC 를 목록에서 한 번에 삭제 `{hosts:[...]}` (최대 500, 관리자). 응답 `deleted`·`missing`·`still_online` |
 | `GET /api/fields` | 필드 카탈로그 |
 | `GET /api/live?<필터>` | SSE. `event: events` 로 배열 전송 (시간 필터 무시) |
 | `GET/PUT /api/dashboards/{name}` | 대시보드 JSON 읽기/저장 (저장은 audit_log 기록) |

@@ -7,6 +7,8 @@ import { confirmModal, errorBox, fmtCompact, fmtDuration, fmtNum, fmtRelative, f
 export async function mount(root, params) {
   let since = params.since || '24h';
   let timer;
+  // 15초마다 표를 다시 그리므로 선택은 표 밖에 기억한다 (새로고침 때 체크가 풀리지 않게)
+  const selected = new Set();
 
   root.innerHTML = html`
     <div class="page-head">
@@ -119,11 +121,21 @@ export async function mount(root, params) {
         return;
       }
       const admin = isAdmin();
-      table.innerHTML = html`<div class="table-wrap"><table class="table">
-        <thead><tr><th>상태</th><th>PC</th><th>소스</th><th>IP</th><th>마지막 수신</th><th>하트비트</th>
+      // 목록에서 사라진 PC(다른 관리자가 지움 등)는 선택에서도 뺀다
+      const present = new Set(items.map((a) => a.host));
+      [...selected].forEach((h) => { if (!present.has(h)) selected.delete(h); });
+      table.innerHTML = html`${admin ? html`<div class="toolbar" data-bulk style="padding:10px 16px;justify-content:space-between">
+          <span class="muted" data-bulk-count></span>
+          <span class="toolbar">
+            <button class="btn sm" data-select-offline>오프라인 PC 모두 선택</button>
+            <button class="btn sm danger" data-bulk-del>선택한 PC 삭제</button>
+          </span></div>` : ''}
+        <div class="table-wrap"><table class="table">
+        <thead><tr>${admin ? html`<th style="width:32px"><input type="checkbox" data-check-all aria-label="전체 선택"></th>` : ''}<th>상태</th><th>PC</th><th>소스</th><th>IP</th><th>마지막 수신</th><th>하트비트</th>
           <th class="r">이벤트</th><th class="r">오류</th><th class="r">경고</th><th class="r">누적</th><th>최초 등록</th><th>설정 버전</th>
           ${admin ? html`<th class="r">관리</th>` : ''}</tr></thead>
         <tbody>${items.map((a) => html`<tr class="clickable" data-host="${a.host}">
+          ${admin ? html`<td data-check-cell><input type="checkbox" data-check="${a.host}" aria-label="${a.host} 선택" ${selected.has(a.host) ? 'checked' : ''}></td>` : ''}
           <td>${statusBadge(a.status)}</td>
           <td class="nowrap"><b>${a.host}</b></td>
           <td class="nowrap ink-2">${a.sources.map(sourceLabel).join(', ') || '–'}</td>
@@ -139,33 +151,75 @@ export async function mount(root, params) {
           ${admin ? html`<td class="r nowrap"><button class="btn sm danger" data-del="${a.host}">삭제</button></td>` : ''}
         </tr>`)}</tbody></table></div>
         <p class="muted" style="font-size:12px;padding:0 16px">온라인: ${fmtDuration(thresholds.online_sec)} 이내 수신 · 지연: ${fmtDuration(thresholds.stale_sec)} 이내 · 그 이후 오프라인. 행을 누르면 해당 PC 의 이벤트를 검색합니다.</p>`;
+      const statusOf = new Map(items.map((a) => [a.host, a.status]));
       table.querySelectorAll('[data-host]').forEach((tr) =>
         tr.addEventListener('click', (e) => {
-          if (e.target.closest('[data-del]')) return;
+          if (e.target.closest('[data-del], [data-check-cell]')) return;
           navigate('events', { since, host: tr.dataset.host });
         }));
+      if (!admin) return;
+
+      const checks = [...table.querySelectorAll('[data-check]')];
+      const checkAll = table.querySelector('[data-check-all]');
+      const syncBulk = () => {
+        const n = selected.size;
+        table.querySelector('[data-bulk-count]').textContent = n ? `${fmtNum(n)}대 선택됨` : 'PC 를 골라 한 번에 삭제할 수 있습니다';
+        table.querySelector('[data-bulk-del]').disabled = !n;
+        checkAll.checked = n > 0 && checks.every((c) => c.checked);
+        checkAll.indeterminate = n > 0 && !checkAll.checked;
+      };
+      checks.forEach((c) => c.addEventListener('change', () => {
+        if (c.checked) selected.add(c.dataset.check); else selected.delete(c.dataset.check);
+        syncBulk();
+      }));
+      checkAll.addEventListener('change', () => {
+        checks.forEach((c) => { c.checked = checkAll.checked; if (c.checked) selected.add(c.dataset.check); else selected.delete(c.dataset.check); });
+        syncBulk();
+      });
+      table.querySelector('[data-select-offline]').addEventListener('click', () => {
+        checks.forEach((c) => { if (statusOf.get(c.dataset.check) === 'offline') { c.checked = true; selected.add(c.dataset.check); } });
+        syncBulk();
+      });
+      syncBulk();
+
+      table.querySelector('[data-bulk-del]').addEventListener('click', () => removeHosts([...selected].sort(), statusOf));
       table.querySelectorAll('[data-del]').forEach((btn) =>
-        btn.addEventListener('click', async (e) => {
+        btn.addEventListener('click', (e) => {
           e.stopPropagation();
-          const host = btn.dataset.del;
-          const ok = await confirmModal({
-            title: 'PC 삭제',
-            message: `'${host}' PC를 수집 목록에서 삭제할까요?\n(기존 이벤트 로그는 유지되며, PC에서 다시 로그를 보내면 다시 등록됩니다)`,
-            danger: true,
-            confirmText: '삭제',
-          });
-          if (!ok) return;
-          try {
-            await api.send('DELETE', `/api/agents/${encodeURIComponent(host)}`);
-            await load();
-            toast(`'${host}' PC가 수집 목록에서 삭제되었습니다.`, { type: 'success' });
-          } catch (err) {
-            toast(err.message, { type: 'error' });
-          }
+          removeHosts([btn.dataset.del], statusOf);
         }));
     } catch (err) {
       const table = root.querySelector('[data-table]');
       if (table) table.innerHTML = errorBox(err); // 화면을 떠난 뒤 끝난 요청이면 무시
+    }
+  }
+
+  // 삭제 확인 → 일괄 API 한 번. 아직 보내고 있는(온라인) PC 는 곧 다시 등록되니 미리 알린다
+  async function removeHosts(hosts, statusOf) {
+    if (!hosts.length) return;
+    const online = hosts.filter((h) => statusOf.get(h) === 'online');
+    const lines = hosts.slice(0, 10).map((h) => `· ${h}`);
+    if (hosts.length > 10) lines.push(`… 외 ${fmtNum(hosts.length - 10)}대`);
+    const ok = await confirmModal({
+      title: hosts.length > 1 ? `PC ${fmtNum(hosts.length)}대 삭제` : 'PC 삭제',
+      message: [
+        '다음 PC를 수집 목록에서 삭제할까요?', ...lines, '',
+        '기존 이벤트 로그는 유지되며, PC에서 다시 로그를 보내면 다시 등록됩니다.',
+        ...(online.length ? ['', `주의: ${fmtNum(online.length)}대는 지금 온라인이라 30초 안에 다시 나타납니다. 먼저 그 PC에서 에이전트를 제거(uninstall.ps1)하세요.`] : []),
+      ].join('\n'),
+      danger: true,
+      confirmText: '삭제',
+    });
+    if (!ok) return;
+    try {
+      const res = await api.send('POST', '/api/agents/delete', { hosts });
+      res.deleted.forEach((h) => selected.delete(h));
+      res.missing.forEach((h) => selected.delete(h));
+      await load();
+      toast(`${fmtNum(res.deleted.length)}대가 수집 목록에서 삭제되었습니다.`
+        + (res.missing.length ? ` (${fmtNum(res.missing.length)}대는 이미 없음)` : ''), { type: 'success' });
+    } catch (err) {
+      toast(err.message, { type: 'error' });
     }
   }
 

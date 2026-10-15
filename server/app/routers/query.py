@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from .. import __version__, db, live, repository
 from ..auth import service as auth_service
@@ -28,6 +29,7 @@ router = APIRouter(tags=["query"])
 _NICE_STEPS = (10, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 604800)
 _MAX_BUCKETS = 2000
 _MAX_SERIES = 7  # 이보다 많으면 나머지는 '__other__' 로 합친다 (색 구분 한계)
+_MAX_AGENT_DELETE = 500  # 일괄 삭제 한 번에 받는 PC 수 (실수로 전체를 보내는 요청을 막기 위한 상한)
 
 
 def _filter(request: Request, default_since: str | None = "24h") -> EventFilter:
@@ -192,13 +194,44 @@ async def list_agents(request: Request, since: str = "24h"):
     }
 
 
-@router.delete("/api/agents/{host}")
+class AgentDeleteBody(BaseModel):
+    hosts: list[str] = Field(min_length=1, max_length=_MAX_AGENT_DELETE)
+
+
+async def _delete_agents(hosts: list[str], request: Request, admin: User) -> dict:
+    rows = await repository.delete_agents(hosts)
+    ip = client_ip(request)
+    # PC 마다 한 줄씩: 감사로그를 대상(target)으로 검색했을 때 일괄 삭제도 빠짐없이 나오게
+    for row in rows:
+        await db.audit(admin.username, "agent.delete", row["host"],
+                       {k: v for k, v in row.items() if k != "host"}, actor_ip=ip)
+    deleted = [r["host"] for r in rows]
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "missing": sorted(set(hosts) - set(deleted)),
+        # 아직 보내고 있는 PC 는 다음 하트비트(30초)에 다시 등록된다 — 화면에서 알려 주기 위함
+        "still_online": [r["host"] for r in rows if agent_status(r["silent_sec"]) == "online"],
+    }
+
+
+# {host:path}: syslog 장비 이름에 '/' 가 들어와도 지울 수 있게
+@router.delete("/api/agents/{host:path}")
 async def delete_agent(host: str, request: Request, admin: User = Depends(require_admin)):
     """테스트로 생긴 PC·폐기한 PC 를 목록에서 뺀다 (이벤트는 남는다). 다시 보내면 다시 등록된다."""
-    if not await repository.delete_agent(host):
+    result = await _delete_agents([host], request, admin)
+    if not result["deleted"]:
         raise HTTPException(404, "목록에 없는 PC 입니다")
-    await db.audit(admin.username, "agent.delete", host, {}, actor_ip=client_ip(request))
-    return {"ok": True}
+    return result
+
+
+@router.post("/api/agents/delete")
+async def delete_agents(body: AgentDeleteBody, request: Request, admin: User = Depends(require_admin)):
+    """여러 PC 를 한 번에 목록에서 뺀다. 이미 없는 PC 는 missing 으로 알려 주고 나머지는 진행한다."""
+    hosts = sorted({h for h in body.hosts if h})
+    if not hosts:
+        raise HTTPException(422, "삭제할 PC 를 고르세요")
+    return await _delete_agents(hosts, request, admin)
 
 
 @router.get("/api/fields")
