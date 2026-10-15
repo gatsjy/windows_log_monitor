@@ -84,6 +84,9 @@ if [ "$UPGRADE" = 1 ]; then
   if compose ps --status running --services 2>/dev/null | grep -qx db; then
     compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > "$BACKUP" \
       || die "DB 백업 실패 — 업그레이드를 멈춥니다 ($BACKUP)"
+    # 해시를 옆에 둔다 — 되돌릴 때 backup.sh restore 가 해시가 맞는 파일만 쓴다
+    (cd "$TARGET/backups" && sha256sum "$(basename "$BACKUP")" > "$(basename "$BACKUP").sha256")
+    chmod 600 "$BACKUP" "$BACKUP.sha256"
     echo "  $(du -h "$BACKUP" | cut -f1)  $BACKUP"
   else
     echo "  db 가 꺼져 있어 백업을 건너뜁니다 (볼륨은 그대로 남습니다)"
@@ -98,7 +101,8 @@ if [ "$BUNDLE" != "$(cd "$TARGET" && pwd)" ]; then
   (cd "$BUNDLE" && tar -cf - --exclude=./images --exclude=./config --exclude=./.env --exclude=./archive \
      --exclude=./backups --exclude=./SHA256SUMS .) | (cd "$TARGET" && tar -xf -)
 fi
-mkdir -p "$TARGET/config" "$TARGET/archive"
+mkdir -p "$TARGET/config" "$TARGET/archive" "$TARGET/backups"
+chmod 700 "$TARGET/backups"   # DB 백업에는 로그·계정 정보가 들어 있다
 # 새 기본 설정: 없는 파일은 복사, 이미 있는데 내용이 다르면 *.new 로 옆에 둔다 (운영에서 고친 내용 보호)
 NEWS=()
 while IFS= read -r -d '' src; do

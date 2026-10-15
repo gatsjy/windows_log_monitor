@@ -69,6 +69,10 @@ ACTION_LABELS = {
     "retention.restore_archive": "보관 파일 복원",
     "retention.verify_archives": "보관 파일 무결성 확인",
     "retention.rotate_now": "로그 로테이션 즉시 실행",
+    "backup.create": "DB 백업",
+    "backup.failed": "DB 백업 실패",
+    "backup.verify": "백업 복구 시험",
+    "backup.restore": "백업으로 DB 복원",
 }
 
 

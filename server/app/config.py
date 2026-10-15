@@ -36,6 +36,10 @@ class Settings:
     retention_days: int = _int("RETENTION_DAYS", 365)
     db_retention_days: int = _int("DB_RETENTION_DAYS", 90)
     archive_dir: str = _env("ARCHIVE_DIR", "/app/archive")
+    # DB 백업 일정 (backup 서비스가 실제로 돌린다, deploy/backup/backup.sh). 여기서는 화면 표시와 '오래됨' 판단에만 쓴다
+    backup_time: str = _env("BACKUP_TIME", "02:30")
+    backup_keep: int = _int("BACKUP_KEEP", 14)
+    backup_verify_weekday: int = _int("BACKUP_VERIFY_WEEKDAY", 7)  # 1=월 … 7=일, 0=자동 복구 시험 안 함
     # 마지막 수신 후 이 시간(초) 이내면 '온라인', stale 이내면 '지연', 그 이후는 '오프라인'
     heartbeat_online_sec: int = _int("HEARTBEAT_ONLINE_SEC", 90)
     heartbeat_stale_sec: int = _int("HEARTBEAT_STALE_SEC", 900)

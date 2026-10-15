@@ -451,7 +451,7 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 | 수신 그룹 | 이름(규칙의 notify), 설명, 구성원, **받을 최소 수준**, 사용 중인 규칙 |
 | 외부 연동 | 웹훅(주소·보내는 형식 json/text/Slack/Teams/두레이/잔디·헤더, 주소로 형식 자동 선택, 예시 미리보기), Oracle DB(아래). 받을 최소 수준, 사용 여부, 테스트 |
 | 메일 서버 | SMTP 호스트·포트·보안(STARTTLS/SSL/없음)·계정·비밀번호·보내는 사람, 테스트 메일. 비워 두면 `.env` 의 `WLM_SMTP_*` |
-| 로그 보관 | 로테이션 정책, DB 월 파티션·보관 파일 현황, 지금 실행, 무결성 확인, 다시 불러오기 (§9) |
+| 로그 보관 | **DB 백업·복구 시험 상태**(마지막 백업·복구 시험, 경고), 로테이션 정책, DB 월 파티션·보관 파일 현황, 지금 실행, 무결성 확인, 다시 불러오기 (§9, §13) |
 
 ### 8.1 Oracle 연동
 
@@ -559,10 +559,12 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 - **폐쇄망 배포·업그레이드·되돌리기:** [AIRGAP.md](AIRGAP.md) (`deploy/airgap/make-bundle.sh` → 반입 → `deploy/airgap/install.sh`)
   - 이미지 태그는 `WLM_API_IMAGE`(.env, 기본 `log-monitor-api:latest`)로 고정합니다. 개발은 `log-monitor-api:dev`.
 
-- **백업:** 매일 `docker compose exec db pg_dump -U wlm -Fc wlm > backup_$(date +%F).dump` 를 실행합니다.
-  - 복구 절차를 분기마다 실제로 시험합니다(ISMS 2.9.3).
+- **백업 (ADR-031):** `backup` 서비스가 매일 `WLM_BACKUP_TIME`(02:30)에 `backups/wlm-<시각>.dump`(+ `.sha256`, `config/` 묶음)를 만들고 최근 `WLM_BACKUP_KEEP`(14)개를 남깁니다.
+  - 매주 `WLM_BACKUP_VERIFY_WEEKDAY`(일요일) 백업 뒤 **임시 DB 에 실제로 복원**해 해시·마이그레이션 버전·주요 테이블 행 수(백업 직전보다 적지 않은지)를 확인합니다.
+  - 결과는 감사로그 `backup.create`·`backup.failed`·`backup.verify`·`backup.restore` 와 환경설정 > 로그 보관 화면. 백업이 36시간 넘게 없거나, 마지막 백업·복구 시험이 실패했거나, 8일 넘게 성공한 복구 시험이 없으면 경고합니다.
+  - 명령: `docker compose exec backup backup.sh backup | verify [파일] | list`, 장애 복구 `docker compose stop api && docker compose run --rm backup restore <파일> --yes`, 자체 시험 `docker compose run --rm backup selftest` (docs/AIRGAP.md §11).
 - **보관기간·로테이션:** §9 참고.
-  - `archive/` 폴더(보관 파일)와 `.env`(암호화 키 포함)도 백업 대상입니다.
+  - `backups/`·`archive/` 는 다른 매체로 복사합니다. `.env`(암호화 키)는 DB 백업과 **따로** 보관합니다(ISMS 2.7.2).
 - **알림 운영:**
   - 환경설정 > 메일 서버(또는 `.env` 의 SMTP)를 설정하고, **테스트 메일**로 확인합니다.
   - `WLM_PUBLIC_URL` 을 사용자가 접속하는 주소로 바꿔야 알림의 링크가 맞게 열립니다.

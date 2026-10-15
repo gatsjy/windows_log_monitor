@@ -282,7 +282,7 @@ PC 에 반입·배포할 것은 **서버 화면에서 내려받는 zip 하나**�
 
 | # | 확인 | 방법 | 기대 결과 |
 |---|---|---|---|
-| 1 | 서비스 상태 | `sudo docker compose -f docker-compose.yml ps` (in `/opt/log-monitor`) | db·api healthy, collector Up |
+| 1 | 서비스 상태 | `sudo docker compose -f docker-compose.yml ps` (in `/opt/log-monitor`) | db·api healthy, backup·collector Up |
 | 2 | 상태 API | `curl -s http://<서버>:8080/healthz`, `curl -s http://<서버>:6976/healthz` | 둘 다 `{"status":"ok","version":"0.5.0"}`. `http://<서버>:6976/` 은 404 (수집 전용) |
 | 3 | 로그인·비밀번호 변경 | 화면 | 대시보드 표시 |
 | 4 | 에이전트 수신 | 시험 PC 에 설치 묶음으로 설치 → **수집 PC** 화면 | 30초 안에 '온라인'. PC 에서 `Test-NetConnection <서버> -Port 6976` 성공 |
@@ -291,7 +291,7 @@ PC 에 반입·배포할 것은 **서버 화면에서 내려받는 zip 하나**�
 | 7 | 알림 대상 | 알림 화면 > 알림 대상 > 테스트 발송 | 전송됨 |
 | 8 | 감사 로그 | 감사 로그 화면 | 로그인·설정 변경 기록 |
 | 9 | 시각 | 이벤트의 발생 시각과 수신 시각 차이 | 수 초 이내 (NTP) |
-| 10 | 백업 | §11 백업 명령 1회 실행 | `.dump` 파일 생성 |
+| 10 | 백업·복구 시험 | §11 의 `backup.sh backup` → `backup.sh verify` 1회 | 환경설정 > 로그 보관에 '백업과 복구 시험이 정상입니다', `backups/wlm-*.dump` 생성 |
 
 ## 10. 업그레이드와 되돌리기
 
@@ -315,8 +315,7 @@ cd /opt/log-monitor
 sudo sed -i 's|^WLM_API_IMAGE=.*|WLM_API_IMAGE=log-monitor-api:0.5.0|' .env
 # 2) DB 도 업그레이드 전으로 되돌려야 할 때만 (업그레이드 이후 수집된 로그는 사라짐)
 sudo docker compose -f docker-compose.yml stop api collector
-sudo docker compose -f docker-compose.yml exec -T db sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
-sudo docker compose -f docker-compose.yml exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --exit-on-error' < backups/before-0.6.0-<시각>.dump
+sudo docker compose -f docker-compose.yml run --rm backup restore before-0.6.0-<시각>.dump --yes   # 해시 확인 후 복원
 # 3) 기동
 sudo docker compose -f docker-compose.yml --profile syslog up -d --no-build --pull never
 ```
@@ -325,13 +324,27 @@ sudo docker compose -f docker-compose.yml --profile syslog up -d --no-build --pu
 
 ## 11. 백업 (운영)
 
+`backup` 서비스(db 와 같은 `postgres:17-alpine` 이미지, `deploy/backup/backup.sh`)가 자동으로 합니다(ADR-031).
+
+- **매일** `WLM_BACKUP_TIME`(기본 02:30)에 `backups/wlm-<시각>.dump` + `.sha256` + 설정 묶음(`config/`)을 만들고, 최근 `WLM_BACKUP_KEEP`(기본 14)개만 남깁니다.
+- **매주** `WLM_BACKUP_VERIFY_WEEKDAY`(기본 7 = 일요일) 백업 뒤 임시 DB 에 실제로 복원해 해시·마이그레이션 버전·행 수를 확인합니다. DB 크기만큼 여유 디스크가 필요합니다(부족하면 0 으로 끄고 수동 시험).
+- 결과는 감사로그(DB 백업 / DB 백업 실패 / 백업 복구 시험)와 **환경설정 > 로그 보관** 화면에 남고, 백업이 36시간 넘게 없거나 복구 시험이 실패하면 화면에 경고합니다.
+
 ```bash
 cd /opt/log-monitor
-sudo docker compose -f docker-compose.yml exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > backups/daily-$(date +%F).dump
+sudo docker compose -f docker-compose.yml exec backup backup.sh backup        # 지금 백업
+sudo docker compose -f docker-compose.yml exec backup backup.sh verify        # 가장 최근 백업 복구 시험 (임시 DB)
+sudo docker compose -f docker-compose.yml exec backup backup.sh list          # 목록
+sudo docker compose -f docker-compose.yml run --rm backup selftest            # 백업 스크립트 자체 시험 (시험용 DB 만 씀)
+# 장애 복구: 운영 DB 를 백업으로 되돌린다 (그 뒤 수집된 로그는 사라짐)
+sudo docker compose -f docker-compose.yml stop api
+sudo docker compose -f docker-compose.yml run --rm backup restore wlm-<시각>.dump --yes
+sudo docker compose -f docker-compose.yml start api
 ```
 
-- cron 으로 매일 실행하고, `backups/`, `archive/`, `.env` 를 **다른 매체**로 복사합니다(ISMS 2.9.3).
-- 분기마다 §10 의 복원 절차를 시험 서버에서 실제로 해 보고 기록합니다. 자동화는 [BACKLOG.md](BACKLOG.md) B-16.
+- `backups/` 와 `archive/` 를 **다른 매체**(NAS·외장 디스크)로 복사합니다(ISMS 2.9.3, 복제 자동화는 BACKLOG B-17).
+- `.env`(암호화 키)는 백업에 넣지 않습니다. **따로** 안전한 곳에 보관합니다 — 백업만 유출되어도 화면에서 넣은 비밀값을 풀 수 없게(ISMS 2.7.2).
+- 백업 파일 권한은 600(소유자만)입니다. 로그·계정 정보가 들어 있습니다.
 
 ## 12. 문제 해결
 

@@ -558,10 +558,35 @@ async function smtp(body) {
 const mb = (bytes) => `${(bytes / 1024 / 1024).toLocaleString('ko-KR', { maximumFractionDigits: 1 })} MB`;
 const day = (iso) => fmtTime(iso, { seconds: false }).slice(0, 10);
 
+/** DB 백업 카드 (backup 서비스가 남긴 감사로그 기준, ADR-031) */
+function backupCard(b) {
+  const sch = b.schedule;
+  const last = b.last_backup;
+  const v = b.last_verify;
+  const counts = (c) => (c ? Object.entries(c).map(([k, n]) => `${k} ${fmtNum(n)}`).join(' · ') : '');
+  return html`<section class="card" style="margin-bottom:14px"><div class="card-body">
+    <div class="section-title" style="margin-top:0">DB 백업 · 복구 시험</div>
+    <p class="muted" style="font-size:12.5px;margin:0 0 10px">매일 ${sch.time} (${sch.tz}) 에 백업하고 최근 ${sch.keep}개를 남깁니다.
+      ${sch.verify_day ? `매주 ${sch.verify_day}요일에는 임시 DB 에 실제로 복원해 확인합니다.` : '자동 복구 시험은 꺼져 있습니다.'}</p>
+    ${b.problems.length ? b.problems.map((t) => html`<div class="error-box" style="margin-bottom:8px">${t}</div>`)
+      : html`<div class="hint-box" style="margin-bottom:10px">✓ 백업과 복구 시험이 정상입니다.</div>`}
+    <dl class="kv" style="margin-bottom:10px">
+      <dt>마지막 백업</dt><dd style="flex-wrap:wrap">${last ? html`${fmtTime(last.at)} <span class="muted">(${fmtRelative(last.at)} · ${mb(last.bytes)} · ${fmtNum(last.seconds)}초)</span>` : '없음'}</dd>
+      ${last ? html`<dt>파일</dt><dd class="mono" style="font-size:12.5px" title="SHA-256 ${last.sha256}">backups/${last.file}</dd>` : ''}
+      <dt>복구 시험</dt><dd style="flex-wrap:wrap">${v ? html`${fmtTime(v.at)} — ${v.ok ? html`<span class="tag-good">성공</span> <span class="muted">(${counts(v.counts)})</span>`
+        : html`<span class="tag-bad">실패</span> <span class="muted">${v.reason ?? ''}</span>`}` : '아직 없음'}</dd>
+    </dl>
+    <p class="muted" style="font-size:12.5px;margin:0">지금 백업 <code>docker compose exec backup backup.sh backup</code> ·
+      복구 시험 <code>docker compose exec backup backup.sh verify</code> · 기록은 감사 로그(DB 백업·백업 복구 시험)에 남습니다.
+      백업 폴더 <code>backups/</code> 는 다른 디스크로 옮겨 보관하고, <code>.env</code>(암호화 키)는 백업과 따로 보관하세요.</p>
+  </div></section>`;
+}
+
 async function retention(body) {
   const s = await api.get('/api/settings/retention');
   const p = s.policy;
   body.innerHTML = html`
+    ${backupCard(s.backup)}
     <section class="card" style="margin-bottom:14px"><div class="card-body">
       <div class="section-title" style="margin-top:0">로그 로테이션 정책</div>
       <div class="rotation">

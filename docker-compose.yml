@@ -101,6 +101,10 @@ services:
       WLM_COOKIE_SECURE: ${WLM_COOKIE_SECURE:-false}
       WLM_ADMIN_INITIAL_PASSWORD: ${WLM_ADMIN_INITIAL_PASSWORD:-}
       WLM_API_DOCS: ${WLM_API_DOCS:-true}
+      # 백업 일정 (backup 서비스와 같은 값) — 화면에 일정과 '백업이 오래됨' 경고를 보여 주는 데만 쓴다
+      WLM_BACKUP_TIME: ${WLM_BACKUP_TIME:-02:30}
+      WLM_BACKUP_KEEP: ${WLM_BACKUP_KEEP:-14}
+      WLM_BACKUP_VERIFY_WEEKDAY: ${WLM_BACKUP_VERIFY_WEEKDAY:-7}
     # alerts.yaml 의 ${변수} (Oracle 비밀번호, 웹훅 토큰 등)를 .env 에서 넘겨받기 위함
     env_file:
       - path: .env
@@ -115,6 +119,33 @@ services:
       - ./config:/app/config                           # 대시보드·알림 규칙·tnsnames.ora (화면에서 저장하면 이 폴더에 기록됨)
       - ./archive:/app/archive                         # 로그 보관 파일 (*.jsonl.gz + SHA-256 메타). 백업·별도 보관 대상
       - ./agent-installers:/app/agent-installers:ro   # Fluent Bit 설치 파일 → 에이전트 설치 묶음에 포함 (docs/AIRGAP.md)
+
+  # DB 정기 백업 + 주 1회 복구 시험 (deploy/backup/backup.sh, ADR-031). db 와 같은 이미지라 폐쇄망 묶음에 이미 들어 있다.
+  #   결과는 audit_log(backup.create / backup.verify / backup.failed) → 화면 '환경설정 > 로그 보관'
+  #   지금 백업: docker compose exec backup backup.sh backup   /  복구 시험: ... backup.sh verify
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh"]
+    command: ["daemon"]
+    mem_limit: ${WLM_BACKUP_MEM_LIMIT:-256m}
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:-wlm}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-wlm-dev-password}
+      PGDATABASE: ${POSTGRES_DB:-wlm}
+      TZ: ${WLM_DISPLAY_TZ:-Asia/Seoul}             # WLM_BACKUP_TIME 을 이 시간대로 해석
+      WLM_BACKUP_TIME: ${WLM_BACKUP_TIME:-02:30}
+      WLM_BACKUP_KEEP: ${WLM_BACKUP_KEEP:-14}
+      WLM_BACKUP_VERIFY_WEEKDAY: ${WLM_BACKUP_VERIFY_WEEKDAY:-7}
+    volumes:
+      - ./deploy/backup/backup.sh:/usr/local/bin/backup.sh:ro
+      - ./backups:/backups                 # 백업 파일 — 이 폴더를 다른 디스크·NAS 로 옮겨 보관 (B-17)
+      - ./config:/config:ro                # 대시보드·알림 규칙도 함께 묶는다
 
   # 네트워크 장비 / Linux 서버의 syslog 를 받아 api 로 전달하는 수신기 (선택)
   collector:

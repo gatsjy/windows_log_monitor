@@ -703,6 +703,23 @@ async def list_audit(since: datetime, limit: int, actor: str | None = None, acti
     )
 
 
+async def backup_audit() -> dict[str, Any]:
+    """백업 상태(화면 '로그 보관'): 행위별 최근 기록 + 마지막 성공한 복구 시험 + 첫 백업 시각.
+    backup 서비스가 남긴 audit_log 를 읽는다 — 백업 파일은 api 컨테이너에서 보이지 않아도 된다. (action, at) 인덱스를 탄다."""
+    rows = await db.fetch_all(
+        "SELECT a.action, l.at, l.target, l.detail FROM unnest(%s::text[]) AS a(action)"
+        " CROSS JOIN LATERAL (SELECT at, target, detail FROM audit_log WHERE action = a.action ORDER BY at DESC LIMIT 1) l",
+        (["backup.create", "backup.failed", "backup.verify"],),
+    )
+    latest = {r.pop("action"): r for r in rows}
+    verify_ok = await db.fetch_one(
+        "SELECT at, target, detail FROM audit_log WHERE action = 'backup.verify' AND detail->>'ok' = 'true'"
+        " ORDER BY at DESC LIMIT 1"
+    )
+    first = await db.fetch_one("SELECT min(at) AS at FROM audit_log WHERE action = 'backup.create'")
+    return {"latest": latest, "verify_ok": verify_ok, "first_backup_at": first["at"] if first else None}
+
+
 async def audit_actions() -> list[str]:
     rows = await db.fetch_all("SELECT DISTINCT action FROM audit_log ORDER BY action")
     return [r["action"] for r in rows]

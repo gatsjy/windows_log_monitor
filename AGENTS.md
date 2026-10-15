@@ -80,6 +80,7 @@ collector/           syslog 수신기 설정
 tools/simulate.py    가짜 PC 로그 생성기 (표준 라이브러리만)
 tools/bench/         검색 성능 벤치마크 (별도 DB, docs/PERFORMANCE.md)
 deploy/airgap/       폐쇄망 배포: make-bundle.sh(인터넷 PC) · install.sh(서버 설치·업그레이드) — docs/AIRGAP.md
+deploy/backup/       backup.sh — compose 의 backup 서비스(postgres 이미지): 매일 백업·주간 복구 시험·복원 (ADR-031)
 ```
 
 ## 실행과 검증
@@ -89,6 +90,7 @@ docker compose up -d --build               # 개발 모드 (server/app, web 이 
 python3 tools/simulate.py --once           # 테스트 데이터 (과거 24시간)
 docker compose exec api python -m pytest   # 단위 + 통합 테스트 (통합은 <DB>_test 를 만들어 쓰고, Oracle 은 시험 컨테이너가 있을 때만)
 docker compose exec api ruff check --no-cache app tests
+docker compose run --rm backup selftest     # 백업·복구 시험·복원 스크립트 자체 시험 (시험용 DB 만 씀)
 curl -s localhost:8080/healthz
 ```
 
@@ -135,6 +137,7 @@ curl -s localhost:8080/healthz
 - 알림 처리 기록(`alert_notes`)은 `audit_log` 처럼 트리거로 수정·삭제·TRUNCATE 를 막는다(알림이 보관기간 만료로 지워질 때만 함께 삭제). 테스트에서도 지울 수 없다.
 - 웹훅 오류·연결 실패 문구는 `WebhookNotifier.redact()` 를 거친다(받는 쪽이 토큰이 든 경로를 돌려준다). 새 전송기도 오류 문구에 주소를 그대로 넣지 않는다.
 - **CSV 를 내보내는 새 API 는 `app/csvexport.csv_response` 를 쓴다.** 로그에서 온 값(syslog 호스트 이름 등)이 엑셀 수식으로 실행되지 않게 한다.
+- 백업은 api 가 아니라 `backup` 서비스(postgres 이미지, busybox sh)가 한다. 결과는 `audit_log` 의 `backup.*` 로만 api 에 전달된다. `backup.sh` 를 고치면 `selftest` 로 확인한다.
 - 무음은 행을 지우지 않는다. 해제 = `ends_at` 을 앞당김(시작 전이면 길이 0). 상태(적용 중·예정·끝남)는 `routers/alerts._silence_state` 가 정한다.
 - 수집 포트(8001/6976)로는 `/api/ingest`·`/healthz` 만 열린다(`main.INGEST_PORT_PATHS`). 에이전트용 새 경로가 필요하면 거기에 추가.
 - 알림 규칙을 화면에서 저장하면 그 규칙 블록만 다시 쓴다(`ruleedit.py`). 블록 안의 주석은 그 규칙을 화면에서 저장하면 사라진다(켜기/끄기만은 보존).
