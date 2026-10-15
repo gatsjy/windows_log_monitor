@@ -11,6 +11,7 @@ from typing import Any
 
 from .. import db, oracle, secrets
 from ..config import settings
+from .messenger import FORMATS
 from .notifiers import (
     ORACLE_DEFAULT_SQL,
     ORACLE_DEFAULT_TABLE,
@@ -257,7 +258,9 @@ async def get_channel(channel_id: int) -> dict:
 def _clean_channel_config(kind: str, config: dict[str, Any]) -> dict[str, Any]:
     if kind == "webhook":
         fmt = config.get("format", "json")
-        return {"format": fmt if fmt in ("json", "text") else "json",
+        if fmt not in FORMATS:
+            raise TargetError(f"보내는 형식은 {', '.join(FORMATS)} 중 하나")
+        return {"format": fmt,
                 "timeout_sec": min(max(float(config.get("timeout_sec") or 10), 1), 60)}
     mode = config.get("mode", "service")
     if mode not in oracle.MODES:

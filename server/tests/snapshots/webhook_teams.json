@@ -1,0 +1,111 @@
+{
+  "attachments": [
+    {
+      "content": {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "actions": [
+          {
+            "title": "Log Monitor 에서 자세히 보기",
+            "type": "Action.OpenUrl",
+            "url": "http://logmon.local:8080/#/events?since=2026-10-03T04%3A50%3A00%2B00%3A00&event_id=4625&host=DC-01"
+          }
+        ],
+        "body": [
+          {
+            "bleed": true,
+            "items": [
+              {
+                "size": "Medium",
+                "text": "[경고] 로그온 실패 급증 · DC-01",
+                "type": "TextBlock",
+                "weight": "Bolder",
+                "wrap": true
+              },
+              {
+                "isSubtle": true,
+                "spacing": "None",
+                "text": "2026-10-03 14:00:00",
+                "type": "TextBlock",
+                "wrap": true
+              }
+            ],
+            "style": "warning",
+            "type": "Container"
+          },
+          {
+            "text": "DC-01 에서 최근 10분 동안 조건에 맞는 이벤트 27건 (기준 20건 이상)",
+            "type": "TextBlock",
+            "wrap": true
+          },
+          {
+            "isSubtle": true,
+            "spacing": "None",
+            "text": "짧은 시간에 로그온 실패가 몰렸습니다",
+            "type": "TextBlock",
+            "wrap": true
+          },
+          {
+            "facts": [
+              {
+                "title": "발생 시각",
+                "value": "2026-10-03 14:00:00"
+              },
+              {
+                "title": "이벤트 시각",
+                "value": "2026-10-03 13:51:00 ~ 2026-10-03 14:00:00"
+              },
+              {
+                "title": "건수",
+                "value": "27건 (기준 20건 이상)"
+              },
+              {
+                "title": "대상",
+                "value": "DC-01"
+              },
+              {
+                "title": "태그",
+                "value": "MITRE T1110, ISMS 2.11.3"
+              },
+              {
+                "title": "알림 번호",
+                "value": "#7"
+              }
+            ],
+            "type": "FactSet"
+          },
+          {
+            "spacing": "Medium",
+            "text": "최근 이벤트",
+            "type": "TextBlock",
+            "weight": "Bolder",
+            "wrap": true
+          },
+          {
+            "fontType": "Monospace",
+            "size": "Small",
+            "spacing": "None",
+            "text": "14:00:00 · 경고 · DC-01 · Security 4625 — 계정을 로그온하지 못했습니다.",
+            "type": "TextBlock",
+            "wrap": true
+          },
+          {
+            "fontType": "Monospace",
+            "size": "Small",
+            "spacing": "None",
+            "text": "13:59:00 · 경고 · DC-01 · Security 4625 — 계정을 로그온하지 못했습니다. 원본 주소: 203.0.113.9",
+            "type": "TextBlock",
+            "wrap": true
+          }
+        ],
+        "msteams": {
+          "width": "Full"
+        },
+        "type": "AdaptiveCard",
+        "version": "1.4"
+      },
+      "contentType": "application/vnd.microsoft.card.adaptive",
+      "contentUrl": null
+    }
+  ],
+  "type": "message"
+}

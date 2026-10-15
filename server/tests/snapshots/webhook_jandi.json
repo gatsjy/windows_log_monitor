@@ -1,0 +1,42 @@
+{
+  "body": "[경고] 로그온 실패 급증 · DC-01\n[Log Monitor 에서 자세히 보기](http://logmon.local:8080/#/events?since=2026-10-03T04%3A50%3A00%2B00%3A00&event_id=4625&host=DC-01)",
+  "connectColor": "#FAB219",
+  "connectInfo": [
+    {
+      "description": "DC-01 에서 최근 10분 동안 조건에 맞는 이벤트 27건 (기준 20건 이상)",
+      "title": "요약"
+    },
+    {
+      "description": "짧은 시간에 로그온 실패가 몰렸습니다",
+      "title": "설명"
+    },
+    {
+      "description": "2026-10-03 14:00:00",
+      "title": "발생 시각"
+    },
+    {
+      "description": "2026-10-03 13:51:00 ~ 2026-10-03 14:00:00",
+      "title": "이벤트 시각"
+    },
+    {
+      "description": "27건 (기준 20건 이상)",
+      "title": "건수"
+    },
+    {
+      "description": "DC-01",
+      "title": "대상"
+    },
+    {
+      "description": "MITRE T1110, ISMS 2.11.3",
+      "title": "태그"
+    },
+    {
+      "description": "#7",
+      "title": "알림 번호"
+    },
+    {
+      "description": "14:00:00 · 경고 · DC-01 · Security 4625 — 계정을 로그온하지 못했습니다.\n13:59:00 · 경고 · DC-01 · Security 4625 — 계정을 로그온하지 못했습니다. 원본 주소: 203.0.113.9",
+      "title": "최근 이벤트"
+    }
+  ]
+}

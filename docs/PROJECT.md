@@ -193,6 +193,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/alerts/config` | 엔진 상태, 규칙(최근 발생 포함), 알림 대상(비밀값 제외), 원본 YAML |
 | `PUT /api/alerts/config` | 본문 = YAML. 검증 실패 시 422 + 오류 내용, 파일은 그대로 (저장은 audit_log 기록) |
 | `POST /api/alerts/test/{notifier}` | 알림 대상 연결 테스트 (audit_log 기록) |
+| `POST /api/settings/webhook-preview` | `{format, severity?}` 웹훅 형식별 예시 본문·헤더 (보내지 않음) — `settings.manage` |
 | `PUT /api/alerts/rules` | 규칙 한 개 추가·수정 (`{original?, rule}`), 그 규칙 블록만 바꿈 — `alerts.manage` |
 | `DELETE /api/alerts/rules/{이름}` · `POST /api/alerts/rules/enabled` | 삭제 · 켜기/끄기 (`{names, enabled}`, 묶음 단위 가능) — `alerts.manage` |
 | `POST /api/alerts/rules/preview` | 최근 N시간 데이터로 규칙 미리보기 (맞는 로그·예상 알림·대상별) — `alerts.manage` |
@@ -306,7 +307,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 
 - 규칙의 `notify` 에는 **수신 그룹 이름** 또는 **외부 연동 이름**을 씁니다. 이 이름들은 DB 에서 관리합니다.
   - 수신 그룹 → 그룹 안에서 '알림 받음'이고 이메일이 있는 수신자 전원에게 메일 한 통
-  - 외부 연동(웹훅) → HTTP POST
+  - 외부 연동(웹훅) → HTTP POST. 보내는 형식(아래 표)으로 Slack·Teams·두레이·잔디가 바로 보여 줄 수 있게 바꿉니다
   - 외부 연동(Oracle) → 설정한 SQL 한 문장 실행
 - 규칙을 저장할 때 없는 이름이 있으면 거부합니다(422). 규칙에서 쓰는 그룹·연동은 삭제하거나 이름을 바꿀 수 없습니다.
 - 대상은 엔진이 매 주기 DB 에서 다시 만듭니다. 화면에서 바꾸면 다음 평가부터 바로 반영됩니다.
@@ -316,13 +317,32 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
   - 예: 운영팀은 경고 이상, 임원 보고용 메신저는 심각만, 사내 DB 는 전부.
 - `config/alerts.yaml` 에 예전 형식의 `notifiers:` 가 있으면 설정 오류로 알려 줍니다(화면으로 옮기라는 안내).
 
+**웹훅 보내는 형식 (메신저 프리셋, `app/alerts/messenger.py`, ADR-030):**
+
+| 형식 | 받는 곳 | 본문 | 주소 | 같은 주소 간격 |
+|---|---|---|---|---|
+| `json` | 사내 시스템 | `{"source", "title", "text", "alert": {...}}` | http·https | – |
+| `text` | Mattermost·Rocket.Chat 등 | `{"text": "..."}` | http·https | – |
+| `slack` | Slack 'Incoming Webhooks' 앱 | 머리글 블록 + 심각도 색 막대 첨부 안의 Block Kit(요약·설명·항목·최근 이벤트·글자 링크) | https (`hooks.slack.com/services/…`) | 1초 |
+| `teams` | Teams 워크플로 웹훅 | Adaptive Card 1.4 (머리 영역 색 = 심각도 스타일, 항목표, 최근 이벤트, '자세히 보기' 버튼) | https (`*.environment.api.powerplatform.com`) | 0.3초 |
+| `dooray` | 두레이 메신저 Incoming | `{"botName", "text", "attachments"}` — 서식 없는 평문, 링크는 첨부 제목 | https (`hook.dooray.com` 등) | 1.1초 |
+| `jandi` | 잔디 Incoming | `{"body", "connectColor", "connectInfo"}` + `Accept: application/vnd.tosslab.jandi-v2+json` | https (`wh.jandi.com`) | 1초 |
+
+- 주소를 붙여 넣으면 화면이 형식을 골라 줍니다. 종료된 주소(Office 365 커넥터 `webhook.office.com`, 옛 `logic.azure.com`, Slack 워크플로 빌더 `hooks.slack.com/triggers/`)는 경고합니다.
+- **예시 미리보기:** 형식마다 실제로 보낼 본문과 함께 보내는 헤더를 보여 줍니다(보내지 않음).
+- 클라우드 메신저 4종은 **https 주소만** 받습니다(http 로도 받아 버려 주소의 토큰이 평문으로 나가므로). 같은 서버 안 중계(127.0.0.1)만 예외.
+- **같은 주소로는 간격을 두고 차례로** 보냅니다. 두레이는 1초에 1건을 넘으면 성공(200)을 주고도 버립니다. 기다리다 전송 시간 제한(30초)에 걸리면 다음 재시도에서 보냅니다.
+- 받는 쪽 오류 본문에 주소의 토큰이 섞여 오면(두레이) 가린 뒤 전송 이력·화면에 남깁니다.
+- 로그에서 온 값(대상 이름, 이벤트 메시지)은 서비스별 서식 문자를 무력화합니다 — Slack `& < >` 엔티티, Teams·잔디 마크다운 링크.
+- 심각도 색은 메일과 같은 표(`message.SEVERITY_COLORS`)를 씁니다. Teams 는 임의 색을 받지 않아 스타일(심각·오류 = attention, 경고 = warning, 정보 = accent)로 나타냅니다.
+
 ### 6.3 메시지
 
 모든 대상이 같은 내용을 씁니다(`app/alerts/message.py`).
 
 - **제목:** `[경고] 로그온 실패 급증 · DC-01`
 - **본문:** 요약, 설명, 발생 시각(`WLM_DISPLAY_TZ`, 기본 Asia/Seoul), 최근 이벤트 5건, `WLM_PUBLIC_URL` 기준 검색 링크
-- **웹훅 json:** `{"source", "title", "text", "alert": {...}}`
+- **웹훅:** 형식별 본문은 §6.2 표. 형식별 실제 본문은 `server/tests/snapshots/webhook_<형식>.json` 에 있습니다.
 
 ### 6.4 화면 (`#/alerts`)
 
@@ -338,7 +358,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
   - 해결할 때 같은 규칙·대상의 해결 안 된 다른 알림을 함께 해결할 수 있습니다(재발은 합치지 않고 발생마다 따로 기록).
   - 무음…: '이 규칙·이 대상' 또는 '이 규칙 전체', 1시간·4시간·하루·사흘, 사유(필수).
 - **무음 탭:** 적용 중·예정·끝난 무음(범위, 기간, 사유, 보내지 않은 알림 수, 만든 사람·일찍 해제한 사람), '무음 추가'(규칙·대상·시작·끝을 정하는 점검 시간대 예약), 해제.
-  - 무음 중에도 알림은 이력에 남고 전송만 건너뜁니다. 무음이 끝났는데 문제가 계속되면 재알림 간격을 기다리지 않고 다음 평가에서 다시 알립니다.
+  - 무음 중에도 알림은 이력에 남고 전송만 건너뜁니다. 무음이 끝난 뒤 새 로그가 들어오면(문제가 계속되면) 재알림 간격을 기다리지 않고 다음 평가에서 다시 알립니다.
 - **규칙 관리 (Snort 방식):**
   - 왼쪽 **규칙 묶음**(`group`) 목록 — 묶음 단위로 켜기/끄기(일부만 켜져 있으면 반쯤 켜진 스위치)
   - 오른쪽 규칙 표 — 사용 스위치(바로 저장), **SID**, 심각도·이름·설명·태그, 조건·기준, 받는 곳, 발생 수. 검색(이름·SID·태그·조건), 사용/꺼짐 필터
@@ -356,6 +376,8 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 
 - **메일:** 15건이 발생했고, 첫 전송 실패 뒤 재시도로 전부 Mailpit에 도착했습니다.
 - **웹훅:** 로컬 수신기로 json 수신을 확인했습니다.
+- **메신저 형식 (2026-10-15):** Slack·Teams(워크플로)·두레이·잔디 공식 문서와 실제 응답(가짜 토큰으로 오류 응답만)으로 본문·헤더·제한을 확인하고, 형식별 본문 스냅샷과 로컬 수신기 시험(헤더·간격·토큰 가림)으로 고정했습니다.
+  - **각 서비스의 실제 채널로 보내 보는 시험은 아직입니다(BACKLOG B-04).** 받는 쪽 화면(색 막대·카드·줄바꿈)은 실채널에서 한 번씩 확인해야 합니다.
 - **Oracle:** `gvenzl/oracle-free:23-slim-faststart` 시험 컨테이너의 `LOGMON_ALERTS` 에 INSERT 했습니다.
   - CLOB 4000자 초과, 한글, 재전송 시 중복 무시를 확인했습니다.
   - 이 컨테이너는 시험에만 썼고 구성에는 넣지 않았습니다.
@@ -427,7 +449,7 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 |---|---|
 | 수신자 | 이름·이메일·전화·부서·메모, 알림 받음 여부, 소속 그룹. 로그인 계정과 별개 |
 | 수신 그룹 | 이름(규칙의 notify), 설명, 구성원, **받을 최소 수준**, 사용 중인 규칙 |
-| 외부 연동 | 웹훅(주소·형식·헤더), Oracle DB(아래). 받을 최소 수준, 사용 여부, 테스트 |
+| 외부 연동 | 웹훅(주소·보내는 형식 json/text/Slack/Teams/두레이/잔디·헤더, 주소로 형식 자동 선택, 예시 미리보기), Oracle DB(아래). 받을 최소 수준, 사용 여부, 테스트 |
 | 메일 서버 | SMTP 호스트·포트·보안(STARTTLS/SSL/없음)·계정·비밀번호·보내는 사람, 테스트 메일. 비워 두면 `.env` 의 `WLM_SMTP_*` |
 | 로그 보관 | 로테이션 정책, DB 월 파티션·보관 파일 현황, 지금 실행, 무결성 확인, 다시 불러오기 (§9) |
 

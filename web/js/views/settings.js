@@ -3,6 +3,7 @@
 // 비밀값(비밀번호·웹훅 주소·헤더)은 서버가 돌려주지 않는다 → 입력란이 비어 있으면 '기존 값 유지'.
 import * as api from '../api.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
+import { jsonView } from '../jsonview.js';
 import { confirmModal, errorBox, fmtNum, fmtRelative, fmtTime, html, navigate, promptModal, toast } from '../util.js';
 
 const TABS = [
@@ -260,10 +261,10 @@ async function channels(body, meta) {
   }));
   const reload = () => channels(body, meta);
   body.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () =>
-    (b.dataset.add === 'oracle' ? editOracle(null, meta, tns.aliases, reload) : editWebhook(null, reload))));
+    (b.dataset.add === 'oracle' ? editOracle(null, meta, tns.aliases, reload) : editWebhook(null, meta, reload))));
   body.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
     const c = items.find((x) => x.id === Number(b.dataset.edit));
-    if (c.type === 'oracle') editOracle(c, meta, tns.aliases, reload); else editWebhook(c, reload);
+    if (c.type === 'oracle') editOracle(c, meta, tns.aliases, reload); else editWebhook(c, meta, reload);
   }));
 }
 
@@ -301,15 +302,37 @@ async function deleteChannel(c, done) {
   }
 }
 
-function editWebhook(c, done) {
-  const drawer = openDrawer({ title: c ? `웹훅 — ${c.name}` : '웹훅 추가', subtitle: '사내 메신저 등으로 HTTP POST' });
+// 형식별 설치 안내 — 받는 쪽 설정을 잘못하면 '전송 성공'인데 메시지가 안 보이는 경우가 있다 (ADR-030)
+const FORMAT_NOTES = {
+  slack: 'Slack 앱 디렉터리의 \'Incoming Webhooks\' 로 만든 주소(hooks.slack.com/services/…)를 넣습니다. 채널은 주소마다 하나로 정해집니다.',
+  teams: 'Teams 채널의 워크플로에서 \'웹후크 요청이 수신되면 채널에 게시\' 템플릿으로 만든 주소를 넣습니다. 트리거할 수 있는 사람은 \'누구나\'로 두고, 인증 헤더는 넣지 마세요. 전송 성공(202)은 \'접수\'까지만이라 실제 게시는 워크플로 실행 기록에서 확인합니다.',
+  dooray: '두레이 대화방 설정 > 서비스 연동 > Incoming 에서 \'연동 URL 복사\'로 받은 주소를 넣습니다. 한 주소로 1초에 1건까지만 받아서 알림이 몰리면 차례로 보냅니다.',
+  jandi: '잔디 토픽의 잔디 커넥트 > Incoming Webhook 에서 받은 주소(wh.jandi.com/…)를 넣습니다. 필요한 Accept 헤더는 자동으로 붙습니다.',
+};
+
+/** 주소의 호스트로 메신저 형식을 짐작한다 (예: hooks.slack.com → slack). 모르면 null */
+function guessFormat(url, formats) {
+  let host;
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return null; }
+  return formats.find((f) => f.hosts.some((h) => host === h || host.endsWith(`.${h}`)))?.key ?? null;
+}
+
+function editWebhook(c, meta, done) {
+  const formats = meta.webhook_formats ?? [{ key: 'json', label: 'json', hosts: [] }];
+  const current = c?.config.format ?? 'json';
+  const drawer = openDrawer({ title: c ? `웹훅 — ${c.name}` : '웹훅 추가', subtitle: 'Slack·Teams·두레이·잔디·사내 시스템으로 HTTP POST' });
   drawer.innerHTML = html`<form class="auth-form">
     ${commonFields(c)}
-    <label>웹훅 주소<input class="input mono" name="url" ${c ? '' : 'required'} placeholder="${c ? `${c.target}  (${SECRET_HINT})` : 'https://chat.example.com/hooks/…'}"></label>
+    <label>웹훅 주소<input class="input mono" name="url" ${c ? '' : 'required'} placeholder="${c ? `${c.target}  (${SECRET_HINT})` : 'https://hooks.slack.com/services/…'}"></label>
     <label>보내는 형식<select class="select" name="format">
-      <option value="json" ${c?.config.format !== 'text' ? 'selected' : ''}>json — 알림 전체 데이터 (사내 시스템 연동)</option>
-      <option value="text" ${c?.config.format === 'text' ? 'selected' : ''}>text — {"text": "..."} (Slack·Mattermost·메신저 호환)</option>
+      ${formats.map((f) => html`<option value="${f.key}" ${f.key === current ? 'selected' : ''}>${f.label}</option>`)}
     </select></label>
+    <div class="error-box" data-url-warning hidden></div>
+    <div class="muted" data-format-hint style="font-size:12.5px;margin-top:-6px"></div>
+    <div class="hint-box" data-format-note hidden></div>
+    <div class="toolbar"><button class="btn sm" type="button" data-preview>예시 미리보기</button>
+      <span class="muted" style="font-size:12.5px">보낼 본문을 보여 줍니다 (보내지 않음)</span></div>
+    <div data-preview-box></div>
     <label>추가 헤더 (한 줄에 하나, 예: Authorization: Bearer 토큰)
       <textarea class="input mono" name="headers" rows="3" placeholder="${c?.has_secret ? '저장된 헤더 유지 — 바꿀 때만 입력 (모두 지우려면 - 한 글자)' : ''}"></textarea></label>
     <label>시간 제한(초)<input class="input" name="timeout" type="number" min="1" max="60" value="${c?.config.timeout_sec ?? 10}"></label>
@@ -319,6 +342,39 @@ function editWebhook(c, done) {
   </form>`;
   const form = drawer.querySelector('form');
   const out = form.querySelector('[data-error]');
+  const hint = form.querySelector('[data-format-hint]');
+  const previewBox = form.querySelector('[data-preview-box]');
+  // 주소를 붙여 넣으면 맞는 형식을 권한다. 사용자가 형식을 직접 고른 뒤에는 바꾸지 않는다
+  let pickedByUser = !!c;
+  form.format.addEventListener('change', () => { pickedByUser = true; previewBox.innerHTML = ''; });
+  const showFormatNote = () => {
+    // 형식별 안내 (Teams 는 202 '접수' 만 확인되고, 워크플로 템플릿에 따라 인증 헤더를 넣으면 안 된다)
+    const note = FORMAT_NOTES[form.format.value] ?? '';
+    form.querySelector('[data-format-note]').textContent = note;
+    form.querySelector('[data-format-note]').hidden = !note;
+  };
+  form.format.addEventListener('change', showFormatNote);
+  showFormatNote();
+  form.url.addEventListener('input', () => {
+    const url = form.url.value.trim();
+    const warning = (meta.webhook_url_warnings ?? []).find((w) => url.includes(w.match));
+    const warnBox = form.querySelector('[data-url-warning]');
+    warnBox.textContent = warning?.text ?? '';
+    warnBox.hidden = !warning;
+    const guess = guessFormat(url, formats);
+    hint.textContent = '';
+    if (!guess || guess === form.format.value) return;
+    const label = formats.find((f) => f.key === guess).label.split(' —')[0];
+    if (pickedByUser) hint.textContent = `이 주소는 ${label} 형식으로 보이는데, 지금은 다른 형식이 선택되어 있습니다.`;
+    else { form.format.value = guess; hint.textContent = `주소를 보고 ${label} 형식을 골랐습니다.`; showFormatNote(); }
+  });
+  form.querySelector('[data-preview]').addEventListener('click', (e) => run(e.target, previewBox, async () => {
+    const res = await api.send('POST', '/api/settings/webhook-preview', { format: form.format.value });
+    const extra = Object.entries(res.headers).filter(([k]) => !['Content-Type', 'User-Agent'].includes(k));
+    previewBox.innerHTML = html`${extra.length ? html`<div class="muted" style="font-size:12.5px;margin-bottom:6px">함께 보내는 헤더: ${
+      extra.map(([k, v]) => `${k}: ${v}`).join(', ')}</div>` : ''}<div data-json style="max-height:340px;overflow:auto"></div>`;
+    jsonView(previewBox.querySelector('[data-json]'), res.body);
+  }));
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const raw = form.headers.value.trim();

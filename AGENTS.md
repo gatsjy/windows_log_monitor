@@ -52,7 +52,7 @@ server/app/
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
-  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·재시도·무음) · visibility(조회 범위)
+  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·재시도·무음) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF)
   oracle.py          Oracle 접속(TNS/SID/서비스/접속문자열)·조회 전용 쿼리·SQL 실행
   secrets.py         환경설정 비밀값 암호화 (WLM_SECRET_KEY)
@@ -105,6 +105,7 @@ curl -s localhost:8080/healthz
 | 새 로그 소스 | `normalizers/새소스.py` 작성 → `normalizers/__init__.py` 의 `BY_SOURCE` 등록 → 에이전트에서 `log_source: 새소스` 부착 → 테스트 추가 |
 | 새 위젯 | `web/js/widgets/이름.js` (`render(body, cfg, ctx)`, 실시간이면 `live(body, cfg, ctx, events)` 도) → `widgets/index.js` 등록 → `server/app/routers/dashboards.py` 의 `WIDGET_TYPES` 추가 → `views/dashboard.js` 의 REFERENCE 설명 추가 |
 | 알림 규칙 추가 | `config/alerts.yaml` 의 `rules` (형식: docs/PROJECT.md §6.1). `tests/test_alerts.py::test_shipped_config_is_valid` 가 검증 |
+| 새 메신저(웹훅 형식) | `alerts/messenger.py` 에 `build_<이름>` + `FORMATS` 한 줄(호스트·필수 헤더·https·전송 간격) → `tests/test_messenger.py` 스냅샷 생성(`WLM_UPDATE_SNAPSHOTS=1`) → PROJECT.md §6.2 표. 형식은 공식 문서로 확인한 것만 |
 | 새 알림 대상 종류 | `app/alerts/notifiers.py` (Notifier 상속, `send()` 실패 시 예외) → `channels.type` CHECK 마이그레이션 → `targets.py` 의 `build_channel`/`_clean_channel_config` → `views/settings.js` → 테스트 |
 | 새 API | 라우터를 `main.py` 에 등록할 때 `dependencies=[Depends(require_user)]` 로 로그인 필수, 변경 작업은 엔드포인트에 `Depends(require_admin)` + `db.audit(...)` |
 | 관리자 화면 | `main.js` 의 `ADMIN_VIEWS` + 메뉴 링크에 `data-admin` (서버도 `require_admin` 으로 막을 것) |
@@ -132,6 +133,7 @@ curl -s localhost:8080/healthz
 - **이벤트를 돌려주는 새 API 는 반드시 `routers/query._filter(request)` 로 필터를 만든다.** 그래야 사용자 그룹의 조회 범위(`scopes`)가 붙는다. 단건 조회는 `filters.scopes_allow` 로 확인.
   - 알림·무음을 돌려주거나 바꾸는 API 는 `alerts/visibility.py`(`alert_visible`·`silence_visible`·`count_by_status`)로 범위를 확인한다. 알림 수를 새로 셀 때도 마찬가지.
 - 알림 처리 기록(`alert_notes`)은 `audit_log` 처럼 트리거로 수정·삭제·TRUNCATE 를 막는다(알림이 보관기간 만료로 지워질 때만 함께 삭제). 테스트에서도 지울 수 없다.
+- 웹훅 오류·연결 실패 문구는 `WebhookNotifier.redact()` 를 거친다(받는 쪽이 토큰이 든 경로를 돌려준다). 새 전송기도 오류 문구에 주소를 그대로 넣지 않는다.
 - **CSV 를 내보내는 새 API 는 `app/csvexport.csv_response` 를 쓴다.** 로그에서 온 값(syslog 호스트 이름 등)이 엑셀 수식으로 실행되지 않게 한다.
 - 무음은 행을 지우지 않는다. 해제 = `ends_at` 을 앞당김(시작 전이면 길이 0). 상태(적용 중·예정·끝남)는 `routers/alerts._silence_state` 가 정한다.
 - 수집 포트(8001/6976)로는 `/api/ingest`·`/healthz` 만 열린다(`main.INGEST_PORT_PATHS`). 에이전트용 새 경로가 필요하면 거기에 추가.

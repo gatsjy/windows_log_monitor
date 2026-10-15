@@ -116,6 +116,24 @@ def test_webhook_secrets_are_never_returned(client):
     assert "very-secret" not in stored  # DB 에도 암호화되어 저장
 
 
+def test_webhook_formats_preview_and_validation(client):
+    formats = {f["key"]: f for f in client.get("/api/settings/meta").json()["webhook_formats"]}
+    assert set(formats) == {"json", "text", "slack", "teams", "dooray", "jandi"}
+    assert "hooks.slack.com" in formats["slack"]["hosts"]
+    # 미리보기: 보내지 않고 본문·서비스 헤더만 (사용자 헤더는 비밀값일 수 있어 안 보여 줌)
+    r = client.post("/api/settings/webhook-preview", json={"format": "jandi", "severity": "critical"}, headers=CSRF)
+    assert r.status_code == 200, r.text
+    assert r.json()["headers"]["Accept"] == "application/vnd.tosslab.jandi-v2+json"
+    assert r.json()["body"]["connectInfo"]
+    teams = client.post("/api/settings/webhook-preview", json={"format": "teams"}, headers=CSRF).json()["body"]
+    assert teams["attachments"][0]["contentType"] == "application/vnd.microsoft.card.adaptive"
+    assert client.post("/api/settings/webhook-preview", json={"format": "kakao"}, headers=CSRF).status_code == 422
+    # 모르는 형식은 저장하지 않는다 (예전처럼 json 으로 바꿔 조용히 저장하지 않음)
+    r = client.post("/api/settings/channels", json={"name": "잘못된형식", "type": "webhook", "url": "https://h.example.com/x",
+                                                    "config": {"format": "kakao"}}, headers=CSRF)
+    assert r.status_code in (400, 422) and "형식" in r.text
+
+
 def test_smtp_settings_hide_password(client):
     r = client.put("/api/settings/smtp", json={"host": "smtp.example.com", "port": 587, "security": "starttls",
                                                "user": "logmon", "sender": "logmon@example.com",

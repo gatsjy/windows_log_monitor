@@ -12,10 +12,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import smtplib
 import ssl
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -23,10 +25,11 @@ from datetime import UTC
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from .. import oracle
 from .message import AlertMessage
+from .messenger import FORMATS
 
 
 class NotifierError(Exception):
@@ -113,8 +116,15 @@ class EmailNotifier(Notifier):
 
 # ------------------------------------------------------------------- 웹훅
 
+# 같은 주소로 보내는 간격 (형식의 min_interval_sec). 전송기는 매 주기 새로 만들어지므로 모듈에 둔다.
+# 키 = (이벤트 루프, 주소 해시) — 주소를 그대로 들고 있지 않고, 루프가 바뀌면(테스트) 잠금도 새로 만든다
+_SEND_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
+_LAST_SENT: dict[tuple[int, str], float] = {}
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
 class WebhookNotifier(Notifier):
-    """format: json → {"source", "title", "text", "alert": {...}}  /  text → {"text": "..."} (Slack·Mattermost 호환)"""
+    """보내는 형식(format)은 messenger.FORMATS: json · text · slack · teams · dooray · jandi (BACKLOG B-04, ADR-030)."""
 
     type = "webhook"
 
@@ -124,7 +134,11 @@ class WebhookNotifier(Notifier):
         if not url.startswith(("http://", "https://")):
             raise NotifierError("웹훅 주소는 http:// 또는 https:// 로 시작해야 합니다")
         self.url = url
-        self.format = fmt
+        self.format = fmt if fmt in FORMATS else "json"
+        spec = FORMATS[self.format]
+        # 클라우드 메신저는 http 로도 받아 버려서(리다이렉트 없음) 주소의 토큰이 평문으로 나간다. 같은 서버 안 중계만 예외
+        if spec.https_only and url.startswith("http://") and urlsplit(url).hostname not in _LOOPBACK:
+            raise NotifierError(f"'{spec.label.split(' —')[0]}' 형식은 https:// 주소만 씁니다 (주소에 든 토큰이 평문으로 나가지 않게)")
         self.headers = {str(k): str(v) for k, v in (headers or {}).items()}
         self.timeout = float(timeout_sec)
 
@@ -134,27 +148,53 @@ class WebhookNotifier(Notifier):
         return f"{parts.scheme}://{parts.hostname}{f':{parts.port}' if parts.port else ''}/…"
 
     def payload(self, message: AlertMessage) -> dict[str, Any]:
-        if self.format == "text":
-            text = f"{message.title()}\n{message.summary()}"
-            return {"text": f"{text}\n{message.link}" if message.link else text}
-        return {"source": "log-monitor", "title": message.title(), "text": message.summary(),
-                "alert": message.to_dict()}
+        return FORMATS[self.format].build(message)
+
+    def request_headers(self) -> dict[str, str]:
+        """기본 → 형식이 요구하는 헤더(잔디 Accept 등) → 사용자가 넣은 헤더 순으로 덮어쓴다."""
+        return {"Content-Type": "application/json; charset=utf-8", "User-Agent": "log-monitor",
+                **FORMATS[self.format].headers, **self.headers}
+
+    def redact(self, text: str) -> str:
+        """주소의 경로·쿼리(토큰)를 가린다. 두레이처럼 오류 본문에 요청 경로를 그대로 돌려주는 서비스가 있어서,
+        그대로 두면 전송 이력·화면·감사로그에 토큰이 남는다 (AGENTS.md 절대 규칙 6)."""
+        parts = urlsplit(self.url)
+        secret = [parts.path, parts.query, *(seg for seg in parts.path.split("/") if len(seg) >= 8),
+                  *(v for _, v in parse_qsl(parts.query) if len(v) >= 8)]
+        for piece in sorted({p for p in secret if p and p != "/"}, key=len, reverse=True):
+            text = text.replace(piece, "…")
+        return text
 
     def _post(self, body: bytes) -> None:
-        request = urllib.request.Request(self.url, data=body, method="POST", headers={
-            "Content-Type": "application/json; charset=utf-8", "User-Agent": "log-monitor", **self.headers})
+        request = urllib.request.Request(self.url, data=body, method="POST", headers=self.request_headers())
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 response.read(1024)
         except urllib.error.HTTPError as exc:
-            detail = exc.read(300).decode("utf-8", "replace")
+            detail = self.redact(exc.read(300).decode("utf-8", "replace"))
             raise NotifierError(f"웹훅 응답 {exc.code}: {detail}") from exc
         except (urllib.error.URLError, OSError) as exc:
-            raise NotifierError(f"웹훅 연결 실패 ({self.target()}): {getattr(exc, 'reason', exc)}") from exc
+            reason = self.redact(str(getattr(exc, "reason", exc)))
+            raise NotifierError(f"웹훅 연결 실패 ({self.target()}): {reason}") from exc
 
     async def send(self, message: AlertMessage) -> None:
         body = json.dumps(self.payload(message), ensure_ascii=False, default=str).encode("utf-8")
-        await asyncio.to_thread(self._post, body)
+        interval = FORMATS[self.format].min_interval_sec
+        if not interval:
+            await asyncio.to_thread(self._post, body)
+            return
+        # 두레이는 1초에 1건을 넘으면 200 을 주고도 버린다(재시도로도 못 찾음), Slack·잔디는 429.
+        # 알림이 몰려도 주소마다 차례로 간격을 두고 보낸다 (기다리다 엔진의 전송 시간 제한에 걸리면 다음 재시도에서 보냄)
+        key = (id(asyncio.get_running_loop()), hashlib.sha256(self.url.encode()).hexdigest())
+        lock = _SEND_LOCKS.setdefault(key, asyncio.Lock())
+        async with lock:
+            wait = _LAST_SENT.get(key, 0.0) + interval - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                await asyncio.to_thread(self._post, body)
+            finally:
+                _LAST_SENT[key] = time.monotonic()
 
 
 # ----------------------------------------------------------------- Oracle

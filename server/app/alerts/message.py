@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 from ..config import settings
 
 SEVERITY_LABELS = {"critical": "심각", "error": "오류", "warning": "경고", "info": "정보"}
+# 심각도 색: 메일 왼쪽 막대와 메신저(Slack 색 막대·두레이·잔디)가 같은 색을 쓴다
+SEVERITY_COLORS = {"critical": "#d03b3b", "error": "#ec835a", "warning": "#fab219", "info": "#2a78d6"}
 LEVEL_LABELS = {1: "심각", 2: "오류", 3: "경고", 4: "정보", 5: "상세"}
 
 
@@ -113,7 +115,6 @@ class AlertMessage:
 
     def html(self) -> str:
         e = html.escape
-        colors = {"critical": "#d03b3b", "error": "#ec835a", "warning": "#fab219", "info": "#2a78d6"}
         rows = "".join(
             "<tr>"
             f"<td style='padding:4px 8px;color:#52514e;white-space:nowrap'>{e(local(_dt(s.get('ts'))))}</td>"
@@ -133,7 +134,7 @@ class AlertMessage:
             desc += f"<p style='font-size:12px;color:#52514e'>태그: {e(', '.join(self.tags))}</p>"
         return (
             "<div style='font-family:system-ui,-apple-system,\"Malgun Gothic\",sans-serif;color:#0b0b0b;max-width:760px'>"
-            f"<div style='border-left:4px solid {colors.get(self.severity, '#898781')};padding:4px 0 4px 12px'>"
+            f"<div style='border-left:4px solid {SEVERITY_COLORS.get(self.severity, '#898781')};padding:4px 0 4px 12px'>"
             f"<div style='font-size:12px;color:#52514e'>{e(self.severity_label)} · {e(local(self.fired_at))}</div>"
             f"<div style='font-size:17px;font-weight:600'>{e(self.title())}</div></div>"
             f"<p>{e(self.summary())}</p>{desc}{table}{link}"

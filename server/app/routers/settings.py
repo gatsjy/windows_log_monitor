@@ -19,8 +19,16 @@ from pydantic import BaseModel, Field
 from .. import archive, db, oracle, partitions, secrets
 from ..alerts import targets
 from ..alerts.engine import engine
-from ..alerts.message import AlertMessage
-from ..alerts.notifiers import ORACLE_BINDS, ORACLE_DEFAULT_SQL, ORACLE_DEFAULT_TABLE, EmailNotifier, NotifierError
+from ..alerts.message import AlertMessage, search_link
+from ..alerts.messenger import FORMATS, URL_WARNINGS
+from ..alerts.notifiers import (
+    ORACLE_BINDS,
+    ORACLE_DEFAULT_SQL,
+    ORACLE_DEFAULT_TABLE,
+    EmailNotifier,
+    NotifierError,
+    WebhookNotifier,
+)
 from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
 from ..config import settings
@@ -47,6 +55,23 @@ def _sample_message(name: str) -> AlertMessage:
     )
 
 
+def _example_message(severity: str) -> AlertMessage:
+    """형식 미리보기용 예시 알림 (실제 알림과 같은 모양 — 테스트 알림은 항목이 적어 미리보기로 부족하다)."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    samples = [
+        {"id": 1, "ts": (now - timedelta(seconds=40)).isoformat(), "host": "DC-01", "level": 3, "channel": "Security",
+         "event_id": 4625, "message": "계정을 로그온하지 못했습니다. 계정 이름: admin, 원본 주소: 203.0.113.9"},
+        {"id": 2, "ts": (now - timedelta(seconds=90)).isoformat(), "host": "DC-01", "level": 3, "channel": "Security",
+         "event_id": 4625, "message": "계정을 로그온하지 못했습니다. 계정 이름: kim, 원본 주소: 203.0.113.9"},
+    ]
+    return AlertMessage(
+        rule="로그온 실패 급증", severity=severity, kind="count", group_by="host", group_key="DC-01", event_count=27,
+        threshold=20, window_sec=600, fired_at=now, first_event_at=now - timedelta(minutes=9), last_event_at=now,
+        description="짧은 시간에 로그온 실패가 몰렸습니다 (무차별 대입 의심)", tags=["MITRE T1110", "ISMS 2.11.3"],
+        alert_id=1234, samples=samples, link=search_link({"since": (now - timedelta(minutes=10)).isoformat(), "event_id": "4625", "host": "DC-01"}),
+    )
+
+
 # ------------------------------------------------------------------ 개요
 
 @router.get("/api/settings/meta")
@@ -56,6 +81,10 @@ async def meta():
         "oracle_modes": oracle.MODES,
         "oracle_binds": ORACLE_BINDS,
         "oracle_default_sql": ORACLE_DEFAULT_SQL.format(table=ORACLE_DEFAULT_TABLE),
+        # 웹훅 보내는 형식 (메신저 프리셋). hosts = 주소로 형식을 권할 때 쓰는 호스트 끝부분
+        "webhook_formats": [{"key": f.key, "label": f.label, "hosts": list(f.hosts), "https_only": f.https_only}
+                            for f in FORMATS.values()],
+        "webhook_url_warnings": [{"match": m, "text": t} for m, t in URL_WARNINGS],
         "tns_file": str(oracle.tns_file()),
         "used_targets": _used(),
     }
@@ -266,6 +295,20 @@ async def _channel(channel_id: int) -> dict:
         return await targets.get_channel(channel_id)
     except targets.TargetError as exc:
         raise _fail(exc) from exc
+
+
+class WebhookPreviewBody(BaseModel):
+    format: str = Field(max_length=20)
+    severity: str = Field(default="warning", pattern="^(info|warning|error|critical)$")
+
+
+@router.post("/api/settings/webhook-preview")
+async def webhook_preview(body: WebhookPreviewBody):
+    """형식별로 실제로 보낼 본문·헤더 예시 (보내지 않는다). 사용자가 넣은 헤더는 비밀값일 수 있어 빼고 보여 준다."""
+    if body.format not in FORMATS:
+        raise HTTPException(422, f"알 수 없는 형식: {body.format}")
+    hook = WebhookNotifier("미리보기", "https://example.invalid/hook", body.format)
+    return {"format": body.format, "headers": hook.request_headers(), "body": hook.payload(_example_message(body.severity))}
 
 
 @router.post("/api/settings/channels/{channel_id}/test")
