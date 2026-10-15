@@ -134,6 +134,18 @@ env_set WLM_API_IMAGE "$API_IMAGE"
 chmod 600 "$TARGET/.env"
 LEFT=$(grep -E '^[A-Z_]+=change-me' "$TARGET/.env" | cut -d= -f1 | tr '\n' ' ' || true)
 [ -z "$LEFT" ] || echo "  [확인 필요] 아직 예시 값: ${LEFT}"
+# 컨테이너 메모리 상한(ADR-027)은 업그레이드 때 .env 에 없다 → 기본 상한(db 1536m)과 옛 DB 설정(shared_buffers 1GB)이
+# 겹치면 부하 때 DB 가 메모리 부족으로 종료될 수 있어, 서버 메모리에 맞는 값을 알려 준다
+if [ "$UPGRADE" = 1 ] && ! grep -q '^WLM_DB_MEM_LIMIT=' "$TARGET/.env"; then
+  MEM_MB=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+  echo "  [확인 필요] 메모리 상한이 새로 생겼습니다 (docs/PERFORMANCE.md §4). 서버 메모리 ${MEM_MB}MB 기준으로 .env 를 맞추세요:"
+  if [ "${MEM_MB:-0}" -ge 6000 ]; then
+    echo "    8GB: WLM_PG_SHARED_BUFFERS=1GB WLM_PG_SHM_SIZE=1g WLM_DB_MEM_LIMIT=3g WLM_API_MEM_LIMIT=1g"
+  else
+    echo "    4GB: WLM_PG_SHARED_BUFFERS=512MB WLM_PG_EFFECTIVE_CACHE_SIZE=1536MB WLM_PG_WORK_MEM=16MB"
+    echo "         WLM_PG_MAINTENANCE_WORK_MEM=128MB WLM_PG_PARALLEL_WORKERS=2 WLM_DB_MEM_LIMIT=1536m WLM_API_MEM_LIMIT=768m"
+  fi
+fi
 
 # ------------------------------------------------------------------ 7. 권한
 step "7. 폴더 권한"
