@@ -23,12 +23,37 @@ from .message import LEVEL_LABELS, SEVERITY_COLORS, AlertMessage, _dt, local
 
 SAMPLE_LINE_MAX = 160     # 샘플 이벤트 한 줄 (메신저 화면에서 한두 줄로 보이게)
 LINK_TITLE = "Log Monitor 에서 자세히 보기"
+# 대상(group_key)은 로그에서 온 값이라 길이 제한이 없다(group_by: f.<경로> — 예: 수천 자 명령줄).
+# 제목·요약·항목 값·링크를 형식과 상관없이 이만큼으로 자른다 (Teams 28KB 를 넘으면 202 를 받고도 게시가 실패해 알림이 사라진다)
+TITLE_MAX = 200
+TEXT_MAX = 1000
+FACT_MAX = 300
+LINK_MAX = 2000
 
 
 # ---------------------------------------------------------------- 공통 재료
 
 def _cut(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _title(m: AlertMessage) -> str:
+    return _cut(m.title(), TITLE_MAX)
+
+
+def _summary(m: AlertMessage) -> str:
+    return _cut(m.summary(), TEXT_MAX)
+
+
+def _description(m: AlertMessage) -> str:
+    return _cut(m.description, TEXT_MAX)
+
+
+def _link(m: AlertMessage) -> str:
+    """검색 링크에는 대상 값이 들어가서 아주 길어질 수 있다. 자르면 깨지므로 너무 길면 알림 화면으로 보낸다."""
+    if len(m.link) <= LINK_MAX:
+        return m.link
+    return m.link.split("#", 1)[0] + "#/alerts"
 
 
 def _facts(m: AlertMessage) -> list[tuple[str, str]]:
@@ -39,9 +64,9 @@ def _facts(m: AlertMessage) -> list[tuple[str, str]]:
     if m.kind != "agent_silent" and not m.test:
         facts.append(("건수", f"{m.event_count:,}건 (기준 {m.threshold:,}건 이상)"))
     if m.group_key:
-        facts.append(("대상", m.group_key))
+        facts.append(("대상", _cut(m.group_key, FACT_MAX)))
     if m.tags:
-        facts.append(("태그", ", ".join(m.tags)))
+        facts.append(("태그", _cut(", ".join(m.tags), FACT_MAX)))
     if m.alert_id and not m.test:
         facts.append(("알림 번호", f"#{m.alert_id}"))
     return facts
@@ -71,8 +96,9 @@ def build_json(m: AlertMessage) -> dict[str, Any]:
 
 
 def build_text(m: AlertMessage) -> dict[str, Any]:
-    text = f"{m.title()}\n{m.summary()}"
-    return {"text": f"{text}\n{m.link}" if m.link else text}
+    # Mattermost 는 16,383자를 넘으면 여러 글로 쪼갠다 → 다른 메신저 형식과 같은 상한
+    text = f"{_title(m)}\n{_summary(m)}"
+    return {"text": f"{text}\n{_link(m)}" if m.link else text}
 
 
 # ------------------------------------------------------------------------ Slack
@@ -98,10 +124,10 @@ def _slack_url(url: str) -> str:
 
 def build_slack(m: AlertMessage) -> dict[str, Any]:
     details: list[dict[str, Any]] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": _mrkdwn(m.summary(), 3000)}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": _mrkdwn(_summary(m), 3000)}},
     ]
     if m.description:
-        details.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _mrkdwn(m.description, 3000)}]})
+        details.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _mrkdwn(_description(m), 3000)}]})
     # 굵은 항목명은 따로 한 줄 — 한글에 바로 붙은 *굵게* 는 굵게 안 보일 때가 있다
     details.append({"type": "section", "fields": [
         {"type": "mrkdwn", "text": f"*{k}*\n{_mrkdwn(v, 1900)}"} for k, v in _facts(m)][:10]})
@@ -112,8 +138,8 @@ def build_slack(m: AlertMessage) -> dict[str, Any]:
     if m.link:
         # 버튼(url)은 앱에 상호작용 설정이 없으면 누를 때 오류 표시가 떠서, 글자 링크로 둔다
         details.append({"type": "context", "elements": [
-            {"type": "mrkdwn", "text": f"<{_slack_url(m.link)}|{LINK_TITLE}>"}]})
-    fallback = _mrkdwn(f"{m.title()} — {m.summary()}", 3000)
+            {"type": "mrkdwn", "text": f"<{_slack_url(_link(m))}|{LINK_TITLE}>"}]})
+    fallback = _mrkdwn(f"{_title(m)} — {_summary(m)}", 3000)
     return {
         "text": fallback,  # 휴대폰 푸시·검색에 쓰이는 대체 문구 (블록이 있으면 화면에는 안 보인다)
         "blocks": [{"type": "header", "text": {"type": "plain_text", "text": _cut(m.title(), 150)}}],
@@ -130,16 +156,16 @@ TEAMS_STYLE = {"critical": "attention", "error": "attention", "warning": "warnin
 
 def build_teams(m: AlertMessage) -> dict[str, Any]:
     head: list[dict[str, Any]] = [
-        {"type": "TextBlock", "text": _no_md_link(m.title()), "weight": "Bolder",
+        {"type": "TextBlock", "text": _no_md_link(_title(m)), "weight": "Bolder",
          "size": "Large" if m.severity == "critical" else "Medium", "wrap": True},
         {"type": "TextBlock", "text": local(m.fired_at), "isSubtle": True, "spacing": "None", "wrap": True},
     ]
     body: list[dict[str, Any]] = [
         {"type": "Container", "style": TEAMS_STYLE.get(m.severity, "emphasis"), "bleed": True, "items": head},
-        {"type": "TextBlock", "text": _no_md_link(m.summary()), "wrap": True},
+        {"type": "TextBlock", "text": _no_md_link(_summary(m)), "wrap": True},
     ]
     if m.description:
-        body.append({"type": "TextBlock", "text": _no_md_link(m.description), "wrap": True, "isSubtle": True,
+        body.append({"type": "TextBlock", "text": _no_md_link(_description(m)), "wrap": True, "isSubtle": True,
                      "spacing": "None"})
     body.append({"type": "FactSet", "facts": [{"title": k, "value": _no_md_link(v)} for k, v in _facts(m)]})
     samples = _sample_lines(m)
@@ -151,7 +177,7 @@ def build_teams(m: AlertMessage) -> dict[str, Any]:
     card: dict[str, Any] = {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard",
                             "version": "1.4", "msteams": {"width": "Full"}, "body": body}
     if m.link:
-        card["actions"] = [{"type": "Action.OpenUrl", "title": LINK_TITLE, "url": m.link}]
+        card["actions"] = [{"type": "Action.OpenUrl", "title": LINK_TITLE, "url": _link(m)}]
     # 워크플로 템플릿은 attachments 를 돌며 카드를 올린다 → 이 봉투가 필수 (contentUrl 은 항상 null)
     return {"type": "message", "attachments": [
         {"contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None, "content": card}]}
@@ -163,15 +189,16 @@ def build_dooray(m: AlertMessage) -> dict[str, Any]:
     """두레이 메신저 훅은 서식(마크다운)을 공식 지원하지 않는다 → 평문, 링크는 첨부 제목(titleLink)으로만."""
     facts = "\n".join(f"{k}: {v}" for k, v in _facts(m))
     color = SEVERITY_COLORS[m.severity]
-    first: dict[str, Any] = {"title": m.summary(), "text": f"{m.description}\n{facts}" if m.description else facts,
-                             "color": color}
+    # 마크다운은 공식 지원이 아니지만 일부 렌더링된다는 보고가 있어, 로그에서 온 [이름](주소) 는 다른 형식처럼 깨 둔다
+    text = f"{_description(m)}\n{facts}" if m.description else facts
+    first: dict[str, Any] = {"title": _no_md_link(_summary(m)), "text": _no_md_link(text), "color": color}
     if m.link:
-        first["titleLink"] = m.link
+        first["titleLink"] = _link(m)
     attachments = [first]
     samples = _sample_lines(m)
     if samples:
-        attachments.append({"title": "최근 이벤트", "text": "\n".join(samples), "color": color})
-    return {"botName": "Log Monitor", "text": m.title(), "attachments": attachments}
+        attachments.append({"title": "최근 이벤트", "text": _no_md_link("\n".join(samples)), "color": color})
+    return {"botName": "Log Monitor", "text": _no_md_link(_title(m)), "attachments": attachments}
 
 
 # -------------------------------------------------------------------------- 잔디
@@ -181,12 +208,12 @@ JANDI_SHOWN_MAX = 5000  # 잔디는 메시지 앞 5,000자만 보여 준다
 
 def build_jandi(m: AlertMessage) -> dict[str, Any]:
     # 제목에 [경고] 가 있어 [제목](주소) 로 감싸면 대괄호가 겹친다 → 링크는 따로 한 줄
-    body = _no_md_link(m.title())
+    body = _no_md_link(_title(m))
     if m.link:
-        body += f"\n[{LINK_TITLE}]({m.link})"
-    info = [{"title": "요약", "description": _no_md_link(m.summary())}]
+        body += f"\n[{LINK_TITLE}]({_link(m)})"
+    info = [{"title": "요약", "description": _no_md_link(_summary(m))}]
     if m.description:
-        info.append({"title": "설명", "description": _no_md_link(m.description)})
+        info.append({"title": "설명", "description": _no_md_link(_description(m))})
     info += [{"title": k, "description": _no_md_link(v)} for k, v in _facts(m)]
     samples = _sample_lines(m)
     if samples:

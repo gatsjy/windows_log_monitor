@@ -136,6 +136,7 @@ curl -s localhost:8080/healthz
   - 알림·무음을 돌려주거나 바꾸는 API 는 `alerts/visibility.py`(`alert_visible`·`silence_visible`·`count_by_status`)로 범위를 확인한다. 알림 수를 새로 셀 때도 마찬가지.
 - 알림 처리 기록(`alert_notes`)은 `audit_log` 처럼 트리거로 수정·삭제·TRUNCATE 를 막는다(알림이 보관기간 만료로 지워질 때만 함께 삭제). 테스트에서도 지울 수 없다.
 - 웹훅 오류·연결 실패 문구는 `WebhookNotifier.redact()` 를 거친다(받는 쪽이 토큰이 든 경로를 돌려준다). 새 전송기도 오류 문구에 주소를 그대로 넣지 않는다.
+- 웹훅은 `notifiers._OPENER`(넘김 거부)로 보낸다. `urllib.request.urlopen` 을 직접 쓰면 30x 를 따라가 인증 헤더가 새고 실패가 '전송됨'이 된다.
 - **CSV 를 내보내는 새 API 는 `app/csvexport.csv_response` 를 쓴다.** 로그에서 온 값(syslog 호스트 이름 등)이 엑셀 수식으로 실행되지 않게 한다.
 - 백업은 api 가 아니라 `backup` 서비스(postgres 이미지, busybox sh)가 한다. 결과는 `audit_log` 의 `backup.*` 로만 api 에 전달된다. `backup.sh` 를 고치면 `selftest` 로 확인한다.
 - 무음은 행을 지우지 않는다. 해제 = `ends_at` 을 앞당김(시작 전이면 길이 0). 상태(적용 중·예정·끝남)는 `routers/alerts._silence_state` 가 정한다.

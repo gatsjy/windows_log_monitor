@@ -121,6 +121,20 @@ class EmailNotifier(Notifier):
 _SEND_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
 _LAST_SENT: dict[tuple[int, str], float] = {}
 _LOOPBACK = ("127.0.0.1", "localhost", "::1")
+# 클라우드 메신저 호스트는 고른 형식(json·text 포함)과 상관없이 https 만 — 주소 자체에 토큰이 있다
+_HTTPS_HOSTS = tuple(h for f in FORMATS.values() if f.https_only for h in f.hosts)
+_BAD_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f]")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """웹훅은 넘김(30x)을 따라가지 않는다. 따라가면 POST 가 본문 없는 GET 으로 바뀌어 아무것도 안 보내고도 '전송됨'이 되고,
+    사용자가 넣은 인증 헤더가 다른 호스트(http 포함)로 간다. 넘김은 오류로 보여 최종 주소를 넣게 한다."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # 표준 라이브러리 서명 그대로
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 class WebhookNotifier(Notifier):
@@ -133,12 +147,19 @@ class WebhookNotifier(Notifier):
         super().__init__(name)
         if not url.startswith(("http://", "https://")):
             raise NotifierError("웹훅 주소는 http:// 또는 https:// 로 시작해야 합니다")
+        # 공백·제어 문자가 섞이면 전송 때 http.client 가 주소 전체(토큰 포함)를 오류 문구에 넣는다 → 저장 전에 막는다
+        if _BAD_URL_CHARS.search(url):
+            raise NotifierError("웹훅 주소에 공백이나 줄바꿈이 섞여 있습니다. 주소를 다시 복사해 넣으세요")
         self.url = url
         self.format = fmt if fmt in FORMATS else "json"
         spec = FORMATS[self.format]
-        # 클라우드 메신저는 http 로도 받아 버려서(리다이렉트 없음) 주소의 토큰이 평문으로 나간다. 같은 서버 안 중계만 예외
-        if spec.https_only and url.startswith("http://") and urlsplit(url).hostname not in _LOOPBACK:
-            raise NotifierError(f"'{spec.label.split(' —')[0]}' 형식은 https:// 주소만 씁니다 (주소에 든 토큰이 평문으로 나가지 않게)")
+        # 클라우드 메신저는 http 로도 받아 버려서(리다이렉트 없음) 주소의 토큰이 평문으로 나간다. 같은 서버 안 중계만 예외.
+        # 형식을 json·text 로 바꿔 우회하지 못하게 메신저 호스트면 형식과 상관없이 막는다
+        host = (urlsplit(url).hostname or "").lower()
+        known_host = any(host == h or host.endswith(f".{h}") for h in _HTTPS_HOSTS)
+        if url.startswith("http://") and host not in _LOOPBACK and (spec.https_only or known_host):
+            what = f"'{spec.label.split(' —')[0]}' 형식" if spec.https_only else "메신저 웹훅 주소"
+            raise NotifierError(f"{what}은 https:// 주소만 씁니다 (주소에 든 토큰이 평문으로 나가지 않게)")
         self.headers = {str(k): str(v) for k, v in (headers or {}).items()}
         self.timeout = float(timeout_sec)
 
@@ -159,7 +180,9 @@ class WebhookNotifier(Notifier):
         """주소의 경로·쿼리(토큰)를 가린다. 두레이처럼 오류 본문에 요청 경로를 그대로 돌려주는 서비스가 있어서,
         그대로 두면 전송 이력·화면·감사로그에 토큰이 남는다 (AGENTS.md 절대 규칙 6)."""
         parts = urlsplit(self.url)
-        secret = [parts.path, parts.query, *(seg for seg in parts.path.split("/") if len(seg) >= 8),
+        userinfo = parts.netloc.rpartition("@")[0]  # https://사용자:비밀번호@호스트 형식의 인증 정보
+        secret = [parts.path, parts.query, userinfo, parts.password or "",
+                  *(seg for seg in parts.path.split("/") if len(seg) >= 8),
                   *(v for _, v in parse_qsl(parts.query) if len(v) >= 8)]
         for piece in sorted({p for p in secret if p and p != "/"}, key=len, reverse=True):
             text = text.replace(piece, "…")
@@ -168,14 +191,18 @@ class WebhookNotifier(Notifier):
     def _post(self, body: bytes) -> None:
         request = urllib.request.Request(self.url, data=body, method="POST", headers=self.request_headers())
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with _OPENER.open(request, timeout=self.timeout) as response:
                 response.read(1024)
         except urllib.error.HTTPError as exc:
-            detail = self.redact(exc.read(300).decode("utf-8", "replace"))
-            raise NotifierError(f"웹훅 응답 {exc.code}: {detail}") from exc
+            # 넉넉히 읽어 가린 '뒤에' 자른다 — 먼저 자르면 경계에 걸친 토큰 앞부분이 가려지지 않고 남는다
+            detail = self.redact(exc.read(4096).decode("utf-8", "replace"))[:300]
+            moved = " — 다른 주소로 넘기려 합니다. 넘어간 뒤의 최종 주소를 넣으세요" if 300 <= exc.code < 400 else ""
+            raise NotifierError(f"웹훅 응답 {exc.code}{moved}: {detail}") from exc
         except (urllib.error.URLError, OSError) as exc:
             reason = self.redact(str(getattr(exc, "reason", exc)))
             raise NotifierError(f"웹훅 연결 실패 ({self.target()}): {reason}") from exc
+        except Exception as exc:  # http.client.InvalidURL·ValueError 등도 주소를 문구에 넣는다 → 가려서
+            raise NotifierError(f"웹훅 전송 실패 ({self.target()}): {self.redact(str(exc))[:300]}") from exc
 
     async def send(self, message: AlertMessage) -> None:
         body = json.dumps(self.payload(message), ensure_ascii=False, default=str).encode("utf-8")

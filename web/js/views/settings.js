@@ -346,27 +346,44 @@ function editWebhook(c, meta, done) {
   const previewBox = form.querySelector('[data-preview-box]');
   // 주소를 붙여 넣으면 맞는 형식을 권한다. 사용자가 형식을 직접 고른 뒤에는 바꾸지 않는다
   let pickedByUser = !!c;
-  form.format.addEventListener('change', () => { pickedByUser = true; previewBox.innerHTML = ''; });
+  let beforeAuto = null; // 자동으로 바꾸기 전 형식 — 주소가 더는 맞지 않으면 되돌린다
   const showFormatNote = () => {
     // 형식별 안내 (Teams 는 202 '접수' 만 확인되고, 워크플로 템플릿에 따라 인증 헤더를 넣으면 안 된다)
     const note = FORMAT_NOTES[form.format.value] ?? '';
     form.querySelector('[data-format-note]').textContent = note;
     form.querySelector('[data-format-note]').hidden = !note;
   };
-  form.format.addEventListener('change', showFormatNote);
+  // 형식이 바뀌면(직접이든 자동이든) 이전 형식의 안내·미리보기를 지운다
+  const onFormatChanged = () => { previewBox.innerHTML = ''; hint.textContent = ''; showFormatNote(); };
+  form.format.addEventListener('change', () => { pickedByUser = true; beforeAuto = null; onFormatChanged(); });
   showFormatNote();
-  form.url.addEventListener('input', () => {
-    const url = form.url.value.trim();
+  const warnBox = form.querySelector('[data-url-warning]');
+  const showUrlWarning = (url) => {
     const warning = (meta.webhook_url_warnings ?? []).find((w) => url.includes(w.match));
-    const warnBox = form.querySelector('[data-url-warning]');
     warnBox.textContent = warning?.text ?? '';
     warnBox.hidden = !warning;
+  };
+  // 저장된 연동은 주소를 돌려받지 않지만 호스트(target)로 종료된 주소(Office 365 커넥터 등)는 알 수 있다
+  if (c?.target) showUrlWarning(c.target);
+  form.url.addEventListener('input', () => {
+    const url = form.url.value.trim();
+    showUrlWarning(url || c?.target || '');
     const guess = guessFormat(url, formats);
-    hint.textContent = '';
+    if (!pickedByUser && beforeAuto !== null && guess !== form.format.value) {
+      form.format.value = beforeAuto; // 주소를 바꿔 더는 그 메신저가 아니면 자동으로 고른 형식을 되돌린다
+      beforeAuto = null;
+      onFormatChanged();
+    }
     if (!guess || guess === form.format.value) return;
     const label = formats.find((f) => f.key === guess).label.split(' —')[0];
-    if (pickedByUser) hint.textContent = `이 주소는 ${label} 형식으로 보이는데, 지금은 다른 형식이 선택되어 있습니다.`;
-    else { form.format.value = guess; hint.textContent = `주소를 보고 ${label} 형식을 골랐습니다.`; showFormatNote(); }
+    if (pickedByUser) {
+      hint.textContent = `이 주소는 ${label} 형식으로 보이는데, 지금은 다른 형식이 선택되어 있습니다.`;
+      return;
+    }
+    if (beforeAuto === null) beforeAuto = form.format.value;
+    form.format.value = guess;
+    onFormatChanged();
+    hint.textContent = `주소를 보고 ${label} 형식을 골랐습니다.`;
   });
   form.querySelector('[data-preview]').addEventListener('click', (e) => run(e.target, previewBox, async () => {
     const res = await api.send('POST', '/api/settings/webhook-preview', { format: form.format.value });
