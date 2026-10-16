@@ -4,6 +4,7 @@ import * as api from './api.js';
 import { GROUP_LABELS, matchText } from './alertdetail.js';
 import { closeDrawer, openDrawer } from './drawer.js';
 import { CATEGORY_LABELS, LEVELS, SEVERITIES, categoryLabel, levelIcon, severityBadge } from './levels.js';
+import { queryBox } from './querybox.js';
 import { confirmModal, errorBox, fmtNum, html, toast } from './util.js';
 
 const UNITS = [['s', '초', 1], ['m', '분', 60], ['h', '시간', 3600], ['d', '일', 86400]];
@@ -11,7 +12,7 @@ const GROUP_BY = [['host', 'PC'], ['ip', '출발지 IP'], ['user', '사용자'],
   ['channel', '채널'], ['none', '전체 합산']];
 const TRACK = { host: 'by_host', ip: 'by_src', user: 'by_user', category: 'by_category', event_id: 'by_event', channel: 'by_channel', none: 'none' };
 const SEV_ORDER = ['critical', 'error', 'warning', 'info'];
-const MATCH_FIELDS = ['category', 'level', 'event_id', 'host', 'user', 'ip', 'source', 'channel', 'provider', 'q'];
+const MATCH_FIELDS = ['category', 'level', 'event_id', 'host', 'user', 'ip', 'source', 'channel', 'provider', 'q', 'query'];
 
 function splitUnit(sec) {
   const [key] = [...UNITS].reverse().find(([, , size]) => sec % size === 0 && sec >= size) || UNITS[0];
@@ -31,7 +32,9 @@ export function signature(r) {
   } else {
     Object.entries(r.match).forEach(([k, v]) => {
       if (!v) return;
-      parts.push(k.startsWith('f.') ? `field:${k.slice(2)}=${quote(v)}` : k === 'q' ? `content:${quote(v)}` : `${k}:${v}`);
+      // 검색 문장은 query:"…" (Snort 의 msg: 와 겹치지 않게)
+      parts.push(k.startsWith('f.') ? `field:${k.slice(2)}=${quote(v)}` : k === 'q' ? `content:${quote(v)}`
+        : k === 'query' ? `query:${quote(v)}` : `${k}:${v}`);
     });
     parts.push(`threshold:type both, track ${TRACK[r.group_by] || `by_${r.group_by.replace(/^f\./, '')}`}, count ${r.threshold}, seconds ${r.window_sec}`);
     parts.push(`cooldown:${r.cooldown_sec}`);
@@ -150,6 +153,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
           <label class="field"><span>출발지 IP</span><input class="input" data-m="ip" value="${r.match.ip ?? ''}" placeholder="203.0.113.5"></label>
         </div>
         <label class="field"><span>메시지에 포함 (여러 단어는 <code>a|b</code> = 둘 중 하나)</span><input class="input" data-m="q" value="${r.match.q ?? ''}" placeholder="Failed password|Invalid user"></label>
+        <div class="field"><span>검색 문장 (선택 — 위 조건과 모두 만족, 이벤트 검색과 같은 문법)</span><div data-rule-query></div></div>
         <div class="field"><span>원본 필드 조건</span>
           <datalist id="field-paths">${fieldPaths.map((p) => html`<option value="${p}">`)}</datalist>
           <div class="cond-list">${r.fields.map(([k, v], i) => html`<div class="cond-row">
@@ -195,7 +199,32 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
         <button type="button" class="btn primary" data-save>${isNew ? '규칙 추가' : '저장'}</button>
       </div>`;
     bind();
+    mountQuery();
     refresh();
+  }
+
+  // 검색 문장 칸: 틀린 동안에는 저장·미리보기를 막는다 (서버도 ConfigError 로 거절하지만 위치를 먼저 보여 준다)
+  let queryValid = true;
+  function mountQuery() {
+    const el = body.querySelector('[data-rule-query]');
+    if (!el) return;
+    queryBox(el, {
+      value: r.match.query ?? '',
+      label: '규칙 검색 문장',
+      staleNote: false,
+      placeholder: '예) -user:svc_backup "잘못된 암호"',
+      fieldBudget: () => 10 - r.fields.filter(([k, v]) => k.trim() && String(v).trim()).length,
+      onCommit: () => {},
+      onAnalyze: (terms, text) => {
+        queryValid = Boolean(terms);
+        setMatch('query', (text ?? '').trim());
+        body.querySelectorAll('[data-save], [data-preview]').forEach((b) => {
+          b.disabled = !queryValid;
+          b.title = queryValid ? '' : '검색 문장의 오류를 먼저 고치세요';
+        });
+        if (body.querySelector('[data-sig]')) refresh();
+      },
+    });
   }
 
   function refresh() {

@@ -30,6 +30,7 @@ const REFERENCE = html`
   <ul class="ref-list">
     <li><code>title</code> 제목, <code>w</code> 너비(1~12칸)</li>
     <li><code>query</code> 조건 — <code>{"level":"1,2", "host":"WEB-01", "channel":"Security", "event_id":"4625", "q":"timeout", "f.StringInserts.5":"admin"}</code></li>
+    <li><code>query</code> 안의 <code>"query"</code> = 검색 문장 (이벤트 검색과 같은 문법, 다른 조건과 AND) — <code>{"query":"event_id:4625 -user:svc_backup"}</code>. 저장할 때 문장을 확인합니다.</li>
     <li><code>since</code> 이 위젯만 다른 기간 (예: "7d")</li>
   </ul>
   <div class="section-title">대시보드 옵션</div>

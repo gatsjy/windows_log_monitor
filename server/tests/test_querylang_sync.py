@@ -21,7 +21,7 @@ JS = Path(settings.web_dir) / "js" / "querylang.js"
 
 def js_sync() -> dict:
     text = JS.read_text(encoding="utf-8")
-    m = re.search(r"/\* @sync:begin \*/(.*?)/\* @sync:end \*/", text, re.S)
+    m = re.search(r"/\* @sync:begin \*/(.*?)/\* @sync:end \*/", text, re.DOTALL)
     assert m, "web/js/querylang.js 에 @sync 블록이 없습니다"
     return json.loads(m.group(1))
 

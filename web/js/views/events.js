@@ -1,12 +1,18 @@
-// 이벤트 검색 화면: 필터 → 시간대 분포 → 결과 표 (더 보기).
+// 이벤트 검색 화면: 필터(검색 문장) → 시간대 분포 → 결과 표 (더 보기).
+// 옛 링크(host=…&q=a|b)로 들어오면 문장으로 접어 주소를 바꾼다 (filterState). 같은 주소 = 같은 조건.
 import * as api from '../api.js';
 import { columnChart, legend, seriesColors, seriesLabel } from '../charts.js';
+import { setSearchContext } from '../drawer.js';
 import { EVENT_HEAD, bindRows, eventRow } from '../eventtable.js';
-import { filterBar, isFilterKey } from '../filterbar.js';
+import { filterBar, filterState } from '../filterbar.js';
+import { parseTerms } from '../querylang.js';
 import { errorBox, fmtNum, html, replaceParams, tzOffset } from '../util.js';
 
 export async function mount(root, params) {
-  let state = Object.fromEntries(Object.entries({ since: '24h', ...params }).filter(([k]) => isFilterKey(k)));
+  const initial = filterState({ since: '24h', ...params }, { showTime: true });
+  let state = initial.state;
+  if (initial.changed) replaceParams('events', state);
+  let bar = null;
   let items = [];
   let cursor = null;
   let token = 0;
@@ -49,6 +55,12 @@ export async function mount(root, params) {
   async function load() {
     const my = ++token;
     rowsEl.innerHTML = '';
+    // 문장이 틀렸으면 서버에 묻지 않는다 (입력 칸이 틀린 곳을 보여 준다) — 옛 링크·손으로 고친 주소로 들어온 경우
+    try { parseTerms(state.query ?? ''); } catch {
+      footEl.innerHTML = html`<span class="muted">검색 문장을 고치면 결과가 보입니다.</span>`;
+      root.querySelector('[data-count]').textContent = '';
+      return;
+    }
     footEl.innerHTML = '<div class="skeleton" style="height:120px"></div>';
     try {
       const [series, count, page] = await Promise.all([
@@ -65,7 +77,7 @@ export async function mount(root, params) {
       hist.innerHTML = html`${legend(ser)}<div data-chart></div>`;
       columnChart(hist.querySelector('[data-chart]'), {
         buckets: series.buckets, intervalSec: series.interval_sec, series: [...ser].reverse(), height: 150,
-        onSelect: (range) => { state = { ...state, ...range }; replaceParams('events', state); remountFilter(); load(); },
+        onSelect: (range) => { state = { ...state, ...range }; replaceParams('events', state); bar?.setState(state); load(); },
       });
 
       items = page.items;
@@ -77,16 +89,15 @@ export async function mount(root, params) {
     } catch (err) {
       if (my !== token) return;
       footEl.innerHTML = errorBox(err);
+      bar?.showServerError(err);   // 문장 오류면 입력 칸에서 틀린 곳을 칠한다
     }
   }
 
-  function remountFilter() {
-    filterBar(root.querySelector('[data-filter]'), state, {
-      onChange: (next) => { state = next; replaceParams('events', state); load(); },
-    });
-  }
-
-  remountFilter();
+  filterBar(root.querySelector('[data-filter]'), state, {
+    onChange: (next) => { state = next; replaceParams('events', state); load(); },
+  }).then((b) => { bar = b; });
+  // 상세 패널의 '좁히기·제외'가 이 화면의 문장을 고치게
+  setSearchContext({ query: () => bar?.query ?? state.query ?? '', apply: (text) => bar?.applySentence(text) });
   load();
-  return () => { token++; };
+  return () => { token++; bar?.destroy(); setSearchContext(null); };
 }

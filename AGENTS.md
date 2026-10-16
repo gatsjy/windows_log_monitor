@@ -49,6 +49,7 @@ server/app/
   partitions.py      events 월별 파티션 생성 / 보관기간 만료 삭제
   repository.py      ★ 이벤트 저장·조회 SQL 전부
   filters.py         검색 조건 파싱 + 실시간 매칭 (백엔드 무관)
+  querylang.py       ★ 검색 문장 파서·정규형 (표준 라이브러리만, web/js/querylang.js 와 한 줄씩 같은 알고리즘, ADR-033)
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
@@ -69,7 +70,10 @@ web/js/
   views/             화면: dashboard, live, events, alerts, agents, fields, reports(점검 보고서), users·audit·settings(관리자)
   auth.js            로그인·비밀번호 변경 화면, 현재 사용자 (main.js 가 init)
   widgets/           ★ 대시보드 위젯: stat, timeseries, top, events, hosts, text, alerts (live() = 실시간 갱신)
-  livefilter.js      서버 filters.py 와 같은 조건 판단 (대시보드 실시간 갱신용)
+  querylang.js       ★ 검색 문장 파서·매처·옛 링크 접기·문장 편집 (import·DOM 없음 — node 로 시험)
+  querybox.js        검색 문장 입력 칸 (해석·오류 위치·빠른 고침·도움말·자동완성)
+  filterbar.js       검색·실시간 필터 막대 (문장이 정본, 드롭다운·수준 칩은 문장을 고치는 창)
+  livefilter.js      대시보드 실시간 갱신용 조건 판단 (querylang.compileQuery 에 맡김)
   responsive.js      좁은 화면 보정: 표 칸에 data-label(모바일 카드), 카드 격자 줄 단위 재배치 (MutationObserver)
   ruleform.js        알림 규칙 편집 패널 (Snort 식 규칙 문장·우리말 요약·미리보기)
   alertdetail.js     알림 상세 패널(확인·해결·메모·무음), 전송·처리 상태 칩, 규칙 요약 문구
@@ -93,11 +97,12 @@ python3 tools/simulate.py --once           # 테스트 데이터 (과거 24시�
 docker compose exec api python -m pytest   # 단위 + 통합 테스트 (통합은 <DB>_test 를 만들어 쓰고, Oracle 은 시험 컨테이너가 있을 때만)
 docker compose exec api ruff check --no-cache app tests
 docker compose run --rm backup selftest     # 백업·복구 시험·복원 스크립트 자체 시험 (시험용 DB 만 씀)
+node --test 'server/tests/js/*.test.mjs'    # 검색 문장 화면 쪽 시험 + node·python3 교차 퍼징 (npm 없음, 개발 PC 에서)
 curl -s localhost:8080/healthz
 ```
 
 **완료 기준:**
-- 테스트와 린트가 통과합니다.
+- 테스트와 린트가 통과합니다. 검색·필터 규칙(querylang·filters·livefilter)을 바꿨으면 node 시험도 통과합니다.
 - 관련 화면을 브라우저(http://localhost:8080)에서 직접 열어 확인했습니다.
 - 브라우저 콘솔에 오류가 없습니다.
 - 문서(이 파일, PROJECT.md, DECISIONS.md, ISMS.md 중 해당하는 것)를 갱신했습니다.
@@ -117,6 +122,7 @@ curl -s localhost:8080/healthz
 | 새 API | `routers/` 에 엔드포인트, SQL 은 `repository.py` 에 함수로 |
 | DB 변경 | `server/migrations/00N_설명.sql` 추가 |
 | 이벤트 ID 설명 | `web/js/catalog.js` 의 `EVENT_DOCS` (IIS 는 `HTTP_STATUS`) |
+| 검색 키 추가 | 케이스 표에 줄 먼저 → `querylang.py`·`querylang.js` 의 SYNC(키·힌트) → `EventFilter`(필드·merged·matches) → `repository.where_clause`(포함·`_EXCLUDE_COLUMNS`) → `querylang.js`(INCLUDE_FIELD·compileFilter) → `querybox.js` KEY_LABELS → PROJECT.md §4.1 |
 | 분류 추가·변경 | `normalizers/categories.py` 의 `classify()` + `web/js/levels.js` 의 `CATEGORY_LABELS` + 기존 데이터 UPDATE 마이그레이션 |
 | 사용자·IP 추출 추가 | 정규화기에서 `Event.username`/`src_ip` 채우기 (`clean_user`/`clean_ip` 통과). Windows 는 `windows.py` 의 `USER_FIELDS`·`IP_FIELDS`·`STRING_INSERT_POSITIONS` |
 | 알림 규칙 태그 | 규칙의 `tags: [MITRE Txxxx, ISMS 2.x.x]` — ISMS.md 의 '알림 규칙과 ISMS 항목' 표도 맞춤 |
@@ -130,9 +136,13 @@ curl -s localhost:8080/healthz
 - 보안 로그 `Level` 은 대부분 0이라 정보(4)로 들어옵니다. Keywords의 감사 실패 비트가 있으면 경고(3)로 올립니다(ADR-008).
 - 개발 포트는 UI 8080, **수집 6976**, DB 15432(127.0.0.1), Mailpit 8025(127.0.0.1)입니다. 5432와 8000은 다른 로컬 프로젝트가 쓰고 있습니다.
 - 개발 중 알림 메일은 밖으로 나가지 않습니다. Mailpit(http://localhost:8025)에서 확인합니다.
-- 필터 규칙을 바꾸면 `server/app/filters.py`(서버·알림)와 `web/js/livefilter.js`(대시보드 실시간)를 **둘 다** 고쳐야 합니다.
+- **검색 규칙은 세 곳에 있습니다:** `server/app/querylang.py`·`filters.py`(서버·알림), `web/js/querylang.js`(화면·대시보드 실시간), 케이스 표 `server/tests/querylang_cases.json`. **표에 줄을 먼저 추가**하고 두 언어를 같이 고칩니다(ADR-033).
+  - 상수·오류 문구는 두 파일의 SYNC(`@sync` 블록)에 두고 pytest(`test_querylang_sync.py`)가 비교합니다. JS 는 `Array.from` 코드 포인트, Python 은 str 인덱스 — 위치는 코드 포인트.
+  - 제외는 값이 없는 이벤트를 남깁니다: SQL `(포함식) IS NOT TRUE`, 매처는 None 이면 통과. `NOT IN`·`<> ALL` 을 쓰지 않습니다.
+  - 기존 파라미터의 SQL 은 바뀌면 안 됩니다(`test_where_snapshot.py`). 일부러 바꿨다면 `WLM_UPDATE_SNAPSHOTS=1` 로 다시 만들고 이유를 커밋에 적습니다.
   - 검색 파라미터 `user`·`ip` 는 컬럼 `username`·`src_ip` 로 매핑됩니다(`repository.COLUMN_EXPR`, `livefilter.FIELD_OF`).
   - 상위 값 목록에서 `user`·`ip` 의 빈 값 제외도 두 곳입니다(`repository.TOP_SKIP_EMPTY`, `widgets/top.js` 의 `SKIP_EMPTY`).
+- 알림 규칙이 감시하는 분류는 `Rule.categories`(match.category + match.query 의 `category:`)입니다. 조회 범위 판단(`alerts/visibility.py`)은 이것만 봅니다.
 - **새 API 의 권한:** 관리자만이면 `require_admin`, 그룹으로 위임할 수 있는 기능이면 `require_permission("권한")`(auth/groups.py PERMISSIONS 에 추가). 화면은 `auth.can("권한")` 으로 버튼을 숨긴다.
 - **이벤트를 돌려주는 새 API 는 반드시 `routers/query._filter(request)` 로 필터를 만든다.** 그래야 사용자 그룹의 조회 범위(`scopes`)가 붙는다. 단건 조회는 `filters.scopes_allow` 로 확인.
   - 알림·무음을 돌려주거나 바꾸는 API 는 `alerts/visibility.py`(`alert_visible`·`silence_visible`·`count_by_status`)로 범위를 확인한다. 알림 수를 새로 셀 때도 마찬가지.

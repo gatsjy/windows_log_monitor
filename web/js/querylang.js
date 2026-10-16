@@ -372,7 +372,8 @@ class Scanner {
     if (SYNC.time_keys.includes(low)) throw this.err('time_key', i, j);
     const nxt = j + 1 < n ? t[j + 1] : '';
     if (IDENT.test(head) && ![':', '\\', '/'].includes(nxt)) {
-      throw this.err('unknown_key', i, j, { key: head, hint: hint(suggest(head, SYNC.key_hints, KEYS)) });
+      const suggested = suggest(head, SYNC.key_hints, KEYS);   // suggest: 화면의 '고치기' 단추용 (문구에는 hint)
+      throw this.err('unknown_key', i, j, { key: head, hint: hint(suggested), suggest: suggested });
     }
     let k = j;                                              // ':' 가 든 메시지 단어 (C:\x, http://x, 12:30, fe80::1)
     while (k < n && !WS.has(t[k])) {
@@ -475,9 +476,8 @@ class Scanner {
     if (key === 'category') {
       const low = asciiLower(value);
       if (CATEGORIES.includes(low)) return low;
-      throw this.err('bad_category', s0, s1, {
-        value, hint: hint(suggest(value, SYNC.category_hints, CATEGORIES)), list: CATEGORIES.join(', '),
-      });
+      const suggested = suggest(value, SYNC.category_hints, CATEGORIES);
+      throw this.err('bad_category', s0, s1, { value, hint: hint(suggested), suggest: suggested, list: CATEGORIES.join(', ') });
     }
     if (key === 'level') {
       const level = LEVEL_OF.get(asciiLower(value));

@@ -4,6 +4,8 @@ import { can } from './auth.js';
 import { openDrawer } from './drawer.js';
 import { EVENT_HEAD, bindRows, eventRow } from './eventtable.js';
 import { categoryLabel, levelLabel, severityBadge, sourceLabel } from './levels.js';
+import { describe } from './querybox.js';
+import { parseTerms } from './querylang.js';
 import { errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html } from './util.js';
 
 const DELIVERY = {
@@ -55,6 +57,9 @@ export function matchText(match = {}) {
     if (k === 'ip') return `IP ${v}`;
     if (k === 'provider') return `공급자 ${v}`;
     if (k === 'q') return `"${v}" 포함`;
+    if (k === 'query') {
+      try { return describe(parseTerms(v)); } catch { return `문장: ${v}`; }
+    }
     return `${k.replace(/^f\./, '')} = ${v}`;
   });
   return parts.join(', ') || '모든 이벤트';

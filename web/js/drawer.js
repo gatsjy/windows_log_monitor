@@ -3,9 +3,50 @@ import * as api from './api.js';
 import { eventDoc } from './catalog.js';
 import { jsonView } from './jsonview.js';
 import { categoryLabel, levelBadge, sourceLabel } from './levels.js';
+import { addTerm, formatTerm, parseTerms } from './querylang.js';
 import { errorBox, fmtRelative, fmtTime, html, navigate } from './util.js';
 
 let current = null;
+// 이벤트 검색·실시간 화면이 열려 있는 동안: { query(): 지금 확정된 문장, apply(text): 문장을 바꿔 바로 검색 }
+// 상세 패널의 값에서 지금 검색을 '좁히기'(조건 추가)·'제외'(-조건)할 수 있게 한다 (B-01)
+let searchContext = null;
+export function setSearchContext(ctx) { searchContext = ctx; }
+
+const INT_KEYS = new Set(['event_id', 'level']);
+
+/** {host: 'WEB-01'} 같은 옛 조건 → 문장 term. 문장으로 쓸 수 없는 원본 경로면 null */
+function termOf(filter) {
+  const [[key, value]] = Object.entries(filter);
+  const term = key.startsWith('f.')
+    ? { key: 'f', path: key.slice(2).split('.'), values: [String(value)], neg: false }
+    : { key, path: [], values: [INT_KEYS.has(key) ? Number(value) : String(value)], neg: false };
+  try {
+    return parseTerms(formatTerm(term)).length === 1 ? term : null;
+  } catch {
+    return null;
+  }
+}
+
+function actions(filter) {
+  const term = termOf(filter);
+  const enc = (v) => JSON.stringify(v);
+  if (searchContext && term) {
+    return html` <a href="#" class="filter-link" data-act="only" data-filter='${enc(filter)}'>이 값만</a>
+      <a href="#" class="filter-link" data-act="narrow" data-filter='${enc(filter)}' title="지금 검색 문장에 이 조건을 더합니다">＋ 좁히기</a>
+      <a href="#" class="filter-link" data-act="exclude" data-filter='${enc(filter)}' title="지금 검색에서 이 값을 뺍니다">－ 제외</a>`;
+  }
+  return html` <a href="#" class="filter-link" data-act="only" data-filter='${enc(filter)}'>이 값으로 검색</a>
+    ${term ? html`<a href="#" class="filter-link" data-act="without" data-filter='${enc(filter)}'>제외하고 검색</a>` : ''}`;
+}
+
+function act(kind, filter) {
+  const term = termOf(filter);
+  if (kind === 'only' || !term) { searchBy(filter); return; }
+  if (kind === 'without') { searchBy({ query: formatTerm({ ...term, neg: true }) }); return; }
+  const ctx = searchContext;
+  closeDrawer();
+  ctx.apply(addTerm(ctx.query(), kind === 'exclude' ? { ...term, neg: true } : term));
+}
 
 export function closeDrawer() {
   current?.();
@@ -53,7 +94,7 @@ export async function openEvent(evOrId) {
   const doc = eventDoc(ev.event_id, ev.source);
   const row = (label, value, filter) => html`
     <dt>${label}</dt>
-    <dd>${value ?? '–'}${filter ? html` <a href="#" class="filter-link" data-filter='${JSON.stringify(filter)}'>이 값으로 검색</a>` : ''}</dd>`;
+    <dd>${value ?? '–'}${filter ? actions(filter) : ''}</dd>`;
 
   body.innerHTML = html`
     <div class="toolbar" style="margin-bottom:14px">
@@ -81,14 +122,23 @@ export async function openEvent(evOrId) {
       <span>원본 데이터 (에이전트가 보낸 그대로)</span>
       <button class="btn sm" data-copy>JSON 복사</button>
     </div>
-    <div class="hint-box" style="margin-bottom:8px">값을 클릭하면 그 값을 가진 이벤트만 검색합니다.</div>
+    <div class="hint-box" style="margin-bottom:8px">${searchContext ? '값을 클릭하면 그 값으로 검색을 좁히거나 제외할 수 있습니다.' : '값을 클릭하면 그 값을 가진 이벤트만 검색합니다.'}</div>
+    <div data-picked></div>
     <div data-json></div>`;
 
-  body.querySelectorAll('[data-filter]').forEach((a) => a.addEventListener('click', (e) => {
+  const bind = (root) => root.querySelectorAll('[data-act]').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
-    searchBy(JSON.parse(a.dataset.filter));
+    act(a.dataset.act, JSON.parse(a.dataset.filter));
   }));
-  jsonView(body.querySelector('[data-json]'), ev.raw, (path, value) => searchBy({ [`f.${path}`]: value }));
+  bind(body);
+  jsonView(body.querySelector('[data-json]'), ev.raw, (path, value) => {
+    const filter = { [`f.${path}`]: value };
+    if (!searchContext) { searchBy(filter); return; }
+    // 검색 화면에서는 고를 수 있게: 이 값만 / 좁히기 / 제외
+    const picked = body.querySelector('[data-picked]');
+    picked.innerHTML = html`<div class="picked-bar"><code>${path} = ${value}</code>${actions(filter)}</div>`;
+    bind(picked);
+  });
   body.querySelector('[data-copy]').addEventListener('click', async (e) => {
     try {
       await navigator.clipboard.writeText(JSON.stringify(ev.raw, null, 2));

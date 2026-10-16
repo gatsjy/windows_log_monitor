@@ -282,7 +282,8 @@ class _Scanner:
             raise self.err("time_key", i, j)
         nxt = t[j + 1] if j + 1 < n else ""
         if _IDENT.fullmatch(head) and nxt not in (":", "\\", "/"):
-            raise self.err("unknown_key", i, j, key=head, hint=_hint(_suggest(head, SYNC["key_hints"], KEYS)))
+            suggested = _suggest(head, SYNC["key_hints"], KEYS)       # suggest: 화면의 '고치기' 단추용 (문구에는 hint)
+            raise self.err("unknown_key", i, j, key=head, hint=_hint(suggested), suggest=suggested)
         k = j                                                     # ':' 가 든 메시지 단어 (C:\x, http://x, 12:30, fe80::1)
         while k < n and t[k] not in WS:
             if t[k] in QUOTES:
@@ -389,8 +390,9 @@ class _Scanner:
             low = ascii_lower(value)
             if low in SYNC["categories"]:
                 return low
-            hint = _hint(_suggest(value, SYNC["category_hints"], SYNC["categories"]))
-            raise self.err("bad_category", s0, s1, value=value, hint=hint, list=", ".join(SYNC["categories"]))
+            suggested = _suggest(value, SYNC["category_hints"], SYNC["categories"])
+            raise self.err("bad_category", s0, s1, value=value, hint=_hint(suggested), suggest=suggested,
+                           list=", ".join(SYNC["categories"]))
         if key == "level":
             level = _LEVEL_OF.get(ascii_lower(value))
             if level is None:

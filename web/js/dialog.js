@@ -24,15 +24,17 @@ const TOAST_ICONS = {
 /**
  * 토스트 메시지를 화면에 띄웁니다.
  * @param {string} message - 안내 문구
- * @param {{type?: 'info'|'success'|'error'|'warning', duration?: number}} options
+ * @param {{type?: 'info'|'success'|'error'|'warning', duration?: number, action?: {label: string, onClick: () => void}}} options
+ *   action: 토스트 안의 단추 하나 (예: [되돌리기]) — 누르면 실행하고 토스트를 닫는다
  */
-export function toast(message, { type = 'info', duration = 3200 } = {}) {
+export function toast(message, { type = 'info', duration = 3200, action = null } = {}) {
   const container = ensureToastContainer();
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
   el.innerHTML = `
     <div class="toast-icon">${TOAST_ICONS[type] || TOAST_ICONS.info}</div>
     <div class="toast-msg">${message}</div>
+    ${action ? html`<button type="button" class="btn sm toast-action">${action.label}</button>` : ''}
     <button type="button" class="toast-close" aria-label="닫기">✕</button>
   `;
 
@@ -43,6 +45,7 @@ export function toast(message, { type = 'info', duration = 3200 } = {}) {
   };
 
   el.querySelector('.toast-close').addEventListener('click', remove);
+  el.querySelector('.toast-action')?.addEventListener('click', () => { action.onClick(); remove(); });
 
   container.appendChild(el);
 

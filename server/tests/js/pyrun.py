@@ -10,8 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.filters import EventFilter  # noqa: E402
-from app.querylang import QueryError, parse_terms  # noqa: E402
+from app.filters import EventFilter
+from app.querylang import QueryError, parse_terms
 
 CASES = json.loads((Path(__file__).resolve().parents[1] / "querylang_cases.json").read_text(encoding="utf-8"))
 

@@ -1,12 +1,19 @@
 // 실시간 로그: 서버가 받는 즉시 SSE(/api/live)로 밀어주는 이벤트를 위에서부터 쌓는다.
+// 조건(검색 문장)은 서버가 거른다(filters.matches). 조건을 바꾸면 이미 보이는 행도 같은 규칙(querylang.compileQuery)으로 다시 거른다.
+import * as api from '../api.js';
+import { setSearchContext } from '../drawer.js';
 import { EVENT_HEAD, bindRows, eventRow } from '../eventtable.js';
-import { filterBar, isFilterKey } from '../filterbar.js';
+import { filterBar, filterState } from '../filterbar.js';
+import { compileQuery } from '../querylang.js';
 import { fmtNum, html, qs, replaceParams } from '../util.js';
 
 const MAX_ROWS = 300;
 
 export async function mount(root, params) {
-  let state = Object.fromEntries(Object.entries(params).filter(([k]) => isFilterKey(k) && k !== 'since' && k !== 'until'));
+  const initial = filterState(params, { showTime: false });
+  let state = initial.state;
+  if (initial.changed) replaceParams('live', state);
+  let bar = null;
   let source = null;
   let paused = false;
   let pending = [];
@@ -69,9 +76,20 @@ export async function mount(root, params) {
   function connect() {
     source?.close();
     setStatus('off', '연결 중…');
-    source = new EventSource(`/api/live?${qs(state)}`);
+    const mine = new EventSource(`/api/live?${qs(state)}`);
+    source = mine;
     source.onopen = () => setStatus('', paused ? '일시정지' : '수신 중');
-    source.onerror = () => setStatus('bad', '재연결 중…');
+    source.onerror = async () => {
+      if (mine.readyState !== EventSource.CLOSED) { setStatus('bad', '재연결 중…'); return; }
+      // 400 등으로 끊김(EventSource 는 본문을 못 읽는다) → 해석 API 로 문장 오류 위치를 받아 보여 준다
+      try {
+        await api.get('/api/search/parse', state);
+        setStatus('bad', '연결이 끊겼습니다 — 새로고침하세요');
+      } catch (err) {
+        setStatus('bad', err.queryError ? '검색 조건 오류' : '연결이 끊겼습니다');
+        bar?.showServerError(err);
+      }
+    };
     source.addEventListener('events', (e) => {
       const batch = JSON.parse(e.data);
       total += batch.length;
@@ -98,12 +116,23 @@ export async function mount(root, params) {
     emptyEl.hidden = false;
   });
 
+  // 조건이 바뀌면 이미 보이는 행·대기 중인 행도 새 조건으로 거른다 (서버와 같은 규칙)
+  function refilter() {
+    const keep = compileQuery(state);
+    for (const tr of [...rowsEl.children]) {
+      if (!keep(events.get(tr.dataset.k))) { events.delete(tr.dataset.k); tr.remove(); }
+    }
+    pending = pending.filter(keep);
+    emptyEl.hidden = rowsEl.children.length > 0;
+  }
+
   filterBar(root.querySelector('[data-filter]'), state, {
     showTime: false,
-    onChange: (next) => { state = next; replaceParams('live', state); connect(); },
-  });
+    onChange: (next) => { state = next; replaceParams('live', state); refilter(); connect(); },
+  }).then((b) => { bar = b; });
+  setSearchContext({ query: () => bar?.query ?? state.query ?? '', apply: (text) => bar?.applySentence(text) });
   connect();
   const timer = setInterval(updateRate, 5000);
 
-  return () => { source?.close(); clearInterval(timer); };
+  return () => { source?.close(); clearInterval(timer); bar?.destroy(); setSearchContext(null); };
 }

@@ -325,6 +325,37 @@ textarea.input { height: auto; padding: 10px 11px; line-height: 1.55; }
 .fb-inputs .fb-id { width: 160px; flex: none; }
 .filterbar .grow { flex: 1 1 200px; }
 .fb-reset { margin-left: auto; }
+/* 검색 문장(B-01): 1행 = 문장 칸, 2행 = 기간·드롭다운·수준 칩·링크 복사·초기화 */
+.fb-query { flex: 1 1 100%; min-width: 0; }
+.fb-controls { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; min-width: 0; }
+.fb-actions { margin-left: auto; }
+.fb-hint { font-size: 12px; }
+.qb { position: relative; display: grid; gap: 6px; }
+.qb-row { display: flex; gap: 8px; align-items: center; }
+.qb-input { font-family: var(--mono); font-size: 13px; }
+.qb-input[aria-invalid="true"] { border-color: var(--critical); box-shadow: 0 0 0 3px color-mix(in srgb, var(--critical) 14%, transparent); }
+.qb-help-btn { flex: none; width: 34px; font-weight: 700; }
+.qb-line { font-size: 12.5px; line-height: 1.6; min-height: 1.6em; overflow-wrap: anywhere; display: grid; gap: 4px; }
+.qb-line.qb-error { color: var(--bad-ink); }
+.qb-line.qb-stale { opacity: 0.6; }
+.qb-src { display: block; white-space: pre-wrap; color: var(--ink-2); background: var(--surface-2); border-radius: var(--radius-sm); padding: 6px 9px; }
+.qb-mark { background: color-mix(in srgb, var(--critical) 22%, transparent); color: var(--ink); border-radius: 3px; padding: 0 1px; }
+.qb-fixes { display: flex; flex-wrap: wrap; gap: 6px; }
+.qb-lint { color: var(--muted); }
+.qb-help { background: var(--surface-2); border-radius: var(--radius-sm); padding: 11px 13px; font-size: 13px; line-height: 1.6; }
+.qb-help-body p { margin: 0 0 8px; }
+.qb-help-body ul { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; }
+.qb-keys, .qb-examples { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.qb-keys code { color: var(--muted); }
+.qb-example { display: inline-flex; gap: 8px; align-items: baseline; border: 1px solid var(--border-strong); background: var(--surface); color: var(--ink); border-radius: var(--radius-sm); padding: 5px 9px; cursor: pointer; font: inherit; text-align: left; }
+.qb-example:hover { border-color: var(--accent); }
+.qb-example span { font-size: 12px; }
+.qb-ac { position: absolute; top: 40px; left: 0; right: 42px; z-index: 30; list-style: none; margin: 0; padding: 4px; max-height: 260px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18); }
+.qb-ac li { padding: 6px 9px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.qb-ac li:hover, .qb-ac li.on { background: var(--accent-wash); }
+.picked-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.toast-action { flex: none; }
 
 /* ------------------------------------------------------------ level/status */
 .lvl { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; font-weight: 500; color: var(--ink); }
@@ -794,6 +825,10 @@ body.auth-open .app { visibility: hidden; }
   .fb-inputs { flex: 1 1 auto; display: grid; grid-template-columns: 1fr; }
   .fb-inputs .fb-id, .fb-inputs .input { width: 100%; }
   .fb-reset { margin: 0; width: 100%; }
+  .fb-controls { gap: 10px; }
+  .fb-actions { margin: 0; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; }
+  .qb-ac { right: 0; }
+  .qb-examples { display: grid; }
 
   .drawer-head { padding: 14px 16px 12px; }
   .drawer-body { padding: 16px 16px 40px; }

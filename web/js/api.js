@@ -17,20 +17,18 @@ function headers(method, extra = {}) {
   return h;
 }
 
-async function errorText(res) {
-  try {
-    const body = await res.json();
-    if (typeof body.detail === 'string') return body.detail;
-    if (Array.isArray(body.detail)) return body.detail.map((d) => d.msg).join(', ');
-    return JSON.stringify(body.detail ?? body);
-  } catch {
-    return `${res.status} ${res.statusText}`;
-  }
+function errorText(body, res) {
+  if (body == null) return `${res.status} ${res.statusText}`;
+  if (typeof body.detail === 'string') return body.detail;
+  if (Array.isArray(body.detail)) return body.detail.map((d) => d.msg).join(', ');
+  return JSON.stringify(body.detail ?? body);
 }
 
 async function handle(res, path) {
   if (res.ok) return res.json();
-  const message = await errorText(res);
+  let body = null;
+  try { body = await res.json(); } catch { /* 본문이 JSON 이 아님 */ }
+  const message = errorText(body, res);
   const reason = res.headers.get('X-WLM-Reason');
   // 로그인 API 자체의 실패(비밀번호 틀림 등)는 화면에서 처리한다
   if (!path.startsWith('/api/auth/login')) {
@@ -42,6 +40,8 @@ async function handle(res, path) {
   const error = new Error(message);
   error.status = res.status;
   error.reason = reason;
+  // 검색 문장 오류: {param, code, start, end, message} — 입력 칸이 틀린 곳을 칠한다 (routers/query.QueryRejected)
+  error.queryError = body?.query_error ?? null;
   throw error;
 }
 

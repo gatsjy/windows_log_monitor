@@ -58,6 +58,25 @@ TEMPLATES = [
 ]
 
 
+# 채널 → 분류 (normalizers/categories.classify 와 같은 결과)
+CATEGORY_SQL = ("CASE t.channel WHEN 'Security' THEN 'security' WHEN 'System' THEN 'system'"
+                " WHEN 'Application' THEN 'application' ELSE 'powershell' END")
+
+
+def fill_columns() -> None:
+    """예전에 만든 벤치 DB 에 분류·사용자·IP 를 채운다 (UPDATE 라 테이블이 부푼다 — 공식 수치는 --drop 후 새로 생성)."""
+    with psycopg.connect(BENCH_URL, autocommit=True) as conn:
+        t0 = time.time()
+        conn.execute(
+            "UPDATE events SET category = CASE channel WHEN 'Security' THEN 'security' WHEN 'System' THEN 'system'"
+            " WHEN 'Application' THEN 'application' ELSE 'powershell' END,"
+            " username = CASE WHEN channel = 'Security' THEN raw #>> '{StringInserts,5}' END,"
+            " src_ip = CASE WHEN event_id IN (4624, 4625) THEN raw #>> '{StringInserts,11}' END"
+            " WHERE category IS NULL")
+        conn.execute("VACUUM (ANALYZE) events")
+        print(f"분류·사용자·IP 채움: {time.time() - t0:,.0f}초")
+
+
 def seed(rows: int, days: int, hosts: int, chunk: int = 250_000) -> None:
     with psycopg.connect(BENCH_URL, autocommit=True) as conn:
         have = conn.execute("SELECT count(*) FROM events").fetchone()[0]
@@ -84,7 +103,8 @@ def seed(rows: int, days: int, hosts: int, chunk: int = 250_000) -> None:
         total_templates = idx
 
         sql = f"""
-        INSERT INTO events (received_at, ts, host, source, channel, provider, event_id, level, message, raw)
+        INSERT INTO events (received_at, ts, host, source, channel, provider, event_id, level, message, raw,
+                            category, username, src_ip)
         SELECT r_at, r_at - (random() * interval '3 seconds'), host, 'winevtlog', t.channel, t.provider, t.event_id,
                t.level, t.message || ' 계정 이름: ' || usr || ' 원본 주소: ' || ip,
                jsonb_build_object(
@@ -97,7 +117,11 @@ def seed(rows: int, days: int, hosts: int, chunk: int = 250_000) -> None:
                  'StringInserts', jsonb_build_array('S-1-5-18', '-', '-', '0x3e7', 'S-1-5-21-1', usr, 'CORP',
                                                     '0x1a2b', '3', 'NtLmSsp', '-', ip),
                  'agent_host', host, 'log_source', 'winevtlog',
-                 'date', to_char(r_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
+                 'date', to_char(r_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
+               -- 분류·사용자·IP (B-01 검색 문장 벤치용): 실제처럼 보안 로그에만 사용자, 로그온 이벤트에만 IP — 나머지는 NULL
+               {CATEGORY_SQL},
+               CASE WHEN t.channel = 'Security' THEN usr END,
+               CASE WHEN t.event_id IN (4624, 4625) THEN ip END
           FROM (
             SELECT now() - random() * interval '{days} days' AS r_at,
                    'PC-' || lpad((1 + floor(random() * {hosts}))::int::text, 4, '0') AS host,
@@ -122,6 +146,32 @@ def seed(rows: int, days: int, hosts: int, chunk: int = 250_000) -> None:
         size = conn.execute("SELECT pg_size_pretty(pg_database_size(current_database()))").fetchone()[0]
         print(f"DB 크기: {size}")
 
+
+# 검색 문장(B-01): 옛 파라미터와 같은 뜻의 문장을 같은 실행 안에서 짝으로 잰다 (SQL 이 같으므로 같아야 한다) + 새 기능
+SENTENCE_SCENARIOS = [
+    ("[문장] 24시간 · PC 1대", "/api/events", {"since": "24h", "query": "host:PC-0042", "limit": 100}),
+    ("[문장] 7일 · 오류(1,2)", "/api/events", {"since": "7d", "query": "level:심각,오류", "limit": 100}),
+    ("[문장] 30일 · 이벤트 4740", "/api/events", {"since": "30d", "query": "event_id:4740", "limit": 100}),
+    ("[문장] 30일 · PC 1대 + 4625", "/api/events", {"since": "30d", "query": "host:PC-0042 event_id:4625", "limit": 100}),
+    ("[문장] 24시간 · 'TimeoutException'", "/api/events", {"since": "24h", "query": "TimeoutException", "limit": 100}),
+    ("[문장] 30일 · \"다시 부팅\"", "/api/events", {"since": "30d", "query": '"다시 부팅"', "limit": 100}),
+    ("[문장] 7일 · 원본 필드 StringInserts.5:user77", "/api/events", {"since": "7d", "query": "f.StringInserts.5:user77", "limit": 100}),
+    ("[문장] 7일 건수 · 오류", "/api/stats/count", {"since": "7d", "query": "level:심각,오류", "compare": "true"}),
+    ("[문장] 7일 상위 이벤트 ID (오류·경고)", "/api/stats/top", {"since": "7d", "field": "event_id", "query": "level:심각,오류,경고", "limit": 10}),
+    # 새 기능 — 옛 근사와 비교할 기준값은 없다 (느린 것은 EXPLAIN 으로 기록)
+    ("[새] 7일 · 백로그 예문", "/api/events", {"since": "7d", "limit": 100,
+                                       "query": 'event_id:4625 ip:10.1.2.3 -user:user7 level:경고 "잘못된 암호"'}),
+    ("[새] 30일 · ip:10.1.2.3", "/api/events", {"since": "30d", "query": "ip:10.1.2.3", "limit": 100}),
+    ("[새] 24시간 목록 · -host:PC-0042", "/api/events", {"since": "24h", "query": "-host:PC-0042", "limit": 100}),
+    ("[새] 7일 건수 · -level:정보,상세", "/api/stats/count", {"since": "7d", "query": "-level:정보,상세"}),
+    ("[새] 7일 건수 · level=1,2,3 (위와 같은 결과)", "/api/stats/count", {"since": "7d", "level": "1,2,3"}),
+    ("[새] 7일 건수 · -user:user1 (NULL 유지)", "/api/stats/count", {"since": "7d", "query": "-user:user1"}),
+    ("[새] 7일 · 계정 user1234 (메시지 AND)", "/api/events", {"since": "7d", "query": "계정 user1234", "limit": 100}),
+    ("[새] 24시간 · -\"로그오프\"", "/api/events", {"since": "24h", "query": '-"로그오프"', "limit": 100}),
+    ("[새] 7일 · 4625 -f.StringInserts.5:user77", "/api/events", {"since": "7d", "query": "event_id:4625 -f.StringInserts.5:user77", "limit": 100}),
+    ("[새] 30일 건수 · -host:PC-0001 (최악)", "/api/stats/count", {"since": "30d", "query": "-host:PC-0001"}),
+    ("[새] 30일 · 다시 부팅 (따옴표 없음, 짧은 단어)", "/api/events", {"since": "30d", "query": "다시 부팅", "limit": 100}),
+]
 
 SCENARIOS = [
     # (이름, 경로, 파라미터)
@@ -174,7 +224,7 @@ def run_benchmarks(repeat: int) -> list[dict]:
                 cursor, rows = body["next_cursor"], len(body["items"])
             return rows
 
-        for name, path, params in SCENARIOS + [("7일 목록 10페이지째 (더 보기 10번)", None, None)]:
+        for name, path, params in SCENARIOS + SENTENCE_SCENARIOS + [("7일 목록 10페이지째 (더 보기 10번)", None, None)]:
             times, rows = [], None
             for _ in range(repeat):
                 t0 = time.perf_counter()
@@ -212,6 +262,22 @@ def run_benchmarks(repeat: int) -> list[dict]:
         print(f"  수집 처리량: {batches * size:,}건 / {elapsed:.1f}초 = {rate:,.0f}건/초 (배치 {size}건, 요청 1개씩 순차)")
         results.append({"name": f"수집 처리량 (배치 {size}건 순차)", "first": elapsed * 1000 / batches,
                         "median": elapsed * 1000 / batches, "rows": f"{rate:,.0f}건/초"})
+
+    # 실시간 매처(SSE·알림 미리보기 아님): 검색 문장 하나로 이벤트 10만 건을 거르는 데 드는 시간 (DB 없음)
+    from app.filters import EventFilter
+
+    flt = EventFilter.from_params({"query": 'event_id:4625 ip:10.1.2.3 -user:user7 level:경고 "잘못된 암호"'},
+                                  default_since=None)
+    sample = {"host": "PC-0042", "category": "security", "channel": "Security", "event_id": 4625, "level": 3,
+              "username": "user8", "src_ip": "10.1.2.3", "message": TEMPLATES[3][4] + " 계정 이름: user8 원본 주소: 10.1.2.3",
+              "raw": {"StringInserts": ["S-1-5-18", "-", "-", "0x3e7", "S-1-5-21-1", "user8"]}}
+    t0 = time.perf_counter()
+    for _ in range(100_000):
+        flt.matches(sample)
+    per = (time.perf_counter() - t0) / 100_000 * 1e6
+    print(f"  실시간 매처: 백로그 예문 문장, 이벤트당 {per:.1f} µs")
+    results.append({"name": "실시간 매처 (백로그 예문, 이벤트당 µs)", "first": per / 1000, "median": per / 1000,
+                    "rows": f"{per:.1f} µs"})
     return results
 
 
@@ -224,6 +290,7 @@ def main() -> None:
     parser.add_argument("--skip-seed", action="store_true")
     parser.add_argument("--drop", action="store_true")
     parser.add_argument("--label", default="", help="결과 제목")
+    parser.add_argument("--fill-columns", action="store_true", help="예전 벤치 DB 에 분류·사용자·IP 채우기 (B-01)")
     args = parser.parse_args()
 
     with psycopg.connect(DEV_URL, autocommit=True) as admin:
@@ -242,6 +309,8 @@ def main() -> None:
     if not args.skip_seed:
         print(f"{BENCH_DB} 에 {args.rows:,}건 생성 (최근 {args.days}일, PC {args.hosts}대)")
         seed(args.rows, args.days, args.hosts)
+    if args.fill_columns:
+        fill_columns()
     with psycopg.connect(BENCH_URL) as conn:
         count = conn.execute("SELECT count(*) FROM events").fetchone()[0]
         size = conn.execute("SELECT pg_size_pretty(pg_database_size(current_database()))").fetchone()[0]
