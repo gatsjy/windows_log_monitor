@@ -136,7 +136,9 @@ jobs:
         run: |
           $zip = "fluent-bit-$env:FLUENTBIT_VERSION-win64.zip"
           Invoke-WebRequest "https://packages.fluentbit.io/windows/$zip" -OutFile $zip
-          $want = (Get-Content "deploy/airgap/agent-installers/$zip.sha256").Split(" ")[0].ToLower()
+          $pin = "deploy/airgap/agent-installers/$zip.sha256"
+          if (-not (Test-Path $pin)) { throw "$pin is missing: commit the SHA-256 of the new Fluent Bit version (FLUENTBIT_VERSION)" }
+          $want = (Get-Content $pin).Split(" ")[0].ToLower()
           $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
           if ($want -ne $got) { throw "SHA-256 mismatch: $got (expected $want)" }
           Expand-Archive $zip -DestinationPath fb

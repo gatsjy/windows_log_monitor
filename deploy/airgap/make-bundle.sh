@@ -66,8 +66,13 @@ if [ "$AGENT_DOWNLOAD" = 1 ]; then
   mkdir -p "$FB_DIR"
   if [ ! -f "$FB_DIR/$FB_ZIP" ]; then
     curl -fL --retry 3 -o "$FB_DIR/$FB_ZIP.part" "https://packages.fluentbit.io/windows/$FB_ZIP"
-    curl -fsSL --retry 3 -o "$FB_DIR/$FB_ZIP.sha256" "https://packages.fluentbit.io/windows/$FB_ZIP.sha256"
     mv "$FB_DIR/$FB_ZIP.part" "$FB_DIR/$FB_ZIP"
+  fi
+  # 해시는 저장소에 고정한 값으로 확인한다 (같은 서버의 .sha256 은 파일과 함께 바뀔 수 있다).
+  # 버전을 올려 고정값이 없을 때만 받아 오고, 저장소에 올리라고 알린다 (CI 윈도 작업도 이 파일을 쓴다)
+  if [ ! -f "$FB_DIR/$FB_ZIP.sha256" ]; then
+    curl -fsSL --retry 3 -o "$FB_DIR/$FB_ZIP.sha256" "https://packages.fluentbit.io/windows/$FB_ZIP.sha256"
+    echo "  (주의) $FB_DIR/$FB_ZIP.sha256 을 새로 받았습니다 — 확인한 뒤 저장소에 커밋하세요" >&2
   fi
   (cd "$FB_DIR" && sha256 -c "$FB_ZIP.sha256") || { echo "Fluent Bit 설치 파일 해시가 맞지 않습니다 — 지우고 다시 실행하세요" >&2; exit 1; }
 fi

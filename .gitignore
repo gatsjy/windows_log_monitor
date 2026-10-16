@@ -12,7 +12,10 @@ dist/
 backups/
 deploy/airgap/agent-installers/*
 !deploy/airgap/agent-installers/README.md
-agent-installers/
+# 설치 파일의 SHA-256 고정값은 저장소에 둔다 (make-bundle·CI 가 내려받은 파일을 이것으로 확인)
+!deploy/airgap/agent-installers/*.sha256
+# 반입 묶음을 푼 서버의 ./agent-installers (docker-compose.yml)
+/agent-installers/
 # TLS 인증서·개인키, CA 개인키 (ADR-036) — 저장소·이미지에 넣지 않는다
 tls/
 tls-ca/

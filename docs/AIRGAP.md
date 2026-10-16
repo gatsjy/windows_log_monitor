@@ -82,6 +82,7 @@
 - **주의 (Apple Silicon Mac):** 그냥 `docker build` 하면 arm64 이미지가 되어 x86 서버에서 뜨지 않습니다. 스크립트는 기본으로 `linux/amd64` 로 빌드·다운로드합니다.
 - 에이전트 설치 파일을 함께 넣으려면, 실행 전에 `deploy/airgap/agent-installers/` 에 넣어 둡니다(§5).
 - Fluent Bit Windows 설치 파일(서버 수신기와 같은 4.0.14, `FLUENTBIT_VERSION` 로 변경)을 자동으로 받아 해시를 확인하고 묶음에 넣습니다.
+  - 해시는 저장소에 고정한 `deploy/airgap/agent-installers/<zip>.sha256` 으로 확인합니다. 버전을 올리면 새 `.sha256` 을 확인해 커밋합니다(CI 윈도 작업도 같은 파일을 씁니다).
   - 이 파일이 서버 화면의 '에이전트 설치 묶음' zip 에 그대로 들어가므로, 폐쇄망 PC 에 따로 반입할 것이 없습니다.
   - 인터넷이 안 되는 빌드 PC 라면 `--no-agent-download` 로 끄고 `deploy/airgap/agent-installers/` 에 직접 넣습니다.
 - 결과물 (`dist/`):
