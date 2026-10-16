@@ -30,6 +30,11 @@ class Settings:
     # 에이전트 수집 전용 포트 (컨테이너 안). compose 가 호스트의 WLM_INGEST_PORT(기본 6976)를 여기로 연결한다.
     # 이 포트로는 /api/ingest 와 /healthz 만 열린다 → 화면(WLM_PORT)과 방화벽 정책을 나눌 수 있다
     ingest_listen_port: int = _int("INGEST_LISTEN_PORT", 8001)
+    # 컨테이너 안 화면·API 포트 (compose 가 WLM_PORT 를 여기로). 헬스체크(app.healthcheck)도 읽는다
+    web_listen_port: int = _int("LISTEN_PORT", 8000)
+    # TLS 수집(WLM_TLS=on 일 때, 호스트 WLM_INGEST_TLS_PORT 6977)과 수집기(collector) 전용 내부 수집(게시 안 함) — ADR-036
+    ingest_tls_listen_port: int = _int("INGEST_TLS_LISTEN_PORT", 8002)
+    internal_ingest_listen_port: int = _int("INTERNAL_INGEST_LISTEN_PORT", 8003)
     # 로그 로테이션 (월 단위 파티션이라 실제로는 최대 +1개월 더 남는다)
     #   DB 보관(db_retention_days): 화면에서 바로 검색되는 기간. 지나면 압축 파일로 보관(archive) 후 DB 에서 삭제
     #   전체 보관(retention_days): 보관 파일까지 포함한 기간. 지나면 보관 파일도 삭제 (ISMS 접속기록 1년 이상)
@@ -57,6 +62,11 @@ class Settings:
     agent_installers_dir: str = _env("AGENT_INSTALLERS_DIR", "/app/agent-installers")
     # 에이전트가 접속할 호스트 쪽 수집 포트 (compose 의 WLM_INGEST_PORT). 설치 묶음의 settings.json 에 들어간다
     ingest_public_port: int = _int("INGEST_PORT", 6976)
+    ingest_tls_public_port: int = _int("INGEST_TLS_PORT", 6977)
+    # 평문 수집 리스너(6976). 모든 에이전트를 TLS 로 옮긴 뒤 off — 리스너를 띄우지 않아 연결 자체가 거부된다
+    ingest_plain: bool = _env("INGEST_PLAIN", "on").lower() in ("1", "on", "true", "yes")
+    # 수집 리스너 keep-alive(초). Fluent Bit 의 유휴 연결(30초)보다 길어야 재사용 순간에 끊기는 경합이 없다
+    ingest_keepalive_sec: int = _int("INGEST_KEEPALIVE_SEC", 75)
     partition_months_ahead: int = _int("PARTITION_MONTHS_AHEAD", 2)
     log_level: str = _env("LOG_LEVEL", "INFO")
 
@@ -80,8 +90,22 @@ class Settings:
     login_max_failures: int = _int("LOGIN_MAX_FAILURES", 5)       # 연속 실패 시 계정 잠금
     login_lockout_min: int = _int("LOGIN_LOCKOUT_MIN", 10)        # 잠금 시간
     password_max_age_days: int = _int("PASSWORD_MAX_AGE_DAYS", 90)  # 비밀번호 변경 주기 (0 = 사용 안 함)
-    # HTTPS(리버스 프록시) 뒤에서 운영하면 true → 쿠키가 HTTPS 에서만 전송된다
+    # https 요청의 세션 쿠키는 자동으로 Secure. true 면 http 에서도 Secure 를 강제하고 http 로그인은 거부(조용히 안 되는 대신 안내)
     cookie_secure: bool = _env("COOKIE_SECURE", "false").lower() in ("1", "true", "yes")
+
+    # ---- HTTPS·에이전트 TLS (ADR-036, docs/AIRGAP.md §7.5) ----
+    # on: 화면(8000)과 TLS 수집(8002)을 api 가 직접 TLS 로. 그 밖의 값이면 기동 거부(app.tlsutil.preflight)
+    tls_mode: str = _env("TLS", "off").strip().lower()
+    tls_cert_file: str = _env("TLS_CERT_FILE", "/app/tls/server.crt")   # 리프 먼저, 중간 CA 포함
+    tls_key_file: str = _env("TLS_KEY_FILE", "/app/tls/server.key")     # 암호 없는 PEM, 0640 root:10001
+    tls_ca_file: str = _env("TLS_CA_FILE", "/app/tls/ca.crt")           # 에이전트 설치 묶음에 넣는 루트 CA(공개값)
+    # X-Forwarded-For/Proto 를 믿을 리버스 프록시 IP·CIDR. 비우면 프록시 헤더를 보지 않는다('*'·/0 은 기동 거부)
+    trusted_proxies: tuple[str, ...] = _list("TRUSTED_PROXIES")
+    hsts_max_age: int = _int("HSTS_MAX_AGE", 0)   # https 응답의 HSTS 초 (0 = 보내지 않음)
+
+    @property
+    def tls(self) -> bool:
+        return self.tls_mode == "on"
     # 사용자가 하나도 없을 때 만드는 admin 계정의 초기 비밀번호 (비우면 무작위 생성 후 서버 로그에 1회 출력)
     admin_initial_password: str = _env("ADMIN_INITIAL_PASSWORD", "")
     login_notice: str = _env(

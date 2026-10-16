@@ -28,6 +28,11 @@ def _error(exc: AuthError) -> HTTPException:
     return HTTPException(exc.status, exc.message, headers={"X-WLM-Reason": exc.code})
 
 
+def _cookie_secure(request: Request) -> bool:
+    """https 로 온 요청은 자동으로 Secure (TLS·신뢰 프록시 뒤 모두). WLM_COOKIE_SECURE=true 는 http 에서도 강제."""
+    return settings.cookie_secure or request.url.scheme == "https"
+
+
 def _me(user: User) -> dict:
     return {
         **user.public(),
@@ -45,6 +50,9 @@ async def login_info():
 @router.post("/api/auth/login")
 async def login(body: LoginBody, request: Request, response: Response):
     check_csrf(request)
+    if settings.cookie_secure and request.url.scheme != "https":
+        # 브라우저는 http 에서 Secure 쿠키를 버린다 — 비밀번호가 맞아도 '로그인이 안 되는' 조용한 실패 대신 바로 안내
+        raise HTTPException(400, f"HTTPS 주소로 접속하세요: {settings.public_url}", headers={"X-WLM-Reason": "https_required"})
     try:
         token, user = await service.login(body.username, body.password, client_ip(request),
                                           request.headers.get("user-agent"))
@@ -52,7 +60,7 @@ async def login(body: LoginBody, request: Request, response: Response):
         raise _error(exc) from exc
     await with_access(user)
     response.set_cookie(
-        COOKIE_NAME, token, httponly=True, samesite="strict", secure=settings.cookie_secure, path="/",
+        COOKIE_NAME, token, httponly=True, samesite="strict", secure=_cookie_secure(request), path="/",
     )
     return _me(user)
 
@@ -60,7 +68,8 @@ async def login(body: LoginBody, request: Request, response: Response):
 @router.post("/api/auth/logout")
 async def logout(request: Request, response: Response, user: User = Depends(current_user)):
     await service.logout(request.state.session_token, user, client_ip(request))
-    response.delete_cookie(COOKIE_NAME, path="/")
+    # 지울 때도 같은 속성으로 (Secure 쿠키를 속성이 다른 Set-Cookie 로 지우면 브라우저가 무시할 수 있다)
+    response.delete_cookie(COOKIE_NAME, path="/", secure=_cookie_secure(request), httponly=True, samesite="strict")
     return {"ok": True}
 
 

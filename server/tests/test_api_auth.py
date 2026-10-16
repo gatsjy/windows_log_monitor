@@ -208,3 +208,27 @@ def test_logout_invalidates_session(client):
     logged_in_admin(client)
     assert client.post("/api/auth/logout", headers=CSRF).status_code == 200
     assert client.get("/api/auth/me").status_code == 401
+
+
+def test_cookie_secure_follows_https(client, monkeypatch):
+    """https 요청의 세션 쿠키는 자동으로 Secure, http 는 아님. WLM_COOKIE_SECURE=true 면 http 로그인은 400 + 안내 (ADR-036)."""
+    from dataclasses import replace
+
+    from app.routers import auth as auth_router
+
+    client.cookies.clear()
+    assert "secure" not in login(client, "admin", ADMIN_PASSWORD).headers["set-cookie"].lower()
+    client.cookies.clear()
+    r = client.post("https://testserver/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD},
+                    headers=CSRF)
+    cookie = r.headers["set-cookie"].lower()
+    assert r.status_code == 200 and "; secure" in cookie and "httponly" in cookie and "samesite=strict" in cookie
+    out = client.post("https://testserver/api/auth/logout", headers=CSRF)
+    gone = out.headers["set-cookie"].lower()
+    assert out.status_code == 200 and "; secure" in gone and "samesite=strict" in gone and "max-age=0" in gone
+    monkeypatch.setattr(auth_router, "settings", replace(auth_router.settings, cookie_secure=True))
+    r = login(client, "admin", ADMIN_PASSWORD)
+    assert r.status_code == 400 and r.headers["x-wlm-reason"] == "https_required" and "HTTPS" in r.json()["detail"]
+    assert client.post("https://testserver/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD},
+                       headers=CSRF).status_code == 200
+    client.cookies.clear()

@@ -9,14 +9,26 @@
   docker compose exec api python -m app.cli rotate-now                # 로그 로테이션 즉시 실행
 
 모든 작업은 actor='cli' 로 audit_log 에 남는다.
+
+인증서 명령(B-06, ADR-036)은 DB 없이 돈다 — 폐쇄망 설치가 api 를 띄우기 전에 일회성 컨테이너(--network none)로 부른다.
+CA 개인키는 api 컨테이너에 마운트하지 않는 폴더(tls-ca/)에만 둔다 (docs/AIRGAP.md §7.5).
+
+  python -m app.cli tls-init --out /out --ca-dir /ca --name logmon.corp.local [--ip 10.0.0.10]
+  python -m app.cli tls-renew --dir /out --ca-dir /ca [--name 새이름] [--ip 새IP]   # 2년마다, 에이전트 재배포 없음
+  python -m app.cli tls-status [--dir /app/tls]                                      # 이름·만료·CA 지문·문제
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
+import tempfile
+from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
 
-from . import archive, db, partitions
+from . import archive, db, partitions, tlsutil
 from .auth import service
 from .config import settings
 
@@ -103,7 +115,117 @@ def main() -> None:
     restore.add_argument("partition", help="예: events_2026_06")
     restore.add_argument("--hold-days", type=int, default=14, help="자동 정리에서 제외할 일수")
     sub.add_parser("rotate-now", help="로그 로테이션(보관·삭제) 즉시 실행")
-    asyncio.run(_run(parser.parse_args()))
+    init = sub.add_parser("tls-init", help="자체 CA + 서버 인증서 만들기 (DB 없이)")
+    init.add_argument("--out", default="/app/tls", help="server.crt·server.key·ca.crt 를 둘 폴더 (api 가 읽는 tls/)")
+    init.add_argument("--ca-dir", required=True, help="CA 개인키를 둘 폴더 — api 에 마운트하지 않는 곳 (tls-ca/)")
+    init.add_argument("--name", action="append", default=[], help="서버 DNS 이름 (여러 번). DNS 에 없는 이름이어도 됨")
+    init.add_argument("--ip", action="append", default=[], help="서버 IP (여러 번, 브라우저가 IP 로 접속할 때)")
+    init.add_argument("--days", type=int, default=tlsutil.SERVER_DAYS, help="서버 인증서 유효일 (기본 730)")
+    init.add_argument("--force", action="store_true", help="CA 가 이미 있어도 새로 만듦 — 모든 에이전트 재배포 필요")
+    renew = sub.add_parser("tls-renew", help="같은 CA 로 서버 인증서 갱신 (에이전트 재배포 없음)")
+    renew.add_argument("--dir", default="/app/tls")
+    renew.add_argument("--ca-dir", required=True)
+    renew.add_argument("--name", action="append", default=[], help="더할 DNS 이름")
+    renew.add_argument("--ip", action="append", default=[], help="더할 IP")
+    renew.add_argument("--days", type=int, default=tlsutil.SERVER_DAYS)
+    st = sub.add_parser("tls-status", help="서버 인증서 이름·만료·CA 지문·문제 (오류가 있으면 종료 코드 1)")
+    st.add_argument("--dir", default=None, help="기본: WLM_TLS_*_FILE")
+    args = parser.parse_args()
+    if args.command.startswith("tls-"):
+        try:
+            raise SystemExit(_tls(args))
+        except tlsutil.TlsError as exc:
+            raise SystemExit(f"오류: {exc}") from exc
+    asyncio.run(_run(args))
+
+
+def _write_atomic(path: Path, data: bytes, mode: int, group: int | None = None) -> None:
+    """임시 파일 → 권한 → 이름 바꾸기. 쓰는 도중에 api 가 반쯤 쓴 키를 읽거나, 실패해 옛 키를 잃지 않게."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        os.fchmod(fd, mode)
+        if group is not None and os.geteuid() == 0:
+            try:
+                os.fchown(fd, 0, group)
+            except OSError as exc:   # macOS 바인드 마운트 등
+                print(f"  경고: {path.name} 의 그룹을 {group} 으로 바꾸지 못했습니다 ({exc}). api(uid 10001)가 읽는지 확인하세요.")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+API_GID = 10001   # server/Dockerfile 의 wlm 계정 — 키는 0640 root:10001
+
+
+def _write_server(out: Path, key, cert, ca) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    _write_atomic(out / "server.key", tlsutil.key_pem(key), 0o640, API_GID)
+    # 리프 + CA: 중간 CA 가 없는 자체 CA 라 CA 를 붙여 두면 브라우저·에이전트가 연쇄를 바로 만든다
+    _write_atomic(out / "server.crt", tlsutil.cert_pem(cert) + tlsutil.cert_pem(ca), 0o644)
+    _write_atomic(out / "ca.crt", tlsutil.cert_pem(ca), 0o644)
+
+
+def _print_status(st: tlsutil.TlsStatus) -> None:
+    print(f"  이름(DNS) {', '.join(st.dns_names) or '-'}   IP {', '.join(st.ip_names) or '-'}")
+    if st.not_after:
+        print(f"  만료 {st.not_after:%Y-%m-%d} (D-{st.days_left})")
+    print(f"  CA SHA-256 {st.ca_sha256 or '-'}  ({'서버 인증서와 이어짐' if st.ca_ok else '서버 인증서와 이어지지 않음'})")
+    for level, text in st.problems:
+        print(f"  {'[오류]' if level == 'error' else '[주의]'} {text}")
+
+
+def _tls(args: argparse.Namespace) -> int:
+    if args.command == "tls-status":
+        s = settings
+        if args.dir:
+            d = Path(args.dir)
+            s = replace(settings, tls_cert_file=str(d / "server.crt"), tls_key_file=str(d / "server.key"),
+                        tls_ca_file=str(d / "ca.crt"))
+        st = tlsutil.status(replace(s, tls_mode="on"))
+        _print_status(st)
+        return 1 if any(level == "error" for level, _ in st.problems) else 0
+
+    ca_dir = Path(args.ca_dir)
+    out = Path(args.out if args.command == "tls-init" else args.dir)
+    if ca_dir.resolve() == out.resolve():
+        raise tlsutil.TlsError("CA 개인키는 api 가 읽는 폴더(tls/)와 다른 곳(tls-ca/)에 두어야 합니다 — "
+                               "서버가 뚫려도 가짜 인증서를 만들 수 없게.")
+    if args.command == "tls-init":
+        if (ca_dir / "ca.key").exists() and not args.force:
+            raise tlsutil.TlsError(f"이미 CA 가 있습니다({ca_dir / 'ca.key'}). 새 CA 를 만들면 모든 에이전트를 다시 배포해야 합니다. "
+                                   "서버 인증서만 새로 만들려면 tls-renew, 정말 새로 만들려면 --force.")
+        ca_key, ca = tlsutil.issue_ca(args.name, args.ip)
+        key, cert = tlsutil.issue_server(ca_key, ca, args.name, args.ip, days=args.days)
+        ca_dir.mkdir(parents=True, exist_ok=True)
+        _write_atomic(ca_dir / "ca.key", tlsutil.key_pem(ca_key), 0o600)
+        _write_atomic(ca_dir / "ca.crt", tlsutil.cert_pem(ca), 0o644)
+        _write_server(out, key, cert, ca)
+        print(f"자체 CA 와 서버 인증서를 만들었습니다: {out}/server.crt·server.key·ca.crt, CA 개인키 {ca_dir}/ca.key")
+        print(f"  CA 개인키({ca_dir})는 오프라인 매체로 옮겨 따로 보관하세요 — 2년마다 tls-renew 에 필요합니다.")
+    else:
+        ca_key, ca = tlsutil.load_key(str(ca_dir / "ca.key")), tlsutil.load_certs(str(ca_dir / "ca.crt"))[0]
+        deployed = out / "ca.crt"
+        if deployed.exists() and tlsutil.load_certs(str(deployed))[0] != ca:
+            raise tlsutil.TlsError(f"{deployed} 와 {ca_dir}/ca.crt 가 다른 CA 입니다. 에이전트가 믿는 CA 의 키로 갱신해야 합니다.")
+        names, ips = list(args.name), list(args.ip)
+        current = out / "server.crt"
+        if current.exists():
+            dns, addrs = tlsutil.san_names(tlsutil.load_certs(str(current))[0])
+            names, ips = dns + names, addrs + ips
+        key, cert = tlsutil.issue_server(ca_key, ca, names, ips, days=args.days)
+        _write_server(out, key, cert, ca)
+        print(f"서버 인증서를 갱신했습니다: {out}/server.crt (CA 는 그대로라 에이전트 재배포 없음)")
+        print("  반영: docker compose -f docker-compose.yml restart api")
+    # 공개 주소(WLM_PUBLIC_URL) 점검은 빼고 본다 — 설치 중의 일회성 컨테이너에는 .env 가 없고, 주소는 켤 때 바꾼다
+    st = tlsutil.status(replace(settings, tls_mode="on", tls_cert_file=str(out / "server.crt"),
+                                tls_key_file=str(out / "server.key"), tls_ca_file=str(out / "ca.crt"),
+                                public_url=f"https://{tlsutil.san_names(cert)[0][0]}"),
+                        now=datetime.now(UTC))
+    _print_status(st)
+    return 0
 
 
 if __name__ == "__main__":

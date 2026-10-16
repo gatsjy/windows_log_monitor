@@ -30,12 +30,13 @@ def call(path: str, port: int) -> int:
 
 
 def test_ingest_port_allows_only_ingest_and_health():
-    port = settings.ingest_listen_port
-    assert call("/api/ingest", port) == 200
-    assert call("/healthz", port) == 200
-    assert call("/", port) == 404
-    assert call("/api/events", port) == 404
-    assert call("/api/auth/login", port) == 404
+    # 평문 수집·TLS 수집·수집기 전용 내부 수집 (ADR-036)
+    for port in (settings.ingest_listen_port, settings.ingest_tls_listen_port, settings.internal_ingest_listen_port):
+        assert call("/api/ingest", port) == 200
+        assert call("/healthz", port) == 200
+        assert call("/", port) == 404
+        assert call("/api/events", port) == 404
+        assert call("/api/auth/login", port) == 404
 
 
 def test_web_port_is_not_restricted():

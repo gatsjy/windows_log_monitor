@@ -6,13 +6,14 @@ import asyncio
 import logging
 import mimetypes
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 
-from . import __version__, db, partitions
+from . import __version__, db, partitions, tlsutil
 from .alerts.engine import engine as alert_engine
 from .auth import service as auth_service
 from .auth.deps import require_user
@@ -30,13 +31,23 @@ log = logging.getLogger("app")
 MAINTENANCE_INTERVAL_SEC = 3600
 
 
+def log_tls_problems() -> None:
+    """인증서 만료·이름·CA 문제를 로그로 (기동 때, 그리고 하루 한 번). 만료되면 에이전트가 모두 보내지 못한다."""
+    for level, text in tlsutil.status(settings).problems:
+        (log.error if level == "error" else log.warning)("TLS: %s", text)
+
+
 async def _maintenance_loop() -> None:
+    tls_checked = None
     while True:
         await asyncio.sleep(MAINTENANCE_INTERVAL_SEC)
         try:
             await partitions.run_maintenance()
         except Exception:
             log.exception("파티션 유지보수 실패")
+        if settings.tls and tls_checked != (today := datetime.now(UTC).date()):
+            tls_checked = today
+            log_tls_problems()
 
 
 @asynccontextmanager
@@ -51,6 +62,7 @@ async def lifespan(_: FastAPI):
         log.warning("WLM_SECRET_KEY 가 비어 있어 환경설정에서 비밀번호(SMTP·Oracle 등)를 저장할 수 없습니다")
     if display_zone().key != settings.display_tz:
         log.warning("WLM_DISPLAY_TZ '%s' 를 알 수 없어 UTC 로 표시·계산합니다 (예: Asia/Seoul)", settings.display_tz)
+    log_tls_problems()
     task = asyncio.create_task(_maintenance_loop())
     alert_task = asyncio.create_task(alert_engine.run_forever())
     report_task = asyncio.create_task(report_scheduler.run_forever()) if settings.report_scheduler else None
@@ -66,6 +78,8 @@ async def lifespan(_: FastAPI):
 
 
 INGEST_PORT_PATHS = ("/api/ingest", "/healthz")
+# 평문 수집(8001)·TLS 수집(8002)·수집기 전용 내부 수집(8003) — app/serve.py
+INGEST_LISTEN_PORTS = (settings.ingest_listen_port, settings.ingest_tls_listen_port, settings.internal_ingest_listen_port)
 
 
 class IngestPortGuard:
@@ -78,7 +92,7 @@ class IngestPortGuard:
     async def __call__(self, scope, receive, send):
         if scope["type"] in ("http", "websocket"):
             port = (scope.get("server") or (None, None))[1]
-            if port == settings.ingest_listen_port and scope.get("path") not in INGEST_PORT_PATHS:
+            if port in INGEST_LISTEN_PORTS and scope.get("path") not in INGEST_PORT_PATHS:
                 if scope["type"] == "websocket":
                     return await send({"type": "websocket.close", "code": 1008})
                 response = JSONResponse({"detail": "수집 전용 포트입니다. 화면은 WLM_PORT(기본 8080)로 접속하세요"}, 404)
@@ -87,7 +101,9 @@ class IngestPortGuard:
 
 
 class SecurityHeaders:
-    """기본 보안 헤더 (순수 ASGI 미들웨어 — SSE 스트리밍에 영향 없음)."""
+    """기본 보안 헤더 (순수 ASGI 미들웨어 — SSE 스트리밍에 영향 없음).
+    HSTS 는 https 응답에만, WLM_HSTS_MAX_AGE 가 0 보다 클 때만 — 그 이름의 모든 포트에 걸리고 되돌리기 어려워 기본은 끈다.
+    includeSubDomains 는 넣지 않는다(같은 도메인의 다른 사내 서비스까지 묶지 않게)."""
 
     def __init__(self, app):
         self.app = app
@@ -102,6 +118,8 @@ class SecurityHeaders:
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("Referrer-Policy", "same-origin")
+                if settings.hsts_max_age > 0 and scope.get("scheme") == "https":
+                    headers.setdefault("Strict-Transport-Security", f"max-age={settings.hsts_max_age}")
             await send(message)
 
         await self.app(scope, receive, send_with_headers)

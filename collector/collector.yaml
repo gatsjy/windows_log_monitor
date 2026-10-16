@@ -58,7 +58,7 @@ pipeline:
     - name: http
       match: '*'
       host: api
-      port: 8001        # 수집 전용 포트 (app/serve.py)
+      port: 8003        # 수집기 전용 내부 수집 리스너 (app/serve.py, 게시 안 함) — 평문 수집(6976)을 닫아도 syslog 는 계속
       uri: /api/ingest
       format: json
       json_date_key: date
