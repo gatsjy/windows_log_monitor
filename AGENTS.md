@@ -11,6 +11,7 @@ Fluent Bit 에이전트가 보낸 Windows 이벤트 로그, IIS·SQL Server 로�
 - **알림:** 엔진이 규칙(`config/alerts.yaml`)에 맞으면 수신 그룹(메일), 웹훅, Oracle 로 보냅니다. 대상은 환경설정 화면(DB)에서 관리합니다.
   - 알림마다 처리 상태(처리 안 됨 → 확인함 → 해결됨)와 고칠 수 없는 처리 기록이 남고, 점검 중에는 무음으로 전송만 건너뜁니다(ADR-029).
 - **인증:** 로그인·역할(관리자/조회자)·감사로그가 있습니다.
+- **전송 구간:** `WLM_TLS=on` 이면 api 가 직접 TLS(화면 https, 수집 6977). 에이전트는 CA·인증서 이름으로 서버를 확인합니다(ADR-036).
 - **로그 로테이션:** DB → 압축 보관 파일 → 삭제 순서로 정리합니다.
 
 ## 절대 규칙
@@ -42,8 +43,10 @@ Fluent Bit 에이전트가 보낸 Windows 이벤트 로그, IIS·SQL Server 로�
 
 ```
 server/app/
-  main.py            앱 진입점, 시작 시 마이그레이션·파티션 준비, 정적 UI 제공, 수집 포트 제한(IngestPortGuard)
-  serve.py           운영 실행: 8000(화면·API) + 8001(수집 전용, 호스트 6976) 두 리스너를 한 프로세스에서
+  main.py            앱 진입점, 시작 시 마이그레이션·파티션 준비, 정적 UI 제공, 수집 포트 제한(IngestPortGuard), 보안 헤더(HSTS 선택)
+  serve.py           운영 실행: 한 프로세스에 리스너 넷 — 8000 화면·API(TLS 면 https), 8001 평문 수집(6976), 8002 TLS 수집(6977), 8003 수집기 전용 내부
+  tlsutil.py         ★ TLS: uvicorn TLS 설정(1.2+, ECDHE+AEAD), 기동 전 점검, 인증서 상태(만료·이름·CA), 자체 CA·서버 인증서 발급 (ADR-036)
+  healthcheck.py     상태 확인(HEALTHCHECK·install.sh): config 만 읽고 TLS 면 https
   config.py          환경변수(WLM_*) 설정
   db.py              연결 풀, 마이그레이션 실행기, audit()
   partitions.py      events 월별 파티션 생성 / 보관기간 만료 삭제
@@ -61,7 +64,7 @@ server/app/
   secrets.py         환경설정 비밀값 암호화 (WLM_SECRET_KEY)
   csvexport.py       CSV 내려받기 공용 (BOM, 엑셀 수식 주입 방지) — 감사로그·알림 이력
   archive.py         로그 보관 파일 만들기·검증·복원
-  cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원)
+  cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원, 인증서 tls-init·tls-renew·tls-status — DB 없이)
   routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음)
 server/migrations/   번호순 SQL
 server/tests/        pytest (DB 없이 도는 단위 테스트)
@@ -100,6 +103,9 @@ docker compose run --rm backup selftest     # 백업·복구 시험·복원 스�
 node --test 'server/tests/js/*.test.mjs'    # 검색 문장 화면 쪽 시험 + node·python3 교차 퍼징 (npm 없음, 개발 PC 에서)
 python3 tools/ci/render_agent_configs.py out  # 에이전트 설정 틀을 채워 보기 (CI 가 fluent-bit --dry-run 에 씀)
 curl -s localhost:8080/healthz
+# TLS 로 띄워 보기 (개발, .env 는 그대로): 인증서 → WLM_TLS=on 으로 up → https 확인 → 그냥 up 으로 평문 복귀 (AIRGAP.md §13)
+docker compose run --rm --no-deps --user 0 -v "$PWD/tls:/out" -v "$PWD/tls-ca:/ca" api python -m app.cli tls-init --out /out --ca-dir /ca --name logmon.dev.internal --name localhost --ip 127.0.0.1
+WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && curl -s --cacert tls/ca.crt https://localhost:8080/healthz
 ```
 
 **완료 기준:**
@@ -135,7 +141,7 @@ curl -s localhost:8080/healthz
 - 실시간 스트림은 프로세스 메모리 기반이라 **uvicorn 워커가 1개**여야 합니다(ADR-006).
 - jsonb는 `\u0000` 을, TEXT는 NUL 문자를 저장하지 못합니다. 정규화와 저장 단계에서 제거합니다.
 - 보안 로그 `Level` 은 대부분 0이라 정보(4)로 들어옵니다. Keywords의 감사 실패 비트가 있으면 경고(3)로 올립니다(ADR-008).
-- 개발 포트는 UI 8080, **수집 6976**, DB 15432(127.0.0.1), Mailpit 8025(127.0.0.1)입니다. 5432와 8000은 다른 로컬 프로젝트가 쓰고 있습니다.
+- 개발 포트는 UI 8080, **수집 6976**(평문)·6977(TLS, `WLM_TLS=on` 일 때만 받음), DB 15432(127.0.0.1), Mailpit 8025(127.0.0.1)입니다. 수집기는 api 내부 8003 으로 보냅니다(게시 안 함). 5432와 8000은 다른 로컬 프로젝트가 쓰고 있습니다.
 - 개발 중 알림 메일은 밖으로 나가지 않습니다. Mailpit(http://localhost:8025)에서 확인합니다.
 - **검색 규칙은 세 곳에 있습니다:** `server/app/querylang.py`·`filters.py`(서버·알림), `web/js/querylang.js`(화면·대시보드 실시간), 케이스 표 `server/tests/querylang_cases.json`. **표에 줄을 먼저 추가**하고 두 언어를 같이 고칩니다(ADR-033).
   - 상수·오류 문구는 두 파일의 SYNC(`@sync` 블록)에 두고 pytest(`test_querylang_sync.py`)가 비교합니다. JS 는 `Array.from` 코드 포인트, Python 은 str 인덱스 — 위치는 코드 포인트.
@@ -159,7 +165,20 @@ curl -s localhost:8080/healthz
 - 표시 시간대는 `config.display_zone()` 으로 얻는다(`ZoneInfo(settings.display_tz)` 를 직접 부르지 않는다 — 이름이 틀리면 UTC 로).
 - 점검 보고서 `payload` 는 고칠 수 없으므로 렌더러(`reports/render.py`)는 예전 형식도 그려야 한다. 전송 기록(`deliveries`)은 덮어쓰지 말고 `repository.add_report_deliveries` 로 덧붙인다.
 - 무음은 행을 지우지 않는다. 해제 = `ends_at` 을 앞당김(시작 전이면 길이 0). 상태(적용 중·예정·끝남)는 `routers/alerts._silence_state` 가 정한다.
-- 수집 포트(8001/6976)로는 `/api/ingest`·`/healthz` 만 열린다(`main.INGEST_PORT_PATHS`). 에이전트용 새 경로가 필요하면 거기에 추가.
+- 수집 포트(8001·8002·8003)로는 `/api/ingest`·`/healthz` 만 열린다(`main.INGEST_PORT_PATHS`·`INGEST_LISTEN_PORTS`). 에이전트용 새 경로가 필요하면 거기에 추가.
+- **TLS (ADR-036):**
+  - Fluent Bit 의 `tls.verify_hostname` 기본값은 **off** 다 — 에이전트 틀에 on 을 고정하고 CI 정적 검사가 막는다. `--dry-run` 은 없는 `tls.ca_file`·키 오타를 통과시킨다(실행 때 종료).
+  - 에이전트는 IP SAN 으로 서버를 확인하지 못한다 → 서버 인증서에 DNS 이름 필수, 에이전트는 `tls.vhost`. 설치 묶음 API 는 확인할 수 없는 CA·이름·만료면 409/422.
+  - 이미지의 `wlm` 은 uid 10001·**gid 999** — 키는 그룹이 아니라 소유자(10001, 0600)로 준다.
+  - 인증서 판단은 `tlsutil.agent_handshake`(메모리 안 OpenSSL 핸드셰이크, STRICT·PARTIAL_CHAIN 끔 = Fluent Bit 기본). cryptography 의 검증기로 바꾸지 않는다 — 판정이 OpenSSL 과 달라 에이전트가 거부할 묶음을 통과시켰다(검토에서 재현).
+  - 시험 인증서가 핸드셰이크를 거치면 **실제 시각** 기준으로 유효해야 한다(고정 날짜 NOW 로 만들면 그 날짜가 지나 깨진다).
+  - `last_transport` 는 `tls`·`plain`·`web`(화면 포트로 온 평문 = 0.4 이전 묶음). 제약은 마이그레이션 013.
+  - `WLM_HSTS_MAX_AGE` 는 비우면 안 보냄, `0` 은 `max-age=0`(지우기) — 0 과 빈 값을 섞지 않는다.
+  - 화면 포트가 TLS 면 http 상태 확인은 실패한다 — 상태 확인은 `python -m app.healthcheck`(Dockerfile HEALTHCHECK·install.sh).
+  - `.env` 를 바꾸면 `up -d`(restart 는 환경을 다시 읽지 않음), 인증서 파일만 바꾸면 `restart api`.
+  - 프록시 헤더 신뢰는 `WLM_TRUSTED_PROXIES` 로만(serve.py 가 값을 직접 넘김). `FORWARDED_ALLOW_IPS` 환경변수는 효과가 없다.
+  - CA 개인키(`tls-ca/`)는 api 에 마운트하지 않는다. `tls/`·`tls-ca/` 는 .gitignore·.dockerignore 에 있다.
+  - 내장 브라우저는 자체 서명 인증서를 열지 않는다 → TLS 화면은 같은 설정의 평문 리스너(개발 전용 `docker compose run -p 127.0.0.1:8090:8090 … uvicorn`)로 확인했다(AIRGAP.md §13).
 - 알림 규칙을 화면에서 저장하면 그 규칙 블록만 다시 쓴다(`ruleedit.py`). 블록 안의 주석은 그 규칙을 화면에서 저장하면 사라진다(켜기/끄기만은 보존).
 - UI 디자인 값은 `web/css/app.css` 의 토큰(`:root`)만 쓴다. 좁은 화면 기준: 1000px(상단 바), 700px(표→카드), 600px(휴대폰).
 - 정규화기는 `None` 을 돌려 레코드를 저장하지 않을 수 있습니다(IIS `#Fields:` 머리줄). 그 외에는 버리지 않습니다.

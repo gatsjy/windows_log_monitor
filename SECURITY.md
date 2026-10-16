@@ -22,8 +22,10 @@
 - [ ] `.env` 에 `KEY=    # 설명` 처럼 빈 값 뒤 주석이 없다 (compose 가 설명문을 값으로 읽음)
 - [ ] 개발용 `docker-compose.override.yml` 없이 기동했다 (`docker compose -f docker-compose.yml ...`)
 - [ ] 첫 로그인 후 `admin` 비밀번호를 바꾸고, 담당자별 개인 계정을 만들었다
-- [ ] HTTPS 리버스 프록시 뒤에 두고 `WLM_COOKIE_SECURE=true`, 에이전트 `tls: on` (계획: [BACKLOG](docs/BACKLOG.md) B-06)
-- [ ] 수집 포트(6976)는 에이전트가 있는 사내 대역에, 화면 포트(8080)는 관리·사용자 대역에만 열었다. DB 포트는 열지 않았다
+- [ ] `WLM_TLS=on` 으로 화면·수집을 TLS 로 켰고(`tls-status` 에 [오류] 없음), 모든 에이전트가 TLS 묶음으로 옮긴 뒤 평문 수집을 닫았다(`WLM_INGEST_PLAIN=off`, 수집 PC '연결' 칸 평문 0대) — [docs/AIRGAP.md](docs/AIRGAP.md) §7.5
+- [ ] 자체 CA 개인키(`tls-ca/`)를 서버에서 오프라인 매체로 옮겨 따로 보관하고, 서버 인증서 만료일(2년)을 운영 달력에 넣었다
+- [ ] 앞에 리버스 프록시가 있으면 `WLM_TRUSTED_PROXIES` 에 그 IP 만 적었다 (`*` 금지)
+- [ ] 수집 포트(6977, 전환 중엔 6976)는 에이전트가 있는 사내 대역에, 화면 포트(8080)는 관리·사용자 대역에만 열었다. DB 포트는 열지 않았다
 - [ ] 부서별 사용자는 사용자 그룹으로 필요한 권한·조회 범위만 받았다 (관리자 계정 최소화)
 - [ ] 에이전트 설치 묶음(zip, API 키 포함)은 배포 후 지웠다
 - [ ] 운영에서 API 문서(`/docs`)를 숨겼다 (`WLM_API_DOCS=false`)

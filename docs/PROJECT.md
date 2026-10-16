@@ -1,6 +1,6 @@
 # Log Monitor 프로젝트 명세
 
-> 최종 갱신: 2026-10-04 · 버전 0.5.0 (… + 알림 규칙 관리 화면, 사용자 그룹·권한·조회 범위, 수집 전용 포트 6976, 폐쇄망 에이전트 설치 묶음, 반응형 화면)
+> 최종 갱신: 2026-10-16 · 버전 0.5.0 + 미출시(HTTPS·에이전트 TLS, 검색 문장 등 — CHANGELOG) (… + 알림 규칙 관리 화면, 사용자 그룹·권한·조회 범위, 수집 전용 포트 6976, 폐쇄망 에이전트 설치 묶음, 반응형 화면)
 > 앞으로 개발할 내용은 [BACKLOG.md](BACKLOG.md), 다른 오픈소스 제품과의 비교는 [COMPARISON.md](COMPARISON.md) 에 있습니다.
 > 이 문서는 사람과 AI 에이전트가 함께 보는 **단일 기준 문서**입니다. 구현이 바뀌면 같은 변경에서 이 문서도 고칩니다.
 
@@ -40,7 +40,7 @@
 | 서비스 | 이미지 | 포트 | 비고 |
 |---|---|---|---|
 | `db` | postgres:17-alpine | (개발) 127.0.0.1:15432 | 볼륨 `pgdata` |
-| `api` | server/Dockerfile | 8080 → 8000, **6976 → 8001** | 8000: UI + API, 8001: **에이전트 수집 전용**(`/api/ingest`·`/healthz` 만). 한 프로세스(`app/serve.py`). 비 root(uid 10001) |
+| `api` | server/Dockerfile | 8080 → 8000, **6976 → 8001**, **6977 → 8002** | 8000: UI + API(`WLM_TLS=on` 이면 https 만), 8001: **에이전트 수집 전용** 평문, 8002: 수집 전용 TLS, 8003: 수집기 전용 내부(게시 안 함) — 수집 리스너는 `/api/ingest`·`/healthz` 만. 한 프로세스(`app/serve.py`). 비 root(uid 10001). TLS 는 api 가 직접(ADR-036) |
 | `collector` | fluent/fluent-bit:4.0 | 514/udp·tcp, 1514/tcp | `--profile syslog` 일 때만 |
 | `mailpit` | axllent/mailpit | (개발) 127.0.0.1:8025 | **개발 전용.** 알림 메일을 실제로 보내지 않고 받아서 웹으로 보여줌 |
 
@@ -52,7 +52,7 @@
 ### 3.1 수집 API
 
 ```
-POST http://<서버>:6976/api/ingest      ← 에이전트는 수집 전용 포트(WLM_INGEST_PORT)로 보낸다 (8080 도 받음)
+POST https://<서버>:6977/api/ingest     ← 에이전트는 수집 전용 포트로 보낸다: TLS 6977(WLM_TLS=on), 평문 6976(전환용). 화면 포트도 받음
 Headers: X-API-Key: <WLM_INGEST_API_KEYS 중 하나>
          Content-Encoding: gzip (선택)
 Body:    JSON 배열 | JSON 객체 | NDJSON
@@ -179,7 +179,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/stats/timeseries?group=&buckets=&interval=&tz_offset=` | 시간 구간별 건수. group 상위 6개 + `__other__` (level 은 전부) |
 | `GET /api/stats/top?field=&limit=` | 상위 값. field = 컬럼명 또는 `f.<경로>` |
 | `GET /api/stats/summary` | PC 상태 수, 분당 수집량, 최근 24시간 알림 수(`alerts_24h`), 확인하지 않은 알림 수(`alerts_open`, 조회 범위 반영) |
-| `GET /api/agents?since=` | PC 목록 + 기간 내 이벤트/오류/경고 수 + 상태 |
+| `GET /api/agents?since=` | PC 목록 + 기간 내 이벤트/오류/경고 수 + 상태 + `last_transport`(마지막 하트비트의 전송 방식: `tls`·`plain`·`web`=화면 포트로 보낸 옛 묶음). `transport{tls, ingest_plain}` |
 | `DELETE /api/agents/{host}` | 수집 PC 목록에서 삭제 (관리자, audit_log 기록, 이벤트는 보존) |
 | `POST /api/agents/delete` | 여러 PC 를 목록에서 한 번에 삭제 `{hosts:[...]}` (최대 500, 관리자). 응답 `deleted`·`missing`·`still_online` |
 | `GET /api/fields` | 필드 카탈로그 |
@@ -205,8 +205,8 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `PUT /api/alerts/rules` | 규칙 한 개 추가·수정 (`{original?, rule}`), 그 규칙 블록만 바꿈 — `alerts.manage` |
 | `DELETE /api/alerts/rules/{이름}` · `POST /api/alerts/rules/enabled` | 삭제 · 켜기/끄기 (`{names, enabled}`, 묶음 단위 가능) — `alerts.manage` |
 | `POST /api/alerts/rules/preview` | 최근 N시간 데이터로 규칙 미리보기 (맞는 로그·예상 알림·대상별) — `alerts.manage` |
-| `GET /api/agents/package?os=&server=&port=&iis=&mssql=` | 에이전트 설치 묶음 zip (설정·API 키·Fluent Bit 포함) — `agents.deploy`, 감사로그 |
-| `GET /api/agents/package/info` | 내려받기 창 정보 (기본 서버 주소·포트, 들어갈 설치 파일) |
+| `GET /api/agents/package?os=&server=&port=&iis=&mssql=&name=` | 에이전트 설치 묶음 zip (설정·API 키·Fluent Bit 포함, TLS 면 `ca.crt`·인증서 이름 `name`·CA 지문, 포트 6977 — 확인할 수 없는 CA·만료·없는 이름은 409/422) — `agents.deploy`, 감사로그 |
+| `GET /api/agents/package/info` | 내려받기 창 정보 (기본 서버 주소·포트, 들어갈 설치 파일, `tls`: 인증서 이름·만료 D-n·CA 지문·문제) |
 | `GET/POST /api/user-groups`, `PUT/DELETE /api/user-groups/{id}` | 사용자 그룹 (관리자) |
 | `GET /api/meta`, `GET /healthz` | 메타 정보(소스·분류 목록 등), 상태 확인 |
 
@@ -480,7 +480,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 | 임시 비밀번호 | 계정 생성·초기화 시 발급, 첫 로그인 때 변경 강제. 화면에 한 번만 표시 | – |
 | 변경 주기 | 지나면 로그인 후 변경 강제 | `WLM_PASSWORD_MAX_AGE_DAYS`(90, 0=끔) |
 | 계정 잠금 | 연속 실패 시 잠금, 관리자 '잠금 해제' 또는 시간 경과 | `WLM_LOGIN_MAX_FAILURES`(5), `WLM_LOGIN_LOCKOUT_MIN`(10) |
-| 세션 | 서버 세션(DB 에는 토큰의 SHA-256만), HttpOnly·SameSite=Strict 쿠키 | `WLM_COOKIE_SECURE`(HTTPS 면 true) |
+| 세션 | 서버 세션(DB 에는 토큰의 SHA-256만), HttpOnly·SameSite=Strict 쿠키. https 요청이면 자동으로 Secure | `WLM_COOKIE_SECURE`(true = http 에서도 Secure 강제, http 로그인은 안내와 함께 거부) |
 | 자동 로그아웃 | 사용자 조작이 없으면 만료. 자동 새로고침·실시간 스트림은 연장하지 않음 | `WLM_SESSION_IDLE_MIN`(30) |
 | 최대 세션 | 로그인 후 최대 유지 시간 | `WLM_SESSION_MAX_HOURS`(12) |
 | CSRF | 상태를 바꾸는 요청에 `X-WLM-CSRF: 1` 헤더 필수 | – |
@@ -625,6 +625,20 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 
 전체 목록은 `.env.example` 에 있습니다. 서버 설정은 모두 `WLM_` 접두사를 씁니다(`server/app/config.py`).
 
+HTTPS·에이전트 TLS (ADR-036, AIRGAP.md §7.5):
+
+| 변수 | 기본값 | 뜻 |
+|---|---|---|
+| `WLM_TLS` | `off` | `on`: 화면(8000→`WLM_PORT`)·TLS 수집(8002→`WLM_INGEST_TLS_PORT`)을 TLS 로. 그 밖의 값이면 기동 거부 |
+| `WLM_TLS_CERT_FILE` / `_KEY_FILE` / `_CA_FILE` | `/app/tls/server.crt` · `server.key` · `ca.crt` | 서버 인증서(리프 먼저, 중간 포함) · 암호 없는 키(소유자 uid 10001, 0600) · 설치 묶음에 넣을 루트 CA |
+| `WLM_INGEST_TLS_PORT` | `6977` | 호스트 쪽 TLS 수집 포트 (compose 게시, 설치 묶음 기본) |
+| `WLM_INGEST_PLAIN` | `on` | `off` 면 평문 수집 리스너를 띄우지 않음 (TLS 가 꺼져 있으면 무시하고 오류 로그) |
+| `WLM_INGEST_KEEPALIVE_SEC` | `75` | 수집 리스너 keep-alive. Fluent Bit 유휴 연결(30초)보다 길게 |
+| `WLM_TRUSTED_PROXIES` | (빈 값) | X-Forwarded-For/Proto 를 믿을 프록시 IP·CIDR. 비우면 프록시 헤더를 보지 않음. `*`·/0·호스트 비트가 있는 대역(`10.0.0.5/24`)·IPv4 매핑 주소는 기동 거부 (환경변수 `FORWARDED_ALLOW_IPS` 는 영향 없음) |
+| `WLM_HSTS_MAX_AGE` | (빈 값) | https 응답의 HSTS 초. 비우면 보내지 않음, `0` 이면 `max-age=0`(되돌릴 때 브라우저의 기억을 지움). includeSubDomains 없음 |
+| `WLM_COOKIE_SECURE` | `false` | https 요청은 자동으로 Secure. true 면 http 에서도 강제하고 http 로그인은 400 |
+| `WLM_SEARCH_TIMEOUT_SEC` | `30` | 화면 조회 쿼리 시간 상한 (ADR-035) |
+
 ## 12. 확장 가이드
 
 | 하고 싶은 것 | 위치 |
@@ -641,7 +655,13 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 
 ## 13. 운영
 
-- **포트:** 8080 화면(사용자·관리자), **6976 수집 전용**(에이전트·syslog 수신기). 방화벽에서 6976 은 모든 PC, 8080 은 관리 대역만 여는 것을 권장합니다.
+- **포트:** 8080 화면(사용자·관리자), **6977 수집 전용 TLS**·6976 수집 전용 평문(에이전트), 8003 수집기 내부(게시 안 함). 방화벽에서 6977(전환 중엔 6976 도)은 모든 PC, 8080 은 관리 대역만 여는 것을 권장합니다.
+- **HTTPS·에이전트 TLS (ADR-036):** `WLM_TLS=on` 이면 api 가 직접 TLS(1.2 이상, ECDHE+AEAD). 인증서는 `tls/`(server.crt·server.key·ca.crt), 만들기·갱신·확인은 `python -m app.cli tls-init|tls-renew|tls-status`, CA 개인키는 api 에 마운트하지 않는 `tls-ca/`.
+  - 에이전트는 설치 묶음의 `ca.crt` 와 인증서 이름(DNS)으로 서버를 확인합니다(`tls.verify`·`tls.verify_hostname` — 끌 수 없음).
+  - 수집 PC 화면의 '연결' 칸(하트비트 기준 TLS·평문·평문(화면 포트))으로 남은 평문 PC 를 보고, 0 이 되면 `WLM_INGEST_PLAIN=off` 로 평문 리스너를 띄우지 않습니다. '평문(화면 포트)' 는 TLS 를 켜면 끊기는 옛 묶음입니다.
+  - 인증서 확인(`tls-status`, 설치 묶음)은 에이전트와 같은 OpenSSL 로 실제 핸드셰이크를 해 봅니다 — 에이전트가 믿지 않을 인증서로는 묶음을 만들지 않습니다.
+  - 인증서 만료 30일 전부터 서버 로그에 매일 경고. 인증서 파일 교체는 `restart api`, `.env` 변경은 `up -d api`.
+  - 리버스 프록시를 앞에 두면 `WLM_TRUSTED_PROXIES` 에 그 IP 만 — X-Forwarded-For/Proto 를 믿는 범위 (`*`·/0 은 기동 거부). 절차: [AIRGAP.md](AIRGAP.md) §7.5
 - **에이전트 배포:** 화면 '수집 PC > 에이전트 설치' 에서 서버 주소·포트·API 키·Fluent Bit 이 들어간 설치 묶음(zip)을 받아 배포합니다(`routers/agentpkg.py`). PC 가 폐쇄망이어도 됩니다.
 - **폐쇄망 배포·업그레이드·되돌리기:** [AIRGAP.md](AIRGAP.md) (`deploy/airgap/make-bundle.sh` → 반입 → `deploy/airgap/install.sh`)
   - 이미지 태그는 `WLM_API_IMAGE`(.env, 기본 `log-monitor-api:latest`)로 고정합니다. 개발은 `log-monitor-api:dev`.
@@ -673,7 +693,7 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 |---|---|---|
 | Phase 1 | 수집(Windows/syslog/journald/파일), PostgreSQL, 대시보드·실시간·검색·필드 탐색, 시뮬레이터 | **완료** |
 | Phase 2 | **알림**: 규칙(YAML) → 메일 / 웹훅 / Oracle, 재시도, 알림 화면·위젯, 대시보드 실시간 갱신 | **완료** (§6, §5.2) |
-| 운영 | HTTPS 리버스 프록시(Caddy/Nginx) 예시 구성, 사내 SSO(LDAP/OIDC) 연동 | 필요 시 |
+| 운영 | HTTPS·에이전트 TLS(api 가 직접, ADR-036) **완료** · 사내 SSO(LDAP/OIDC) 연동·관리 화면 접근 IP 제한(BACKLOG B-12·B-30) | 필요 시 |
 | Phase 2 | **인증·권한·감사로그**, **환경설정**(수신자·그룹·최소 수준, 웹훅, Oracle TNS/SID/서비스·쿼리, 메일 서버), **로그 로테이션**(보관 파일·무결성·복원), 성능 측정 | **완료** (§7~§10) |
 | Phase 3 | 대용량: 시간별 집계 테이블(긴 기간 대시보드·1년 추세), 자주 쓰는 원본 필드 인덱스, 필요 시 ClickHouse 또는 OpenSearch (ADR-004) | 규모에 따라 (PERFORMANCE.md §5) |
 | 0.4 | IIS·MSSQL 수집, 분류·공통 필드(사용자·IP), EventData 이름 필드, 보안 규칙 팩(MITRE·ISMS 태그), 검색 OR | **완료** (§3.2, §6.1) |
@@ -688,8 +708,12 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 - RFC3164 syslog는 장비 시각에 연도·시간대가 없어서 **수신 시각**을 씁니다.
   - PRI 가 없는 등 형식이 틀린 syslog 줄은 수신기가 버립니다(collector 로그로 확인).
 - 필드 경로는 점으로 구분합니다. 키 이름 자체에 점이 들어간 필드는 `f.` 필터로 지정할 수 없습니다.
-- **전송 구간이 평문 HTTP 입니다.** 운영에서는 리버스 프록시로 HTTPS 를 적용하고 `WLM_COOKIE_SECURE=true` 로 둡니다.
-  - 에이전트도 `tls: on` 으로 바꿉니다.
+- **TLS 를 켜지 않은 설치는 전송 구간이 평문입니다** (`WLM_TLS=off` 가 기본 — 개발·업그레이드 호환). 운영은 AIRGAP.md §7.5 로 켭니다.
+  - 장비 → 수신기(514) syslog 와 수집기 → api 내부(8003)는 평문입니다(후자는 compose 망 안).
+  - 인증서 교체에는 api 재시작이 필요합니다(기동 때 한 번 읽음). TLS 를 켜면 화면의 http 북마크는 빈 응답이 됩니다.
+  - TLS 핸드셰이크도 한 프로세스(ADR-006)가 처리합니다. 초당 200회 새 연결에서 문제없었고(PERFORMANCE.md §2.3), 더 큰 규모는 실서버에서 잽니다(B-25).
+  - 에이전트는 IP SAN 으로 서버를 확인하지 못해(Fluent Bit 4.0) 서버 인증서에 DNS 이름이 꼭 있어야 합니다(DNS 등록은 필요 없음).
+  - L4 로드밸런서(SNAT)를 앞에 두면 접속 IP 가 가려집니다(로그인 시도 제한·감사 IP).
 - IP 단위 로그인 시도 제한은 프로세스 메모리 기반입니다. 재시작하면 초기화되고, 여러 인스턴스 사이에 공유되지 않습니다.
 - 긴 기간(30일 이상) 집계는 행 수에 비례해 느려집니다(PERFORMANCE.md). 시간별 집계 테이블은 로드맵에 있습니다.
 - 알림 규칙은 `received_at`(수신 시각) 기준입니다.

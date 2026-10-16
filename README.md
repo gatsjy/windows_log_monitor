@@ -41,7 +41,8 @@
 - **로그 로테이션:** DB(90일, 빠른 검색) → 압축 보관 파일(SHA-256 무결성) → 365일 후 삭제. 필요하면 복원합니다.
 - **폐쇄망 배포:** 인터넷 PC에서 반입 묶음을 만들고, 서버에서 스크립트 하나로 설치·업그레이드합니다.
   - 에이전트를 설치할 PC 도 폐쇄망이면, 서버 화면에서 **설정이 채워진 에이전트 설치 묶음(zip)** 을 받아 `install.cmd` 하나로 설치합니다.
-- **포트 분리:** 에이전트는 수집 전용 포트 **6976**, 사람은 화면 포트 8080 — 방화벽 정책을 나눌 수 있습니다.
+- **포트 분리:** 에이전트는 수집 전용 포트 **6977**(TLS, 평문 6976 은 전환용), 사람은 화면 포트 8080 — 방화벽 정책을 나눌 수 있습니다.
+- **전송 구간 암호화:** api 가 직접 TLS(1.2+). 에이전트는 서버 인증서를 CA·이름으로 확인하고, 수집 PC 화면에서 PC 별로 TLS·평문을 봅니다.
 - **100% 오픈소스, 단순한 구성:** 컨테이너 3개(PostgreSQL, API, syslog 수신기). UI 는 빌드 도구 없는 순수 JS 입니다.
 
 ## 화면
@@ -60,7 +61,7 @@
 
 ```
 [Windows PC·서버]  Fluent Bit ─┐  이벤트 로그 + (선택) IIS 접속 로그, SQL Server ERRORLOG
-[Linux 서버]       Fluent Bit ─┼─ HTTP :6976 (수집 전용) ─▶ [api: FastAPI] ─▶ [PostgreSQL 17]
+[Linux 서버]       Fluent Bit ─┼─ HTTPS :6977 (수집 전용) ─▶ [api: FastAPI] ─▶ [PostgreSQL 17]
 [네트워크 장비] syslog ─▶ [collector: Fluent Bit] ─┘                │   월별 파티션, 원본 JSONB
                                            웹 UI · 실시간(SSE) · 알림 엔진 → 메일 / 웹훅 / Oracle
 ```
@@ -99,8 +100,9 @@ docker compose exec api python -m app.cli reset-password admin   # 놓쳤거나 
 - **권장:** 화면 **수집 PC > 에이전트 설치** 에서 설치 묶음(zip)을 받아 PC 에서 `install.cmd` 를 관리자 권한으로 실행 (서버 주소·포트·키·Fluent Bit 포함, 인터넷 불필요).
 
 ```powershell
-# 수동 (관리자 PowerShell) — 로그는 서버의 수집 전용 포트 6976 으로
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -ApiKey <수집 API 키>
+# 수동 (관리자 PowerShell) — TLS 서버: 수집 전용 포트 6977, 서버 인증서를 CA·이름으로 확인
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -ApiKey <수집 API 키> -CaFile ca.crt -TlsServerName logmon.corp.local
+# 평문 서버(전환 전): 포트 6976, -CaFile 없이
 ```
 
 ## 운영 배포
@@ -113,7 +115,10 @@ docker compose -f docker-compose.yml --profile syslog up -d --build    # syslog 
 
 - `WLM_PUBLIC_URL`(알림 메일 링크 주소)을 사용자가 접속하는 주소로 바꿉니다.
 - 메일 서버·수신자·Oracle 은 **환경설정** 화면에서 설정하고 테스트 버튼으로 확인합니다. Oracle 테이블은 [docs/oracle_alerts.sql](docs/oracle_alerts.sql) 로 만듭니다.
-- HTTPS 리버스 프록시 뒤에서 운영하면 `WLM_COOKIE_SECURE=true` 로 둡니다.
+- **HTTPS·에이전트 TLS:** api 가 직접 TLS 를 처리합니다(별도 프록시 불필요, ADR-036). 인증서를 `tls/` 에 두고 `WLM_TLS=on`, `WLM_PUBLIC_URL=https://…` 로 켭니다.
+  - 자체 CA: `docker compose run --rm --no-deps --user 0 -v "$PWD/tls:/out" -v "$PWD/tls-ca:/ca" api python -m app.cli tls-init --out /out --ca-dir /ca --name logmon.corp.local` (CA 개인키 `tls-ca/` 는 오프라인 보관).
+  - 에이전트는 6977 로 보내고 서버를 CA·이름으로 확인합니다. 평문(6976)으로 운영 중이면 [docs/AIRGAP.md](docs/AIRGAP.md) §7.5 순서로 옮긴 뒤 `WLM_INGEST_PLAIN=off`.
+  - 앞에 리버스 프록시가 있으면 `WLM_TRUSTED_PROXIES` 에 그 IP 만 적습니다. https 요청의 세션 쿠키는 자동으로 Secure 입니다.
 - `.env`(암호화 키 포함), `archive/`(보관 파일), DB 백업은 따로 보관합니다. 백업·점검 항목은 [docs/PROJECT.md](docs/PROJECT.md) §13 과 [docs/ISMS.md](docs/ISMS.md) 를 봅니다.
 
 ### 폐쇄망 (인터넷 없는 사내망)
@@ -121,7 +126,7 @@ docker compose -f docker-compose.yml --profile syslog up -d --build    # syslog 
 ```bash
 ./deploy/airgap/make-bundle.sh            # 인터넷 PC: x86 서버용 반입 묶음 (Apple Silicon 에서도 amd64 로 빌드)
 # → 해시 확인·반입 승인 → 서버에서:
-sudo ./deploy/airgap/install.sh --public-url http://logmon.corp.local:8080 --syslog
+sudo ./deploy/airgap/install.sh --public-url https://logmon.corp.local:8080 --syslog   # https 면 자체 CA 로 TLS 설치
 ```
 
 - 서버에서는 무결성을 확인하고, 비밀값을 무작위로 만든 뒤, 인터넷 없이 기동합니다.
