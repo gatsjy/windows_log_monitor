@@ -16,7 +16,7 @@ from . import __version__, db, partitions
 from .alerts.engine import engine as alert_engine
 from .auth import service as auth_service
 from .auth.deps import require_user
-from .config import settings
+from .config import display_zone, settings
 from .reports.scheduler import scheduler as report_scheduler
 from .routers import agentpkg, alerts, audit, auth, dashboards, ingest, query, reports, users
 from .routers import settings as settings_router
@@ -49,6 +49,8 @@ async def lifespan(_: FastAPI):
         log.warning("WLM_INGEST_API_KEYS 가 비어 있어 로그 수집이 거부됩니다")
     if not settings.secret_key:
         log.warning("WLM_SECRET_KEY 가 비어 있어 환경설정에서 비밀번호(SMTP·Oracle 등)를 저장할 수 없습니다")
+    if display_zone().key != settings.display_tz:
+        log.warning("WLM_DISPLAY_TZ '%s' 를 알 수 없어 UTC 로 표시·계산합니다 (예: Asia/Seoul)", settings.display_tz)
     task = asyncio.create_task(_maintenance_loop())
     alert_task = asyncio.create_task(alert_engine.run_forever())
     report_task = asyncio.create_task(report_scheduler.run_forever()) if settings.report_scheduler else None

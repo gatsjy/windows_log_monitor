@@ -143,6 +143,8 @@ curl -s localhost:8080/healthz
 - 백업은 api 가 아니라 `backup` 서비스(postgres 이미지, busybox sh)가 한다. 결과는 `audit_log` 의 `backup.*` 로만 api 에 전달된다. `backup.sh` 를 고치면 `selftest` 로 확인한다.
 - 점검 보고서(`reports`)는 트리거로 내용 수정·삭제·TRUNCATE 를 막는다(확인은 한 번, 전송 결과만 나중에 채움, 보관기간 정리만 `SET LOCAL wlm.report_purge`). 보고서 HTML 에는 로그에서 온 값이 들어가므로 `render.py` 에서 반드시 `escape` 한다(화면은 같은 출처 iframe).
 - 테스트에서는 `WLM_REPORT_SCHEDULER=off`(conftest)라 정기 실행이 돌지 않는다. 정기 실행 시험은 `scheduler.tick(now)` 을 직접 부른다.
+- 표시 시간대는 `config.display_zone()` 으로 얻는다(`ZoneInfo(settings.display_tz)` 를 직접 부르지 않는다 — 이름이 틀리면 UTC 로).
+- 점검 보고서 `payload` 는 고칠 수 없으므로 렌더러(`reports/render.py`)는 예전 형식도 그려야 한다. 전송 기록(`deliveries`)은 덮어쓰지 말고 `repository.add_report_deliveries` 로 덧붙인다.
 - 무음은 행을 지우지 않는다. 해제 = `ends_at` 을 앞당김(시작 전이면 길이 0). 상태(적용 중·예정·끝남)는 `routers/alerts._silence_state` 가 정한다.
 - 수집 포트(8001/6976)로는 `/api/ingest`·`/healthz` 만 열린다(`main.INGEST_PORT_PATHS`). 에이전트용 새 경로가 필요하면 거기에 추가.
 - 알림 규칙을 화면에서 저장하면 그 규칙 블록만 다시 쓴다(`ruleedit.py`). 블록 안의 주석은 그 규칙을 화면에서 저장하면 사라진다(켜기/끄기만은 보존).

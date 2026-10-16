@@ -6,13 +6,14 @@ payload 는 그대로 DB 에 저장되고(고칠 수 없음) 메일·화면이 �
 
 from __future__ import annotations
 
+import math
+from bisect import bisect_right
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from .. import archive, backups, db, partitions, repository
-from ..config import settings
+from ..config import display_zone, settings
 from ..filters import EventFilter
 
 PAYLOAD_VERSION = 1
@@ -40,7 +41,7 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def period_label(kind: str, start: datetime, end: datetime) -> str:
-    tz = ZoneInfo(settings.display_tz)
+    tz = display_zone()
     s, e = start.astimezone(tz), (end - timedelta(seconds=1)).astimezone(tz)
     if kind == "daily":
         return f"{s:%Y-%m-%d} ({WEEKDAY_KO[s.weekday()]})"
@@ -51,27 +52,51 @@ def report_title(kind: str, start: datetime, end: datetime) -> str:
     return f"{KIND_LABELS[kind]} 점검 보고서 · {period_label(kind, start, end)}"
 
 
-async def _events(start: datetime, end: datetime) -> dict[str, Any]:
+def trend_buckets(kind: str, start: datetime, end: datetime, tz: tzinfo) -> list[datetime]:
+    """추이 칸의 시작 시각(UTC). 일간 = 1시간, 주간 = 하루(표시 시간대의 자정).
+    서머타임이 있는 시간대에서는 하루가 23·25시간이라 고정 길이로 나누면 칸이 빠지거나 하나로 뭉친다 →
+    일간은 실제 시간으로 1시간씩(23·25칸), 주간은 달력 날짜의 자정으로 나눈다."""
+    if kind == "daily":
+        return [start + timedelta(hours=i) for i in range(math.ceil((end - start) / timedelta(hours=1)))]
+    day = datetime.combine(start.astimezone(tz).date(), time(0), tzinfo=tz)
+    out = []
+    while (at := day.astimezone(UTC)) < end:
+        out.append(max(at, start))
+        day += timedelta(days=1)   # 시간대가 붙은 datetime 의 날짜 더하기는 벽시계 기준 → 다음 날 자정
+    return out
+
+
+def previous_window(start: datetime, end: datetime, tz: tzinfo) -> tuple[datetime, datetime]:
+    """비교 기간 = 일주일 전 같은 시간 (일간 = 지난주 같은 요일, 주간 = 지난주).
+    일간을 바로 전날과 비교하면 PC 를 끄는 주말·휴일 다음 보고서마다 '로그가 줄었다'는 거짓 경고가 난다."""
+    week = timedelta(days=7)
+    return (start.astimezone(tz) - week).astimezone(UTC), (end.astimezone(tz) - week).astimezone(UTC)
+
+
+async def _events(kind: str, start: datetime, end: datetime) -> dict[str, Any]:
+    tz = display_zone()
     base = EventFilter(since=start, until=end)
-    totals = await repository.count(base, compare=True)
+    total_n = (await repository.count(base))["current"]
+    prev_start, prev_end = previous_window(start, end, tz)
+    previous = (await repository.count(replace(base, since=prev_start, until=prev_end)))["current"]
     by_level = {LEVEL_KEYS.get(int(r["value"]), str(r["value"])): r["n"]
                 for r in await repository.top(base, "level", 10) if r["value"] is not None}
-    # 추이: 일간은 1시간, 주간은 하루 단위 — 시간대 경계에 맞추려고 기간 시작을 기준점으로
-    step = timedelta(hours=1) if end - start <= timedelta(days=1) else timedelta(days=1)
-    buckets = [start + step * i for i in range(int((end - start) / step))]
-    rows = await repository.timeseries(base, step, start, "level")
-    index = {b: i for i, b in enumerate(buckets)}
+    # 추이: 1시간 단위로 세어 칸(일간 1시간·주간 하루)에 나눠 담는다 — 서머타임 날에도 칸 경계가 시간 단위라 맞는다
+    buckets = trend_buckets(kind, start, end, tz)
+    rows = await repository.timeseries(base, timedelta(hours=1), start, "level")
     total = [0] * len(buckets)
     errors = [0] * len(buckets)
     for r in rows:
-        i = index.get(r["bucket"])
-        if i is None:
+        i = bisect_right(buckets, r["bucket"]) - 1
+        if i < 0:
             continue
         total[i] += r["n"]
         if str(r["key"]) in ("1", "2"):
             errors[i] += r["n"]
+    step = timedelta(hours=1) if kind == "daily" else timedelta(days=1)
     return {
-        "total": totals["current"], "previous": totals["previous"], "by_level": by_level,
+        "total": total_n, "previous": previous,
+        "previous_label": "지난주 같은 요일" if kind == "daily" else "지난주", "by_level": by_level,
         "trend": {"step_sec": int(step.total_seconds()), "buckets": [_iso(b) for b in buckets], "total": total,
                   "errors": errors},
         "top_error_hosts": await repository.top(replace(base, levels=[1, 2]), "host", 10),
@@ -134,8 +159,25 @@ async def _retention() -> dict[str, Any]:
         "partitions": len(parts), "rows_estimate": sum(p["rows_estimate"] for p in parts),
         "oldest_partition": _iso(min((p["from"] for p in parts), default=None)),
         "archives": len(files), "archives_missing": sum(1 for f in files if not f["exists"]),
-        "last_integrity_check": {"at": _iso(check["at"]), "detail": check["detail"]} if check else None,
+        "last_integrity_check": {"at": _iso(check["at"]), "detail": check["detail"],
+                                 "bad_count": integrity_bad_count(check)} if check else None,
     }
+
+
+def integrity_bad_count(check: dict[str, Any] | None) -> int:
+    """마지막 보관 파일 무결성 확인의 문제 수. 화면 확인은 문제 파일 이름 목록을, 예전 CLI 는 개수를 남겼다 — 둘 다 받는다
+    (예전 형식으로 만든 보고서도 그릴 수 있어야 한다: 보고서는 고칠 수 없다)."""
+    if not check:
+        return 0
+    if isinstance(check.get("bad_count"), int):
+        return check["bad_count"]
+    bad = (check.get("detail") or {}).get("bad")
+    if isinstance(bad, list):
+        return len(bad)
+    try:
+        return int(bad or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
@@ -146,7 +188,8 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
         out.append({"level": "bad", "text": "이 기간에 들어온 로그가 없습니다 — 수집이 멈췄을 수 있습니다"})
     elif ev["previous"] and ev["total"] < ev["previous"] * 0.5:
         drop = round((1 - ev["total"] / ev["previous"]) * 100)
-        out.append({"level": "warn", "text": f"로그 수가 직전 기간보다 {drop}% 줄었습니다 — 수집 PC 상태를 확인하세요"})
+        out.append({"level": "warn",
+                    "text": f"로그 수가 {ev.get('previous_label', '직전 기간')}보다 {drop}% 줄었습니다 — 수집 PC 상태를 확인하세요"})
     for problem in p["backup"]["problems"]:
         out.append({"level": "bad", "text": f"백업: {problem}"})
     for item in p["security"]["items"]:
@@ -161,11 +204,9 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
         out.append({"level": "warn", "text": f"연락이 끊긴 PC {p['agents']['offline']:,}대"})
     if p["retention"]["archives_missing"]:
         out.append({"level": "bad", "text": f"보관 파일 {p['retention']['archives_missing']}개가 없습니다 (목록에는 있음)"})
-    check = p["retention"]["last_integrity_check"]
-    bad = (check or {}).get("detail", {}).get("bad") or []   # 문제 파일 이름 목록 (routers/settings.retention_verify)
+    bad = integrity_bad_count(p["retention"]["last_integrity_check"])
     if bad:
-        count = len(bad) if isinstance(bad, list) else int(bad)
-        out.append({"level": "bad", "text": f"마지막 보관 파일 무결성 확인에서 문제 {count}건"})
+        out.append({"level": "bad", "text": f"마지막 보관 파일 무결성 확인에서 문제 {bad}건"})
     return sorted(out, key=lambda a: a["level"] != "bad")
 
 
@@ -175,9 +216,9 @@ async def build(kind: str, start: datetime, end: datetime, now: datetime | None 
     payload: dict[str, Any] = {
         "version": PAYLOAD_VERSION, "kind": kind, "title": report_title(kind, start, end),
         "period": {"start": _iso(start), "end": _iso(end), "label": period_label(kind, start, end),
-                   "tz": settings.display_tz},
+                   "tz": display_zone().key},
         "generated_at": _iso(now),
-        "events": await _events(start, end),
+        "events": await _events(kind, start, end),
         "security": await _security(start, end),
         "alerts": await _alerts(start, end),
         "agents": await _agents(now),

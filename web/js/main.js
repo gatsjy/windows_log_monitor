@@ -6,7 +6,7 @@ import * as auth from './auth.js';
 import { closeDrawer } from './drawer.js';
 import { categoryLabel } from './levels.js';
 import { enhance } from './responsive.js';
-import { fmtNum, html, store } from './util.js';
+import { fmtNum, html, store, toast } from './util.js';
 import * as agents from './views/agents.js';
 import * as alerts from './views/alerts.js';
 import * as audit from './views/audit.js';
@@ -31,12 +31,10 @@ let statusTimer = null;
 function parseHash() {
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
   const [name, ...rest] = path.split('/');
-  const allowed = VIEWS[name] && allowedView(name);
-  return {
-    name: allowed ? name : 'dashboard',
-    sub: rest.join('/'),
-    params: Object.fromEntries(new URLSearchParams(query)),
-  };
+  // 권한이 없는 화면(예: 메일의 #/reports/12 링크)이면 대시보드로. 하위 주소·파라미터는 그 화면 것이라 버린다
+  // (남기면 대시보드가 '12' 라는 대시보드를 찾는다)
+  if (!(VIEWS[name] && allowedView(name))) return { name: 'dashboard', sub: '', params: {}, denied: VIEWS[name] ? name : null };
+  return { name, sub: rest.join('/'), params: Object.fromEntries(new URLSearchParams(query)) };
 }
 
 function teardownView() {
@@ -50,7 +48,8 @@ async function route() {
   if (!running) return;
   teardownView();
   const my = seq;
-  const { name, sub, params } = parseHash();
+  const { name, sub, params, denied } = parseHash();
+  if (denied) toast('이 화면을 볼 권한이 없습니다 — 관리자에게 요청하세요.', { type: 'error' });
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === name));
   const current = document.querySelector(`[data-nav="${name}"] span`);
   document.getElementById('topbar-page').textContent = current ? current.textContent : '';

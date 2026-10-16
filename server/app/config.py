@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo
 
 
 def _env(name: str, default: str) -> str:
@@ -91,3 +92,12 @@ class Settings:
 
 
 settings = Settings()
+
+
+def display_zone() -> ZoneInfo:
+    """표시 시간대(WLM_DISPLAY_TZ). 이름이 틀리면(.env 오타) 멈추지 않고 UTC 로 — 알림·수집·보고서가 같은 규칙을 쓴다.
+    잘못된 이름은 기동 때 경고한다(main.lifespan)."""
+    try:
+        return ZoneInfo(settings.display_tz)
+    except Exception:  # noqa: BLE001 - ZoneInfoNotFoundError·ValueError(경로 문자 등) 모두 UTC 로
+        return ZoneInfo("UTC")

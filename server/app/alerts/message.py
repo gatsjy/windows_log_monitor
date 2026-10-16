@@ -7,9 +7,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
-from zoneinfo import ZoneInfo
 
-from ..config import settings
+from ..config import display_zone, settings
 
 SEVERITY_LABELS = {"critical": "심각", "error": "오류", "warning": "경고", "info": "정보"}
 # 심각도 색: 메일 왼쪽 막대와 메신저(Slack 색 막대·두레이·잔디)가 같은 색을 쓴다
@@ -17,15 +16,8 @@ SEVERITY_COLORS = {"critical": "#d03b3b", "error": "#ec835a", "warning": "#fab21
 LEVEL_LABELS = {1: "심각", 2: "오류", 3: "경고", 4: "정보", 5: "상세"}
 
 
-def _tz() -> ZoneInfo:
-    try:
-        return ZoneInfo(settings.display_tz)
-    except Exception:  # noqa: BLE001 - 잘못된 시간대 이름이면 UTC
-        return ZoneInfo("UTC")
-
-
 def local(dt: datetime | None) -> str:
-    return dt.astimezone(_tz()).strftime("%Y-%m-%d %H:%M:%S") if dt else "-"
+    return dt.astimezone(display_zone()).strftime("%Y-%m-%d %H:%M:%S") if dt else "-"
 
 
 def _window_text(seconds: int) -> str:

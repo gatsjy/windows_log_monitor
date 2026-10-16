@@ -60,14 +60,16 @@ async def _run(args: argparse.Namespace) -> None:
             for a in archive.list_archives():
                 print(f"  파일 {a['file']}  {a['rows']:>12,}건  {a['bytes'] / 1e6:>10,.1f} MB  sha256 {a['sha256'][:16]}…")
         elif args.command == "verify-archives":
-            bad = 0
+            # 화면의 확인(routers/settings.retention_verify)과 같은 형식: bad = 문제 파일 이름 목록 (점검 보고서가 읽는다)
+            bad = []
             for a in archive.list_archives():
                 result = archive.verify(a["partition"])
-                bad += not result["ok"]
+                if not result["ok"]:
+                    bad.append(a["file"])
                 print(f"  {'정상' if result['ok'] else '문제'}  {a['file']}  {result['problem'] or ''}")
             await db.audit("cli", "retention.verify_archives", None, {"files": len(archive.list_archives()), "bad": bad})
             if bad:
-                raise SystemExit(f"무결성 문제 {bad}건")
+                raise SystemExit(f"무결성 문제 {len(bad)}건")
         elif args.command == "restore-archive":
             rows = await archive.restore(args.partition, args.hold_days, "cli")
             print(f"{args.partition}: {rows:,}건 복원. {args.hold_days}일 동안 자동 정리에서 제외됩니다")

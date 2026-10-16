@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Literal
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -16,7 +15,7 @@ from pydantic import BaseModel, Field
 from .. import db, repository
 from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
-from ..config import settings
+from ..config import display_zone
 from ..reports import config as report_config
 from ..reports import render, scheduler
 
@@ -42,7 +41,7 @@ async def list_reports(limit: int = Query(100, ge=1, le=500), user: User = Depen
     return {
         "items": await repository.list_reports(limit),
         "unreviewed_30d": await repository.count_unreviewed_reports(datetime.now(UTC) - timedelta(days=30)),
-        "schedule": cfg, "tz": settings.display_tz,
+        "schedule": cfg, "tz": display_zone().key,
         "scheduler": {"last_run_at": scheduler.scheduler.last_run_at, "last_error": scheduler.scheduler.last_error},
     }
 
@@ -69,8 +68,9 @@ class CreateBody(BaseModel):
 @router.post("/api/reports")
 async def create_report(body: CreateBody, request: Request, user: User = Depends(report_reader)):
     """지금 만들기: 끝난 가장 최근 기간(어제·지난주)으로 만든다. 보내지는 않는다 (정기 보고서와 따로 저장)."""
-    start, end = scheduler.latest_period(body.kind, datetime.now(UTC), ZoneInfo(settings.display_tz))
-    report_id = await scheduler.generate(body.kind, start, end, scheduled=False, actor=user.username, send_to=[])
+    start, end = scheduler.latest_period(body.kind, datetime.now(UTC), display_zone())
+    report_id = await scheduler.generate(body.kind, start, end, scheduled=False, actor=user.username, send_to=[],
+                                         actor_ip=client_ip(request))
     return {"ok": True, "id": report_id}
 
 
@@ -90,14 +90,26 @@ async def review_report(report_id: int, body: ReviewBody, request: Request, user
     return {"ok": True}
 
 
+class SendBody(BaseModel):
+    all: bool = False   # True = 이미 받은 곳에도 다시 보낸다
+
+
 @router.post("/api/reports/{report_id}/send")
-async def resend_report(report_id: int, request: Request, user: User = Depends(require_permission("settings.manage"))):
-    """지금 설정된 받는 곳으로 다시 보낸다 (전송 실패했거나 '지금 만들기'로 만든 보고서)."""
+async def resend_report(report_id: int, request: Request, body: SendBody | None = None,
+                        user: User = Depends(require_permission("settings.manage"))):
+    """지금 설정된 받는 곳 중 아직 받지 못한 곳으로 보낸다 (전송 실패했거나 '지금 만들기'로 만든 보고서).
+    이미 받은 곳에 또 보내지 않게 기본은 못 받은 곳만 — 모두 다시 보내려면 all."""
     row = await _report(report_id)
     targets = (await report_config.load())["targets"]
     if not targets:
         raise HTTPException(422, "받는 곳이 없습니다 — 환경설정 > 점검 보고서에서 수신 그룹·웹훅을 고르세요")
+    if not (body and body.all):
+        sent = {d["target"] for d in row["deliveries"] if d["status"] == "sent"}
+        targets = [t for t in targets if t not in sent]
+        if not targets:
+            raise HTTPException(409, "설정된 받는 곳으로 이미 모두 보냈습니다 — 다시 보내려면 '모두 다시 보내기'")
     results = await scheduler.deliver(report_id, row["payload"], targets)
-    await db.audit(user.username, "report.send", f"보고서 #{report_id}", {"id": report_id, "results": results},
+    await db.audit(user.username, "report.send", f"보고서 #{report_id}",
+                   {"id": report_id, "all": bool(body and body.all), "results": results},
                    actor_ip=client_ip(request))
     return {"ok": all(r["status"] == "sent" for r in results), "deliveries": results}

@@ -13,6 +13,7 @@ from typing import Any
 
 from ..alerts.message import SEVERITY_COLORS, SEVERITY_LABELS, Notice, local
 from ..config import settings
+from .builder import integrity_bad_count
 
 INK, MUTED, LINE, WASH = "#0b0b0b", "#52514e", "#e4e4e1", "#f5f5f3"
 BAD, WARN, GOOD = SEVERITY_COLORS["critical"], SEVERITY_COLORS["warning"], "#2f8f3a"
@@ -32,11 +33,13 @@ def _n(value: Any) -> str:
     return f"{value:,}" if isinstance(value, int) else ("-" if value is None else str(value))
 
 
-def _change(current: int, previous: int | None) -> str:
+def _change(ev: dict[str, Any]) -> str:
+    """비교 기간 대비 증감. 예전 보고서(비교 이름 없음)는 '직전 기간'."""
+    current, previous = ev["total"], ev["previous"]
     if not previous:
         return ""
     pct = round((current - previous) / previous * 100)
-    return f"직전 기간 대비 {'+' if pct >= 0 else ''}{pct}%"
+    return f"{ev.get('previous_label', '직전 기간')} 대비 {'+' if pct >= 0 else ''}{pct}%"
 
 
 def summary(payload: dict[str, Any]) -> dict[str, Any]:
@@ -108,7 +111,10 @@ def _trend(trend: dict[str, Any]) -> str:
             f"<span style='color:{BAD}'>■</span> 그중 오류 이상</div>")
 
 
-def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str, Any] | None = None) -> str:
+def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str, Any] | None = None,
+         link: bool = True) -> str:
+    """link: 메일에는 '앱에서 보기' 링크를 넣는다. 화면 iframe(sandbox, 스크립트 없음)에서는 누르면 그 틀 안에서
+    앱을 열려다 막히므로 넣지 않는다."""
     p = payload
     s = summary(p)
     ev, sec, al, ag, rt, bk = p["events"], p["security"], p["alerts"], p["agents"], p["retention"], p["backup"]
@@ -132,7 +138,7 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
 
     # 로그 현황
     lv = ev["by_level"]
-    body = _stats([("전체 로그", _n(ev["total"]), _change(ev["total"], ev["previous"])),
+    body = _stats([("전체 로그", _n(ev["total"]), _change(ev)),
                    ("심각", _n(lv.get("critical", 0)), ""), ("오류", _n(lv.get("error", 0)), ""),
                    ("경고", _n(lv.get("warning", 0)), ""), ("정보", _n(lv.get("info", 0)), "")])
     body += _trend(ev["trend"])
@@ -182,7 +188,7 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
         [_e("DB 보관"), _e(f"월 파티션 {rt['partitions']}개 · 약 {rt['rows_estimate']:,}건 · 최근 {rt['db_retention_days']}일")],
         [_e("보관 파일"), _e(f"{rt['archives']}개" + (f" (없는 파일 {rt['archives_missing']}개)" if rt["archives_missing"] else "")
                            + f" · 전체 보관 {rt['retention_days']}일")],
-        [_e("마지막 무결성 확인"), _e(f"{_t(check['at'])} — 문제 {len(check['detail'].get('bad') or [])}건" if check else "아직 없음")],
+        [_e("마지막 무결성 확인"), _e(f"{_t(check['at'])} — 문제 {integrity_bad_count(check)}건" if check else "아직 없음")],
         [_e("마지막 백업"), _e(f"{_t(lb['at'])} · {lb['file']}" if lb else "없음")],
         [_e("마지막 복구 시험"), _e((f"{_t(lv2['at'])} — {'성공' if lv2.get('ok') else '실패'}") if lv2 else "없음")],
     ]
@@ -192,7 +198,7 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
     out.append(_section("로그 보관 · 백업", body))
 
     # 끝: 링크·확인
-    if report_id:
+    if report_id and link:
         out.append(f"<p style='margin:22px 0 0'><a href='{escape(report_link(report_id))}' style='color:#1c5cab'>"
                    f"Log Monitor 에서 보고서 보기 · 점검 확인 남기기 →</a></p>")
     if review and review.get("reviewed_at"):
@@ -210,7 +216,7 @@ def page(payload: dict[str, Any], report_id: int, review: dict[str, Any] | None 
     return ("<!doctype html><html lang='ko'><head><meta charset='utf-8'><title>" + escape(payload["title"]) + "</title>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'><link rel='icon' href='data:,'>"
             "<style>body{margin:0;padding:24px;background:#fff}@media print{body{padding:0}}</style></head><body>"
-            + html(payload, report_id, review) + "</body></html>")
+            + html(payload, report_id, review, link=False) + "</body></html>")
 
 
 def text(payload: dict[str, Any], report_id: int | None = None) -> str:
@@ -218,7 +224,7 @@ def text(payload: dict[str, Any], report_id: int | None = None) -> str:
     lines = [p["title"], f"기간 {_t(p['period']['start'])} ~ {_t(p['period']['end'])} ({p['period']['tz']})", ""]
     lines += [summary(p)["headline"]] + [f"- {a['text']}" for a in p["attention"]] + [""]
     ev, al, ag = p["events"], p["alerts"], p["agents"]
-    lines.append(f"로그 {ev['total']:,}건 {_change(ev['total'], ev['previous'])}".rstrip())
+    lines.append(f"로그 {ev['total']:,}건 {_change(ev)}".rstrip())
     lines.append(f"알림 {al['fired']:,}건, 지금 해결 안 됨 {sum(al['unresolved_by_severity'].values()):,}건")
     lines.append(f"수집 PC {ag['online']:,}/{ag['total']:,} 온라인, 연락 끊김 {ag['offline']:,}대")
     lines.append("백업: " + ("정상" if not p["backup"]["problems"] else f"문제 {len(p['backup']['problems'])}건"))
@@ -232,7 +238,7 @@ def notice(payload: dict[str, Any], report_id: int) -> Notice:
     p = payload
     ev, al, ag = p["events"], p["alerts"], p["agents"]
     lines = [s["headline"]] + [f"· {a['text']}" for a in p["attention"][:5]]
-    lines += [f"로그 {ev['total']:,}건 {_change(ev['total'], ev['previous'])}".rstrip(),
+    lines += [f"로그 {ev['total']:,}건 {_change(ev)}".rstrip(),
               f"알림 {al['fired']:,}건 · 지금 해결 안 됨 {sum(al['unresolved_by_severity'].values()):,}건",
               f"수집 PC {ag['online']:,}/{ag['total']:,} 온라인",
               "백업 " + ("정상" if not p["backup"]["problems"] else f"문제 {len(p['backup']['problems'])}건")]

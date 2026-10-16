@@ -4,16 +4,24 @@
 import * as api from '../api.js';
 import { can } from '../auth.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
-import { errorBox, fmtRelative, fmtTime, html, toast } from '../util.js';
+import { confirmModal, errorBox, fmtRelative, fmtTime, html, toast } from '../util.js';
 
 const WEEKDAYS = ['', '월', '화', '수', '목', '금', '토', '일'];
-const DELIVERY = { sent: ['✓', '전송됨'], failed: ['!', '실패'] };
+const DELIVERY = { sent: ['✓', '전송됨', 'sent'], failed: ['!', '실패', 'gave_up'], pending: ['…', '보내는 중', 'skipped'] };
+
+// 받는 곳마다 마지막 결과. 전송 기록은 다시 보낼 때마다 덧붙으므로(첫 발송 결과도 남김) 화면에는 마지막 것만
+function latest(list = []) {
+  const by = new Map();
+  for (const d of list) by.set(d.target, { ...d, tries: (by.get(d.target)?.tries ?? 0) + 1 });
+  return [...by.values()];
+}
 
 function deliveries(list = []) {
   if (!list.length) return html`<span class="muted">보내지 않음</span>`;
-  return html`${list.map((d) => {
-    const [mark, label] = DELIVERY[d.status] ?? ['?', d.status];
-    return html`<span class="dlv ${d.status === 'sent' ? 'sent' : 'gave_up'}" title="${label}${d.error ? `: ${d.error}` : ''}">${mark} ${d.target}</span>`;
+  return html`${latest(list).map((d) => {
+    const [mark, label, cls] = DELIVERY[d.status] ?? ['?', d.status, ''];
+    const tip = `${label}${d.error ? `: ${d.error}` : ''}${d.tries > 1 ? ` (${d.tries}번 보냄)` : ''}`;
+    return html`<span class="dlv ${cls}" title="${tip}">${mark} ${d.target}</span>`;
   })}`;
 }
 
@@ -36,6 +44,8 @@ export async function mount(root, params, sub) {
     <section class="card"><div class="card-body flush" data-list><div class="skeleton"></div></div></section>`;
 
   let data = null;
+  // 화면을 떠난 뒤에 끝난 요청(지금 만들기 등)이 다른 화면의 [data-list] 를 덮어쓰거나 서랍을 열지 않게
+  let alive = true;
 
   function renderStatus() {
     const s = data.schedule;
@@ -70,24 +80,35 @@ export async function mount(root, params, sub) {
 
   async function load() {
     try {
-      data = await api.get('/api/reports', { limit: 200 });
+      const res = await api.get('/api/reports', { limit: 200 });
+      if (!alive) return;
+      data = res;
       renderStatus();
       renderList();
     } catch (err) {
-      root.querySelector('[data-list]').innerHTML = errorBox(err);
+      if (alive) root.querySelector('[data-list]').innerHTML = errorBox(err);
     }
   }
 
   async function openReport(id) {
+    if (!alive) return;
     const body = openDrawer({ title: '점검 보고서', subtitle: `보고서 #${id}` });
     body.innerHTML = '<div class="skeleton"></div>';
     let r;
     try {
       r = await api.get(`/api/reports/${id}`);
     } catch (err) {
-      body.innerHTML = errorBox(err);
+      if (alive) body.innerHTML = errorBox(err);
       return;
     }
+    if (!alive) return;
+    // 보내기: 기본은 아직 못 받은 곳만 (이미 받은 곳에 또 보내지 않게). 모두 받았으면 '모두 다시 보내기'
+    const targets = data?.schedule.targets ?? [];
+    const got = new Set(latest(r.deliveries).filter((d) => d.status === 'sent').map((d) => d.target));
+    const unsent = targets.filter((t) => !got.has(t));
+    const sendButton = !can('settings.manage') ? ''
+      : targets.length && !unsent.length ? html`<button class="btn sm" data-send="all">모두 다시 보내기</button>`
+        : html`<button class="btn sm" data-send title="${unsent.join(', ')}">${targets.some((t) => got.has(t)) ? '못 받은 곳으로 다시 보내기' : '설정된 받는 곳으로 보내기'}${unsent.length ? ` (${unsent.length}곳)` : ''}</button>`;
     body.innerHTML = html`
       <div class="toolbar" style="margin-bottom:8px"><b>${r.payload.title}</b> ${attentionChip(r.attention)}</div>
       <div class="handle-box">
@@ -100,7 +121,7 @@ export async function mount(root, params, sub) {
       </div>
       <div class="toolbar" style="margin:0 0 8px">
         <a class="btn sm" href="/api/reports/${r.id}/html" target="_blank" rel="noopener">인쇄용으로 열기</a>
-        ${can('settings.manage') ? html`<button class="btn sm" data-send>설정된 받는 곳으로 보내기</button>` : ''}
+        ${sendButton}
         <span class="muted" style="font-size:12px" title="${r.sha256}">내용 해시 ${r.sha256.slice(0, 12)}… · 전송 ${r.deliveries.length ? '' : '없음'}</span>
         ${r.deliveries.length ? deliveries(r.deliveries) : ''}
       </div>
@@ -113,18 +134,22 @@ export async function mount(root, params, sub) {
         await load();
         openReport(r.id);
       } catch (err) {
+        if (!alive) return;
         e.target.disabled = false;
         body.querySelector('[data-msg]').innerHTML = errorBox(err);
       }
     });
     body.querySelector('[data-send]')?.addEventListener('click', async (e) => {
+      const all = e.target.dataset.send === 'all';
+      if (all && !await confirmModal({ title: '모두 다시 보내기', message: '이미 받은 곳에도 이 보고서를 다시 보냅니다.', confirmText: '보내기' })) return;
       e.target.disabled = true;
       try {
-        const res = await api.send('POST', `/api/reports/${r.id}/send`);
+        const res = await api.send('POST', `/api/reports/${r.id}/send`, { all });
         toast(res.ok ? '보냈습니다.' : '일부 받는 곳으로 보내지 못했습니다 — 전송 칩에 마우스를 올려 사유를 보세요.', { type: res.ok ? 'success' : 'error' });
         await load();
         openReport(r.id);
       } catch (err) {
+        if (!alive) return;
         e.target.disabled = false;
         toast(err.message, { type: 'error' });
       }
@@ -138,7 +163,7 @@ export async function mount(root, params, sub) {
       await load();
       openReport(res.id);
     } catch (err) {
-      toast(err.message, { type: 'error' });
+      toast(err.message, { type: 'error' });   // 다른 화면에 있어도 실패는 알린다 (만들기는 서버에서 끝났거나 실패했다)
     } finally {
       b.disabled = false;
     }
@@ -146,5 +171,8 @@ export async function mount(root, params, sub) {
 
   await load();
   if (/^\d+$/.test(sub)) openReport(sub);
-  return () => closeDrawer();
+  return () => {
+    alive = false;
+    closeDrawer();
+  };
 }

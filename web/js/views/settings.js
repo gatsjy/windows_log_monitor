@@ -23,8 +23,15 @@ function ok(text) {
   return html`<div class="hint-box">✓ ${text}</div>`;
 }
 
-function usedBy(list) {
-  return list?.length ? html`<span class="muted" title="${list.join(', ')}">규칙 ${list.length}개에서 사용</span>` : html`<span class="muted">미사용</span>`;
+// 쓰는 곳: 알림 규칙(이름 목록) + 점검 보고서의 받는 곳. 쓰는 중이면 이름을 바꾸거나 지울 수 없다 (서버가 막는다)
+function usedBy(list, report) {
+  const parts = [list?.length ? `규칙 ${list.length}개` : '', report ? '점검 보고서' : ''].filter(Boolean);
+  return parts.length ? html`<span class="muted" title="${(list ?? []).join(', ')}">${parts.join(' · ')}에서 사용</span>` : html`<span class="muted">미사용</span>`;
+}
+
+function usedNote(t) {
+  const parts = [t?.used_by?.length ? `규칙 ${t.used_by.join(', ')}` : '', t?.report_target ? '점검 보고서(받는 곳)' : ''].filter(Boolean);
+  return parts.length ? html`<p class="muted" style="margin:0;font-size:12.5px">${parts.join(' · ')} 에서 사용 중이라 이름을 바꾸거나 지우려면 그 설정을 먼저 고치세요.</p>` : '';
 }
 
 async function run(button, out, fn) {
@@ -162,7 +169,7 @@ async function groups(body) {
           <td>${g.member_ids.length ? g.member_ids.map((id) => html`<span class="dlv">${byId[id]?.name ?? id}</span>`) : html`<span class="muted">없음</span>`}</td>
           <td class="r num ${g.deliverable ? '' : 'tag-bad'}">${fmtNum(g.deliverable)}</td>
           <td class="nowrap">${MIN_LABEL[g.min_severity]}</td>
-          <td class="nowrap">${usedBy(g.used_by)}</td>
+          <td class="nowrap">${usedBy(g.used_by, g.report_target)}</td>
           <td class="nowrap r"><button class="btn sm" data-edit="${g.id}">수정</button></td>
         </tr>`)}</tbody></table></div></div>
     </section>
@@ -174,7 +181,7 @@ async function groups(body) {
     const members = new Set(g?.member_ids ?? []);
     drawer.innerHTML = html`<form class="auth-form">
       <label>그룹 이름 (규칙의 notify 에 쓰는 이름)<input class="input" name="name" required maxlength="64" value="${g?.name ?? ''}"></label>
-      ${g?.used_by?.length ? html`<p class="muted" style="margin:0;font-size:12.5px">규칙 ${g.used_by.join(', ')} 에서 사용 중이라 이름을 바꾸려면 규칙을 먼저 고치세요.</p>` : ''}
+      ${usedNote(g)}
       <label>설명<input class="input" name="description" maxlength="200" value="${g?.description ?? ''}"></label>
       ${minSeveritySelect(g?.min_severity)}
       <div class="section-title" style="margin:4px 0 0">구성원</div>
@@ -240,7 +247,7 @@ async function channels(body, meta) {
           <td class="nowrap">${c.type === 'oracle' ? `Oracle · ${meta.oracle_modes[c.config.mode] ?? ''}` : '웹훅'}</td>
           <td class="mono" style="font-size:12px;overflow-wrap:anywhere">${c.error ? html`<span class="tag-bad">${c.error}</span>` : c.target}</td>
           <td class="nowrap">${MIN_LABEL[c.min_severity]}</td>
-          <td class="nowrap">${usedBy(c.used_by)}</td>
+          <td class="nowrap">${usedBy(c.used_by, c.report_target)}</td>
           <td class="nowrap muted" title="${fmtTime(c.updated_at)}">${fmtRelative(c.updated_at)} · ${c.updated_by || ''}</td>
           <td class="nowrap r"><button class="btn sm" data-edit="${c.id}">${c.type === 'oracle' ? '설정·쿼리' : '수정'}</button></td>
         </tr>`)}</tbody></table></div>` : html`<div class="empty">웹훅(사내 메신저) 또는 Oracle DB 연동을 추가하세요.</div>`}</div>
@@ -525,6 +532,7 @@ async function reportSettings(body) {
   const s = await api.get('/api/settings/report');
   const c = s.config;
   const days = ['월', '화', '수', '목', '금', '토', '일'];
+  const gone = c.targets.filter((t) => !s.targets.includes(t));   // 설정에는 있는데 그룹·웹훅이 없어진 이름
   body.innerHTML = html`
     <section class="card"><div class="card-body">
       <div class="hint-box" style="margin-bottom:14px">정해진 시각에 <b>일간(어제 하루)</b>·<b>주간(지난주 월~일)</b> 점검 보고서를 만들어 저장하고, 고른 곳으로 보냅니다.
@@ -543,7 +551,8 @@ async function reportSettings(body) {
         <div class="field"><span>받는 곳 (수신 그룹·웹훅)</span>
           ${s.targets.length ? html`<div class="check-list">${s.targets.map((t) => html`
             <label><input type="checkbox" data-target="${t}" ${c.targets.includes(t) ? 'checked' : ''}>${t}</label>`)}</div>`
-            : html`<span class="muted">수신 그룹이나 웹훅이 없습니다 — 다른 탭에서 먼저 만드세요.</span>`}</div>
+            : html`<span class="muted">수신 그룹이나 웹훅이 없습니다 — 다른 탭에서 먼저 만드세요.</span>`}
+          ${gone.length ? html`<div class="error-box" style="margin-top:6px">받는 곳 ${gone.join(', ')} 이(가) 없어져 보고서를 보내지 못합니다. 저장하면 목록에서 빠집니다.</div>` : ''}</div>
         <div data-error></div>
         <div class="toolbar"><button class="btn primary" type="submit">저장</button></div>
       </form>

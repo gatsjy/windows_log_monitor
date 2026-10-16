@@ -76,6 +76,7 @@ ACTION_LABELS = {
     "report.create": "점검 보고서 만들기",
     "report.review": "점검 보고서 확인",
     "report.send": "점검 보고서 다시 보내기",
+    "report.deliver": "점검 보고서 자동 발송",
     "settings.report.save": "점검 보고서 설정",
     "retention.purge_reports": "보관기간 만료 점검 보고서 삭제",
 }

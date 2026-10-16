@@ -186,6 +186,18 @@ async def list_groups() -> list[dict]:
     )
 
 
+# 대상 이름 → 쓰는 곳 목록에서 '점검 보고서의 받는 곳'을 나타내는 표시 (routers/settings._used_all).
+# 보고서 설정도 이름으로 대상을 가리키므로, 이름을 바꾸거나 지우면 보고서가 조용히 안 가게 된다 → 규칙처럼 막는다
+REPORT_USE = "@report"
+
+
+def _in_use(names: list[str]) -> str:
+    rules = [n for n in names if n != REPORT_USE]
+    shown = ", ".join(rules[:3]) + (f" 외 {len(rules) - 3}개" if len(rules) > 3 else "")
+    parts = ([f"알림 규칙 {shown}"] if rules else []) + (["점검 보고서(받는 곳)"] if REPORT_USE in names else [])
+    return " · ".join(parts)
+
+
 async def save_group(group_id: int | None, data: dict[str, Any], used_by_rules: dict[str, list[str]],
                      actor: str, ip: str | None) -> int:
     name = _check_name(data.get("name", ""))
@@ -198,8 +210,8 @@ async def save_group(group_id: int | None, data: dict[str, Any], used_by_rules: 
         if old is None:
             raise TargetError("그룹이 없습니다", 404)
         if old["name"] != name and used_by_rules.get(old["name"]):
-            raise TargetError(f"알림 규칙 {used_by_rules[old['name']]} 에서 '{old['name']}' 을(를) 쓰고 있어 이름을 바꿀 수 없습니다."
-                              " 규칙을 먼저 고치세요")
+            raise TargetError(f"{_in_use(used_by_rules[old['name']])} 에서 '{old['name']}' 을(를) 쓰고 있어 이름을 바꿀 수 없습니다."
+                              " 그 설정을 먼저 고치세요")
         await db.fetch_one(
             "UPDATE contact_groups SET name = %s, description = %s, min_severity = %s WHERE id = %s RETURNING id",
             (name, description, min_severity, group_id))
@@ -224,7 +236,7 @@ async def delete_group(group_id: int, used_by_rules: dict[str, list[str]], actor
     if row is None:
         raise TargetError("그룹이 없습니다", 404)
     if used_by_rules.get(row["name"]):
-        raise TargetError(f"알림 규칙 {used_by_rules[row['name']]} 에서 사용 중이라 지울 수 없습니다")
+        raise TargetError(f"{_in_use(used_by_rules[row['name']])} 에서 사용 중이라 지울 수 없습니다")
     await db.fetch_one("DELETE FROM contact_groups WHERE id = %s RETURNING id", (group_id,))
     await db.audit(actor, "settings.group.delete", row["name"], {"id": group_id}, actor_ip=ip)
 
@@ -286,7 +298,8 @@ async def save_channel(channel_id: int | None, data: dict[str, Any], secret_upda
     if await _name_taken(name, channel_id=channel_id):
         raise TargetError(f"'{name}' 은(는) 이미 그룹 또는 외부 연동 이름으로 쓰고 있습니다")
     if old and old["name"] != name and used_by_rules.get(old["name"]):
-        raise TargetError(f"알림 규칙 {used_by_rules[old['name']]} 에서 '{old['name']}' 을(를) 쓰고 있어 이름을 바꿀 수 없습니다")
+        raise TargetError(f"{_in_use(used_by_rules[old['name']])} 에서 '{old['name']}' 을(를) 쓰고 있어 이름을 바꿀 수 없습니다."
+                          " 그 설정을 먼저 고치세요")
     config = _clean_channel_config(kind, data.get("config") or {})
     try:
         secret = secrets.merge(old["secret_enc"] if old else None, secret_updates)
@@ -319,7 +332,7 @@ async def save_channel(channel_id: int | None, data: dict[str, Any], secret_upda
 async def delete_channel(channel_id: int, used_by_rules: dict[str, list[str]], actor: str, ip: str | None) -> None:
     row = await get_channel(channel_id)
     if used_by_rules.get(row["name"]):
-        raise TargetError(f"알림 규칙 {used_by_rules[row['name']]} 에서 사용 중이라 지울 수 없습니다")
+        raise TargetError(f"{_in_use(used_by_rules[row['name']])} 에서 사용 중이라 지울 수 없습니다")
     await db.fetch_one("DELETE FROM channels WHERE id = %s RETURNING id", (channel_id,))
     await db.audit(actor, "settings.channel.delete", row["name"], {"id": channel_id, "type": row["type"]}, actor_ip=ip)
 

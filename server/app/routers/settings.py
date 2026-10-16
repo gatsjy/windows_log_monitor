@@ -46,6 +46,14 @@ def _used() -> dict[str, list[str]]:
     return engine.config.used_targets()
 
 
+async def _used_all() -> dict[str, list[str]]:
+    """대상 이름 → 쓰는 곳 (알림 규칙 이름들 + 점검 보고서 표시). 이름 바꾸기·삭제를 막을 때 쓴다."""
+    used = {k: list(v) for k, v in _used().items()}
+    for name in (await report_config.load())["targets"]:
+        used.setdefault(name, []).append(targets.REPORT_USE)
+    return used
+
+
 def _sample_message(name: str) -> AlertMessage:
     now = datetime.now(UTC)
     return AlertMessage(
@@ -194,16 +202,18 @@ class GroupBody(BaseModel):
 @router.get("/api/settings/groups")
 async def list_groups():
     used = _used()
+    report = set((await report_config.load())["targets"])
     items = await targets.list_groups()
     for g in items:
         g["used_by"] = used.get(g["name"], [])
+        g["report_target"] = g["name"] in report
     return {"items": items}
 
 
 @router.post("/api/settings/groups")
 async def create_group(body: GroupBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        return {"id": await targets.save_group(None, body.model_dump(exclude_none=True), _used(), admin.username,
+        return {"id": await targets.save_group(None, body.model_dump(exclude_none=True), await _used_all(), admin.username,
                                                client_ip(request))}
     except targets.TargetError as exc:
         raise _fail(exc) from exc
@@ -212,7 +222,7 @@ async def create_group(body: GroupBody, request: Request, admin: User = Depends(
 @router.put("/api/settings/groups/{group_id}")
 async def update_group(group_id: int, body: GroupBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        await targets.save_group(group_id, body.model_dump(exclude_none=True), _used(), admin.username,
+        await targets.save_group(group_id, body.model_dump(exclude_none=True), await _used_all(), admin.username,
                                  client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
@@ -222,7 +232,7 @@ async def update_group(group_id: int, body: GroupBody, request: Request, admin: 
 @router.delete("/api/settings/groups/{group_id}")
 async def delete_group(group_id: int, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        await targets.delete_group(group_id, _used(), admin.username, client_ip(request))
+        await targets.delete_group(group_id, await _used_all(), admin.username, client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
     return {"ok": True}
@@ -257,16 +267,18 @@ def _secret_updates(body: ChannelBody) -> dict[str, Any]:
 @router.get("/api/settings/channels")
 async def list_channels():
     used = _used()
+    report = set((await report_config.load())["targets"])
     items = await targets.list_channels()
     for c in items:
         c["used_by"] = used.get(c["name"], [])
+        c["report_target"] = c["name"] in report
     return {"items": items}
 
 
 @router.post("/api/settings/channels")
 async def create_channel(body: ChannelBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        return {"id": await targets.save_channel(None, body.model_dump(), _secret_updates(body), _used(),
+        return {"id": await targets.save_channel(None, body.model_dump(), _secret_updates(body), await _used_all(),
                                                  admin.username, client_ip(request))}
     except targets.TargetError as exc:
         raise _fail(exc) from exc
@@ -275,7 +287,7 @@ async def create_channel(body: ChannelBody, request: Request, admin: User = Depe
 @router.put("/api/settings/channels/{channel_id}")
 async def update_channel(channel_id: int, body: ChannelBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        await targets.save_channel(channel_id, body.model_dump(), _secret_updates(body), _used(), admin.username,
+        await targets.save_channel(channel_id, body.model_dump(), _secret_updates(body), await _used_all(), admin.username,
                                    client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
@@ -285,7 +297,7 @@ async def update_channel(channel_id: int, body: ChannelBody, request: Request, a
 @router.delete("/api/settings/channels/{channel_id}")
 async def delete_channel(channel_id: int, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        await targets.delete_channel(channel_id, _used(), admin.username, client_ip(request))
+        await targets.delete_channel(channel_id, await _used_all(), admin.username, client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
     return {"ok": True}

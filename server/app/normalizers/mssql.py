@@ -21,9 +21,8 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
-from ..config import settings
+from ..config import display_zone
 from .base import (
     CRITICAL,
     ERROR,
@@ -60,13 +59,6 @@ def severity_level(severity: int) -> int:
     return INFO
 
 
-def _tz():
-    try:
-        return ZoneInfo(settings.display_tz)
-    except Exception:  # noqa: BLE001
-        return ZoneInfo("UTC")
-
-
 def normalize(record: dict, now: datetime) -> Event | None:
     line = str(record.get("log") or record.get("message") or "").strip("\ufeff\r\n ")
     if not line:
@@ -79,7 +71,7 @@ def normalize(record: dict, now: datetime) -> Event | None:
     stamp, process, text = m.groups()
     try:
         fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in stamp else "%Y-%m-%d %H:%M:%S"
-        ts = datetime.strptime(stamp[:23], fmt).replace(tzinfo=_tz())
+        ts = datetime.strptime(stamp[:23], fmt).replace(tzinfo=display_zone())
     except ValueError:
         ts = now
 

@@ -49,7 +49,7 @@
 - **무결성:** '보관 파일 무결성 확인' 결과(`retention.verify_archives`), 감사로그 append-only 트리거(`server/migrations/003_auth.sql`)
 - **접속기록:** 감사 로그 화면 CSV — 로그인 이력, 이벤트 검색·조회 기록(누가·언제·어디서·무엇을)
 - **계정 관리:** 사용자 화면(역할, 마지막 로그인, 비밀번호 변경일, 잠금 상태)
-- **정기 점검 (2.9.5):** '점검 보고서' 화면 — 일간·주간 보고서 이력, 점검 필요 항목, 점검 확인(누가·언제·의견), 인쇄용 문서(PDF 저장). 감사로그 `report.create`(내용 해시)·`report.review`·`report.send`, 받는 곳의 메일. 보고서는 DB 트리거로 내용 수정·삭제를 막습니다(`server/migrations/011_reports.sql`). 보안 감사 대시보드 화면, 검색 결과(URL로 재현 가능)
+- **정기 점검 (2.9.5):** '점검 보고서' 화면 — 일간·주간 보고서 이력, 점검 필요 항목, 점검 확인(누가·언제·의견), 인쇄용 문서(PDF 저장). 감사로그 `report.create`(내용 해시, 만든 사람 IP)·`report.deliver`(자동 발송 결과)·`report.review`·`report.send`, 받는 곳의 메일. 보고서마다 받는 곳별 전송 기록(다시 보내도 첫 발송 결과가 남음). 보고서는 DB 트리거로 내용 수정·삭제를 막습니다(`server/migrations/011_reports.sql`). 보안 감사 대시보드 화면, 검색 결과(URL로 재현 가능)
 - **변경 이력:** `config/dashboards`, `config/alerts.yaml` 의 git 이력과 `audit_log` 의 `dashboard.save`, `alerts.config.save` 기록(내용 해시 포함)
 - **이상행위 대응:** 알림 화면의 이력(발생 시각, 규칙, 대상 PC, 전송 성공 여부), 메일·사내 DB 수신 기록
 - **사고 대응 기록 (2.11.5):** 알림 이력 CSV(처리 상태·확인한 사람·해결한 사람·시각·처리 기록 전체), 알림 상세의 처리 기록 타임라인, 감사로그 `alerts.ack`·`alerts.resolve`·`alerts.reopen`·`alerts.note`·`alerts.export`. 처리 기록은 DB 트리거로 수정·삭제·TRUNCATE 할 수 없습니다(`server/migrations/009_alert_handling.sql`, `010_alert_notes_no_truncate.sql`). CSV 는 로그에서 온 값이 수식으로 실행되지 않게 처리합니다(`app/csvexport.py`)

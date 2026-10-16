@@ -786,13 +786,14 @@ _REPORT_LIST_COLUMNS = (
 
 
 async def insert_report(kind: str, scheduled: bool, start: datetime, end: datetime, payload: dict,
-                        attention: int, created_by: str) -> int | None:
-    """정기 보고서는 같은 기간이 이미 있으면 None (여러 인스턴스·재시작에도 한 번만)."""
+                        attention: int, created_by: str, deliveries: list[dict] | None = None) -> int | None:
+    """정기 보고서는 같은 기간이 이미 있으면 None (여러 인스턴스·재시작에도 한 번만).
+    deliveries: 보낼 곳을 '보내는 중'(pending)으로 같이 적어 둔다 — 보내다가 멈추면 다음 주기에 이어서 보낸다."""
     row = await db.fetch_one(
-        "INSERT INTO reports (kind, scheduled, period_start, period_end, payload, attention, created_by)"
-        " VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)"
+        "INSERT INTO reports (kind, scheduled, period_start, period_end, payload, attention, created_by, deliveries)"
+        " VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb)"
         " ON CONFLICT (kind, period_start) WHERE scheduled DO NOTHING RETURNING id",
-        (kind, scheduled, start, end, _json(payload), attention, created_by),
+        (kind, scheduled, start, end, _json(payload), attention, created_by, _json(deliveries or [])),
     )
     return row["id"] if row else None
 
@@ -804,9 +805,38 @@ async def scheduled_report_exists(kind: str, start: datetime) -> bool:
     return row is not None
 
 
-async def set_report_deliveries(report_id: int, deliveries: list[dict]) -> None:
-    await db.fetch_one("UPDATE reports SET deliveries = %s::jsonb WHERE id = %s RETURNING id",
-                       (_json(deliveries), report_id))
+async def add_report_deliveries(report_id: int, results: list[dict]) -> None:
+    """보낸 결과를 덧붙인다. 이전 결과(정기 발송의 성공·실패)는 지우지 않고, 이번에 보낸 곳의 '보내는 중'만 지운다
+    — 다시 보내기가 첫 발송 기록을 덮어쓰지 않게 (언제 누구에게 갔는지의 기록)."""
+    names = [r["target"] for r in results]
+    await db.fetch_one(
+        "UPDATE reports SET deliveries = (SELECT coalesce(jsonb_agg(d ORDER BY o), '[]'::jsonb)"
+        "   FROM jsonb_array_elements(deliveries) WITH ORDINALITY AS t(d, o)"
+        "  WHERE NOT (d->>'status' = 'pending' AND d->>'target' = ANY(%s))) || %s::jsonb"
+        " WHERE id = %s RETURNING id",
+        (names, _json(results), report_id),
+    )
+
+
+async def reports_pending_delivery(since: datetime) -> list[dict]:
+    """보내는 중에 서버가 멈춰 '보내는 중'으로 남은 보고서 (since 이후에 만든 것만)."""
+    return await db.fetch_all(
+        "SELECT id, payload, deliveries FROM reports"
+        " WHERE created_at >= %s AND deliveries @> '[{\"status\": \"pending\"}]'::jsonb ORDER BY id",
+        (since,),
+    )
+
+
+async def expire_pending_deliveries(before: datetime, error: str) -> int:
+    """오래된 '보내는 중'은 실패로 바꾼다 (며칠 지난 보고서를 뒤늦게 보내지 않는다)."""
+    rows = await db.fetch_all(
+        "UPDATE reports SET deliveries = (SELECT jsonb_agg(CASE WHEN d->>'status' = 'pending'"
+        "   THEN d || jsonb_build_object('status', 'failed', 'error', %s::text, 'at', now()) ELSE d END ORDER BY o)"
+        "   FROM jsonb_array_elements(deliveries) WITH ORDINALITY AS t(d, o))"
+        " WHERE created_at < %s AND deliveries @> '[{\"status\": \"pending\"}]'::jsonb RETURNING id",
+        (error, before),
+    )
+    return len(rows)
 
 
 async def list_reports(limit: int) -> list[dict]:

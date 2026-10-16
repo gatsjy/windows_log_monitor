@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.reports import config, render
+from app.reports import builder, config, render
 from app.reports.scheduler import due_periods, latest_period
 
 SEOUL = ZoneInfo("Asia/Seoul")
@@ -88,7 +89,9 @@ def test_html_escapes_every_log_derived_value():
     assert "<script>alert(1)</script>" not in page and "&lt;script&gt;" in page
     assert "<img src=x" not in page and "onerror=alert(2)&gt;" in page
     assert "R&lt;x&gt;" in page and "PC&#x27;1" in page
-    assert "#/reports/5" in page and "점검 필요 2건" in page and "직전 기간 대비 +20%" in page
+    assert "점검 필요 2건" in page and "직전 기간 대비 +20%" in page
+    # 화면 iframe(sandbox)·인쇄본에는 앱 링크를 넣지 않는다 (누르면 틀 안에서 막힘). 메일에는 넣는다
+    assert "#/reports/5" not in page and "#/reports/5" in render.notice(payload(), 5).html
 
 
 def test_review_and_no_attention_rendering():
@@ -116,3 +119,56 @@ def test_config_validation():
                 {"weekly": {"weekday": "월"}}, {"targets": ["없는곳"]}):
         with pytest.raises(config.ReportConfigError):
             config.clean(bad, known)
+
+
+def test_integrity_check_from_cli_or_screen_renders():
+    """CLI(예전: 개수)·화면(파일 이름 목록) 어느 쪽이 남긴 무결성 확인이어도 보고서를 그린다 — 문제가 있을 때가 바로 보여야 할 때."""
+    for detail, n in (({"files": 3, "bad": 2}, 2), ({"files": 3, "bad": ["a.jsonl.gz"]}, 1), ({"files": 3, "bad": 0}, 0)):
+        retention = {**payload()["retention"], "last_integrity_check": {"at": "2026-10-14T01:00:00+00:00", "detail": detail}}
+        p = payload(retention=retention)
+        assert f"문제 {n}건" in render.page(p, 1) and render.notice(p, 1).html
+        assert builder.integrity_bad_count(retention["last_integrity_check"]) == n
+        bad = [a for a in builder._attention(p) if "무결성" in a["text"]]
+        assert bad == ([{"level": "bad", "text": f"마지막 보관 파일 무결성 확인에서 문제 {n}건"}] if n else [])
+
+
+def test_trend_buckets_follow_wall_clock_on_dst_days():
+    berlin = ZoneInfo("Europe/Berlin")
+    utc = lambda *a: datetime(*a, tzinfo=berlin).astimezone(UTC)
+    # 서머타임 시작 주 (일요일이 23시간): 7칸이고 마지막 칸이 일요일 자정
+    week = builder.trend_buckets("weekly", utc(2026, 3, 23), utc(2026, 3, 30), berlin)
+    assert len(week) == 7 and week[-1] == utc(2026, 3, 29) and week[0] == utc(2026, 3, 23)
+    # 서머타임 끝나는 날 (25시간): 1시간 칸 25개 (하루짜리 칸 하나로 뭉치지 않는다)
+    day = builder.trend_buckets("daily", utc(2026, 10, 25), utc(2026, 10, 26), berlin)
+    assert len(day) == 25 and day[1] - day[0] == timedelta(hours=1)
+    assert len(builder.trend_buckets("weekly", utc(2026, 10, 19), utc(2026, 10, 26), berlin)) == 7
+    assert len(builder.trend_buckets("daily", utc(2026, 10, 14), utc(2026, 10, 15), berlin)) == 24
+    # 30분만 바뀌는 시간대(로드하우섬)의 23.5시간 하루: 마지막 반 시간도 칸이 있어야 로그가 빠지지 않는다
+    lord_howe = ZoneInfo("Australia/Lord_Howe")
+    start, end = datetime(2026, 10, 4, tzinfo=lord_howe), datetime(2026, 10, 5, tzinfo=lord_howe)
+    assert end.astimezone(UTC) - start.astimezone(UTC) == timedelta(hours=23, minutes=30)  # 같은 시간대끼리 빼면 벽시계 기준이라 UTC 로
+    assert len(builder.trend_buckets("daily", start.astimezone(UTC), end.astimezone(UTC), lord_howe)) == 24
+    # 서머타임 시작 날 일간 보고서 기간도 23시간
+    p = {k: (s.astimezone(berlin), e.astimezone(berlin)) for k, s, e in due_periods(utc(2026, 3, 30, 9, 0), CFG, berlin)}
+    assert p["daily"] == (datetime(2026, 3, 29, tzinfo=berlin), datetime(2026, 3, 30, tzinfo=berlin))
+
+
+def test_daily_compares_with_same_weekday_last_week():
+    """일간을 바로 전날과 비교하면 주말·휴일 다음마다 '로그가 줄었다'는 거짓 경고 → 지난주 같은 요일과 비교한다."""
+    s, e = builder.previous_window(kst(2026, 10, 18), kst(2026, 10, 19), SEOUL)   # 일요일 보고서
+    assert (s.astimezone(SEOUL), e.astimezone(SEOUL)) == (kst(2026, 10, 11), kst(2026, 10, 12))
+    berlin = ZoneInfo("Europe/Berlin")
+    s, e = builder.previous_window(datetime(2026, 3, 30, tzinfo=berlin), datetime(2026, 3, 31, tzinfo=berlin), berlin)
+    assert s == datetime(2026, 3, 23, tzinfo=berlin) and e - s == timedelta(hours=24)
+    ev = {**payload()["events"], "total": 100, "previous": 1000, "previous_label": "지난주 같은 요일"}
+    p = payload(events=ev, security={**payload()["security"], "items": []})
+    assert {"level": "warn", "text": "로그 수가 지난주 같은 요일보다 90% 줄었습니다 — 수집 PC 상태를 확인하세요"} in builder._attention(p)
+    assert "지난주 같은 요일 대비 -90%" in render.page(p, 1)
+
+
+def test_bad_display_tz_falls_back_to_utc(monkeypatch):
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "settings", replace(app_config.settings, display_tz="Asia/Seol"))
+    assert app_config.display_zone().key == "UTC"
+    assert builder.period_label("daily", datetime(2026, 10, 14, tzinfo=UTC), datetime(2026, 10, 15, tzinfo=UTC)) == "2026-10-14 (수)"
