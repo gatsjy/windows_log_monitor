@@ -19,10 +19,11 @@ from ..auth import service as auth_service
 from ..auth.deps import client_ip, require_admin, require_user
 from ..auth.service import User
 from ..config import settings
-from ..filters import EventFilter, FilterError, parse_duration, parse_time, scopes_allow
+from ..filters import MAX_FIELD_FILTERS, EventFilter, FilterError, QueryError, parse_duration, parse_time, scopes_allow
 from ..normalizers import BY_SOURCE
 from ..normalizers.base import LEVEL_NAMES
 from ..normalizers.categories import CATEGORIES
+from ..querylang import format_query, parse_terms
 
 router = APIRouter(tags=["query"])
 
@@ -33,9 +34,25 @@ _MAX_SERIES = 7  # 이보다 많으면 나머지는 '__other__' 로 합친다 (�
 _MAX_AGENT_DELETE = 500  # 일괄 삭제 한 번에 받는 PC 수 (실수로 전체를 보내는 요청을 막기 위한 상한)
 
 
+class QueryRejected(Exception):
+    """검색 문장 오류 → 400 {detail: 한 줄 문구, query_error: {param, code, start, end}} (main.py 처리기).
+    detail 은 지금처럼 문자열이라 기존 화면·외부 클라이언트는 그대로 동작하고, 화면은 위치로 틀린 곳을 칠한다."""
+
+    def __init__(self, error: QueryError):
+        super().__init__(str(error))
+        self.error = error
+
+    def body(self) -> dict:
+        return {"detail": str(self.error),
+                "query_error": {"param": "query", "code": self.error.code, "start": self.error.start,
+                                "end": self.error.end, "message": self.error.message}}
+
+
 def _filter(request: Request, default_since: str | None = "24h") -> EventFilter:
     try:
         f = EventFilter.from_params(request.query_params, default_since=default_since)
+    except QueryError as exc:
+        raise QueryRejected(exc) from exc
     except FilterError as exc:
         raise HTTPException(400, str(exc)) from exc
     # 사용자 그룹의 조회 범위 — 검색·통계·대시보드·실시간 모두 이 필터를 거친다
@@ -262,6 +279,19 @@ async def meta():
         "heartbeat_online_sec": settings.heartbeat_online_sec,
         "heartbeat_stale_sec": settings.heartbeat_stale_sec,
     }
+
+
+# -------------------------------------------------------------------- 검색 문장
+
+@router.get("/api/search/parse")
+async def search_parse(request: Request):
+    """검색 문장 해석만 (데이터 조회 없음 → 감사 안 함). 실시간 화면은 EventSource 가 400 본문을 못 읽어서
+    연결이 끊기면 이것으로 오류 위치·문구를 받아 보여 준다. 옛 파라미터 오류도 같은 400 으로 알린다."""
+    f = _filter(request, default_since=None)
+    text = request.query_params.get("query") or ""
+    budget = MAX_FIELD_FILTERS - sum(1 for k in request.query_params if k.startswith("f.") and len(k) > 2)
+    terms = parse_terms(text, field_budget=budget) if text.strip() else []
+    return {"ok": True, "terms": [t.to_json() for t in terms], "canonical": format_query(terms), "never": f.never}
 
 
 # -------------------------------------------------------------------- live

@@ -18,7 +18,8 @@ from ..repository import COLUMN_EXPR
 
 SEVERITIES = ("critical", "error", "warning", "info")
 RULE_KINDS = ("count", "agent_silent")
-MATCH_KEYS = {"host", "channel", "provider", "source", "category", "user", "ip", "level", "event_id", "q"}
+# query = 검색 문장 (B-01). 다른 키와 AND
+MATCH_KEYS = {"host", "channel", "provider", "source", "category", "user", "ip", "level", "event_id", "q", "query"}
 
 
 class ConfigError(ValueError):
@@ -43,6 +44,8 @@ class Rule:
     tags: tuple[str, ...] = ()   # 예: "MITRE T1110", "ISMS 2.11.3" (화면·알림 본문에 표시)
     sid: int | None = None       # 규칙 번호 (Snort 의 sid 처럼 고유). 화면에서 만들면 자동 부여
     group: str = "기타"          # 규칙 묶음 (화면 왼쪽 목록, 묶음 단위로 켜고 끄기)
+    # 이 규칙이 감시하는 분류 (match.category 와 match.query 의 category: 를 합친 포함 조건). 조회 범위 판단용 (visibility)
+    categories: tuple[str, ...] = ()
 
     def event_filter(self) -> EventFilter:
         return EventFilter.from_params(self.match, default_since=None)
@@ -113,12 +116,15 @@ def _check_rule(index: int, raw: Any) -> Rule:
     match = raw.get("match") or {}
     if not isinstance(match, dict):
         raise ConfigError(f"{where}.match 는 객체여야 합니다")
+    # 검색 문장은 쉼표가 문법이라 YAML 목록을 이어 붙이면 뜻이 바뀐다 → 문자열만 받는다
+    if "query" in match and (isinstance(match["query"], bool) or not isinstance(match["query"], (str, int))):
+        raise ConfigError(f"{where}.match.query 는 문자열이어야 합니다")
     match = {str(k): ",".join(map(str, v)) if isinstance(v, list) else str(v) for k, v in match.items()}
     bad = [k for k in match if k not in MATCH_KEYS and not k.startswith("f.")]
     if bad:
         raise ConfigError(f"{where}.match: 알 수 없는 조건 {bad} (사용 가능: {sorted(MATCH_KEYS)}, f.<경로>)")
     try:
-        EventFilter.from_params(match, default_since=None)
+        checked = EventFilter.from_params(match, default_since=None)
     except FilterError as exc:
         raise ConfigError(f"{where}.match: {exc}") from exc
 
@@ -132,7 +138,8 @@ def _check_rule(index: int, raw: Any) -> Rule:
     cooldown = _duration(raw.get("cooldown", "30m"), f"{where}.cooldown")
     # 재알림 간격이 집계 구간보다 짧으면 같은 이벤트로 알림이 반복된다
     cooldown = max(cooldown, window)
-    return Rule(**common, match=match, window=window, threshold=threshold, group_by=group_by, cooldown=cooldown)
+    return Rule(**common, match=match, window=window, threshold=threshold, group_by=group_by, cooldown=cooldown,
+                categories=tuple(checked.categories))
 
 
 def parse(doc: Any) -> AlertConfig:

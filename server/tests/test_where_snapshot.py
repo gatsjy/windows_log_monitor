@@ -41,7 +41,9 @@ def _bench_scenarios() -> list[tuple[str, dict]]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "SCENARIOS" for t in node.targets):
-            return [(f"bench: {name}", params) for name, _path, params in ast.literal_eval(node.value)]
+            # 검색 문장(query) 시나리오는 새 기능이라 옛 SQL 고정 대상이 아니다
+            return [(f"bench: {name}", params) for name, _path, params in ast.literal_eval(node.value)
+                    if params and "query" not in params]
     raise AssertionError("bench.py 에 SCENARIOS 가 없습니다")
 
 

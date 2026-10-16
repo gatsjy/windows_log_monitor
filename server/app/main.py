@@ -7,7 +7,7 @@ import logging
 import mimetypes
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
@@ -132,6 +132,11 @@ app = FastAPI(
 app.add_middleware(SecurityHeaders)
 app.add_middleware(IngestPortGuard)
 # 공개: 수집(API 키로 보호), 로그인. 그 외 /api/* 는 로그인 필수, 변경 작업은 엔드포인트에서 관리자 확인
+@app.exception_handler(query.QueryRejected)
+async def _query_rejected(_: Request, exc: query.QueryRejected) -> JSONResponse:
+    return JSONResponse(exc.body(), status_code=400)
+
+
 app.include_router(ingest.router)
 app.include_router(auth.router)
 app.include_router(query.router, dependencies=[Depends(require_user)])

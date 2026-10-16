@@ -14,8 +14,9 @@ from .engine import engine
 
 
 def _rule_categories(rule_name: str) -> set[str]:
+    """규칙이 감시하는 분류 — match.category 뿐 아니라 검색 문장(match.query)의 category: 도 (Rule.categories)."""
     rule = next((r for r in engine.config.rules if r.name == rule_name), None)
-    return set(rule.match.get("category", "").split(",")) - {""} if rule else set()
+    return set(rule.categories) if rule else set()
 
 
 def alert_visible(user: User, alert: dict[str, Any]) -> bool:

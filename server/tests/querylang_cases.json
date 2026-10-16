@@ -1,0 +1,4352 @@
+{
+ "version": 1,
+ "_comment": "검색 문장(B-01) 케이스 표 — server/app/querylang.py · web/js/querylang.js · SQL 이 같은 결과를 내는지 함께 시험한다. 규칙을 바꾸면 여기에 줄을 먼저 추가한다 (AGENTS.md). 위치는 코드 포인트(0부터, end 미포함).",
+ "fixtures": [
+  {
+   "id": 1,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4625,
+   "level": 3,
+   "username": "svc_backup",
+   "src_ip": "10.0.0.5",
+   "message": "계정을 로그온하지 못했습니다. 알 수 없는 사용자 이름 또는 잘못된 암호입니다.",
+   "raw": {
+    "EventID": 4625,
+    "EventData": {
+     "TargetUserName": "svc_backup",
+     "LogonType": "10"
+    },
+    "StringInserts": [
+     "-",
+     "-",
+     "-",
+     "-",
+     "-",
+     "user77"
+    ]
+   }
+  },
+  {
+   "id": 2,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4625,
+   "level": 3,
+   "username": "Svc_Backup",
+   "src_ip": "10.0.0.6",
+   "message": "계정을 로그온하지 못했습니다. 알 수 없는 사용자 이름 또는 잘못된 암호입니다.",
+   "raw": {
+    "EventID": "4625",
+    "EventData": {
+     "TargetUserName": "Svc_Backup",
+     "LogonType": "3"
+    }
+   }
+  },
+  {
+   "id": 3,
+   "host": "WEB-01",
+   "source": "winevtlog",
+   "category": "application",
+   "channel": "Application",
+   "provider": "Application Error",
+   "event_id": 1000,
+   "level": 2,
+   "username": null,
+   "src_ip": null,
+   "message": "Connection REFUSED / Timeout while calling backend",
+   "raw": {
+    "Flag": true
+   }
+  },
+  {
+   "id": 4,
+   "host": "WEB-02",
+   "source": "winevtlog",
+   "category": "system",
+   "channel": "System",
+   "provider": "Service Control Manager",
+   "event_id": 7031,
+   "level": 1,
+   "username": null,
+   "src_ip": null,
+   "message": "50%_off C:\\Windows\\System32 \\\\srv\\share",
+   "raw": {
+    "Flag": "true",
+    "Arr": [
+     "x",
+     "y"
+    ]
+   }
+  },
+  {
+   "id": 5,
+   "host": "PC 01",
+   "source": "winevtlog",
+   "category": "powershell",
+   "channel": "Microsoft-Windows-PowerShell/Operational",
+   "provider": "Microsoft-Windows-PowerShell",
+   "event_id": 4104,
+   "level": 5,
+   "username": "kim",
+   "src_ip": null,
+   "message": "IEX (New-Object Net.WebClient).DownloadString('http://intra/login')",
+   "raw": {
+    "N": null
+   }
+  },
+  {
+   "id": 6,
+   "host": "lnx-01",
+   "source": "syslog",
+   "category": "syslog",
+   "channel": null,
+   "provider": "sshd",
+   "event_id": null,
+   "level": 4,
+   "username": "root",
+   "src_ip": "fe80::1",
+   "message": "Failed password for root from fe80::1 port 22",
+   "raw": {}
+  },
+  {
+   "id": 7,
+   "host": "lnx-01",
+   "source": "nginx",
+   "category": "file",
+   "channel": null,
+   "provider": null,
+   "event_id": null,
+   "level": 4,
+   "username": null,
+   "src_ip": "10.0.0.5",
+   "message": null,
+   "raw": {
+    "log": "GET /"
+   }
+  },
+  {
+   "id": 8,
+   "host": "DB-01",
+   "source": "mssql",
+   "category": "mssql",
+   "channel": null,
+   "provider": "MSSQLSERVER",
+   "event_id": 18456,
+   "level": 3,
+   "username": "sa",
+   "src_ip": "10.0.0.7",
+   "message": "Login failed for user 'sa'. Reason: Password did not match. Invalid user",
+   "raw": {
+    "StringInserts": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e",
+     "f",
+     "g",
+     "h",
+     "i",
+     "j",
+     "k",
+     "sa"
+    ]
+   }
+  },
+  {
+   "id": 9,
+   "host": "WEB-01",
+   "source": "iis",
+   "category": "iis",
+   "channel": null,
+   "provider": null,
+   "event_id": null,
+   "level": 2,
+   "username": null,
+   "src_ip": "10.0.0.5",
+   "message": "ΟΔΟΣ İstanbul timeout",
+   "raw": {
+    "iis": {
+     "status": 500
+    }
+   }
+  },
+  {
+   "id": 10,
+   "host": "DC-02",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "Administrator",
+   "src_ip": "10.0.0.6",
+   "message": "계정이 성공적으로 로그온되었습니다.",
+   "raw": {
+    "EventID": 4624,
+    "EventData": {
+     "TargetUserName": "Administrator",
+     "LogonType": "10"
+    }
+   }
+  },
+  {
+   "id": 11,
+   "host": "DC-02",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": null,
+   "provider": null,
+   "event_id": 4740,
+   "level": 3,
+   "username": "svc_backup",
+   "src_ip": null,
+   "message": "사용자 계정이 잠겼습니다.",
+   "raw": {
+    "EventID": 4740
+   }
+  },
+  {
+   "id": 12,
+   "host": "WEB-02",
+   "source": "winevtlog",
+   "category": "system",
+   "channel": "System",
+   "provider": "disk",
+   "event_id": 51,
+   "level": 3,
+   "username": null,
+   "src_ip": null,
+   "message": "정상 종료되었습니다.",
+   "raw": {
+    "StringInserts": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e",
+     "user77"
+    ]
+   }
+  },
+  {
+   "id": 13,
+   "host": "APP-01",
+   "source": "winevtlog",
+   "category": "application",
+   "channel": "Application",
+   "provider": ".NET Runtime",
+   "event_id": 1026,
+   "level": 2,
+   "username": null,
+   "src_ip": null,
+   "message": "System.TimeoutException: The operation has timed out 1,024 bytes",
+   "raw": {}
+  },
+  {
+   "id": 14,
+   "host": "APP-01",
+   "source": "winevtlog",
+   "category": "windows",
+   "channel": "Setup",
+   "provider": null,
+   "event_id": 2,
+   "level": 4,
+   "username": null,
+   "src_ip": null,
+   "message": "다시 부팅 필요",
+   "raw": {
+    "EventID": 2
+   }
+  }
+ ],
+ "parse": [
+  {
+   "text": "event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 \"잘못된 암호\"",
+   "terms": [
+    {
+     "key": "event_id",
+     "neg": false,
+     "values": [
+      4625
+     ],
+     "span": [
+      0,
+      13
+     ]
+    },
+    {
+     "key": "ip",
+     "neg": false,
+     "values": [
+      "10.0.0.5"
+     ],
+     "span": [
+      14,
+      25
+     ]
+    },
+    {
+     "key": "user",
+     "neg": true,
+     "values": [
+      "svc_backup"
+     ],
+     "span": [
+      26,
+      42
+     ]
+    },
+    {
+     "key": "level",
+     "neg": false,
+     "values": [
+      2,
+      1
+     ],
+     "span": [
+      43,
+      54
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "잘못된 암호"
+     ],
+     "span": [
+      55,
+      63
+     ]
+    }
+   ],
+   "canonical": "event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 \"잘못된 암호\""
+  },
+  {
+   "text": "host:WEB-01,WEB-02",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "WEB-01",
+      "WEB-02"
+     ],
+     "span": [
+      0,
+      18
+     ]
+    }
+   ],
+   "canonical": "host:WEB-01,WEB-02"
+  },
+  {
+   "text": "Host:WEB-01",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "WEB-01"
+     ],
+     "span": [
+      0,
+      11
+     ]
+    }
+   ],
+   "canonical": "host:WEB-01"
+  },
+  {
+   "text": "-host:WEB-01",
+   "terms": [
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "WEB-01"
+     ],
+     "span": [
+      0,
+      12
+     ]
+    }
+   ],
+   "canonical": "-host:WEB-01"
+  },
+  {
+   "text": "timeout",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "timeout"
+     ],
+     "span": [
+      0,
+      7
+     ]
+    }
+   ],
+   "canonical": "timeout"
+  },
+  {
+   "text": "timeout refused",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "timeout"
+     ],
+     "span": [
+      0,
+      7
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "refused"
+     ],
+     "span": [
+      8,
+      15
+     ]
+    }
+   ],
+   "canonical": "timeout refused"
+  },
+  {
+   "text": "msg:timeout,refused",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "timeout",
+      "refused"
+     ],
+     "span": [
+      0,
+      19
+     ]
+    }
+   ],
+   "canonical": "msg:timeout,refused"
+  },
+  {
+   "text": "-msg:a,b",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": true,
+     "values": [
+      "a",
+      "b"
+     ],
+     "span": [
+      0,
+      8
+     ]
+    }
+   ],
+   "canonical": "-msg:a,b"
+  },
+  {
+   "text": "-\"정상 종료\"",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": true,
+     "values": [
+      "정상 종료"
+     ],
+     "span": [
+      0,
+      8
+     ]
+    }
+   ],
+   "canonical": "-\"정상 종료\""
+  },
+  {
+   "text": "“잘못된 암호”",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "잘못된 암호"
+     ],
+     "span": [
+      0,
+      8
+     ]
+    }
+   ],
+   "canonical": "\"잘못된 암호\""
+  },
+  {
+   "text": "\"say \"\"hi\"\"\"",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "say \"hi\""
+     ],
+     "span": [
+      0,
+      12
+     ]
+    }
+   ],
+   "canonical": "\"say \"\"hi\"\"\""
+  },
+  {
+   "text": "\"C:\\Windows\\System32\"",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "C:\\Windows\\System32"
+     ],
+     "span": [
+      0,
+      21
+     ]
+    }
+   ],
+   "canonical": "\"C:\\Windows\\System32\""
+  },
+  {
+   "text": "C:\\Windows\\System32",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "C:\\Windows\\System32"
+     ],
+     "span": [
+      0,
+      19
+     ]
+    }
+   ],
+   "canonical": "\"C:\\Windows\\System32\""
+  },
+  {
+   "text": "http://intra/login",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "http://intra/login"
+     ],
+     "span": [
+      0,
+      18
+     ]
+    }
+   ],
+   "canonical": "\"http://intra/login\""
+  },
+  {
+   "text": "12:30:01",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "12:30:01"
+     ],
+     "span": [
+      0,
+      8
+     ]
+    }
+   ],
+   "canonical": "\"12:30:01\""
+  },
+  {
+   "text": "fe80::1",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "fe80::1"
+     ],
+     "span": [
+      0,
+      7
+     ]
+    }
+   ],
+   "canonical": "\"fe80::1\""
+  },
+  {
+   "text": "10.0.0.5:443",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "10.0.0.5:443"
+     ],
+     "span": [
+      0,
+      12
+     ]
+    }
+   ],
+   "canonical": "\"10.0.0.5:443\""
+  },
+  {
+   "text": "ip:fe80::1",
+   "terms": [
+    {
+     "key": "ip",
+     "neg": false,
+     "values": [
+      "fe80::1"
+     ],
+     "span": [
+      0,
+      10
+     ]
+    }
+   ],
+   "canonical": "ip:fe80::1"
+  },
+  {
+   "text": "ip:\"fe80::1\"",
+   "terms": [
+    {
+     "key": "ip",
+     "neg": false,
+     "values": [
+      "fe80::1"
+     ],
+     "span": [
+      0,
+      12
+     ]
+    }
+   ],
+   "canonical": "ip:fe80::1"
+  },
+  {
+   "text": "host:-x",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "-x"
+     ],
+     "span": [
+      0,
+      7
+     ]
+    }
+   ],
+   "canonical": "host:-x"
+  },
+  {
+   "text": "host:a:b",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "a:b"
+     ],
+     "span": [
+      0,
+      8
+     ]
+    }
+   ],
+   "canonical": "host:a:b"
+  },
+  {
+   "text": "host:\"PC 01\",\"PC 02\"",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "PC 01",
+      "PC 02"
+     ],
+     "span": [
+      0,
+      20
+     ]
+    }
+   ],
+   "canonical": "host:\"PC 01\",\"PC 02\""
+  },
+  {
+   "text": "ip:10.0.0.5,10.0.0.6",
+   "terms": [
+    {
+     "key": "ip",
+     "neg": false,
+     "values": [
+      "10.0.0.5",
+      "10.0.0.6"
+     ],
+     "span": [
+      0,
+      20
+     ]
+    }
+   ],
+   "canonical": "ip:10.0.0.5,10.0.0.6"
+  },
+  {
+   "text": "user:\"DOMAIN\\john doe\"",
+   "terms": [
+    {
+     "key": "user",
+     "neg": false,
+     "values": [
+      "DOMAIN\\john doe"
+     ],
+     "span": [
+      0,
+      22
+     ]
+    }
+   ],
+   "canonical": "user:\"DOMAIN\\john doe\""
+  },
+  {
+   "text": "f.EventData.TargetUserName:admin",
+   "terms": [
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "admin"
+     ],
+     "span": [
+      0,
+      32
+     ],
+     "path": [
+      "EventData",
+      "TargetUserName"
+     ]
+    }
+   ],
+   "canonical": "f.EventData.TargetUserName:admin"
+  },
+  {
+   "text": "F.EventData.LogonType:10",
+   "terms": [
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "10"
+     ],
+     "span": [
+      0,
+      24
+     ],
+     "path": [
+      "EventData",
+      "LogonType"
+     ]
+    }
+   ],
+   "canonical": "f.EventData.LogonType:10"
+  },
+  {
+   "text": "f.StringInserts.5:user77",
+   "terms": [
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "user77"
+     ],
+     "span": [
+      0,
+      24
+     ],
+     "path": [
+      "StringInserts",
+      "5"
+     ]
+    }
+   ],
+   "canonical": "f.StringInserts.5:user77"
+  },
+  {
+   "text": "-f.StringInserts.5:user77",
+   "terms": [
+    {
+     "key": "f",
+     "neg": true,
+     "values": [
+      "user77"
+     ],
+     "span": [
+      0,
+      25
+     ],
+     "path": [
+      "StringInserts",
+      "5"
+     ]
+    }
+   ],
+   "canonical": "-f.StringInserts.5:user77"
+  },
+  {
+   "text": "f.a.0:x",
+   "terms": [
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "x"
+     ],
+     "span": [
+      0,
+      7
+     ],
+     "path": [
+      "a",
+      "0"
+     ]
+    }
+   ],
+   "canonical": "f.a.0:x"
+  },
+  {
+   "text": "f.EventData.LogonType:10,3",
+   "terms": [
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "10",
+      "3"
+     ],
+     "span": [
+      0,
+      26
+     ],
+     "path": [
+      "EventData",
+      "LogonType"
+     ]
+    }
+   ],
+   "canonical": "f.EventData.LogonType:10,3"
+  },
+  {
+   "text": "level:1,Error,경고",
+   "terms": [
+    {
+     "key": "level",
+     "neg": false,
+     "values": [
+      1,
+      2,
+      3
+     ],
+     "span": [
+      0,
+      16
+     ]
+    }
+   ],
+   "canonical": "level:심각,오류,경고"
+  },
+  {
+   "text": "level:오류 level:오류,심각",
+   "terms": [
+    {
+     "key": "level",
+     "neg": false,
+     "values": [
+      2
+     ],
+     "span": [
+      0,
+      8
+     ]
+    },
+    {
+     "key": "level",
+     "neg": false,
+     "values": [
+      2,
+      1
+     ],
+     "span": [
+      9,
+      20
+     ]
+    }
+   ],
+   "canonical": "level:오류 level:오류,심각"
+  },
+  {
+   "text": "-level:정보,상세",
+   "terms": [
+    {
+     "key": "level",
+     "neg": true,
+     "values": [
+      4,
+      5
+     ],
+     "span": [
+      0,
+      12
+     ]
+    }
+   ],
+   "canonical": "-level:정보,상세"
+  },
+  {
+   "text": "level:INFO,information,4",
+   "terms": [
+    {
+     "key": "level",
+     "neg": false,
+     "values": [
+      4
+     ],
+     "span": [
+      0,
+      24
+     ]
+    }
+   ],
+   "canonical": "level:정보"
+  },
+  {
+   "text": "category:Security",
+   "terms": [
+    {
+     "key": "category",
+     "neg": false,
+     "values": [
+      "security"
+     ],
+     "span": [
+      0,
+      17
+     ]
+    }
+   ],
+   "canonical": "category:security"
+  },
+  {
+   "text": "category:IIS,iis",
+   "terms": [
+    {
+     "key": "category",
+     "neg": false,
+     "values": [
+      "iis"
+     ],
+     "span": [
+      0,
+      16
+     ]
+    }
+   ],
+   "canonical": "category:iis"
+  },
+  {
+   "text": "source:nginx",
+   "terms": [
+    {
+     "key": "source",
+     "neg": false,
+     "values": [
+      "nginx"
+     ],
+     "span": [
+      0,
+      12
+     ]
+    }
+   ],
+   "canonical": "source:nginx"
+  },
+  {
+   "text": "host:A,A",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "A"
+     ],
+     "span": [
+      0,
+      8
+     ]
+    }
+   ],
+   "canonical": "host:A"
+  },
+  {
+   "text": "event_id:04625",
+   "terms": [
+    {
+     "key": "event_id",
+     "neg": false,
+     "values": [
+      4625
+     ],
+     "span": [
+      0,
+      14
+     ]
+    }
+   ],
+   "canonical": "event_id:4625"
+  },
+  {
+   "text": "event_id:0,2147483647",
+   "terms": [
+    {
+     "key": "event_id",
+     "neg": false,
+     "values": [
+      0,
+      2147483647
+     ],
+     "span": [
+      0,
+      21
+     ]
+    }
+   ],
+   "canonical": "event_id:0,2147483647"
+  },
+  {
+   "text": "event_id:4625,4740 -event_id:4740",
+   "terms": [
+    {
+     "key": "event_id",
+     "neg": false,
+     "values": [
+      4625,
+      4740
+     ],
+     "span": [
+      0,
+      18
+     ]
+    },
+    {
+     "key": "event_id",
+     "neg": true,
+     "values": [
+      4740
+     ],
+     "span": [
+      19,
+      33
+     ]
+    }
+   ],
+   "canonical": "event_id:4625,4740 -event_id:4740"
+  },
+  {
+   "text": "  host:A　\tB  ",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "A"
+     ],
+     "span": [
+      2,
+      8
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "B"
+     ],
+     "span": [
+      10,
+      11
+     ]
+    }
+   ],
+   "canonical": "host:A B"
+  },
+  {
+   "text": "",
+   "terms": [],
+   "canonical": ""
+  },
+  {
+   "text": "   ",
+   "terms": [],
+   "canonical": ""
+  },
+  {
+   "text": "user:svc_backup -user:svc_backup",
+   "terms": [
+    {
+     "key": "user",
+     "neg": false,
+     "values": [
+      "svc_backup"
+     ],
+     "span": [
+      0,
+      15
+     ]
+    },
+    {
+     "key": "user",
+     "neg": true,
+     "values": [
+      "svc_backup"
+     ],
+     "span": [
+      16,
+      32
+     ]
+    }
+   ],
+   "canonical": "user:svc_backup -user:svc_backup"
+  },
+  {
+   "text": "host:A host:B",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "A"
+     ],
+     "span": [
+      0,
+      6
+     ]
+    },
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "B"
+     ],
+     "span": [
+      7,
+      13
+     ]
+    }
+   ],
+   "canonical": "host:A host:B"
+  },
+  {
+   "text": "50%_off",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "50%_off"
+     ],
+     "span": [
+      0,
+      7
+     ]
+    }
+   ],
+   "canonical": "50%_off"
+  },
+  {
+   "text": "οδοσ",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "οδοσ"
+     ],
+     "span": [
+      0,
+      4
+     ]
+    }
+   ],
+   "canonical": "οδοσ"
+  },
+  {
+   "text": "f.Flag:true",
+   "terms": [
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "true"
+     ],
+     "span": [
+      0,
+      11
+     ],
+     "path": [
+      "Flag"
+     ]
+    }
+   ],
+   "canonical": "f.Flag:true"
+  },
+  {
+   "text": "f.Arr:\"[\"\"x\"\", \"\"y\"\"]\"",
+   "terms": [
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "[\"x\", \"y\"]"
+     ],
+     "span": [
+      0,
+      22
+     ],
+     "path": [
+      "Arr"
+     ]
+    }
+   ],
+   "canonical": "f.Arr:\"[\"\"x\"\", \"\"y\"\"]\""
+  },
+  {
+   "text": "\"IEX (\"",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "IEX ("
+     ],
+     "span": [
+      0,
+      7
+     ]
+    }
+   ],
+   "canonical": "\"IEX (\""
+  },
+  {
+   "text": "msg:\"Failed password\",\"Invalid user\"",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "Failed password",
+      "Invalid user"
+     ],
+     "span": [
+      0,
+      36
+     ]
+    }
+   ],
+   "canonical": "msg:\"Failed password\",\"Invalid user\""
+  },
+  {
+   "text": "msg:\"a,b\",c",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "a,b",
+      "c"
+     ],
+     "span": [
+      0,
+      11
+     ]
+    }
+   ],
+   "canonical": "msg:\"a,b\",c"
+  },
+  {
+   "text": "System.TimeoutException",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "System.TimeoutException"
+     ],
+     "span": [
+      0,
+      23
+     ]
+    }
+   ],
+   "canonical": "System.TimeoutException"
+  },
+  {
+   "text": "w3wp.exe 1,024",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w3wp.exe"
+     ],
+     "span": [
+      0,
+      8
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "1,024"
+     ],
+     "span": [
+      9,
+      14
+     ]
+    }
+   ],
+   "canonical": "w3wp.exe 1,024"
+  },
+  {
+   "text": "not found or",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "not"
+     ],
+     "span": [
+      0,
+      3
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "found"
+     ],
+     "span": [
+      4,
+      9
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "or"
+     ],
+     "span": [
+      10,
+      12
+     ]
+    }
+   ],
+   "canonical": "not found or"
+  },
+  {
+   "text": "-timeout",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": true,
+     "values": [
+      "timeout"
+     ],
+     "span": [
+      0,
+      8
+     ]
+    }
+   ],
+   "canonical": "-timeout"
+  },
+  {
+   "text": "msg:-x",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "-x"
+     ],
+     "span": [
+      0,
+      6
+     ]
+    }
+   ],
+   "canonical": "\"-x\""
+  },
+  {
+   "text": "\"AND\"",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "AND"
+     ],
+     "span": [
+      0,
+      5
+     ]
+    }
+   ],
+   "canonical": "\"AND\""
+  },
+  {
+   "text": "\"a““b\"",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "a“b"
+     ],
+     "span": [
+      0,
+      6
+     ]
+    }
+   ],
+   "canonical": "\"a““b\""
+  },
+  {
+   "text": "\"a\" \"b\"",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "a"
+     ],
+     "span": [
+      0,
+      3
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "b"
+     ],
+     "span": [
+      4,
+      7
+     ]
+    }
+   ],
+   "canonical": "a b"
+  },
+  {
+   "text": "host:\"a\",b",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "a",
+      "b"
+     ],
+     "span": [
+      0,
+      10
+     ]
+    }
+   ],
+   "canonical": "host:a,b"
+  },
+  {
+   "text": "host:WEB-01 -\"정상 종료\" level:경고",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "WEB-01"
+     ],
+     "span": [
+      0,
+      11
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": true,
+     "values": [
+      "정상 종료"
+     ],
+     "span": [
+      12,
+      20
+     ]
+    },
+    {
+     "key": "level",
+     "neg": false,
+     "values": [
+      3
+     ],
+     "span": [
+      21,
+      29
+     ]
+    }
+   ],
+   "canonical": "host:WEB-01 -\"정상 종료\" level:경고"
+  },
+  {
+   "text": "host:\"a b,c\"",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "a b,c"
+     ],
+     "span": [
+      0,
+      12
+     ]
+    }
+   ],
+   "canonical": "host:\"a b,c\""
+  },
+  {
+   "text": "host:\"=x\"",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "=x"
+     ],
+     "span": [
+      0,
+      9
+     ]
+    }
+   ],
+   "canonical": "host:\"=x\""
+  },
+  {
+   "text": "😀 timeout",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "😀"
+     ],
+     "span": [
+      0,
+      1
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "timeout"
+     ],
+     "span": [
+      2,
+      9
+     ]
+    }
+   ],
+   "canonical": "😀 timeout"
+  },
+  {
+   "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "span": [
+      0,
+      500
+     ]
+    }
+   ],
+   "canonical": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "text": "-host:h1 -host:h2 -host:h3 -host:h4 -host:h5 -host:h6 -host:h7 -host:h8 -host:h9 -host:h10 -host:h11 -host:h12 -host:h13 -host:h14 -host:h15 -host:h16 -host:h17 -host:h18 -host:h19 -host:h20 -host:h21 -host:h22 -host:h23 -host:h24 -host:h25 -host:h26 -host:h27 -host:h28 -host:h29 -host:h30",
+   "terms": [
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h1"
+     ],
+     "span": [
+      0,
+      8
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h2"
+     ],
+     "span": [
+      9,
+      17
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h3"
+     ],
+     "span": [
+      18,
+      26
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h4"
+     ],
+     "span": [
+      27,
+      35
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h5"
+     ],
+     "span": [
+      36,
+      44
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h6"
+     ],
+     "span": [
+      45,
+      53
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h7"
+     ],
+     "span": [
+      54,
+      62
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h8"
+     ],
+     "span": [
+      63,
+      71
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h9"
+     ],
+     "span": [
+      72,
+      80
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h10"
+     ],
+     "span": [
+      81,
+      90
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h11"
+     ],
+     "span": [
+      91,
+      100
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h12"
+     ],
+     "span": [
+      101,
+      110
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h13"
+     ],
+     "span": [
+      111,
+      120
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h14"
+     ],
+     "span": [
+      121,
+      130
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h15"
+     ],
+     "span": [
+      131,
+      140
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h16"
+     ],
+     "span": [
+      141,
+      150
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h17"
+     ],
+     "span": [
+      151,
+      160
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h18"
+     ],
+     "span": [
+      161,
+      170
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h19"
+     ],
+     "span": [
+      171,
+      180
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h20"
+     ],
+     "span": [
+      181,
+      190
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h21"
+     ],
+     "span": [
+      191,
+      200
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h22"
+     ],
+     "span": [
+      201,
+      210
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h23"
+     ],
+     "span": [
+      211,
+      220
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h24"
+     ],
+     "span": [
+      221,
+      230
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h25"
+     ],
+     "span": [
+      231,
+      240
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h26"
+     ],
+     "span": [
+      241,
+      250
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h27"
+     ],
+     "span": [
+      251,
+      260
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h28"
+     ],
+     "span": [
+      261,
+      270
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h29"
+     ],
+     "span": [
+      271,
+      280
+     ]
+    },
+    {
+     "key": "host",
+     "neg": true,
+     "values": [
+      "h30"
+     ],
+     "span": [
+      281,
+      290
+     ]
+    }
+   ],
+   "canonical": "-host:h1 -host:h2 -host:h3 -host:h4 -host:h5 -host:h6 -host:h7 -host:h8 -host:h9 -host:h10 -host:h11 -host:h12 -host:h13 -host:h14 -host:h15 -host:h16 -host:h17 -host:h18 -host:h19 -host:h20 -host:h21 -host:h22 -host:h23 -host:h24 -host:h25 -host:h26 -host:h27 -host:h28 -host:h29 -host:h30"
+  },
+  {
+   "text": "host:v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12,v13,v14,v15,v16,v17,v18,v19,v20,v21,v22,v23,v24,v25,v26,v27,v28,v29,v30,v31,v32,v33,v34,v35,v36,v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "v1",
+      "v2",
+      "v3",
+      "v4",
+      "v5",
+      "v6",
+      "v7",
+      "v8",
+      "v9",
+      "v10",
+      "v11",
+      "v12",
+      "v13",
+      "v14",
+      "v15",
+      "v16",
+      "v17",
+      "v18",
+      "v19",
+      "v20",
+      "v21",
+      "v22",
+      "v23",
+      "v24",
+      "v25",
+      "v26",
+      "v27",
+      "v28",
+      "v29",
+      "v30",
+      "v31",
+      "v32",
+      "v33",
+      "v34",
+      "v35",
+      "v36",
+      "v37",
+      "v38",
+      "v39",
+      "v40",
+      "v41",
+      "v42",
+      "v43",
+      "v44",
+      "v45",
+      "v46",
+      "v47",
+      "v48",
+      "v49",
+      "v50"
+     ],
+     "span": [
+      0,
+      195
+     ]
+    }
+   ],
+   "canonical": "host:v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12,v13,v14,v15,v16,v17,v18,v19,v20,v21,v22,v23,v24,v25,v26,v27,v28,v29,v30,v31,v32,v33,v34,v35,v36,v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50"
+  },
+  {
+   "text": "host:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "terms": [
+    {
+     "key": "host",
+     "neg": false,
+     "values": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "span": [
+      0,
+      205
+     ]
+    }
+   ],
+   "canonical": "host:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "text": "f.k1:1 f.k2:1 f.k3:1 f.k4:1 f.k5:1 f.k6:1 f.k7:1 f.k8:1 f.k9:1 f.k10:1",
+   "terms": [
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "1"
+     ],
+     "span": [
+      0,
+      6
+     ],
+     "path": [
+      "k1"
+     ]
+    },
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "1"
+     ],
+     "span": [
+      7,
+      13
+     ],
+     "path": [
+      "k2"
+     ]
+    },
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "1"
+     ],
+     "span": [
+      14,
+      20
+     ],
+     "path": [
+      "k3"
+     ]
+    },
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "1"
+     ],
+     "span": [
+      21,
+      27
+     ],
+     "path": [
+      "k4"
+     ]
+    },
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "1"
+     ],
+     "span": [
+      28,
+      34
+     ],
+     "path": [
+      "k5"
+     ]
+    },
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "1"
+     ],
+     "span": [
+      35,
+      41
+     ],
+     "path": [
+      "k6"
+     ]
+    },
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "1"
+     ],
+     "span": [
+      42,
+      48
+     ],
+     "path": [
+      "k7"
+     ]
+    },
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "1"
+     ],
+     "span": [
+      49,
+      55
+     ],
+     "path": [
+      "k8"
+     ]
+    },
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "1"
+     ],
+     "span": [
+      56,
+      62
+     ],
+     "path": [
+      "k9"
+     ]
+    },
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "1"
+     ],
+     "span": [
+      63,
+      70
+     ],
+     "path": [
+      "k10"
+     ]
+    }
+   ],
+   "canonical": "f.k1:1 f.k2:1 f.k3:1 f.k4:1 f.k5:1 f.k6:1 f.k7:1 f.k8:1 f.k9:1 f.k10:1"
+  },
+  {
+   "text": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20",
+   "terms": [
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w1"
+     ],
+     "span": [
+      0,
+      2
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w2"
+     ],
+     "span": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w3"
+     ],
+     "span": [
+      6,
+      8
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w4"
+     ],
+     "span": [
+      9,
+      11
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w5"
+     ],
+     "span": [
+      12,
+      14
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w6"
+     ],
+     "span": [
+      15,
+      17
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w7"
+     ],
+     "span": [
+      18,
+      20
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w8"
+     ],
+     "span": [
+      21,
+      23
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w9"
+     ],
+     "span": [
+      24,
+      26
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w10"
+     ],
+     "span": [
+      27,
+      30
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w11"
+     ],
+     "span": [
+      31,
+      34
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w12"
+     ],
+     "span": [
+      35,
+      38
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w13"
+     ],
+     "span": [
+      39,
+      42
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w14"
+     ],
+     "span": [
+      43,
+      46
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w15"
+     ],
+     "span": [
+      47,
+      50
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w16"
+     ],
+     "span": [
+      51,
+      54
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w17"
+     ],
+     "span": [
+      55,
+      58
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w18"
+     ],
+     "span": [
+      59,
+      62
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w19"
+     ],
+     "span": [
+      63,
+      66
+     ]
+    },
+    {
+     "key": "msg",
+     "neg": false,
+     "values": [
+      "w20"
+     ],
+     "span": [
+      67,
+      70
+     ]
+    }
+   ],
+   "canonical": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20"
+  },
+  {
+   "text": "f.s1.s2.s3.s4.s5.s6.s7.s8.s9.s10.s11.s12.s13.s14.s15.s16:x",
+   "terms": [
+    {
+     "key": "f",
+     "neg": false,
+     "values": [
+      "x"
+     ],
+     "span": [
+      0,
+      58
+     ],
+     "path": [
+      "s1",
+      "s2",
+      "s3",
+      "s4",
+      "s5",
+      "s6",
+      "s7",
+      "s8",
+      "s9",
+      "s10",
+      "s11",
+      "s12",
+      "s13",
+      "s14",
+      "s15",
+      "s16"
+     ]
+    }
+   ],
+   "canonical": "f.s1.s2.s3.s4.s5.s6.s7.s8.s9.s10.s11.s12.s13.s14.s15.s16:x"
+  },
+  {
+   "text": "hots:WEB-01",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 4,
+    "message": "알 수 없는 조건 'hots' 입니다. 'host' 를 찾으셨나요? 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "hostname:x",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 8,
+    "message": "알 수 없는 조건 'hostname' 입니다. 'host' 를 찾으셨나요? 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "field.EventData.X:1",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 17,
+    "message": "알 수 없는 조건 'field.EventData.X' 입니다. 'f.EventData.X' 를 찾으셨나요? 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "lvel:2",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 4,
+    "message": "알 수 없는 조건 'lvel' 입니다. 'level' 를 찾으셨나요? 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "f:x",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 1,
+    "message": "알 수 없는 조건 'f' 입니다. 'f.경로' 를 찾으셨나요? 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "host:",
+   "error": {
+    "code": "empty_value",
+    "start": 4,
+    "end": 5,
+    "message": "'host:' 뒤에 값이 없습니다."
+   }
+  },
+  {
+   "text": "Host:",
+   "error": {
+    "code": "empty_value",
+    "start": 4,
+    "end": 5,
+    "message": "'Host:' 뒤에 값이 없습니다."
+   }
+  },
+  {
+   "text": "-msg:",
+   "error": {
+    "code": "empty_value",
+    "start": 4,
+    "end": 5,
+    "message": "'msg:' 뒤에 값이 없습니다."
+   }
+  },
+  {
+   "text": "level:   ",
+   "error": {
+    "code": "empty_value",
+    "start": 5,
+    "end": 6,
+    "message": "'level:' 뒤에 값이 없습니다."
+   }
+  },
+  {
+   "text": "host: WEB-01",
+   "error": {
+    "code": "space_after_colon",
+    "start": 4,
+    "end": 6,
+    "message": "':' 뒤에 띄어쓰기가 있습니다. host:값 처럼 붙여 쓰세요."
+   }
+  },
+  {
+   "text": "host:A,,B",
+   "error": {
+    "code": "empty_item",
+    "start": 7,
+    "end": 8,
+    "message": "쉼표 앞뒤에 값이 없습니다."
+   }
+  },
+  {
+   "text": "host:A,",
+   "error": {
+    "code": "empty_item",
+    "start": 6,
+    "end": 7,
+    "message": "쉼표 앞뒤에 값이 없습니다."
+   }
+  },
+  {
+   "text": "host:A, B",
+   "error": {
+    "code": "empty_item",
+    "start": 6,
+    "end": 7,
+    "message": "쉼표 앞뒤에 값이 없습니다."
+   }
+  },
+  {
+   "text": "host:\"a\",",
+   "error": {
+    "code": "empty_item",
+    "start": 8,
+    "end": 9,
+    "message": "쉼표 앞뒤에 값이 없습니다."
+   }
+  },
+  {
+   "text": "host:,a",
+   "error": {
+    "code": "empty_item",
+    "start": 5,
+    "end": 6,
+    "message": "쉼표 앞뒤에 값이 없습니다."
+   }
+  },
+  {
+   "text": "\"잘못된 암호",
+   "error": {
+    "code": "unterminated_quote",
+    "start": 0,
+    "end": 7,
+    "message": "따옴표가 닫히지 않았습니다. 끝에 \" 를 붙이세요."
+   }
+  },
+  {
+   "text": "“잘못된 암호",
+   "error": {
+    "code": "unterminated_quote",
+    "start": 0,
+    "end": 7,
+    "message": "따옴표가 닫히지 않았습니다. 끝에 \" 를 붙이세요."
+   }
+  },
+  {
+   "text": "host:\"PC 01",
+   "error": {
+    "code": "unterminated_quote",
+    "start": 5,
+    "end": 11,
+    "message": "따옴표가 닫히지 않았습니다. 끝에 \" 를 붙이세요."
+   }
+  },
+  {
+   "text": "\"a\"\"",
+   "error": {
+    "code": "unterminated_quote",
+    "start": 0,
+    "end": 4,
+    "message": "따옴표가 닫히지 않았습니다. 끝에 \" 를 붙이세요."
+   }
+  },
+  {
+   "text": "ab\"cd\"",
+   "error": {
+    "code": "quote_in_word",
+    "start": 2,
+    "end": 3,
+    "message": "단어 중간에 따옴표가 있습니다. 전체를 따옴표로 감싸고, 안의 \" 는 \"\" 로 두 번 쓰세요."
+   }
+  },
+  {
+   "text": "x\"",
+   "error": {
+    "code": "quote_in_word",
+    "start": 1,
+    "end": 2,
+    "message": "단어 중간에 따옴표가 있습니다. 전체를 따옴표로 감싸고, 안의 \" 는 \"\" 로 두 번 쓰세요."
+   }
+  },
+  {
+   "text": "host:a\"b\"",
+   "error": {
+    "code": "quote_in_word",
+    "start": 6,
+    "end": 7,
+    "message": "단어 중간에 따옴표가 있습니다. 전체를 따옴표로 감싸고, 안의 \" 는 \"\" 로 두 번 쓰세요."
+   }
+  },
+  {
+   "text": "C:\\\"x\"",
+   "error": {
+    "code": "quote_in_word",
+    "start": 3,
+    "end": 4,
+    "message": "단어 중간에 따옴표가 있습니다. 전체를 따옴표로 감싸고, 안의 \" 는 \"\" 로 두 번 쓰세요."
+   }
+  },
+  {
+   "text": "\"a\"b",
+   "error": {
+    "code": "junk_after_quote",
+    "start": 3,
+    "end": 4,
+    "message": "닫는 따옴표 뒤에는 띄어쓰기나 쉼표가 와야 합니다."
+   }
+  },
+  {
+   "text": "host:\"a\"b",
+   "error": {
+    "code": "junk_after_quote",
+    "start": 8,
+    "end": 9,
+    "message": "닫는 따옴표 뒤에는 띄어쓰기나 쉼표가 와야 합니다."
+   }
+  },
+  {
+   "text": "\"\"",
+   "error": {
+    "code": "empty_quoted",
+    "start": 0,
+    "end": 2,
+    "message": "따옴표 안이 비어 있습니다."
+   }
+  },
+  {
+   "text": "\"  \"",
+   "error": {
+    "code": "empty_quoted",
+    "start": 0,
+    "end": 4,
+    "message": "따옴표 안이 비어 있습니다."
+   }
+  },
+  {
+   "text": "a - b",
+   "error": {
+    "code": "lone_minus",
+    "start": 2,
+    "end": 3,
+    "message": "'-' 뒤에 제외할 조건이나 단어를 붙여 쓰세요. 예) -user:svc_backup"
+   }
+  },
+  {
+   "text": "-",
+   "error": {
+    "code": "lone_minus",
+    "start": 0,
+    "end": 1,
+    "message": "'-' 뒤에 제외할 조건이나 단어를 붙여 쓰세요. 예) -user:svc_backup"
+   }
+  },
+  {
+   "text": "--force",
+   "error": {
+    "code": "double_minus",
+    "start": 0,
+    "end": 2,
+    "message": "'-' 는 한 번만 씁니다. '-' 로 시작하는 글자를 찾으려면 따옴표로 감싸세요. 예) \"--force\""
+   }
+  },
+  {
+   "text": "timeout|refused",
+   "error": {
+    "code": "pipe",
+    "start": 7,
+    "end": 8,
+    "message": "'|' 는 쓸 수 없습니다. 여러 값 중 하나는 쉼표로 씁니다. 예) msg:timeout,refused · host:A,B"
+   }
+  },
+  {
+   "text": "msg:a|b",
+   "error": {
+    "code": "pipe",
+    "start": 5,
+    "end": 6,
+    "message": "'|' 는 쓸 수 없습니다. 여러 값 중 하나는 쉼표로 씁니다. 예) msg:timeout,refused · host:A,B"
+   }
+  },
+  {
+   "text": "host:WEB-*",
+   "error": {
+    "code": "wildcard",
+    "start": 9,
+    "end": 10,
+    "message": "와일드카드(*)는 지원하지 않습니다(정확히 일치만). 글자 * 를 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "*",
+   "error": {
+    "code": "wildcard",
+    "start": 0,
+    "end": 1,
+    "message": "와일드카드(*)는 지원하지 않습니다(정확히 일치만). 글자 * 를 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "http://x/*",
+   "error": {
+    "code": "wildcard",
+    "start": 9,
+    "end": 10,
+    "message": "와일드카드(*)는 지원하지 않습니다(정확히 일치만). 글자 * 를 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "GetService()",
+   "error": {
+    "code": "paren",
+    "start": 10,
+    "end": 11,
+    "message": "괄호 묶음은 지원하지 않습니다. 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "(a)",
+   "error": {
+    "code": "paren",
+    "start": 0,
+    "end": 1,
+    "message": "괄호 묶음은 지원하지 않습니다. 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "a OR b",
+   "error": {
+    "code": "reserved_word",
+    "start": 2,
+    "end": 4,
+    "message": "'OR' 는 쓸 수 없습니다. 띄어 쓰면 '그리고', 쉼표는 '또는'(host:A,B), 앞의 - 는 '제외'(-host:A)입니다. 글자 그대로 찾으려면 \"OR\"."
+   }
+  },
+  {
+   "text": "-OR",
+   "error": {
+    "code": "reserved_word",
+    "start": 1,
+    "end": 3,
+    "message": "'OR' 는 쓸 수 없습니다. 띄어 쓰면 '그리고', 쉼표는 '또는'(host:A,B), 앞의 - 는 '제외'(-host:A)입니다. 글자 그대로 찾으려면 \"OR\"."
+   }
+  },
+  {
+   "text": "&&",
+   "error": {
+    "code": "reserved_word",
+    "start": 0,
+    "end": 2,
+    "message": "'&&' 는 쓸 수 없습니다. 띄어 쓰면 '그리고', 쉼표는 '또는'(host:A,B), 앞의 - 는 '제외'(-host:A)입니다. 글자 그대로 찾으려면 \"&&\"."
+   }
+  },
+  {
+   "text": "!host:A",
+   "error": {
+    "code": "operator",
+    "start": 0,
+    "end": 1,
+    "message": "비교·부정 기호 '!' 는 쓸 수 없습니다. 제외는 -host:A 처럼 앞에 - 를 붙입니다."
+   }
+  },
+  {
+   "text": "level:>3",
+   "error": {
+    "code": "operator",
+    "start": 6,
+    "end": 7,
+    "message": "비교·부정 기호 '>' 는 쓸 수 없습니다. 제외는 -host:A 처럼 앞에 - 를 붙입니다."
+   }
+  },
+  {
+   "text": "ip:=x",
+   "error": {
+    "code": "operator",
+    "start": 3,
+    "end": 4,
+    "message": "비교·부정 기호 '=' 는 쓸 수 없습니다. 제외는 -host:A 처럼 앞에 - 를 붙입니다."
+   }
+  },
+  {
+   "text": "'잘못된 암호'",
+   "error": {
+    "code": "single_quote",
+    "start": 0,
+    "end": 1,
+    "message": "작은따옴표 대신 큰따옴표(\")로 감싸세요."
+   }
+  },
+  {
+   "text": "user:'kim'",
+   "error": {
+    "code": "single_quote",
+    "start": 5,
+    "end": 6,
+    "message": "작은따옴표 대신 큰따옴표(\")로 감싸세요."
+   }
+  },
+  {
+   "text": ":x",
+   "error": {
+    "code": "missing_key",
+    "start": 0,
+    "end": 1,
+    "message": "':' 앞에 조건 이름이 없습니다. 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "-:x",
+   "error": {
+    "code": "missing_key",
+    "start": 1,
+    "end": 2,
+    "message": "':' 앞에 조건 이름이 없습니다. 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "since:1h",
+   "error": {
+    "code": "time_key",
+    "start": 0,
+    "end": 5,
+    "message": "기간은 문장에 쓰지 않고 위의 기간 선택으로 정합니다."
+   }
+  },
+  {
+   "text": "Until:x",
+   "error": {
+    "code": "time_key",
+    "start": 0,
+    "end": 5,
+    "message": "기간은 문장에 쓰지 않고 위의 기간 선택으로 정합니다."
+   }
+  },
+  {
+   "text": "q:x",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 1,
+    "message": "알 수 없는 조건 'q' 입니다. 'msg' 를 찾으셨나요? 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "사용자:kim",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 3,
+    "message": "알 수 없는 조건 '사용자' 입니다. 'user' 를 찾으셨나요? 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "Error: 18456",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 5,
+    "message": "알 수 없는 조건 'Error' 입니다. 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "TimeoutException: x",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 16,
+    "message": "알 수 없는 조건 'TimeoutException' 입니다. 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "오류:",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 2,
+    "message": "알 수 없는 조건 '오류' 입니다. 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "C:",
+   "error": {
+    "code": "unknown_key",
+    "start": 0,
+    "end": 1,
+    "message": "알 수 없는 조건 'C' 입니다. 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "level:7",
+   "error": {
+    "code": "bad_level",
+    "start": 6,
+    "end": 7,
+    "message": "'7' 는 수준이 아닙니다. 심각·오류·경고·정보·상세 또는 1~5 중에서 씁니다."
+   }
+  },
+  {
+   "text": "level:err",
+   "error": {
+    "code": "bad_level",
+    "start": 6,
+    "end": 9,
+    "message": "'err' 는 수준이 아닙니다. 심각·오류·경고·정보·상세 또는 1~5 중에서 씁니다."
+   }
+  },
+  {
+   "text": "level:01",
+   "error": {
+    "code": "bad_level",
+    "start": 6,
+    "end": 8,
+    "message": "'01' 는 수준이 아닙니다. 심각·오류·경고·정보·상세 또는 1~5 중에서 씁니다."
+   }
+  },
+  {
+   "text": "event_id:abc",
+   "error": {
+    "code": "bad_int",
+    "start": 9,
+    "end": 12,
+    "message": "이벤트 ID 'abc' 는 0 이상의 정수여야 합니다. 여러 개는 4625,4740 처럼 씁니다."
+   }
+  },
+  {
+   "text": "event_id:+5",
+   "error": {
+    "code": "bad_int",
+    "start": 9,
+    "end": 11,
+    "message": "이벤트 ID '+5' 는 0 이상의 정수여야 합니다. 여러 개는 4625,4740 처럼 씁니다."
+   }
+  },
+  {
+   "text": "event_id:-1",
+   "error": {
+    "code": "bad_int",
+    "start": 9,
+    "end": 11,
+    "message": "이벤트 ID '-1' 는 0 이상의 정수여야 합니다. 여러 개는 4625,4740 처럼 씁니다."
+   }
+  },
+  {
+   "text": "event_id:４６２５",
+   "error": {
+    "code": "bad_int",
+    "start": 9,
+    "end": 13,
+    "message": "이벤트 ID '４６２５' 는 0 이상의 정수여야 합니다. 여러 개는 4625,4740 처럼 씁니다."
+   }
+  },
+  {
+   "text": "event_id:99999999999",
+   "error": {
+    "code": "int_range",
+    "start": 9,
+    "end": 20,
+    "message": "이벤트 ID '99999999999' 가 너무 큽니다 (최대 2147483647)."
+   }
+  },
+  {
+   "text": "event_id:2147483648",
+   "error": {
+    "code": "int_range",
+    "start": 9,
+    "end": 19,
+    "message": "이벤트 ID '2147483648' 가 너무 큽니다 (최대 2147483647)."
+   }
+  },
+  {
+   "text": "category:보안",
+   "error": {
+    "code": "bad_category",
+    "start": 9,
+    "end": 11,
+    "message": "'보안' 는 분류 이름이 아닙니다. 'security' 를 찾으셨나요? 쓸 수 있는 값: security, system, application, powershell, defender, rdp, sysmon, windows, iis, mssql, linux, syslog, file"
+   }
+  },
+  {
+   "text": "category:secrity",
+   "error": {
+    "code": "bad_category",
+    "start": 9,
+    "end": 16,
+    "message": "'secrity' 는 분류 이름이 아닙니다. 'security' 를 찾으셨나요? 쓸 수 있는 값: security, system, application, powershell, defender, rdp, sysmon, windows, iis, mssql, linux, syslog, file"
+   }
+  },
+  {
+   "text": "category:foo",
+   "error": {
+    "code": "bad_category",
+    "start": 9,
+    "end": 12,
+    "message": "'foo' 는 분류 이름이 아닙니다. 쓸 수 있는 값: security, system, application, powershell, defender, rdp, sysmon, windows, iis, mssql, linux, syslog, file"
+   }
+  },
+  {
+   "text": "category:\"응용 프로그램\"",
+   "error": {
+    "code": "bad_category",
+    "start": 9,
+    "end": 18,
+    "message": "'응용 프로그램' 는 분류 이름이 아닙니다. 'application' 를 찾으셨나요? 쓸 수 있는 값: security, system, application, powershell, defender, rdp, sysmon, windows, iis, mssql, linux, syslog, file"
+   }
+  },
+  {
+   "text": "ip:10.0.0.0/24",
+   "error": {
+    "code": "cidr",
+    "start": 3,
+    "end": 14,
+    "message": "IP 대역(/) 검색은 지원하지 않습니다. 주소를 쉼표로 나열하세요."
+   }
+  },
+  {
+   "text": "f.:x",
+   "error": {
+    "code": "bad_path",
+    "start": 0,
+    "end": 2,
+    "message": "원본 필드 경로가 잘못되었습니다. 점으로 이어 씁니다. 예) f.EventData.LogonType"
+   }
+  },
+  {
+   "text": "f.a..b:x",
+   "error": {
+    "code": "bad_path",
+    "start": 0,
+    "end": 6,
+    "message": "원본 필드 경로가 잘못되었습니다. 점으로 이어 씁니다. 예) f.EventData.LogonType"
+   }
+  },
+  {
+   "text": "f.a.:x",
+   "error": {
+    "code": "bad_path",
+    "start": 0,
+    "end": 4,
+    "message": "원본 필드 경로가 잘못되었습니다. 점으로 이어 씁니다. 예) f.EventData.LogonType"
+   }
+  },
+  {
+   "text": "f.a.01:x",
+   "error": {
+    "code": "bad_index",
+    "start": 4,
+    "end": 6,
+    "message": "배열 위치는 0, 1, 2 처럼 앞자리 0·부호 없이 씁니다."
+   }
+  },
+  {
+   "text": "f.a.-1:x",
+   "error": {
+    "code": "bad_index",
+    "start": 4,
+    "end": 6,
+    "message": "배열 위치는 0, 1, 2 처럼 앞자리 0·부호 없이 씁니다."
+   }
+  },
+  {
+   "text": "f.s1.s2.s3.s4.s5.s6.s7.s8.s9.s10.s11.s12.s13.s14.s15.s16.s17:x",
+   "error": {
+    "code": "path_too_long",
+    "start": 0,
+    "end": 60,
+    "message": "원본 필드 경로가 너무 깁니다 (최대 16단계, 단계마다 100자)."
+   }
+  },
+  {
+   "text": "f.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:x",
+   "error": {
+    "code": "path_too_long",
+    "start": 0,
+    "end": 103,
+    "message": "원본 필드 경로가 너무 깁니다 (최대 16단계, 단계마다 100자)."
+   }
+  },
+  {
+   "text": "😀 hots:x",
+   "error": {
+    "code": "unknown_key",
+    "start": 2,
+    "end": 6,
+    "message": "알 수 없는 조건 'hots' 입니다. 'host' 를 찾으셨나요? 글자 그대로 찾으려면 따옴표로 감싸세요."
+   }
+  },
+  {
+   "text": "a\u0001b",
+   "error": {
+    "code": "control_char",
+    "start": 1,
+    "end": 2,
+    "message": "보이지 않는 제어 문자가 들어 있습니다. 지우고 다시 입력하세요."
+   }
+  },
+  {
+   "text": "ok",
+   "error": {
+    "code": "control_char",
+    "start": 2,
+    "end": 3,
+    "message": "보이지 않는 제어 문자가 들어 있습니다. 지우고 다시 입력하세요."
+   }
+  },
+  {
+   "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "error": {
+    "code": "too_long",
+    "start": 500,
+    "end": 501,
+    "message": "검색 문장은 500자까지 쓸 수 있습니다."
+   }
+  },
+  {
+   "text": "f.k1:1 f.k2:1 f.k3:1 f.k4:1 f.k5:1 f.k6:1 f.k7:1 f.k8:1 f.k9:1 f.k10:1 f.k11:1",
+   "error": {
+    "code": "too_many_fields",
+    "start": 71,
+    "end": 78,
+    "message": "원본 필드(f.) 조건은 URL 의 f. 조건과 합쳐 10개까지 쓸 수 있습니다."
+   }
+  },
+  {
+   "text": "f.k1:1 f.k2:1 f.k3:1 f.k4:1",
+   "error": {
+    "code": "too_many_fields",
+    "start": 21,
+    "end": 27,
+    "message": "원본 필드(f.) 조건은 URL 의 f. 조건과 합쳐 10개까지 쓸 수 있습니다."
+   },
+   "budget": 3
+  },
+  {
+   "text": "-host:h1 -host:h2 -host:h3 -host:h4 -host:h5 -host:h6 -host:h7 -host:h8 -host:h9 -host:h10 -host:h11 -host:h12 -host:h13 -host:h14 -host:h15 -host:h16 -host:h17 -host:h18 -host:h19 -host:h20 -host:h21 -host:h22 -host:h23 -host:h24 -host:h25 -host:h26 -host:h27 -host:h28 -host:h29 -host:h30 -host:h31",
+   "error": {
+    "code": "too_many_terms",
+    "start": 291,
+    "end": 300,
+    "message": "조건은 30개까지 쓸 수 있습니다."
+   }
+  },
+  {
+   "text": "host:v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12,v13,v14,v15,v16,v17,v18,v19,v20,v21,v22,v23,v24,v25,v26,v27,v28,v29,v30,v31,v32,v33,v34,v35,v36,v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51",
+   "error": {
+    "code": "too_many_values",
+    "start": 196,
+    "end": 199,
+    "message": "한 조건의 값은 50개까지 쓸 수 있습니다."
+   }
+  },
+  {
+   "text": "host:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "error": {
+    "code": "value_too_long",
+    "start": 5,
+    "end": 206,
+    "message": "값은 200자까지 쓸 수 있습니다."
+   }
+  },
+  {
+   "text": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 w21",
+   "error": {
+    "code": "too_many_msg",
+    "start": 71,
+    "end": 74,
+    "message": "메시지 단어·구절은 20개까지 쓸 수 있습니다."
+   }
+  },
+  {
+   "text": "msg:w1,w2,w3,w4,w5,w6,w7,w8,w9,w10,w11,w12,w13,w14,w15,w16,w17,w18,w19,w20,w21",
+   "error": {
+    "code": "too_many_msg",
+    "start": 75,
+    "end": 78,
+    "message": "메시지 단어·구절은 20개까지 쓸 수 있습니다."
+   }
+  }
+ ],
+ "match": [
+  {
+   "name": "문장 이벤트 ID",
+   "params": {
+    "query": "event_id:4625"
+   },
+   "ids": [
+    1,
+    2
+   ]
+  },
+  {
+   "name": "옛 이벤트 ID",
+   "params": {
+    "event_id": "4625"
+   },
+   "ids": [
+    1,
+    2
+   ]
+  },
+  {
+   "name": "제외: 사용자 없는 이벤트는 남음, 대소문자 구분",
+   "params": {
+    "query": "-user:svc_backup"
+   },
+   "ids": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    12,
+    13,
+    14
+   ]
+  },
+  {
+   "name": "사용자 포함",
+   "params": {
+    "query": "user:svc_backup"
+   },
+   "ids": [
+    1,
+    11
+   ]
+  },
+  {
+   "name": "사용자 대소문자",
+   "params": {
+    "query": "user:Svc_Backup"
+   },
+   "ids": [
+    2
+   ]
+  },
+  {
+   "name": "제외: IP 없는 이벤트는 남음",
+   "params": {
+    "query": "-ip:10.0.0.5"
+   },
+   "ids": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    8,
+    10,
+    11,
+    12,
+    13,
+    14
+   ]
+  },
+  {
+   "name": "제외: 채널 없는 이벤트는 남음",
+   "params": {
+    "query": "-channel:Security"
+   },
+   "ids": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    11,
+    12,
+    13,
+    14
+   ]
+  },
+  {
+   "name": "제외: 이벤트 ID 없는 이벤트는 남음",
+   "params": {
+    "query": "-event_id:4625,4740"
+   },
+   "ids": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    12,
+    13,
+    14
+   ]
+  },
+  {
+   "name": "제외: 공급자 없는 이벤트는 남음",
+   "params": {
+    "query": "-provider:sshd"
+   },
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+   ]
+  },
+  {
+   "name": "메시지 단어",
+   "params": {
+    "query": "timeout"
+   },
+   "ids": [
+    3,
+    9,
+    13
+   ]
+  },
+  {
+   "name": "메시지 단어 AND",
+   "params": {
+    "query": "timeout refused"
+   },
+   "ids": [
+    3
+   ]
+  },
+  {
+   "name": "메시지 OR (msg:)",
+   "params": {
+    "query": "msg:timeout,refused"
+   },
+   "ids": [
+    3,
+    9,
+    13
+   ]
+  },
+  {
+   "name": "옛 q 의 |",
+   "params": {
+    "q": "timeout|refused"
+   },
+   "ids": [
+    3,
+    9,
+    13
+   ]
+  },
+  {
+   "name": "메시지 제외: 메시지 없는 이벤트는 남음",
+   "params": {
+    "query": "-timeout"
+   },
+   "ids": [
+    1,
+    2,
+    4,
+    5,
+    6,
+    7,
+    8,
+    10,
+    11,
+    12,
+    14
+   ]
+  },
+  {
+   "name": "메시지 OR 제외",
+   "params": {
+    "query": "-msg:a,b"
+   },
+   "ids": [
+    1,
+    2,
+    7,
+    10,
+    11,
+    12,
+    14
+   ]
+  },
+  {
+   "name": "구절",
+   "params": {
+    "query": "\"잘못된 암호\""
+   },
+   "ids": [
+    1,
+    2
+   ]
+  },
+  {
+   "name": "구절 제외",
+   "params": {
+    "query": "-\"계정\""
+   },
+   "ids": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    12,
+    13,
+    14
+   ]
+  },
+  {
+   "name": "LIKE 특수문자 그대로",
+   "params": {
+    "query": "50%_off"
+   },
+   "ids": [
+    4
+   ]
+  },
+  {
+   "name": "LIKE % 는 와일드카드가 아님",
+   "params": {
+    "query": "50%off"
+   },
+   "ids": []
+  },
+  {
+   "name": "그리스어 어말 시그마",
+   "params": {
+    "query": "οδοσ"
+   },
+   "ids": [
+    9
+   ]
+  },
+  {
+   "name": "그리스어 소문자 ς 는 안 맞음 (PostgreSQL 과 같게)",
+   "params": {
+    "query": "οδος"
+   },
+   "ids": []
+  },
+  {
+   "name": "튀르키예 İ",
+   "params": {
+    "query": "istanbul"
+   },
+   "ids": [
+    9
+   ]
+  },
+  {
+   "name": "콜론·역슬래시 단어",
+   "params": {
+    "query": "C:\\Windows\\System32"
+   },
+   "ids": [
+    4
+   ]
+  },
+  {
+   "name": "UNC 경로 구절",
+   "params": {
+    "query": "\"\\\\srv\\share\""
+   },
+   "ids": [
+    4
+   ]
+  },
+  {
+   "name": "숫자·문자열 EventID 모두",
+   "params": {
+    "query": "f.EventID:4625"
+   },
+   "ids": [
+    1,
+    2
+   ]
+  },
+  {
+   "name": "원본 필드 제외: 경로 없는 이벤트는 남음",
+   "params": {
+    "query": "-f.EventID:4625"
+   },
+   "ids": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+   ]
+  },
+  {
+   "name": "true 와 \"true\"",
+   "params": {
+    "query": "f.Flag:true"
+   },
+   "ids": [
+    3,
+    4
+   ]
+  },
+  {
+   "name": "배열 글자 표현",
+   "params": {
+    "query": "f.Arr:\"[\"\"x\"\", \"\"y\"\"]\""
+   },
+   "ids": [
+    4
+   ]
+  },
+  {
+   "name": "JSON null 은 값 없음",
+   "params": {
+    "query": "f.N:null"
+   },
+   "ids": []
+  },
+  {
+   "name": "JSON null 제외는 남음",
+   "params": {
+    "query": "-f.N:null"
+   },
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+   ]
+  },
+  {
+   "name": "배열 위치",
+   "params": {
+    "query": "f.StringInserts.5:user77"
+   },
+   "ids": [
+    1,
+    12
+   ]
+  },
+  {
+   "name": "옛 원본 필드",
+   "params": {
+    "f.StringInserts.5": "user77"
+   },
+   "ids": [
+    1,
+    12
+   ]
+  },
+  {
+   "name": "배열 위치 두 자리",
+   "params": {
+    "query": "f.StringInserts.11:sa"
+   },
+   "ids": [
+    8
+   ]
+  },
+  {
+   "name": "원본 필드 여러 값",
+   "params": {
+    "query": "f.EventData.LogonType:10,3"
+   },
+   "ids": [
+    1,
+    2,
+    10
+   ]
+  },
+  {
+   "name": "모순",
+   "params": {
+    "query": "host:A host:B"
+   },
+   "ids": []
+  },
+  {
+   "name": "옛 + 문장 교집합",
+   "params": {
+    "host": "DC-01",
+    "query": "host:DC-01,DC-02"
+   },
+   "ids": [
+    1,
+    2
+   ]
+  },
+  {
+   "name": "옛 + 문장 모순",
+   "params": {
+    "host": "DC-01",
+    "query": "host:DC-02"
+   },
+   "ids": []
+  },
+  {
+   "name": "수준 이름",
+   "params": {
+    "query": "level:오류,심각"
+   },
+   "ids": [
+    3,
+    4,
+    9,
+    13
+   ]
+  },
+  {
+   "name": "수준 제외",
+   "params": {
+    "query": "-level:정보,상세"
+   },
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    8,
+    9,
+    11,
+    12,
+    13
+   ]
+  },
+  {
+   "name": "옛 수준 + 문장 수준",
+   "params": {
+    "level": "1,2",
+    "query": "level:오류"
+   },
+   "ids": [
+    3,
+    9,
+    13
+   ]
+  },
+  {
+   "name": "분류 + 제외",
+   "params": {
+    "query": "category:security -user:svc_backup"
+   },
+   "ids": [
+    2,
+    10
+   ]
+  },
+  {
+   "name": "분류 대소문자 무시",
+   "params": {
+    "query": "category:Security"
+   },
+   "ids": [
+    1,
+    2,
+    10,
+    11
+   ]
+  },
+  {
+   "name": "백로그 예문",
+   "params": {
+    "query": "event_id:4625 ip:10.0.0.6 -user:svc_backup level:경고 \"잘못된 암호\""
+   },
+   "ids": [
+    2
+   ]
+  },
+  {
+   "name": "열린 소스",
+   "params": {
+    "query": "source:nginx"
+   },
+   "ids": [
+    7
+   ]
+  },
+  {
+   "name": "메시지 OR 구절",
+   "params": {
+    "query": "msg:\"Failed password\",\"Invalid user\""
+   },
+   "ids": [
+    6,
+    8
+   ]
+  },
+  {
+   "name": "옛 q 구절 OR",
+   "params": {
+    "q": "Failed password|Invalid user"
+   },
+   "ids": [
+    6,
+    8
+   ]
+  },
+  {
+   "name": "IPv6",
+   "params": {
+    "query": "ip:fe80::1"
+   },
+   "ids": [
+    6
+   ]
+  },
+  {
+   "name": "IPv6 메시지 단어",
+   "params": {
+    "query": "fe80::1"
+   },
+   "ids": [
+    6
+   ]
+  },
+  {
+   "name": "공백 든 PC 이름",
+   "params": {
+    "query": "host:\"PC 01\""
+   },
+   "ids": [
+    5
+   ]
+  },
+  {
+   "name": "괄호는 구절 안에서",
+   "params": {
+    "query": "\"IEX (\""
+   },
+   "ids": [
+    5
+   ]
+  },
+  {
+   "name": "쉼표 단어",
+   "params": {
+    "query": "1,024"
+   },
+   "ids": [
+    13
+   ]
+  },
+  {
+   "name": "옛 f 빈 값",
+   "params": {
+    "f.x": ""
+   },
+   "ids": []
+  },
+  {
+   "name": "짧은 단어 AND",
+   "params": {
+    "query": "다시 부팅"
+   },
+   "ids": [
+    14
+   ]
+  },
+  {
+   "name": "옛 q 구절",
+   "params": {
+    "q": "다시 부팅"
+   },
+   "ids": [
+    14
+   ]
+  },
+  {
+   "name": "빈 문장 = 조건 없음",
+   "params": {
+    "query": "  "
+   },
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+   ]
+  },
+  {
+   "name": "옛 + 문장 + 제외 섞기",
+   "params": {
+    "category": "security",
+    "query": "-host:DC-01 msg:잠겼습니다,로그온되었습니다"
+   },
+   "ids": [
+    10,
+    11
+   ]
+  }
+ ],
+ "same_sql": [
+  {
+   "legacy": {
+    "host": "PC-0042"
+   },
+   "query": "host:PC-0042"
+  },
+  {
+   "legacy": {
+    "level": "1,2"
+   },
+   "query": "level:심각,오류"
+  },
+  {
+   "legacy": {
+    "level": "1,2,3"
+   },
+   "query": "level:심각,오류,경고"
+  },
+  {
+   "legacy": {
+    "q": "Failed password|Invalid user"
+   },
+   "query": "msg:\"Failed password\",\"Invalid user\""
+  },
+  {
+   "legacy": {
+    "q": "TimeoutException"
+   },
+   "query": "TimeoutException"
+  },
+  {
+   "legacy": {
+    "q": "다시 부팅"
+   },
+   "query": "\"다시 부팅\""
+  },
+  {
+   "legacy": {
+    "f.StringInserts.5": "user77"
+   },
+   "query": "f.StringInserts.5:user77"
+  },
+  {
+   "legacy": {
+    "host": "PC-0042",
+    "event_id": "4625"
+   },
+   "query": "host:PC-0042 event_id:4625"
+  },
+  {
+   "legacy": {
+    "host": "PC-0042",
+    "event_id": "4625"
+   },
+   "query": "event_id:4625 host:PC-0042"
+  },
+  {
+   "legacy": {
+    "event_id": "4740"
+   },
+   "query": "event_id:4740"
+  },
+  {
+   "legacy": {
+    "category": "security",
+    "user": "kim",
+    "ip": "10.0.0.5"
+   },
+   "query": "category:security user:kim ip:10.0.0.5"
+  },
+  {
+   "legacy": {
+    "channel": "Security",
+    "provider": "P",
+    "source": "winevtlog"
+   },
+   "query": "channel:Security provider:P source:winevtlog"
+  },
+  {
+   "legacy": {
+    "host": "A,B"
+   },
+   "query": "host:A,B"
+  }
+ ],
+ "fold": [
+  {
+   "params": {
+    "host": "WEB-01"
+   },
+   "query": "host:WEB-01",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "host": "A,B",
+    "level": "1,2"
+   },
+   "query": "host:A,B level:심각,오류",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "q": "timeout|refused"
+   },
+   "query": "msg:timeout,refused",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "q": "다시 부팅"
+   },
+   "query": "\"다시 부팅\"",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "q": "a|b|"
+   },
+   "query": "msg:a,b",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "f.X": "a,b"
+   },
+   "query": "f.X:\"a,b\"",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "level": "7"
+   },
+   "query": "",
+   "rest": {
+    "level": "7"
+   },
+   "same_sql": true
+  },
+  {
+   "params": {
+    "category": "foo"
+   },
+   "query": "",
+   "rest": {
+    "category": "foo"
+   },
+   "same_sql": true
+  },
+  {
+   "params": {
+    "category": "Security"
+   },
+   "query": "",
+   "rest": {
+    "category": "Security"
+   },
+   "same_sql": true
+  },
+  {
+   "params": {
+    "f.a b": "1"
+   },
+   "query": "",
+   "rest": {
+    "f.a b": "1"
+   },
+   "same_sql": true
+  },
+  {
+   "params": {
+    "f.x": ""
+   },
+   "query": "",
+   "rest": {
+    "f.x": ""
+   },
+   "same_sql": true
+  },
+  {
+   "params": {
+    "query": "-user:svc_backup",
+    "host": "DC-01"
+   },
+   "query": "-user:svc_backup host:DC-01",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "since": "7d",
+    "host": "A",
+    "q": "x"
+   },
+   "query": "host:A x",
+   "rest": {
+    "since": "7d"
+   },
+   "same_sql": true
+  },
+  {
+   "params": {
+    "level": "2,1"
+   },
+   "query": "level:오류,심각",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "event_id": "04625"
+   },
+   "query": "event_id:4625",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "q": "x\u0001"
+   },
+   "query": "",
+   "rest": {
+    "q": "x\u0001"
+   },
+   "same_sql": true
+  },
+  {
+   "params": {
+    "host": "A",
+    "query": "bad:"
+   },
+   "query": "bad:",
+   "rest": {
+    "host": "A"
+   },
+   "same_sql": null
+  },
+  {
+   "params": {
+    "f.EventData.LogonType": "10",
+    "source": "winevtlog"
+   },
+   "query": "source:winevtlog f.EventData.LogonType:10",
+   "rest": {},
+   "same_sql": true
+  }
+ ],
+ "edits": [
+  {
+   "text": "",
+   "op": "setKey",
+   "args": [
+    "host",
+    "WEB-01"
+   ],
+   "result": "host:WEB-01"
+  },
+  {
+   "text": "timeout",
+   "op": "setKey",
+   "args": [
+    "host",
+    "WEB-01"
+   ],
+   "result": "timeout host:WEB-01"
+  },
+  {
+   "text": "host:A timeout",
+   "op": "setKey",
+   "args": [
+    "host",
+    "B"
+   ],
+   "result": "host:B timeout"
+  },
+  {
+   "text": "host:A,B timeout host:C",
+   "op": "setKey",
+   "args": [
+    "host",
+    "D"
+   ],
+   "result": "host:D timeout"
+  },
+  {
+   "text": "-host:A,B timeout",
+   "op": "setKey",
+   "args": [
+    "host",
+    "A"
+   ],
+   "result": "-host:B timeout host:A"
+  },
+  {
+   "text": "-host:A timeout",
+   "op": "setKey",
+   "args": [
+    "host",
+    "A"
+   ],
+   "result": "timeout host:A"
+  },
+  {
+   "text": "host:A timeout",
+   "op": "setKey",
+   "args": [
+    "host",
+    ""
+   ],
+   "result": "timeout"
+  },
+  {
+   "text": "host:A -host:B",
+   "op": "setKey",
+   "args": [
+    "host",
+    ""
+   ],
+   "result": "-host:B"
+  },
+  {
+   "text": "x",
+   "op": "setKey",
+   "args": [
+    "host",
+    "PC 01"
+   ],
+   "result": "x host:\"PC 01\""
+  },
+  {
+   "text": "category:security",
+   "op": "setKey",
+   "args": [
+    "category",
+    "iis"
+   ],
+   "result": "category:iis"
+  },
+  {
+   "text": "Host:\"A\"  “x y”",
+   "op": "setKey",
+   "args": [
+    "channel",
+    "Security"
+   ],
+   "result": "Host:\"A\" “x y” channel:Security"
+  },
+  {
+   "text": "level:정보 x",
+   "op": "setLevels",
+   "args": [
+    [
+     1,
+     2
+    ]
+   ],
+   "result": "level:심각,오류 x"
+  },
+  {
+   "text": "-level:정보,상세 x",
+   "op": "setLevels",
+   "args": [
+    [
+     3,
+     1,
+     2
+    ]
+   ],
+   "result": "level:심각,오류,경고 x"
+  },
+  {
+   "text": "level:오류",
+   "op": "setLevels",
+   "args": [
+    [
+     1,
+     2,
+     3,
+     4,
+     5
+    ]
+   ],
+   "result": ""
+  },
+  {
+   "text": "x",
+   "op": "setLevels",
+   "args": [
+    []
+   ],
+   "result": "x"
+  },
+  {
+   "text": "x",
+   "op": "setLevels",
+   "args": [
+    [
+     4
+    ]
+   ],
+   "result": "x level:정보"
+  },
+  {
+   "text": "x",
+   "op": "addTerm",
+   "args": [
+    {
+     "key": "user",
+     "values": [
+      "svc"
+     ],
+     "neg": true
+    }
+   ],
+   "result": "x -user:svc"
+  },
+  {
+   "text": "",
+   "op": "addTerm",
+   "args": [
+    {
+     "key": "msg",
+     "values": [
+      "잘못된 암호"
+     ],
+     "neg": false
+    }
+   ],
+   "result": "\"잘못된 암호\""
+  },
+  {
+   "text": "x -user:svc",
+   "op": "addTerm",
+   "args": [
+    {
+     "key": "user",
+     "values": [
+      "svc"
+     ],
+     "neg": true
+    }
+   ],
+   "result": "x -user:svc"
+  },
+  {
+   "text": "x",
+   "op": "addTerm",
+   "args": [
+    {
+     "key": "f",
+     "path": [
+      "EventData",
+      "X"
+     ],
+     "values": [
+      "a b"
+     ],
+     "neg": false
+    }
+   ],
+   "result": "x f.EventData.X:\"a b\""
+  }
+ ]
+}

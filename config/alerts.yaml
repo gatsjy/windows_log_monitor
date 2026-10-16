@@ -15,7 +15,9 @@ settings:
 # kind: count (기본)      — window 동안 '수신된' 이벤트 중 match 에 맞는 것이 threshold 건 이상이면 알림
 #        agent_silent      — PC 에서 silent_for 동안 아무것도(하트비트 포함) 안 들어오면 알림
 # match: 이벤트 검색과 같은 조건 — host, channel, provider, source, category, user, ip, level, event_id,
-#        q(메시지 포함, 'a|b' = 둘 중 하나), f.<원본 경로> (예: f.EventData.LogonType)
+#        q(메시지 포함, 'a|b' = 둘 중 하나), f.<원본 경로> (예: f.EventData.LogonType),
+#        query(검색 문장 — 이벤트 검색 화면과 같은 문법, 다른 조건과 AND. 따옴표가 들어가므로 작은따옴표로 감싸세요)
+#          예) match: { event_id: "4625", query: '-user:svc_backup -ip:10.0.0.5 "잘못된 암호"' }
 # group_by: host(기본) | ip | user | none | category | event_id | ... — 이 값마다 따로 세고 따로 알림
 # cooldown: 같은 규칙·같은 대상은 이 시간 안에 다시 알리지 않음 (window 보다 짧으면 window 로 맞춤)
 # severity: critical | error | warning | info   (수신 그룹·연동의 '받을 최소 수준'과 비교됨)

@@ -71,7 +71,19 @@ def scope_clause(scopes, host_column: str | tuple[str, ...] = "host",
     return sql.SQL("({})").format(sql.SQL(" OR ").join(ors)), params
 
 
+def _like(term: str) -> str:
+    return "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+# 검색 문장의 제외(B-01): 키 → (컬럼, 배열 형). 순서 고정 = SQL 이 늘 같은 모양
+_EXCLUDE_COLUMNS = (("host", "host", "text"), ("channel", "channel", "text"), ("provider", "provider", "text"),
+                    ("source", "source", "text"), ("category", "category", "text"), ("user", "username", "text"),
+                    ("ip", "src_ip", "text"), ("level", "level", "int"), ("event_id", "event_id", "int"))
+
+
 def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
+    if f.never:   # 포함 조건이 서로 겹치지 않음 (host:A host:B) — 범위와 상관없이 결과 없음
+        return sql.SQL("FALSE"), []
     clauses: list[sql.Composable] = []
     params: list[Any] = []
     if f.since:
@@ -95,16 +107,28 @@ def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
     if f.event_ids:
         clauses.append(sql.SQL("event_id = ANY(%s::int[])"))
         params.append(f.event_ids)
-    if f.q_terms:
-        likes = []
-        for term in f.q_terms:
-            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            likes.append(sql.SQL("message ILIKE %s"))
-            params.append(f"%{escaped}%")
-        clauses.append(sql.SQL("({})").format(sql.SQL(" OR ").join(likes)))
+    # 옛 q 와 문장의 메시지 묶음은 같은 모양: q=a|b 와 query=msg:a,b 는 SQL 이 같다
+    for group in ([f.q_terms] if f.q_terms else []) + f.msg_all:
+        clauses.append(sql.SQL("({})").format(sql.SQL(" OR ").join(sql.SQL("message ILIKE %s") for _ in group)))
+        params.extend(_like(term) for term in group)
     for path, value in f.fields:
         clauses.append(sql.SQL("raw #>> %s::text[] = %s"))
         params.extend([path, value])
+    for path, values in f.field_any:
+        clauses.append(sql.SQL("raw #>> %s::text[] = ANY(%s::text[])"))
+        params.extend([path, values])
+    # 제외: (포함식) IS NOT TRUE — 값이 없는(NULL·경로 없음) 이벤트는 남긴다. NOT IN / <> ALL 은 NULL 행을 버린다
+    for key, column, kind in _EXCLUDE_COLUMNS:
+        if f.excludes.get(key):
+            clauses.append(sql.SQL("({} = ANY(%s::{}[])) IS NOT TRUE").format(sql.Identifier(column), sql.SQL(kind)))
+            params.append(f.excludes[key])
+    for key, values in f.excludes.items():
+        if key.startswith("f."):
+            clauses.append(sql.SQL("(raw #>> %s::text[] = ANY(%s::text[])) IS NOT TRUE"))
+            params.extend([key[2:].split("."), values])
+    for term in f.msg_not:
+        clauses.append(sql.SQL("(message ILIKE %s) IS NOT TRUE"))
+        params.append(_like(term))
     if f.scopes is not None:
         scope_sql, scope_params = scope_clause(f.scopes)
         clauses.append(scope_sql)
