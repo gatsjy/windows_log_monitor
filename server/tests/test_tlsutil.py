@@ -268,6 +268,22 @@ def test_status_ca_file_hygiene(tmp_path):
     assert any(lv == "error" and "첫 인증서가 CA 가 아닙니다" in t for lv, t in st.problems)
 
 
+def test_status_ca_file_order_and_format(tmp_path):
+    """설치 스크립트는 맨 앞 인증서를 CA 로 보고 지문·만료를 확인한다 — 맨 앞이 만료된 옛 루트면 묶음을 만들지 않는다.
+    OpenSSL 전용 'TRUSTED CERTIFICATE' 블록은 묶음에 들어가지 않으므로 확인에서도 빼고 오류로 알린다."""
+    s, _, ca, _ = _files(tmp_path)
+    _, old_root = _root(days=-1)
+    _write(tmp_path, "ca.crt", tlsutil.cert_pem(old_root) + tlsutil.cert_pem(ca))
+    st = tlsutil.status(s)
+    assert st.ca_ok   # 에이전트(OpenSSL)는 뒤의 루트로 믿는다
+    assert any(lv == "error" and "맨 앞 인증서" in t for lv, t in st.problems)
+    trusted = tlsutil.cert_pem(ca).replace(b"BEGIN CERTIFICATE", b"BEGIN TRUSTED CERTIFICATE").replace(
+        b"END CERTIFICATE", b"END TRUSTED CERTIFICATE")
+    _write(tmp_path, "ca.crt", tlsutil.cert_pem(_root()[1]) + trusted)
+    st = tlsutil.status(s)
+    assert not st.ca_ok and any(lv == "error" and "TRUSTED CERTIFICATE" in t for lv, t in st.problems)
+
+
 def test_status_key_unreadable_or_mismatched(tmp_path):
     """tls-status·설치 묶음이 키를 실제로 써 본다 — 짝이 아니거나 못 읽는 키를 켜기 전에 잡는다."""
     s, *_ = _files(tmp_path)

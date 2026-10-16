@@ -183,7 +183,8 @@ async def agent_package(
                 "    [ -e \"$pkg\" ] || continue\n"
                 "    case \"$pkg\" in *.rpm) rpm -Uvh \"$pkg\" ;; *.deb) dpkg -i \"$pkg\" ;; esac\n"
                 "    break\n  done\nfi\n"
-                + (f"TLS_CA_FILE=\"$PWD/ca.crt\" TLS_SERVER_NAME={shlex.quote(tls['name'])} " if tls else "")
+                + (f"TLS_CA_FILE=\"$PWD/ca.crt\" TLS_SERVER_NAME={shlex.quote(tls['name'])} "
+                   f"TLS_CA_SHA256={tls['ca_sha256']} " if tls else "")
                 + f"exec ./install.sh {shlex.quote(server)} {port} {shlex.quote(key)}\n"
             )
             info = zipfile.ZipInfo(f"{prefix}/install-configured.sh")

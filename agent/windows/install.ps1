@@ -68,11 +68,14 @@ $DefaultChannels = "System,Application,Security,Microsoft-Windows-PowerShell/Ope
 
 # ---- settings.json (from the server's package download). Command line values win.
 $CaSha256 = ""
+$cfgPort = 0
+$cfgTls = $false
 if (Test-Path $Settings) {
     Write-Host "Reading settings: $Settings"
     $cfg = Get-Content -Raw -Encoding UTF8 $Settings | ConvertFrom-Json
     if (-not $ServerHost -and $cfg.ServerHost) { $ServerHost = [string]$cfg.ServerHost }
-    if (-not $ServerPort -and $cfg.ServerPort) { $ServerPort = [int]$cfg.ServerPort }
+    if ($cfg.ServerPort) { $cfgPort = [int]$cfg.ServerPort }
+    $cfgTls = [bool]$cfg.CaFile
     if (-not $ApiKey -and $cfg.ApiKey) { $ApiKey = [string]$cfg.ApiKey }
     if (-not $Channels -and $cfg.Channels) { $Channels = [string]$cfg.Channels }
     if (-not $Iis -and $cfg.Iis) { $Iis = $true }
@@ -88,6 +91,9 @@ if (Test-Path $Settings) {
     if ($cfg.CaSha256) { $CaSha256 = ([string]$cfg.CaSha256).Trim().ToLower() }
 }
 $Tls = [bool]$CaFile
+# The package port belongs to the package mode: a plain package says 6976, which does not speak TLS.
+# Use it only when this run sends the same way (e.g. -CaFile given here on top of an old plain package -> 6977).
+if (-not $ServerPort -and $cfgPort -and ($cfgTls -eq $Tls)) { $ServerPort = $cfgPort }
 if (-not $ServerPort) {
     if ($Tls) { $ServerPort = 6977 } else { $ServerPort = 6976 }
 }
@@ -112,10 +118,20 @@ if ($Tls) {
     }
     if (-not (Test-Path -LiteralPath $CaFile -PathType Leaf)) { throw "CA file not found: $CaFile" }
     $CaFile = (Resolve-Path -LiteralPath $CaFile).ProviderPath
-    # Read the PEM ourselves and open the DER bytes (PS 5.1 / .NET Framework has no PEM loader)
-    $m = [regex]::Match((Get-Content -Raw -LiteralPath $CaFile), '-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----')
-    if (-not $m.Success) { throw "CA file is not a PEM certificate: $CaFile" }
-    $der = [Convert]::FromBase64String(($m.Groups[1].Value -replace '\s', ''))
+    # Read the PEM ourselves and open the DER bytes (PS 5.1 / .NET Framework has no PEM loader).
+    # Get-Content also decodes UTF-16 (what PS 5.1 '>' and Out-File write); OpenSSL cannot read that,
+    # so the CA is written again below as plain ASCII PEM with the certificates only (no key, no text).
+    $blocks = [regex]::Matches((Get-Content -Raw -LiteralPath $CaFile), '-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----')
+    if ($blocks.Count -eq 0) { throw "CA file is not a PEM certificate: $CaFile" }
+    $CaPem = ""
+    foreach ($block in $blocks) {
+        $b64 = $block.Groups[1].Value -replace '\s', ''
+        try { [void][Convert]::FromBase64String($b64) } catch { throw "CA file has a broken certificate (base64): $CaFile" }
+        $lines = for ($i = 0; $i -lt $b64.Length; $i += 64) { $b64.Substring($i, [Math]::Min(64, $b64.Length - $i)) }
+        $CaPem += "-----BEGIN CERTIFICATE-----`n" + ($lines -join "`n") + "`n-----END CERTIFICATE-----`n"
+    }
+    # The first certificate is the one the server names (CaSha256) and the one checked here
+    $der = [Convert]::FromBase64String(($blocks[0].Groups[1].Value -replace '\s', ''))
     $ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (,$der)
     $sha = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($der))).Replace('-', '').ToLower()
     Write-Host "CA certificate: $($ca.Subject)  valid until $($ca.NotAfter.ToString('yyyy-MM-dd'))  SHA-256 $sha"
@@ -171,6 +187,16 @@ function Enable-Block([string] $text, [string] $name) {
 if (-not $RenderOnly) {
     Write-Host "[1/4] Preparing $DataDir"
     New-Item -ItemType Directory -Force -Path $DataDir, (Join-Path $DataDir "buffer") | Out-Null
+    # A standard user can create C:\ProgramData\wlm-agent before the first install (ProgramData lets Users create folders)
+    # and would stay owner with their own ACEs - then they could swap the CA or the config later.
+    # So take ownership for Administrators and replace every ACE BEFORE the CA and the config (API key) are written.
+    & icacls $DataDir /setowner "*S-1-5-32-544" /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls /setowner failed on $DataDir ($LASTEXITCODE)" }
+    & icacls $DataDir /reset /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls /reset failed on $DataDir ($LASTEXITCODE)" }
+    # Only SYSTEM (the service) and Administrators; files below inherit this
+    & icacls $DataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on $DataDir ($LASTEXITCODE)" }
 }
 
 Write-Host "[2/4] Writing config"
@@ -203,18 +229,18 @@ if ($RenderOnly) {
     $out = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RenderOnly)
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $out) | Out-Null
     [System.IO.File]::WriteAllText($out, $config, (New-Object System.Text.UTF8Encoding $false))
+    # The CA exactly as it would be installed (CI checks it with OpenSSL)
+    if ($Tls) { [System.IO.File]::WriteAllText("$out.ca.crt", $CaPem, (New-Object System.Text.ASCIIEncoding)) }
     Write-Host "Rendered config only (nothing installed): $out"
     exit 0
 }
-if ($Tls -and $CaFile -ne $CaTarget) {
-    # Before the config (never a config pointing at a missing CA) and before the ACL below,
-    # so only SYSTEM and Administrators can replace the CA the agent trusts
-    Copy-Item -LiteralPath $CaFile -Destination $CaTarget -Force
+if ($Tls) {
+    # Before the config: never a config pointing at a missing CA. The folder ACL above already limits it to
+    # SYSTEM and Administrators (files inherit it). Written from memory, so -CaFile may be the installed file itself.
+    [System.IO.File]::WriteAllText($CaTarget, $CaPem, (New-Object System.Text.ASCIIEncoding))
 }
+# The config contains the API key: the folder ACL above lets only SYSTEM and Administrators read it
 [System.IO.File]::WriteAllText($ConfigPath, $config, (New-Object System.Text.UTF8Encoding $false))
-
-# The config contains the API key: only SYSTEM and Administrators may read it
-icacls $DataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
 
 Write-Host "[3/4] Registering service '$ServiceName' ($DisplayName)"
 # Also remove the service name used before 0.2.2 so an upgrade does not leave two agents sending twice

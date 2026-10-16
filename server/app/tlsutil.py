@@ -170,7 +170,8 @@ def agent_handshake(cert_file: str, key_file: str, ca_file: str, name: str) -> t
     client = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)   # 연쇄·이름 확인 켜짐. 파이썬 3.13 의 STRICT·PARTIAL_CHAIN 은 없다
     client.verify_flags &= ~(ssl.VERIFY_X509_STRICT | ssl.VERIFY_X509_PARTIAL_CHAIN)   # Fluent Bit 과 같게
     client.minimum_version = ssl.TLSVersion.TLSv1_2
-    client.load_verify_locations(cafile=ca_file)
+    # 묶음에 실제로 들어가는 인증서만으로 (OpenSSL 전용 'TRUSTED CERTIFICATE' 등은 묶음에서 빠지므로 확인에서도 뺀다)
+    client.load_verify_locations(cadata=ca_bundle_pem(ca_file).decode("ascii"))
     c_in, c_out, s_in, s_out = ssl.MemoryBIO(), ssl.MemoryBIO(), ssl.MemoryBIO(), ssl.MemoryBIO()
     cli = client.wrap_bio(c_in, c_out, server_hostname=name)
     srv = server.wrap_bio(s_in, s_out, server_side=True)
@@ -379,6 +380,15 @@ def _read_status(s: Any, now: datetime) -> TlsStatus:
         problems.append(("error", f"CA 인증서를 읽을 수 없습니다: {exc}"))
     if cas:
         ca_sha256 = cas[0].fingerprint(hashes.SHA256()).hex()
+        if b"TRUSTED CERTIFICATE" in ca_raw:
+            problems.append(("error", ("CA 파일에 OpenSSL 전용 'TRUSTED CERTIFICATE' 형식이 있습니다 — 에이전트 묶음에는 들어가지 않습니다. "
+                                      "openssl x509 -in 그파일 -out ca.crt 로 일반 인증서로 바꾸세요.")))
+        first = cas[0]
+        if first.not_valid_after_utc <= now or first.not_valid_before_utc > now:
+            # 설치 스크립트는 맨 앞 인증서를 이 CA 로 보고 지문·만료를 확인한다 — 루트를 바꾼 뒤엔 지금 쓰는 루트를 맨 앞에
+            problems.append(("error", (f"CA 파일 맨 앞 인증서가 지금 유효하지 않습니다(유효 {first.not_valid_before_utc:%Y-%m-%d}"
+                                      f"~{first.not_valid_after_utc:%Y-%m-%d}). 지금 쓰는 루트 CA 를 맨 앞에 두세요 — "
+                                      "설치 스크립트가 맨 앞 인증서로 확인합니다.")))
         if b"PRIVATE KEY" in ca_raw:
             problems.append(("error", (f"CA 파일({s.tls_ca_file})에 개인키가 들어 있습니다. 인증서(BEGIN CERTIFICATE)만 남기세요 — "
                                       "설치 묶음에는 인증서만 넣지만 파일이 공개값으로 다뤄집니다.")))

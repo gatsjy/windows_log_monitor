@@ -178,7 +178,7 @@
 - **왜:** PowerShell 문법·설정 읽기·Fluent Bit 압축 해제까지는 리눅스 PowerShell 로 확인했지만, 서비스 등록과 GPO `/quiet` 배포는 Windows 에서만 확인할 수 있습니다.
 - **할 일:** Windows 10/11, Server 2019/2022 시험 PC 에서 zip 설치 → 서비스·하트비트 확인 → GPO 시작 스크립트 배포 1회 → 결과를 AIRGAP.md §13 에 기록.
 - **TLS 묶음 (B-06 에서 넘어옴):**
-  - Windows PowerShell 5.1 실기: PEM → DER → `X509Certificate2` 읽기, CA 지문 대조, `C:\ProgramData\wlm-agent\ca.crt` ACL. CI 는 렌더(`-RenderOnly`)까지만 봅니다.
+  - Windows PowerShell 5.1 실기: PEM → DER → `X509Certificate2` 읽기, CA 지문 대조, `C:\ProgramData\wlm-agent` 소유자·ACL. CI 의 윈도 러너(관리자)가 실제 설치·권한·서비스 기동·제거까지 돌지만(첫 push 뒤 확인), 사내 PC·GPO 배포는 실기로.
   - 설치 뒤 `fluent-bit.log` 판정(HTTP status, `X509 code`)을 설치 스크립트가 보여 줄지(실패면 종료 코드 3).
   - Windows 인증서 저장소(`tls.windows.certstore_name`·`use_enterprise_store`)를 파일 대신 쓸 수 있는지 — 4.0.14 동작 미확인.
   - 평문 묶음으로 설치된 PC 를 TLS 묶음으로 다시 설치했을 때 쌓인 버퍼가 이어서 나가는지.

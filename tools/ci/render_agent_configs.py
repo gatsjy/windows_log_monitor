@@ -2,8 +2,9 @@
 TLS 설정을 정적으로 검사한다 (표준 라이브러리만).
 
   python3 tools/ci/render_agent_configs.py <출력 폴더>
-  python3 tools/ci/render_agent_configs.py --check-tls <설정 파일>...   다른 곳에서 채운 TLS 설정만 검사
-                                                                       (예: install.ps1 -RenderOnly 결과)
+  python3 tools/ci/render_agent_configs.py --check-tls <설정 파일>... [--expect-vhost 이름] [--expect-port 번호]
+                                          [--expect-ca-file 경로]   다른 곳에서 채운 TLS 설정만 검사 (install.ps1 -RenderOnly 결과)
+  python3 tools/ci/render_agent_configs.py --ca-sha256 <ca.crt>      첫 인증서 DER 의 SHA-256 (서버·설치 스크립트와 따로 계산)
 
 - linux.yaml        agent/linux/install.sh 의 sed 와 같은 치환 (평문)
 - linux-tls.yaml    같은 치환 + TLS 블록을 켠 것 (TLS_CA_FILE 을 준 설치)
@@ -54,8 +55,8 @@ PROBE = "tools/ci/tls-probe.yaml"
 
 _ON = {"on", "true", "yes"}
 _MIN_VERSIONS = {"TLSv1.2", "TLSv1.3"}
-# 줄 첫머리(주석이어도)의 검증 끄기. 문서의 설명 문장은 줄 중간이라 걸리지 않는다
-_VERIFY_OFF = re.compile(r"^\s*(#\s*)?tls\.verify(_hostname)?\s*:\s*['\"]?(off|false|no|0)\b", re.IGNORECASE)
+# 줄 첫머리(주석이어도)의 검증 끄기 — 따옴표 친 키("tls.verify": off)도. 문서의 설명 문장은 줄 중간이라 걸리지 않는다
+_VERIFY_OFF = re.compile(r"^\s*(#\s*)?['\"]?tls\.verify(_hostname)?['\"]?\s*:\s*['\"]?(off|false|no|0)\b", re.IGNORECASE)
 
 
 def fill(text: str, tls: bool = False) -> str:
@@ -111,14 +112,14 @@ def http_output(text: str) -> dict[str, str] | None:
                 continue
             if len(nxt) - len(nxt.lstrip()) <= base:
                 break
-            kv = re.match(r"^\s*([A-Za-z0-9_.]+)\s*:\s*(.*?)\s*(?:\s#.*)?$", nxt)
+            kv = re.match(r"^\s*['\"]?([A-Za-z0-9_.]+)['\"]?\s*:\s*(.*?)\s*(?:\s#.*)?$", nxt)
             if kv:
                 keys[kv.group(1)] = kv.group(2).strip("'\"")
         return keys
     return None
 
 
-def check_tls(text: str, ca_file: str | None = None, vhost: str | None = None) -> list[str]:
+def check_tls(text: str, ca_file: str | None = None, vhost: str | None = None, port: str | None = None) -> list[str]:
     out = http_output(text)
     if out is None:
         return ["http 출력이 없습니다"]
@@ -131,6 +132,8 @@ def check_tls(text: str, ca_file: str | None = None, vhost: str | None = None) -
             errors.append(f"{key}: 비어 있습니다")
         elif want is not None and out[key] != want:
             errors.append(f"{key}: {want} 이어야 합니다 (지금 {out[key]})")
+    if port is not None and out.get("port") != port:
+        errors.append(f"port: {port} 이어야 합니다 (지금 {out.get('port') or '없음'}) — TLS 를 평문 포트로 보내면 연결이 끊긴다")
     return errors
 
 
@@ -161,12 +164,25 @@ def leftover(text: str, active_only: bool = False) -> list[str]:
     return sorted(set(re.findall(r"(?<!@)@[A-Z_]+@(?!@)", text)))
 
 
-def check_files(paths: list[str]) -> int:
+def ca_sha256(path: str) -> str:
+    """첫 인증서 DER 의 SHA-256 — tlsutil(cryptography)·install.ps1·install.sh 와 따로 계산해 셋을 대조하는 기준."""
+    import base64
+    import hashlib
+
+    text = Path(path).read_bytes().decode("ascii", errors="ignore")
+    m = re.search(r"-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----", text)
+    if not m:
+        raise SystemExit(f"PEM 인증서가 아닙니다: {path}")
+    return hashlib.sha256(base64.b64decode(re.sub(r"\s", "", m.group(1)))).hexdigest()
+
+
+def check_files(paths: list[str], expect: dict[str, str]) -> int:
     failed = False
     for name in paths:
         text = Path(name).read_text(encoding="utf-8")
         left = leftover(text, active_only=True)
-        problems = check_tls(text) + ([f"채우지 않은 자리 {left}"] if left else [])
+        problems = check_tls(text, expect.get("ca-file"), expect.get("vhost"), expect.get("port")) \
+            + ([f"채우지 않은 자리 {left}"] if left else [])
         for problem in problems:
             print(f"{name}: {problem}", file=sys.stderr)
         failed |= bool(problems)
@@ -220,7 +236,21 @@ def main(out_dir: str) -> int:
 
 
 if __name__ == "__main__":
+    # 윈도 러너는 파이프 출력을 ANSI(cp1252)로 써서 한글에서 UnicodeEncodeError 로 멈춘다
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     args = sys.argv[1:]
+    if args[:1] == ["--ca-sha256"] and len(args) == 2:
+        print(ca_sha256(args[1]))
+        sys.exit(0)
     if args[:1] == ["--check-tls"]:
-        sys.exit(check_files(args[1:]) if args[1:] else "사용법: render_agent_configs.py --check-tls <설정 파일>...")
+        files, expect, rest = [], {}, args[1:]
+        while rest:
+            item = rest.pop(0)
+            if item.startswith("--expect-") and rest:
+                expect[item.removeprefix("--expect-")] = rest.pop(0)
+            else:
+                files.append(item)
+        sys.exit(check_files(files, expect) if files else "사용법: render_agent_configs.py --check-tls <설정 파일>...")
     sys.exit(main(args[0] if args else "agent-render"))

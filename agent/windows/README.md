@@ -49,7 +49,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -Ap
   - `ca.crt` 가 PEM 형식의 **CA** 인증서이고 만료되지 않았는지 (`server.crt` 를 잘못 넣으면 거부)
   - `ca.crt` 의 SHA-256 이 `settings.json` 의 `CaSha256` 과 같은지 — 다르면 다른 서버의 묶음과 파일이 섞인 것입니다
   - 인증서 이름이 DNS 이름인지 (서버 주소가 IP 인데 이름이 없으면 중단)
-- CA 는 `C:\ProgramData\wlm-agent\ca.crt` 로 복사되고, 폴더 권한(SYSTEM·Administrators)이 함께 걸립니다.
+- CA 는 `C:\ProgramData\wlm-agent\ca.crt` 에 인증서만 ASCII PEM 으로 다시 써서 둡니다(UTF-16 으로 저장한 파일도 Fluent Bit 이 읽게).
+- 파일을 쓰기 **전에** 그 폴더의 소유자를 Administrators 로 바꾸고 권한을 SYSTEM·Administrators 만으로 다시 겁니다 — 일반 사용자가 폴더를 미리 만들어 두었어도 CA·설정을 바꿀 수 없게.
 - 에이전트는 **인증서 체인과 이름을 모두 검증**합니다(`tls.verify`, `tls.verify_hostname`). 검증을 끄는 옵션은 두지 않습니다.
   - Fluent Bit 은 이름 검증의 기본값이 꺼져 있어 설정 틀에서 켭니다. 꺼져 있으면 같은 CA 가 발급한 어떤 인증서든 통과합니다.
   - 서버 주소가 IP 여도 이름은 `tls.vhost`(인증서 이름)로 검증합니다. Fluent Bit 은 IP 로 인증서를 검증하지 못합니다.

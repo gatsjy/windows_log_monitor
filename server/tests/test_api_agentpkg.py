@@ -201,8 +201,9 @@ def test_tls_names_and_linux(client, tls_on):
     assert get(name="10.0.0.10").status_code == 422
     z = unzip(get(os="linux", name="LogMon.corp.local."))
     script = z.read("log-monitor-agent-linux/install-configured.sh").decode()
-    assert 'TLS_CA_FILE="$PWD/ca.crt" TLS_SERVER_NAME=logmon.corp.local exec ./install.sh logmon.corp.local 6977 test-key' \
-        in script
+    sha = json.loads(client.get("/api/agents/package/info", headers=CSRF).text)["tls"]["ca_sha256"]
+    assert (f'TLS_CA_FILE="$PWD/ca.crt" TLS_SERVER_NAME=logmon.corp.local TLS_CA_SHA256={sha} '
+            'exec ./install.sh logmon.corp.local 6977 test-key') in script
     assert "log-monitor-agent-linux/ca.crt" in z.namelist()
 
 

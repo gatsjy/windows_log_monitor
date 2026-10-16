@@ -102,6 +102,8 @@ docker compose exec api ruff check --no-cache app tests
 docker compose run --rm backup selftest     # 백업·복구 시험·복원 스크립트 자체 시험 (시험용 DB 만 씀)
 node --test 'server/tests/js/*.test.mjs'    # 검색 문장 화면 쪽 시험 + node·python3 교차 퍼징 (npm 없음, 개발 PC 에서)
 python3 tools/ci/render_agent_configs.py out  # 에이전트 설정 틀을 채워 보기 (CI 가 fluent-bit --dry-run 에 씀)
+docker run --rm --network none -v "$PWD:/repo:ro" -v "$PWD/out:/render:ro" rockylinux/rockylinux:9 bash /repo/tools/ci/test_install_sh.sh   # install.sh 실행 시험
+docker run --rm --network none -v "$PWD:/repo:ro" -v "$PWD/out:/render:ro" mcr.microsoft.com/powershell:lts-alpine-3.20 pwsh -File /repo/tools/ci/test_install_ps1.ps1 -RenderDir /render -CaSha256 $(python3 tools/ci/render_agent_configs.py --ca-sha256 tools/ci/fixtures/ci-ca.crt) -Work /tmp/w   # install.ps1 (CI 는 5.1)
 curl -s localhost:8080/healthz
 # TLS 로 띄워 보기 (개발, .env 는 그대로): 인증서 → WLM_TLS=on 으로 up → https 확인 → 그냥 up 으로 평문 복귀 (AIRGAP.md §13)
 docker compose run --rm --no-deps --user 0 -v "$PWD/tls:/out" -v "$PWD/tls-ca:/ca" api python -m app.cli tls-init --out /out --ca-dir /ca --name logmon.dev.internal --name localhost --ip 127.0.0.1
@@ -178,6 +180,8 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - `.env` 를 바꾸면 `up -d`(restart 는 환경을 다시 읽지 않음), 인증서 파일만 바꾸면 `restart api`.
   - 프록시 헤더 신뢰는 `WLM_TRUSTED_PROXIES` 로만(serve.py 가 값을 직접 넘김). `FORWARDED_ALLOW_IPS` 환경변수는 효과가 없다.
   - CA 개인키(`tls-ca/`)는 api 에 마운트하지 않는다. `tls/`·`tls-ca/` 는 .gitignore·.dockerignore 에 있다.
+  - 설치 스크립트를 고치면 `tools/ci/test_install_sh.sh`·`test_install_ps1.ps1` 로 실제로 돌린다(렌더 스크립트는 재구현이라 스크립트 회귀를 못 잡는다). CI 의 기대 지문은 `--ca-sha256` 으로 따로 계산한 값.
+  - 윈도 CI 의 PowerShell 실행 본문은 영어만(5.1 이 임시 스크립트를 ANSI 로 읽을 수 있다). 파이썬은 `PYTHONUTF8=1`.
   - 내장 브라우저는 자체 서명 인증서를 열지 않는다 → TLS 화면은 같은 설정의 평문 리스너(개발 전용 `docker compose run -p 127.0.0.1:8090:8090 … uvicorn`)로 확인했다(AIRGAP.md §13).
 - 알림 규칙을 화면에서 저장하면 그 규칙 블록만 다시 쓴다(`ruleedit.py`). 블록 안의 주석은 그 규칙을 화면에서 저장하면 사라진다(켜기/끄기만은 보존).
 - UI 디자인 값은 `web/css/app.css` 의 토큰(`:root`)만 쓴다. 좁은 화면 기준: 1000px(상단 바), 700px(표→카드), 600px(휴대폰).

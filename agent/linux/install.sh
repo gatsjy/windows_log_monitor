@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Log Monitor Linux 에이전트 설치 (Fluent Bit 을 wlm-agent systemd 서비스로 실행)
 #   sudo ./install.sh <서버주소> <포트> <수집 API 키>
-#   HTTPS(TLS): sudo TLS_CA_FILE=./ca.crt [TLS_SERVER_NAME=<인증서 DNS 이름>] ./install.sh <서버주소> <포트> <키>
-#     설치 묶음의 install-configured.sh 는 서버가 TLS 를 켰으면 이 두 값을 채워서 부른다.
+#   HTTPS(TLS): sudo TLS_CA_FILE=./ca.crt [TLS_SERVER_NAME=<인증서 DNS 이름>] [TLS_CA_SHA256=<지문>] ./install.sh <서버주소> <포트> <키>
+#     설치 묶음의 install-configured.sh 는 서버가 TLS 를 켰으면 이 세 값을 채워서 부른다.
 # 다시 실행하면 설정을 갱신하고 재시작한다.
 set -euo pipefail
 
 TLS_CA_FILE=${TLS_CA_FILE:-}           # 서버 인증서를 발급한 CA (PEM). 있으면 TLS 로 보낸다
 TLS_SERVER_NAME=${TLS_SERVER_NAME:-}   # 서버 인증서의 DNS 이름. 비우면 서버 주소 (IP 면 필수)
+TLS_CA_SHA256=${TLS_CA_SHA256:-}       # 묶음을 만든 서버가 알려 준 CA 지문(첫 인증서 DER 의 SHA-256) — 다른 서버의 ca.crt 와 섞이지 않게
 if [ -n "$TLS_CA_FILE" ]; then DEFAULT_PORT=6977; else DEFAULT_PORT=6976; fi
 SERVER_HOST=${1:?사용법: sudo ./install.sh <서버주소> <포트> <수집 API 키>}
 SERVER_PORT=${2:-$DEFAULT_PORT}   # 서버의 수집 전용 포트 (평문 WLM_INGEST_PORT 6976, TLS WLM_INGEST_TLS_PORT 6977)
@@ -51,15 +52,38 @@ if [ -n "$TLS_CA_FILE" ]; then
     echo "TLS_SERVER_NAME 이 DNS 이름이 아닙니다: $TLS_SERVER_NAME (영문자·숫자·-·. 만)" >&2
     exit 1
   fi
+  # 인증서 블록만 (줄끝 CR 제거) — 개인키·설명 글이 섞인 파일도 PC 에는 인증서만 둔다. 지문은 openssl 없이도 확인한다
+  ca_pem=$(tr -d '\r' < "$TLS_CA_FILE" | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p')
+  first_b64=$(printf '%s\n' "$ca_pem" | awk '/-----BEGIN CERTIFICATE-----/{n++; next} /-----END CERTIFICATE-----/{if (n == 1) exit; next} n == 1 {print}' | tr -d ' \n')
+  if [ -z "$first_b64" ] || ! printf '%s' "$first_b64" | base64 -d >/dev/null 2>&1; then
+    echo "CA 인증서가 깨졌습니다(base64): $TLS_CA_FILE" >&2
+    exit 1
+  fi
+  ca_sha=$(printf '%s' "$first_b64" | base64 -d | sha256sum | cut -d' ' -f1)
+  echo "CA SHA-256: $ca_sha"
+  if [ -n "$TLS_CA_SHA256" ] && [ "$ca_sha" != "$(printf '%s' "$TLS_CA_SHA256" | tr 'A-F' 'a-f')" ]; then
+    echo "CA 파일이 서버가 묶어 준 것과 다릅니다 (SHA-256 $ca_sha, 묶음 $TLS_CA_SHA256): $TLS_CA_FILE" >&2
+    exit 1
+  fi
   if command -v openssl >/dev/null 2>&1; then
-    if ! openssl x509 -in "$TLS_CA_FILE" -noout -subject -enddate -fingerprint -sha256; then
+    if ! printf '%s\n' "$ca_pem" | openssl x509 -noout -subject -enddate; then
       echo "CA 인증서를 읽을 수 없습니다: $TLS_CA_FILE" >&2
       exit 1
     fi
-    if ! openssl x509 -in "$TLS_CA_FILE" -noout -checkend 0 >/dev/null; then
+    if ! printf '%s\n' "$ca_pem" | openssl x509 -noout -checkend 0 >/dev/null; then
       echo "CA 인증서가 만료되었습니다: $TLS_CA_FILE" >&2
       exit 1
     fi
+    if ! printf '%s\n' "$ca_pem" | openssl x509 -noout -text | grep -q 'CA:TRUE'; then
+      echo "CA 인증서가 아닙니다 (server.crt 를 넣었나요?): $TLS_CA_FILE" >&2
+      exit 1
+    fi
+    not_before=$(printf '%s\n' "$ca_pem" | openssl x509 -noout -startdate | cut -d= -f2)
+    if [ "$(date -d "$not_before" +%s 2>/dev/null || echo 0)" -gt "$(date +%s)" ]; then
+      echo "경고: CA 인증서가 아직 유효하지 않습니다(시작 ${not_before}) — 이 PC 의 시계(NTP)를 확인하세요" >&2
+    fi
+  else
+    echo "경고: openssl 이 없어 CA 의 만료·용도는 확인하지 않았습니다 (지문은 확인함)" >&2
   fi
   # 4칸 + '#' + 3칸으로 적힌 키 줄만 6칸 들여쓰기로 푼다 (install.ps1 Enable-Block 과 같은 결과, 설명 줄은 그대로)
   sed_tls=(-e '/# @@TLS_BEGIN/,/# @@TLS_END/ s/^\( *\)# \(  \)/\1\2/')
@@ -73,8 +97,11 @@ else
 fi
 
 install -d -m 700 /etc/wlm-agent /var/lib/wlm-agent /var/lib/wlm-agent/buffer
-if [ -n "$TLS_CA_FILE" ] && ! [ "$TLS_CA_FILE" -ef /etc/wlm-agent/ca.crt ]; then
-  install -m 644 "$TLS_CA_FILE" /etc/wlm-agent/ca.crt   # 틀의 tls.ca_file 위치
+if [ -n "$TLS_CA_FILE" ]; then
+  # 틀의 tls.ca_file 위치. 위에서 읽어 둔 인증서 블록만 임시 파일 → 이름 바꾸기 (같은 파일로 다시 실행해도 안전)
+  printf '%s\n' "$ca_pem" > /etc/wlm-agent/.ca.crt.new
+  chmod 644 /etc/wlm-agent/.ca.crt.new
+  mv -f /etc/wlm-agent/.ca.crt.new /etc/wlm-agent/ca.crt
 fi
 # sed_tls 는 비어 있을 수 있다: set -u 인 옛 bash(4.3 이하)에서도 되도록 ${배열[@]+...} 꼴로 편다
 sed -e "s|@SERVER_HOST@|${SERVER_HOST}|g" \

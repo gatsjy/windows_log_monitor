@@ -322,14 +322,14 @@ PC 에 반입·배포할 것은 **서버 화면에서 내려받는 zip 하나**�
 | `install.cmd` | 관리자 권한으로 실행. 여러 대는 `install.cmd /quiet` 를 GPO 시작 스크립트·SCCM 으로 |
 | `install.ps1`, `fluent-bit.yaml` | 에이전트 설치 스크립트·설정 틀 |
 | `settings.json` | 서버 주소·수집 포트·**수집 API 키**·IIS/MSSQL 선택. TLS 면 `CaFile`·`TlsServerName`(인증서 이름)·`CaSha256`(CA 지문 — 설치 스크립트가 대조) |
-| `ca.crt` | TLS 면: 서버 인증서를 확인할 루트 CA (공개값). 설치 때 `C:\ProgramData\wlm-agent\ca.crt` 로 복사 |
+| `ca.crt` | TLS 면: 서버 인증서를 확인할 루트 CA (공개값). 설치 스크립트가 지문(`CaSha256`, Linux 는 `TLS_CA_SHA256`)을 대조하고 인증서만 `C:\ProgramData\wlm-agent\ca.crt`(Linux `/etc/wlm-agent/ca.crt`)에 둡니다 |
 | `fluent-bit/fluent-bit-4.0.14-win64.zip` | Fluent Bit (PC 에 없으면 자동 설치 — `C:\Program Files\fluent-bit`) |
 | `설치방법.txt` | 위 절차 요약 |
 
 4. 사내 파일 서버·배포 도구로 PC 에 복사 → `install.cmd` 실행 → 30초 안에 '수집 PC' 에 나타남
 
 - **보안:** zip 에 수집 API 키가 들어 있습니다. 내려받기는 관리자(또는 '에이전트 배포' 권한 그룹)만 할 수 있고 감사 로그에 남습니다. 배포가 끝나면 복사본을 지웁니다.
-  - PC 에 설치된 설정 파일(`C:\ProgramData\wlm-agent`)은 SYSTEM·Administrators 만 읽을 수 있습니다.
+  - PC 에 설치된 설정 파일(`C:\ProgramData\wlm-agent`)은 SYSTEM·Administrators 만 읽을 수 있습니다. 설치 스크립트가 파일을 쓰기 전에 폴더의 소유자·권한을 다시 잡습니다(미리 만들어 둔 폴더 대비).
 - 웹 서버·DB 서버·일반 PC 용 zip 을 따로 받아 두면 배포 그룹별로 나눠 쓸 수 있습니다.
 - **Linux:** 같은 화면에서 Linux 를 고르면 `install-configured.sh` 가 들어 있습니다. `packages/` 에 Fluent Bit 패키지가 있으면 먼저 설치합니다.
 - **네트워크 장비:** syslog 대상을 `서버:514`(UDP/TCP)로 지정합니다(`--syslog` 로 설치한 경우).
