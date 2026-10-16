@@ -33,8 +33,9 @@ param(
     # Comma separated paths. Default: every ERRORLOG found under C:\Program Files\Microsoft SQL Server
     [string] $MssqlErrorlogPath = "",
     [string] $FluentBitExe = "C:\Program Files\fluent-bit\bin\fluent-bit.exe",
-    # Settings file written by the server when the package is downloaded
-    [string] $Settings = (Join-Path $PSScriptRoot "settings.json"),
+    # Settings file written by the server when the package is downloaded. Default: settings.json next to this script
+    # (resolved below: Windows PowerShell 5.1 can leave $PSScriptRoot empty inside param() defaults)
+    [string] $Settings = "",
     [string] $ServiceName = "knuh-agent",
     [string] $DisplayName = "",
     # HTTPS: CA certificate (PEM) of the server certificate. Turns TLS on.
@@ -47,6 +48,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$Here = $PSScriptRoot
+if (-not $Here) { $Here = Split-Path -Parent $MyInvocation.MyCommand.Definition }
+if (-not $Settings) { $Settings = Join-Path $Here "settings.json" }
 # Not "#Requires -RunAsAdministrator": -RenderOnly must work without admin rights (CI, preview)
 if (-not $RenderOnly) {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -148,7 +152,7 @@ if ($Tls) {
 
 # ---- Fluent Bit: install from the package when missing (no internet needed). -RenderOnly does not need it.
 if (-not $RenderOnly -and -not (Test-Path $FluentBitExe)) {
-    $pkgDir = Join-Path $PSScriptRoot "fluent-bit"
+    $pkgDir = Join-Path $Here "fluent-bit"
     $zip = Get-ChildItem $pkgDir -Filter "fluent-bit-*-win64.zip" -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
     $exe = Get-ChildItem $pkgDir -Filter "fluent-bit-*-win64.exe" -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
     $target = Split-Path (Split-Path $FluentBitExe -Parent) -Parent
@@ -200,7 +204,7 @@ if (-not $RenderOnly) {
 }
 
 Write-Host "[2/4] Writing config"
-$template = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot "fluent-bit.yaml")
+$template = Get-Content -Raw -Encoding UTF8 (Join-Path $Here "fluent-bit.yaml")
 $config = $template.Replace("@SERVER_HOST@", $ServerHost).Replace("@SERVER_PORT@", "$ServerPort").Replace("@API_KEY@", $ApiKey).Replace("@CHANNELS@", $Channels)
 # Empty without TLS: the placeholder then stays only in the commented-out TLS block
 if ($Tls) { $config = (Enable-Block $config "TLS").Replace("@TLS_SERVER_NAME@", $TlsServerName) } else { $config = $config.Replace("@TLS_SERVER_NAME@", "") }

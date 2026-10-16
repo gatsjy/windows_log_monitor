@@ -7,10 +7,15 @@
 param(
     [Parameter(Mandatory = $true)] [string] $RenderDir,
     [Parameter(Mandatory = $true)] [string] $CaSha256,
-    [string] $Repo = (Join-Path $PSScriptRoot "..\.."),
+    [string] $Repo = "",   # default: the repository root (resolved below; 5.1 can leave $PSScriptRoot empty in param defaults)
     [string] $Work = (Join-Path ([System.IO.Path]::GetTempPath()) "wlm-ps1-test")
 )
 $ErrorActionPreference = "Stop"
+if (-not $Repo) {
+    $here = $PSScriptRoot
+    if (-not $here) { $here = Split-Path -Parent $MyInvocation.MyCommand.Definition }
+    $Repo = Join-Path $here "..\.."
+}
 $Repo = (Resolve-Path $Repo).ProviderPath
 $RenderDir = (Resolve-Path $RenderDir).ProviderPath
 $Ps = Join-Path $Repo "agent/windows/install.ps1"
