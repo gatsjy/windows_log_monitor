@@ -326,9 +326,13 @@ sudo docker compose -f docker-compose.yml --profile syslog up -d --no-build --pu
 
 `backup` 서비스(db 와 같은 `postgres:17-alpine` 이미지, `deploy/backup/backup.sh`)가 자동으로 합니다(ADR-031).
 
-- **매일** `WLM_BACKUP_TIME`(기본 02:30)에 `backups/wlm-<시각>.dump` + `.sha256` + 설정 묶음(`config/`)을 만들고, 최근 `WLM_BACKUP_KEEP`(기본 14)개만 남깁니다.
-- **매주** `WLM_BACKUP_VERIFY_WEEKDAY`(기본 7 = 일요일) 백업 뒤 임시 DB 에 실제로 복원해 해시·마이그레이션 버전·행 수를 확인합니다. DB 크기만큼 여유 디스크가 필요합니다(부족하면 0 으로 끄고 수동 시험).
-- 결과는 감사로그(DB 백업 / DB 백업 실패 / 백업 복구 시험)와 **환경설정 > 로그 보관** 화면에 남고, 백업이 36시간 넘게 없거나 복구 시험이 실패하면 화면에 경고합니다.
+- **매일** `WLM_BACKUP_TIME`(기본 02:30)이 지나면 그날 한 번 `backups/wlm-<시각>.dump` + `.sha256` + 설정 묶음(`config/`)을 만들고, 최근 `WLM_BACKUP_KEEP`(기본 14, **1 이상**)개만 남깁니다.
+  - 서버가 꺼져 있어 시각을 놓쳤으면 켜진 뒤 그날 바로 합니다. 마지막으로 한 날짜는 `backups/.last-run` 에 남아 같은 날 두 번 하지 않습니다.
+  - 매시간 유지보수(00:00 UTC 전후에 새 달 파티션 생성)와 겹쳐도 수집은 멈추지 않습니다. 파티션 작업이 잠금을 5초만 기다리고 다음 주기로 미룹니다.
+- **매주** `WLM_BACKUP_VERIFY_WEEKDAY`(기본 7 = 일요일) 백업 뒤 임시 DB 에 실제로 복원해 해시·마이그레이션 버전·행 수(백업과 정확히 같은지)를 확인합니다.
+  - DB 크기 + 1GB 의 여유 디스크가 필요합니다. 모자라면 시험하지 않고 '실패(공간 부족)'로 남깁니다 — 디스크를 늘리거나 0 으로 끄고 시험 서버에서 수동으로 합니다.
+- 결과는 감사로그(DB 백업 / DB 백업 실패 / 백업 복구 시험 / 백업으로 DB 복원)와 **환경설정 > 로그 보관** 화면에 남습니다. 백업이 36시간 넘게 없거나 복구 시험이 실패하면 화면에 경고합니다.
+  - 실패한 복구 시험은 **같은 백업이나 더 새 백업**의 시험이 성공해야 경고에서 빠집니다.
 
 ```bash
 cd /opt/log-monitor
@@ -336,15 +340,20 @@ sudo docker compose -f docker-compose.yml exec backup backup.sh backup        # 
 sudo docker compose -f docker-compose.yml exec backup backup.sh verify        # 가장 최근 백업 복구 시험 (임시 DB)
 sudo docker compose -f docker-compose.yml exec backup backup.sh list          # 목록
 sudo docker compose -f docker-compose.yml run --rm backup selftest            # 백업 스크립트 자체 시험 (시험용 DB 만 씀)
-# 장애 복구: 운영 DB 를 백업으로 되돌린다 (그 뒤 수집된 로그는 사라짐)
+# 장애 복구: 운영 DB 를 백업으로 되돌린다 (그 뒤 수집된 로그는 운영 DB 에서 빠짐)
 sudo docker compose -f docker-compose.yml stop api
 sudo docker compose -f docker-compose.yml run --rm backup restore wlm-<시각>.dump --yes
 sudo docker compose -f docker-compose.yml start api
 ```
 
+- 복원은 운영 DB 에 연결된 세션이 있으면 거부합니다(api 를 먼저 멈춤). 지금 DB 를 `backups/before-restore-<시각>.dump` 로 남긴 뒤, 임시 DB 에 복원이 끝나면 이름을 바꿔 끼웁니다. 복원이 실패하면 운영 DB 는 그대로입니다.
+  - 파일을 잘못 골랐으면 그 안전 사본으로 다시 `restore before-restore-<시각>.dump --yes` 합니다.
+  - DB 가 망가져 지금 DB 를 덤프할 수 없을 때만 끝에 `--no-safety-dump` 를 붙입니다.
+- 백업·복구 시험 중에 `docker compose stop`·재부팅하면 만들던 파일(`*.part`)과 임시 DB 를 지우고 멈춥니다. 남은 것은 다음 기동 때 정리합니다.
+
 - `backups/` 와 `archive/` 를 **다른 매체**(NAS·외장 디스크)로 복사합니다(ISMS 2.9.3, 복제 자동화는 BACKLOG B-17).
 - `.env`(암호화 키)는 백업에 넣지 않습니다. **따로** 안전한 곳에 보관합니다 — 백업만 유출되어도 화면에서 넣은 비밀값을 풀 수 없게(ISMS 2.7.2).
-- 백업 파일 권한은 600(소유자만)입니다. 로그·계정 정보가 들어 있습니다.
+- 백업 파일 권한은 600(소유자만), `backups/` 는 700 입니다. 로그·계정 정보가 들어 있습니다. SELinux(Enforcing)에서는 설치 스크립트가 `backups/` 에 컨테이너 레이블을 붙입니다.
 
 ## 12. 문제 해결
 

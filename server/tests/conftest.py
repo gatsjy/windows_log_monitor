@@ -27,6 +27,11 @@ os.environ["WLM_AGENT_INSTALLERS_DIR"] = os.path.join(_tmp, "agent-installers")
 os.environ["WLM_INGEST_PORT"] = "6976"
 os.environ["WLM_DB_RETENTION_DAYS"] = "90"
 os.environ["WLM_RETENTION_DAYS"] = "365"
+# compose 가 .env 의 값을 api 컨테이너에 넘기므로, 운영자가 바꿔 둔 값에 테스트 결과가 흔들리지 않게 고정한다
+os.environ["WLM_DISPLAY_TZ"] = "Asia/Seoul"
+os.environ["WLM_BACKUP_TIME"] = "02:30"
+os.environ["WLM_BACKUP_KEEP"] = "14"
+os.environ["WLM_BACKUP_VERIFY_WEEKDAY"] = "7"
 os.environ["WLM_SECRET_KEY"] = "test-secret-key-0123456789abcdef"
 # 점검 보고서 정기 실행은 실제 시각으로 돌아 테스트 DB 에 보고서를 만들어 버린다 → 끄고, 테스트가 tick(now) 을 직접 부른다
 os.environ["WLM_REPORT_SCHEDULER"] = "off"

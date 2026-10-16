@@ -108,3 +108,25 @@ def test_tampered_archive_is_detected(client):
     sql(f"DROP TABLE {OLD_NAME}")
     r = client.post("/api/settings/retention/restore", json={"partition": OLD_NAME}, headers=CSRF)
     assert r.status_code == 400 and "해시" in r.json()["detail"]
+
+
+def test_partition_ddl_does_not_queue_behind_a_backup(client, monkeypatch):
+    """백업(pg_dump)이 events 를 읽고 있으면 파티션 만들기는 잠깐만 기다리고 미룬다 — 줄을 서서 수집을 막지 않는다."""
+    import time
+
+    from app import partitions as parts
+
+    future = f"events_{_month(2)[0]:%Y_%m}"
+    sql(f"DROP TABLE {future}")
+    monkeypatch.setattr(parts, "DDL_LOCK_TIMEOUT", "300ms")
+    with psycopg.connect(os.environ["WLM_DATABASE_URL"]) as reader:
+        reader.execute("LOCK TABLE events IN ACCESS SHARE MODE")  # pg_dump 가 잡는 잠금
+        started = time.monotonic()
+        client.portal.call(parts.run_maintenance)
+        assert time.monotonic() - started < 5
+        assert future not in partitions()
+        # 기다리는 동안에도 수집(INSERT)은 막히지 않는다
+        sql("INSERT INTO events (received_at, ts, host, source, level, message, raw)"
+            " VALUES (now(), now(), 'PC', 'winevtlog', 4, '백업 중 수집', '{}'::jsonb)")
+    client.portal.call(parts.run_maintenance)  # 백업이 끝나면 다음 주기에 만든다
+    assert future in partitions()

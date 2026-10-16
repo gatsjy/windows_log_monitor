@@ -79,14 +79,15 @@ compose() {
 
 if [ "$UPGRADE" = 1 ]; then
   step "4. 업그레이드 전 DB 백업"
+  # 덤프를 쓰는 동안에도 다른 계정이 열 수 없게 처음부터 소유자 전용으로 만든다 (나중에 chmod 하면 그 사이에 열린다)
   mkdir -p "$TARGET/backups"
+  chmod 700 "$TARGET/backups"
   BACKUP="$TARGET/backups/before-${VERSION}-$(date +%Y%m%d-%H%M%S).dump"
   if compose ps --status running --services 2>/dev/null | grep -qx db; then
-    compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > "$BACKUP" \
+    (umask 077 && compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > "$BACKUP") \
       || die "DB 백업 실패 — 업그레이드를 멈춥니다 ($BACKUP)"
     # 해시를 옆에 둔다 — 되돌릴 때 backup.sh restore 가 해시가 맞는 파일만 쓴다
-    (cd "$TARGET/backups" && sha256sum "$(basename "$BACKUP")" > "$(basename "$BACKUP").sha256")
-    chmod 600 "$BACKUP" "$BACKUP.sha256"
+    (umask 077 && cd "$TARGET/backups" && sha256sum "$(basename "$BACKUP")" > "$(basename "$BACKUP").sha256")
     echo "  $(du -h "$BACKUP" | cut -f1)  $BACKUP"
   else
     echo "  db 가 꺼져 있어 백업을 건너뜁니다 (볼륨은 그대로 남습니다)"
@@ -156,7 +157,8 @@ step "7. 폴더 권한"
 if [ "$(id -u)" = 0 ]; then
   chown -R 10001:10001 "$TARGET/config" "$TARGET/archive"   # 컨테이너 사용자(uid 10001)가 화면 저장·보관 파일 기록
   if command -v getenforce >/dev/null && [ "$(getenforce)" = Enforcing ]; then
-    chcon -R -t container_file_t "$TARGET/config" "$TARGET/archive" "$TARGET/collector"
+    # backups/ 는 backup 서비스가 쓰고, deploy/backup/backup.sh 는 그 서비스가 읽는다
+    chcon -R -t container_file_t "$TARGET/config" "$TARGET/archive" "$TARGET/collector" "$TARGET/backups" "$TARGET/deploy/backup"
     echo "  SELinux: 컨테이너가 읽고 쓸 수 있게 레이블 지정"
   fi
   echo "  config/, archive/ → uid 10001"

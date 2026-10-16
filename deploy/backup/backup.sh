@@ -1,19 +1,21 @@
 #!/bin/sh
 # Log Monitor DB 백업·복구 시험 (BACKLOG B-16, ADR-031) — postgres:17-alpine 컨테이너(compose 의 backup 서비스) 안에서 돈다.
 #
-#   daemon         매일 WLM_BACKUP_TIME 에 백업, WLM_BACKUP_VERIFY_WEEKDAY 요일에는 이어서 복구 시험 (서비스 기본 명령)
+#   daemon         매일 WLM_BACKUP_TIME 이 지나면 그날 백업 한 번, WLM_BACKUP_VERIFY_WEEKDAY 요일에는 이어서 복구 시험 (서비스 기본 명령)
 #   backup         지금 백업 한 번
 #   verify [파일]  백업 파일을 임시 DB 에 복원해 확인 (기본: 가장 최근). 실제 DB 는 건드리지 않는다
 #   list           백업 목록
-#   restore 파일 --yes   운영 DB 를 이 백업으로 되돌린다 (장애 복구). 먼저 api 를 멈춘다: docker compose stop api
-#   selftest       시험용 DB 로 백업 → 복구 시험 → 손상 감지 → 보관 개수 정리를 스스로 시험 (실제 DB·백업 폴더는 건드리지 않음)
+#   restore 파일 --yes [--no-safety-dump]
+#                  운영 DB 를 이 백업으로 되돌린다 (장애 복구). 먼저 api 를 멈춘다: docker compose stop api
+#                  연결된 세션이 있으면 거부하고, 지금 DB 를 before-restore-*.dump 로 남긴 뒤, 임시 DB 에 복원이 끝나면 이름을 바꿔 끼운다
+#   selftest       시험용 DB 로 백업 → 복구 시험 → 손상 감지 → 보관 개수 → 복원을 스스로 시험 (실제 DB·백업 폴더는 건드리지 않음)
 #
 # 예)  docker compose exec backup backup.sh backup
 #      docker compose exec backup backup.sh verify
 #      docker compose run --rm backup selftest
 #      docker compose stop api && docker compose run --rm backup restore wlm-20261016-023000.dump --yes && docker compose start api
 #
-# 결과는 DB 의 audit_log 에 남긴다 (backup.create / backup.verify / backup.failed)
+# 결과는 DB 의 audit_log 에 남긴다 (backup.create / backup.verify / backup.failed / backup.restore)
 #   → 화면 '환경설정 > 로그 보관' 과 '감사 로그'에서 확인 (ISMS 2.9.3 백업·복구 시험 증적).
 # 접속 정보는 PGHOST·PGUSER·PGPASSWORD·PGDATABASE (compose 가 넣어 준다).
 # .env(암호화 키)는 일부러 묶지 않는다 — 키는 DB 백업과 따로 보관해야 백업만 빼 가도 비밀값을 못 푼다(ISMS 2.7.2).
@@ -28,7 +30,15 @@ KEEP=${WLM_BACKUP_KEEP:-14}
 AT=${WLM_BACKUP_TIME:-02:30}
 VERIFY_DAY=${WLM_BACKUP_VERIFY_WEEKDAY:-7}   # date +%u: 1=월 … 7=일. 0 이면 자동 복구 시험을 하지 않는다
 CONFIG_DIR=${WLM_BACKUP_CONFIG_DIR:-/config}
+# db 볼륨(읽기 전용으로 붙임) — 복구 시험·복원은 DB 크기만큼 같은 디스크를 더 쓰므로 남은 공간을 먼저 본다
+PGDATA_DIR=${WLM_BACKUP_PGDATA_DIR:-/pgdata}
+SPACE_RESERVE_KB=${WLM_BACKUP_SPACE_RESERVE_KB:-1048576}   # 복원 뒤에도 남겨 둘 공간 (WAL·운영 DB 증가분). 기본 1GB
+MAINT_DB=${WLM_BACKUP_MAINT_DB:-postgres}                  # 운영 DB 이름을 바꿔 끼울 때 접속할 DB
 TABLES="events alerts alert_notes audit_log users agents"
+
+# 신호로 멈출 때 지울 것 (만들던 덤프, 복원하던 임시 DB). compose 가 init(tini)으로 자식 프로세스까지 멈춘 뒤 여기로 온다
+CURRENT_PART=""
+CURRENT_TEMP_DB=""
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S %Z') $*"; }
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -45,21 +55,82 @@ audit() {
     || log "경고: 감사로그 기록 실패 ($1 $2)"
 }
 
-# 주요 테이블 행 수 → {"events": 12, ...} (없는 테이블은 뺀다)
-counts_json() {
-  out=""
-  for t in $TABLES; do
-    n=$(psql_q -d "$1" -c "SELECT count(*) FROM $t" 2>/dev/null) || continue
-    out="$out${out:+, }\"$t\": $n"
-  done
-  echo "{$out}"
+on_signal() {
+  [ -n "$CURRENT_PART" ] && rm -f "$CURRENT_PART"
+  [ -n "$CURRENT_TEMP_DB" ] && dropdb --if-exists "$CURRENT_TEMP_DB" >/dev/null 2>&1
+  log "중단됨 — 만들던 파일·임시 DB 를 정리했습니다"
+  exit 143
+}
+trap on_signal INT TERM
+
+# 보관 개수는 1 이상의 정수만. 0 을 '무제한'으로 알고 넣으면 방금 만든 백업까지 지워지므로 아예 받지 않는다
+check_settings() {
+  case $KEEP in ''|*[!0-9]*) log "WLM_BACKUP_KEEP 은 1 이상의 정수입니다: '$KEEP'"; return 2 ;; esac
+  [ "$KEEP" -ge 1 ] || { log "WLM_BACKUP_KEEP 은 1 이상이어야 합니다 (0 이면 방금 만든 백업까지 지워집니다)"; return 2; }
+  case $AT in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) log "WLM_BACKUP_TIME 형식은 HH:MM 입니다: $AT"; return 2 ;; esac
+  case $VERIFY_DAY in [0-7]) ;; *) log "WLM_BACKUP_VERIFY_WEEKDAY 는 0(안 함)~7 입니다: $VERIFY_DAY"; return 2 ;; esac
+  return 0
 }
 
-migration_of() { psql_q -d "$1" -c "SELECT max(version) FROM schema_migrations" 2>/dev/null || true; }
+# 주요 테이블 행 수를 JSON 한 줄로 내는 SQL (그 DB 에 있는 테이블만). 테이블 이름은 위 TABLES 고정값
+counts_sql() {
+  have=$(psql_q -d "$1" -c "SELECT coalesce(string_agg(t, ' '), '') FROM unnest(string_to_array('$TABLES', ' ')) t WHERE to_regclass(t) IS NOT NULL") || return 1
+  q=""
+  for t in $have; do q="$q${q:+, }'$t', (SELECT count(*) FROM $t)"; done
+  echo "SELECT json_build_object($q)::jsonb::text;"
+}
+
+# 행 수 JSON (실패하면 1 — 빠진 테이블을 조용히 넘기지 않는다)
+counts_of() { q=$(counts_sql "$1") && psql_q -d "$1" -c "$q"; }
+
+migration_of() { psql_q -d "$1" -c "SELECT coalesce(max(version), '') FROM schema_migrations"; }
 
 newest_dump() { ls -1t "$BACKUP_DIR"/wlm-*.dump 2>/dev/null | head -n 1; }
 
+# psql 은 -c 로 준 명령에서 :'변수' 를 바꾸지 않는다 → 변수를 쓰는 SQL 은 표준 입력으로 넘긴다
+maint_sql() { _q=$1; shift; printf '%s\n' "$_q" | psql_q -d "$MAINT_DB" "$@"; }
+
+db_exists() { [ "$(maint_sql "SELECT 1 FROM pg_database WHERE datname = :'d';" -v d="$1" 2>/dev/null)" = 1 ]; }
+
+allow_connections() { maint_sql "ALTER DATABASE :\"d\" ALLOW_CONNECTIONS $2;" -v d="$1" >/dev/null; }
+
+db_size_kb() { psql_q -d "$1" -c "SELECT pg_database_size(current_database()) / 1024"; }
+
+# 다른 세션 수 (api·화면·다른 작업). 이 스크립트 자신의 연결은 빼고 센다
+other_sessions() { maint_sql "SELECT count(*) FROM pg_stat_activity WHERE datname = :'d' AND pid <> pg_backend_pid();" -v d="$1"; }
+
+# DB 디스크에 KB 만큼 + 여유분이 남아 있는가. 실패하면 사유를 SPACE_REASON 에 남긴다.
+# db 볼륨이 안 붙어 있으면(직접 만든 compose 등) 확인할 수 없으니 경고만 남기고 넘어간다
+space_ok() {
+  SPACE_REASON=""
+  [ -d "$PGDATA_DIR" ] || { log "경고: $PGDATA_DIR 가 없어 DB 디스크의 남은 공간을 확인하지 못했습니다"; return 0; }
+  free=$(df -k -P "$PGDATA_DIR" 2>/dev/null | awk 'NR == 2 {print $4}')
+  case $free in ''|*[!0-9]*) log "경고: DB 디스크의 남은 공간을 읽지 못했습니다"; return 0 ;; esac
+  need=$(( $1 + SPACE_RESERVE_KB ))
+  [ "$free" -ge "$need" ] && return 0
+  SPACE_REASON="DB 디스크 공간 부족: 필요 약 $(( need / 1024 ))MB (DB 크기 + 여유 $(( SPACE_RESERVE_KB / 1024 ))MB), 남은 공간 $(( free / 1024 ))MB"
+  return 1
+}
+
+# 임시 DB 지우기. 잠깐 연결이 끊긴 경우를 위해 몇 번 다시 시도한다 (남으면 DB 크기만큼 디스크를 계속 차지)
+drop_temp_db() {
+  for _ in 1 2 3; do
+    dropdb --if-exists "$1" >/dev/null 2>&1 && { CURRENT_TEMP_DB=""; return 0; }
+    sleep 5
+  done
+  log "경고: 임시 DB '$1' 를 지우지 못했습니다 — 디스크를 차지하니 직접 지우세요: docker compose exec backup dropdb $1"
+  return 1
+}
+
 # ------------------------------------------------------------------ 백업
+backup_fail() {  # 이름 단계 오류
+  [ -n "$CURRENT_PART" ] && rm -f "$CURRENT_PART"
+  CURRENT_PART=""
+  log "백업 실패 ($2): $3"
+  audit backup.failed "$1" "{\"stage\": \"$2\", \"error\": \"$(json_esc "$3")\", \"started_at\": \"$started\"}"
+  return 1
+}
+
 do_backup() {
   mkdir -p "$BACKUP_DIR" || { log "백업 폴더를 만들 수 없음: $BACKUP_DIR"; return 1; }
   stamp=$(date +%Y%m%d-%H%M%S)
@@ -67,18 +138,35 @@ do_backup() {
   name="wlm-$stamp.dump"
   started=$(now_utc)
   t0=$(date +%s)
-  # 백업 직전 행 수 — 복구 시험 때 '이만큼은 있어야 한다'의 기준 (덤프 중에 들어온 행은 더 많을 수 있다)
-  counts=$(counts_json "$PGDATABASE")
-  version=$(migration_of "$PGDATABASE")
-  log "백업 시작: $name (DB $PGDATABASE, 마이그레이션 $version)"
+  q=$(counts_sql "$PGDATABASE") || { backup_fail "$name" connect "DB 에 접속할 수 없습니다 ($PGHOST/$PGDATABASE)"; return 1; }
+  log "백업 시작: $name (DB $PGDATABASE)"
 
-  if ! err=$(pg_dump -Fc -Z 6 -f "$base.dump.part" "$PGDATABASE" 2>&1); then
-    rm -f "$base.dump.part"
-    log "백업 실패: $err"
-    audit backup.failed "$name" "{\"stage\": \"dump\", \"error\": \"$(json_esc "$err")\", \"started_at\": \"$started\"}"
-    return 1
+  # 행 수·마이그레이션 버전을 pg_dump 와 같은 스냅숏에서 센다 — 복구 시험이 '백업에 든 행 수와 정확히 같은가'를 볼 수 있게.
+  # (따로 세면 그 사이 매시간 정리 작업이 지운 행 때문에 맞지 않는다.) 스냅숏을 내보낸 트랜잭션이 열려 있는 동안 \! 로 pg_dump 를 돌린다
+  CURRENT_PART="$base.dump.part"
+  work=$(mktemp -d)
+  WLM_DUMP_PART="$CURRENT_PART" WLM_DUMP_ERR="$work/err" WLM_DUMP_RC="$work/rc"
+  export WLM_DUMP_PART WLM_DUMP_ERR WLM_DUMP_RC
+  psql_q -d "$PGDATABASE" >"$work/out" 2>"$work/psql" <<SQL
+BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;
+SELECT pg_export_snapshot() AS snap \gset
+\setenv WLM_SNAPSHOT :snap
+SELECT coalesce(max(version), '') FROM schema_migrations;
+$q
+\! pg_dump --snapshot="\$WLM_SNAPSHOT" -Fc -Z 6 -f "\$WLM_DUMP_PART" "\$PGDATABASE" 2>"\$WLM_DUMP_ERR"; echo \$? > "\$WLM_DUMP_RC"
+COMMIT;
+SQL
+  psql_rc=$?
+  dump_rc=$(cat "$work/rc" 2>/dev/null)
+  version=$(sed -n 1p "$work/out")
+  counts=$(sed -n 2p "$work/out")
+  dump_err=$(cat "$work/err" "$work/psql" 2>/dev/null)
+  rm -rf "$work"
+  if [ "$psql_rc" != 0 ] || [ "$dump_rc" != 0 ] || [ -z "$counts" ]; then
+    backup_fail "$name" dump "${dump_err:-pg_dump 종료 코드 ${dump_rc:-없음}}"; return 1
   fi
-  mv "$base.dump.part" "$base.dump"
+  mv "$CURRENT_PART" "$base.dump" || { backup_fail "$name" dump "덤프 파일 이름을 바꿀 수 없음"; return 1; }
+  CURRENT_PART=""
   sha=$(sha256sum "$base.dump" | cut -d' ' -f1)
   echo "$sha  $name" > "$base.dump.sha256"
   bytes=$(stat -c %s "$base.dump")
@@ -90,18 +178,25 @@ do_backup() {
   seconds=$(( $(date +%s) - t0 ))
   detail="{\"file\": \"$name\", \"bytes\": $bytes, \"sha256\": \"$sha\", \"started_at\": \"$started\", \"finished_at\": \"$(now_utc)\", \"seconds\": $seconds, \"migration\": \"$version\", \"counts\": $counts, \"config\": \"$config_file\", \"keep\": $KEEP}"
   echo "$detail" > "$base.json"
-  prune
+  prune "$name"
   audit backup.create "$name" "$detail"
   log "백업 완료: $name ($bytes 바이트, ${seconds}초) sha256=$sha"
   return 0
 }
 
-# 최근 KEEP 개만 남긴다. 업그레이드 전 백업(before-*.dump, install.sh)은 건드리지 않는다
+# 최근 KEEP 개만 남긴다. 방금 만든 파일($1)은 어떤 경우에도 지우지 않는다.
+# 업그레이드 전 백업(before-*.dump, install.sh)·복원 전 사본(before-restore-*)은 건드리지 않는다.
+# 중단된 백업이 남긴 *.part 는 하루가 지나면 지운다 (지금 다른 곳에서 만들고 있는 것일 수 있어 바로 지우지 않는다)
 prune() {
   ls -1t "$BACKUP_DIR"/wlm-*.dump 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
+    [ "$(basename "$old")" = "${1:-}" ] && continue
     base=${old%.dump}
     rm -f "$old" "$old.sha256" "$base.json" "$base.config.tar.gz"
     log "오래된 백업 정리: $(basename "$old")"
+  done
+  find "$BACKUP_DIR" -maxdepth 1 -name '*.dump.part' -mmin +1440 2>/dev/null | while read -r part; do
+    rm -f "$part"
+    log "중단된 백업 조각 정리: $(basename "$part")"
   done
 }
 
@@ -115,10 +210,11 @@ verify_fail() {
 
 do_verify() {
   file=${1:-$(newest_dump)}
-  [ -n "$file" ] || { log "복구 시험할 백업이 없습니다 ($BACKUP_DIR)"; return 1; }
+  check_db="${PGDATABASE}_restore_check"
+  # 시험할 백업이 없는 것도 실패로 남긴다 (보관 설정 실수로 백업이 지워진 경우 등을 화면에서 알 수 있게)
+  [ -n "$file" ] || { verify_fail "(없음)" "복구 시험할 백업이 없습니다 ($BACKUP_DIR)"; return 1; }
   case $file in /*) ;; *) file="$BACKUP_DIR/$file" ;; esac
   name=$(basename "$file")
-  check_db="${PGDATABASE}_restore_check"
   t0=$(date +%s)
   [ -f "$file" ] || { verify_fail "$name" "파일이 없습니다: $file"; return 1; }
   log "복구 시험 시작: $name → 임시 DB $check_db"
@@ -129,36 +225,55 @@ do_verify() {
   [ -n "$expected" ] || { verify_fail "$name" "해시 파일(.sha256)이 없습니다"; return 1; }
   [ "$expected" = "$actual" ] || { verify_fail "$name" "해시가 다릅니다 — 파일이 손상되었거나 바뀌었습니다"; return 1; }
 
-  # 2) 임시 DB 에 실제로 복원
-  dropdb --if-exists "$check_db" >/dev/null 2>&1
+  # 2) 백업 정보(.json): 있으면 반드시 읽을 수 있어야 한다 (업그레이드 전 백업 before-*.dump 에는 없다)
+  manifest="${file%.dump}.json"
+  expected_version=""
+  if [ -f "$manifest" ]; then
+    # JSON 은 psql 로 읽는다 (컨테이너에 jq 가 없다)
+    if ! info=$(printf '%s\n' "SELECT coalesce((:'m'::json)->>'migration', '') || '|' || coalesce(json_typeof((:'m'::json)->'counts'), '없음');" \
+        | psql_q -d "$PGDATABASE" -v m="$(cat "$manifest")" 2>&1); then
+      verify_fail "$name" "백업 정보 파일(.json)을 읽을 수 없습니다: $info"; return 1
+    fi
+    [ "${info##*|}" = object ] || { verify_fail "$name" "백업 정보 파일(.json)에 행 수(counts)가 없습니다"; return 1; }
+    expected_version=${info%|*}
+  fi
+
+  # 3) 남은 공간: 임시 DB 는 운영 DB 와 같은 디스크에 운영 DB 크기만큼 생긴다 → 모자라면 시험하지 않고 실패로 남긴다
+  size_kb=$(db_size_kb "$PGDATABASE" 2>/dev/null) || size_kb=0
+  space_ok "$size_kb" || { verify_fail "$name" "$SPACE_REASON — 공간을 늘리거나 시험 서버에서 복구 시험을 하세요"; return 1; }
+
+  # 4) 임시 DB 에 실제로 복원
+  drop_temp_db "$check_db" || { verify_fail "$name" "이전 임시 DB 를 지울 수 없습니다: $check_db"; return 1; }
   if ! err=$(createdb "$check_db" 2>&1); then verify_fail "$name" "임시 DB 를 만들 수 없음: $err"; return 1; fi
+  CURRENT_TEMP_DB=$check_db
   if ! err=$(pg_restore --no-owner --no-privileges --exit-on-error -d "$check_db" "$file" 2>&1); then
-    dropdb --if-exists "$check_db" >/dev/null 2>&1
+    drop_temp_db "$check_db"
     verify_fail "$name" "복원 실패: $err"
     return 1
   fi
 
-  # 3) 복원된 내용: 마이그레이션 버전이 같고, 주요 테이블 행 수가 백업 직전보다 적지 않은가
-  restored=$(counts_json "$check_db")
-  version=$(migration_of "$check_db")
-  dropdb --if-exists "$check_db" >/dev/null 2>&1
-  manifest="${file%.dump}.json"
-  expected_version=""
-  short=""
+  # 5) 복원된 내용: 마이그레이션 버전과 주요 테이블 행 수가 백업에 담긴 것(같은 스냅숏에서 센 값)과 정확히 같은가
+  if ! restored=$(counts_of "$check_db" 2>&1) || ! version=$(migration_of "$check_db" 2>&1); then
+    drop_temp_db "$check_db"
+    verify_fail "$name" "복원한 DB 를 읽을 수 없습니다: ${restored:-}${version:-}"; return 1
+  fi
+  drop_temp_db "$check_db"
+  diff=""
   if [ -f "$manifest" ]; then
-    # JSON 비교는 psql 로 (컨테이너에 jq 가 없다)
-    expected_version=$(printf '%s\n' "SELECT (:'m'::json)->>'migration';" | psql_q -d "$PGDATABASE" -v m="$(cat "$manifest")")
-    short=$(printf '%s\n' "SELECT string_agg(p.key || ' ' || q.value || '/' || p.value, ', ')
+    if [ "$version" != "$expected_version" ]; then
+      verify_fail "$name" "마이그레이션 버전이 다릅니다: 복원 $version, 백업 때 $expected_version"; return 1
+    fi
+    # 빠진 테이블은 '없음'으로 (NULL 이 섞여 조용히 통과하지 않게)
+    if ! diff=$(printf '%s\n' "SELECT coalesce(string_agg(p.key || ' ' || coalesce(q.value, '없음') || '/' || p.value, ', '), '')
         FROM json_each_text((:'m'::json)->'counts') p LEFT JOIN json_each_text(:'r'::json) q USING (key)
-        WHERE q.value IS NULL OR q.value::bigint < p.value::bigint;" \
-      | psql_q -d "$PGDATABASE" -v m="$(cat "$manifest")" -v r="$restored")
+        WHERE q.value IS DISTINCT FROM p.value;" \
+        | psql_q -d "$PGDATABASE" -v m="$(cat "$manifest")" -v r="$restored" 2>&1); then
+      verify_fail "$name" "행 수를 비교할 수 없습니다: $diff"; return 1
+    fi
   fi
   seconds=$(( $(date +%s) - t0 ))
-  if [ -n "$expected_version" ] && [ "$version" != "$expected_version" ]; then
-    verify_fail "$name" "마이그레이션 버전이 다릅니다: 복원 $version, 백업 때 $expected_version"; return 1
-  fi
-  if [ -n "$short" ]; then
-    verify_fail "$name" "행 수가 백업 직전보다 적습니다 (복원/백업 직전): $short"; return 1
+  if [ -n "$diff" ]; then
+    verify_fail "$name" "행 수가 백업 때와 다릅니다 (복원/백업): $diff"; return 1
   fi
   audit backup.verify "$name" "{\"file\": \"$name\", \"ok\": true, \"sha256\": \"$actual\", \"migration\": \"$version\", \"counts\": $restored, \"seconds\": $seconds, \"manifest\": $([ -f "$manifest" ] && echo true || echo false), \"checked_at\": \"$(now_utc)\"}"
   log "복구 시험 성공: $name (${seconds}초) 행 수 $restored"
@@ -166,47 +281,115 @@ do_verify() {
 }
 
 # ------------------------------------------------------------------ 복원 (장애 복구)
-# 운영 DB 를 지우고 백업으로 다시 만든다. 되돌릴 수 없으므로 --yes 가 있어야 하고, 해시가 맞는 파일만 쓴다
+# 운영 DB 를 백업 내용으로 바꾼다. 되돌리기 어려우므로:
+#   --yes 가 있어야 하고, 해시가 맞는 파일만 쓰고, 운영 DB 에 연결된 세션(api 등)이 있으면 거부한다.
+#   지금 DB 를 before-restore-*.dump 로 먼저 남기고(잘못 고른 파일이어도 되돌릴 수 있게),
+#   임시 DB 에 복원이 끝난 다음에만 이름을 바꿔 끼운다(복원이 실패해도 운영 DB 는 그대로).
 do_restore() {
   file=${1:-}
   [ -n "$file" ] || { echo "복원할 백업 파일을 지정하세요 (backup.sh list)" >&2; return 2; }
-  [ "${2:-}" = "--yes" ] || { echo "운영 DB '$PGDATABASE' 를 지우고 $file 로 되돌립니다. 맞으면 끝에 --yes 를 붙이세요 (먼저 docker compose stop api)" >&2; return 2; }
+  [ "${2:-}" = "--yes" ] || { echo "운영 DB '$PGDATABASE' 를 $file 내용으로 바꿉니다. 맞으면 끝에 --yes 를 붙이세요 (먼저 docker compose stop api)" >&2; return 2; }
+  safety_dump=1
+  case ${3:-} in '') ;; --no-safety-dump) safety_dump=0 ;; *) echo "알 수 없는 옵션: $3" >&2; return 2 ;; esac
   case $file in /*) ;; *) file="$BACKUP_DIR/$file" ;; esac
   name=$(basename "$file")
+  restoring="${PGDATABASE}_restoring"
   [ -f "$file" ] || { log "파일이 없습니다: $file"; return 1; }
   expected=$(cut -d' ' -f1 "$file.sha256" 2>/dev/null || true)
   [ -n "$expected" ] && [ "$expected" = "$(sha256sum "$file" | cut -d' ' -f1)" ] \
     || { log "해시가 맞지 않아 복원하지 않습니다 (파일 손상·변조 또는 .sha256 없음): $name"; return 1; }
-  log "복원 시작: $name → $PGDATABASE (기존 내용은 지워집니다)"
-  dropdb --force --if-exists "$PGDATABASE" || { log "기존 DB 를 지울 수 없습니다 (연결 중인 api 를 멈췄는지 확인)"; return 1; }
-  createdb "$PGDATABASE" || return 1
-  if ! err=$(pg_restore --no-owner --exit-on-error -d "$PGDATABASE" "$file" 2>&1); then
-    log "복원 실패: $err"
+
+  exists=0
+  db_exists "$PGDATABASE" && exists=1
+  if [ "$exists" = 1 ]; then
+    n=$(other_sessions "$PGDATABASE") || { log "DB 에 접속할 수 없습니다"; return 1; }
+    [ "$n" = 0 ] || { log "운영 DB '$PGDATABASE' 에 연결된 세션이 ${n}개 있어 복원하지 않습니다 — 먼저 docker compose stop api (알림·보고서 작업도 api 안에서 돈다)"; return 1; }
+    size_kb=$(db_size_kb "$PGDATABASE") || size_kb=0
+    space_ok "$size_kb" || { log "복원하지 않습니다: $SPACE_REASON"; return 1; }
+  fi
+
+  # 1) 지금 DB 의 안전 사본
+  safety_name=""
+  if [ "$exists" = 1 ] && [ "$safety_dump" = 1 ]; then
+    safety_name="before-restore-$(date +%Y%m%d-%H%M%S).dump"
+    CURRENT_PART="$BACKUP_DIR/$safety_name.part"
+    log "복원 전 지금 DB 를 남깁니다: $safety_name"
+    if ! err=$(pg_dump -Fc -Z 6 -f "$CURRENT_PART" "$PGDATABASE" 2>&1); then
+      rm -f "$CURRENT_PART"; CURRENT_PART=""
+      log "지금 DB 를 남기지 못해 복원하지 않습니다: $err (DB 가 망가져 덤프가 안 되면 --no-safety-dump)"; return 1
+    fi
+    mv "$CURRENT_PART" "$BACKUP_DIR/$safety_name"; CURRENT_PART=""
+    (cd "$BACKUP_DIR" && sha256sum "$safety_name" > "$safety_name.sha256")
+  fi
+
+  # 2) 임시 DB 에 복원
+  log "복원 시작: $name → 임시 DB $restoring"
+  drop_temp_db "$restoring" || return 1
+  createdb "$restoring" || { log "임시 DB 를 만들 수 없습니다: $restoring"; return 1; }
+  CURRENT_TEMP_DB=$restoring
+  if ! err=$(pg_restore --no-owner --exit-on-error -d "$restoring" "$file" 2>&1); then
+    drop_temp_db "$restoring"
+    log "복원 실패 — 운영 DB 는 바뀌지 않았습니다: $err"
     return 1
   fi
-  # 복원한 DB 에 복원 사실을 남긴다 (백업 시점 이후의 감사로그는 이 복원으로 사라지므로, 그 공백을 알 수 있게)
-  audit backup.restore "$name" "{\"file\": \"$name\", \"restored_at\": \"$(now_utc)\", \"counts\": $(counts_json "$PGDATABASE")}"
-  log "복원 완료: $name — 이제 docker compose start api"
+
+  # 3) 바꿔 끼우기: 운영 DB 연결을 막고, 그 사이 다시 붙은 세션이 없을 때만 이름을 바꾼다
+  if [ "$exists" = 1 ]; then
+    replaced="${PGDATABASE}_replaced"
+    allow_connections "$PGDATABASE" false || { drop_temp_db "$restoring"; return 1; }
+    n=$(other_sessions "$PGDATABASE")
+    if [ "$n" != 0 ]; then
+      allow_connections "$PGDATABASE" true
+      drop_temp_db "$restoring"
+      log "복원하는 동안 운영 DB 에 세션 ${n}개가 다시 연결되어 바꿔 끼우지 않았습니다 — api 를 멈추고 다시 하세요"; return 1
+    fi
+    drop_temp_db "$replaced" || return 1
+    if ! maint_sql 'ALTER DATABASE :"d" RENAME TO :"old"; ALTER DATABASE :"new" RENAME TO :"d";' \
+        -v d="$PGDATABASE" -v old="$replaced" -v new="$restoring" -1 >/dev/null; then
+      allow_connections "$PGDATABASE" true
+      drop_temp_db "$restoring"
+      log "DB 이름을 바꾸지 못했습니다 — 운영 DB 는 바뀌지 않았습니다"; return 1
+    fi
+    CURRENT_TEMP_DB=""
+    drop_temp_db "$replaced"
+  else
+    maint_sql 'ALTER DATABASE :"new" RENAME TO :"d";' -v d="$PGDATABASE" -v new="$restoring" >/dev/null || return 1
+    CURRENT_TEMP_DB=""
+  fi
+  # 복원한 DB 에 복원 사실을 남긴다 (백업 시점 이후의 감사로그는 이 복원으로 운영 DB 에서 빠지므로, 그 공백을 알 수 있게.
+  # 빠진 기록은 안전 사본에 남아 있다)
+  audit backup.restore "$name" "{\"file\": \"$name\", \"restored_at\": \"$(now_utc)\", \"safety_dump\": \"$safety_name\", \"counts\": $(counts_of "$PGDATABASE" 2>/dev/null || echo null)}"
+  log "복원 완료: $name${safety_name:+ (이전 DB: backups/$safety_name)} — 이제 docker compose start api"
   return 0
 }
 
 do_list() {
-  ls -1t "$BACKUP_DIR"/wlm-*.dump 2>/dev/null | while read -r f; do
+  ls -1t "$BACKUP_DIR"/wlm-*.dump "$BACKUP_DIR"/before-*.dump 2>/dev/null | while read -r f; do
     echo "$(basename "$f")  $(stat -c %s "$f") 바이트  $(date -r "$f" '+%Y-%m-%d %H:%M')"
   done
 }
 
 # ------------------------------------------------------------------ 상주
+# 오늘 할 차례인가: 시각(HHMM)이 지났고 오늘 아직 안 했으면. 정확히 그 1분에만 돌면 긴 복구 시험이 다음 날 시각을 넘기거나
+# 서머타임으로 그 시각이 없는 날 하루를 건너뛴다. 마지막으로 돈 날짜는 파일에 남겨 컨테이너가 다시 떠도 같은 날 두 번 돌지 않는다
+is_due() { [ "$1" -ge "$(echo "$AT" | tr -d :)" ] && [ "$2" != "$3" ]; }
+
 daemon() {
-  case $AT in [0-2][0-9]:[0-5][0-9]) ;; *) log "WLM_BACKUP_TIME 형식은 HH:MM 입니다: $AT"; exit 2 ;; esac
-  log "백업 대기: 매일 $AT, 최근 ${KEEP}개 보관, 복구 시험 요일 $VERIFY_DAY (1=월 … 7=일, 0=안 함), 폴더 $BACKUP_DIR"
-  last=""
+  check_settings || exit 2
+  state="$BACKUP_DIR/.last-run"
+  mkdir -p "$BACKUP_DIR"
+  last=$(cat "$state" 2>/dev/null || true)
+  # 지난번에 중간에 멈췄다면 남은 것 정리 (임시 DB 는 DB 크기만큼 디스크를 차지한다)
+  rm -f "$BACKUP_DIR"/*.dump.part
+  dropdb --if-exists "${PGDATABASE}_restore_check" >/dev/null 2>&1
+  log "백업 대기: 매일 $AT 이후 한 번 (마지막 ${last:-없음}), 최근 ${KEEP}개 보관, 복구 시험 요일 $VERIFY_DAY (1=월 … 7=일, 0=안 함), 폴더 $BACKUP_DIR"
   while true; do
     today=$(date +%Y-%m-%d)
-    # 분 단위로 맞춘다. 같은 날 두 번 돌지 않게 날짜를 기억 (컨테이너가 재시작되면 그날 시각이 지났으면 다음 날)
-    if [ "$(date +%H:%M)" = "$AT" ] && [ "$last" != "$today" ]; then
+    if is_due "$(date +%H%M)" "$today" "$last"; then
+      dow=$(date +%u)   # 백업이 자정을 넘겨도 시작한 날의 요일로 복구 시험 여부를 정한다
       last=$today
-      if do_backup && [ "$(date +%u)" = "$VERIFY_DAY" ]; then
+      echo "$today" > "$state" || log "경고: $state 에 기록하지 못했습니다 (컨테이너가 다시 뜨면 오늘 백업을 한 번 더 할 수 있음)"
+      if do_backup && [ "$dow" = "$VERIFY_DAY" ]; then
         do_verify || true
       fi
     fi
@@ -224,9 +407,11 @@ selftest() {
   echo '{"name": "selftest"}' > "$CONFIG_DIR/dashboard.json"
   failed=0
   check() { if [ "$1" = "$2" ]; then log "  통과: $3"; else log "  실패: $3 (기대 $2, 실제 $1)"; failed=1; fi; }
+  sql() { psql_q -d "$PGDATABASE" -c "$1"; }
 
-  dropdb --if-exists "$PGDATABASE" >/dev/null 2>&1
-  dropdb --if-exists "${PGDATABASE}_restore_check" >/dev/null 2>&1
+  for d in "$PGDATABASE" "${PGDATABASE}_restore_check" "${PGDATABASE}_restoring" "${PGDATABASE}_replaced"; do
+    dropdb --if-exists "$d" >/dev/null 2>&1
+  done
   createdb "$PGDATABASE" || { log "시험용 DB 를 만들 수 없음"; exit 1; }
   psql_q -d "$PGDATABASE" >/dev/null <<'SQL'
 CREATE TABLE schema_migrations (version TEXT PRIMARY KEY);
@@ -240,11 +425,24 @@ CREATE TABLE users (id SERIAL PRIMARY KEY, username TEXT);
 INSERT INTO users (username) VALUES ('admin'), ('kim');
 SQL
 
-  log "시험 1: 백업 → 복구 시험"
+  log "시험 0: 설정 검사·일정"
+  (KEEP=0; check_settings >/dev/null); check "$?" 2 "WLM_BACKUP_KEEP=0 은 거부 (방금 만든 백업까지 지워지므로)"
+  (KEEP=abc; check_settings >/dev/null); check "$?" 2 "숫자가 아닌 보관 개수는 거부"
+  (AT=24:00; check_settings >/dev/null); check "$?" 2 "없는 시각은 거부"
+  check_settings >/dev/null; check "$?" 0 "올바른 설정"
+  (AT=02:30; is_due 0300 2026-03-29 2026-03-28); check "$?" 0 "시각을 넘겨 확인해도 그날 한 번 (서머타임으로 02:30 이 없는 날)"
+  (AT=02:30; is_due 0229 2026-03-29 2026-03-28); check "$?" 1 "시각 전에는 하지 않음"
+  (AT=02:30; is_due 2359 2026-03-29 2026-03-29); check "$?" 1 "같은 날 두 번 하지 않음"
+
+  log "시험 1: 백업 → 복구 시험 (행 수는 덤프와 같은 스냅숏)"
   do_backup; check "$?" 0 "백업"
   first=$(newest_dump)
+  manifest="${first%.dump}.json"
+  check "$(grep -c '"events": 500' "$manifest")" 1 "백업 정보에 행 수"
   check "$(ls "$BACKUP_DIR"/*.config.tar.gz 2>/dev/null | wc -l | tr -d ' ')" 1 "설정 묶음"
+  check "$(stat -c %a "$first")" 600 "백업 파일은 소유자만 읽기"
   do_verify; check "$?" 0 "정상 백업의 복구 시험"
+  check "$(sql "SELECT count(*) FROM pg_database WHERE datname = '${PGDATABASE}_restore_check'")" 0 "임시 DB 를 지움"
 
   log "시험 2: 손상된 파일은 복구 시험에서 걸린다"
   cp "$first" "$BACKUP_DIR/broken.dump.tmp"
@@ -261,32 +459,73 @@ SQL
   do_verify "$first"; check "$?" 1 "반쯤 잘린 덤프 (복원 실패)"
   mv "$BACKUP_DIR/whole.tmp" "$first"
   mv "$BACKUP_DIR/sha.tmp" "$first.sha256"
-  # 백업 직전보다 행이 적게 복원되면 (덤프가 일부만 담긴 경우) 걸려야 한다
-  manifest="${first%.dump}.json"
+  # 행 수가 백업 때와 다르면 (덤프가 일부만 담긴 경우) 걸려야 한다 — 많아도 적어도
   cp "$manifest" "$BACKUP_DIR/manifest.tmp"
   sed 's/"events": 500/"events": 999999/' "$BACKUP_DIR/manifest.tmp" > "$manifest"
-  do_verify "$first"; check "$?" 1 "행 수가 백업 직전보다 적음"
+  do_verify "$first"; check "$?" 1 "행 수가 백업 때보다 적음"
+  sed 's/"events": 500/"events": 7/' "$BACKUP_DIR/manifest.tmp" > "$manifest"
+  do_verify "$first"; check "$?" 1 "행 수가 백업 때와 다름 (많음)"
+  # 복원본에 아예 없는 테이블 (NULL 이 섞여도 통과하지 않아야 한다)
+  sed 's/"events": 500/"events": 500, "ghost": 3/' "$BACKUP_DIR/manifest.tmp" > "$manifest"
+  do_verify "$first"; check "$?" 1 "복원본에 없는 테이블"
+  echo 'not json' > "$manifest"
+  do_verify "$first"; check "$?" 1 "읽을 수 없는 백업 정보 파일"
+  echo '{"migration": "010_selftest"}' > "$manifest"
+  do_verify "$first"; check "$?" 1 "행 수가 빠진 백업 정보 파일"
   mv "$BACKUP_DIR/manifest.tmp" "$manifest"
   do_verify "$first"; check "$?" 0 "원래대로 되돌린 백업은 다시 통과"
+  # DB 디스크가 모자라면 복원하지 않고 실패로 남긴다
+  (SPACE_RESERVE_KB=999999999999; do_verify "$first" >/dev/null); check "$?" 1 "디스크 공간이 모자라면 시험하지 않음"
+  check "$(sql "SELECT count(*) FROM pg_database WHERE datname = '${PGDATABASE}_restore_check'")" 0 "공간 부족 때 임시 DB 를 만들지 않음"
 
   log "시험 3: 보관 개수 ($KEEP 개)"
+  # 업그레이드 전 백업은 실제로는 이후 매일 백업보다 오래되었다 → 가장 오래된 시각으로 두고 정리해도 남는지 본다
+  touch "$BACKUP_DIR/before-0.6.0-x.dump"; touch -d '2000-01-01 00:00:00' "$BACKUP_DIR/before-0.6.0-x.dump"
+  touch "$BACKUP_DIR/wlm-19990101-000000.dump.part"; touch -d '2000-01-01 00:00:00' "$BACKUP_DIR/wlm-19990101-000000.dump.part"
+  touch "$BACKUP_DIR/wlm-fresh.dump.part"
   sleep 1; do_backup >/dev/null; sleep 1; do_backup >/dev/null; sleep 1; do_backup >/dev/null
   check "$(ls "$BACKUP_DIR"/wlm-*.dump | wc -l | tr -d ' ')" "$KEEP" "최근 ${KEEP}개만 남음"
-  touch "$BACKUP_DIR/before-0.6.0-x.dump"; prune
   check "$(ls "$BACKUP_DIR"/before-*.dump | wc -l | tr -d ' ')" 1 "업그레이드 전 백업은 지우지 않음"
+  check "$(ls "$BACKUP_DIR"/*.part | wc -l | tr -d ' ')" 1 "하루 지난 .part 만 정리 (만드는 중일 수 있는 것은 둔다)"
+  rm -f "$BACKUP_DIR"/*.part
+  # 방금 만든 백업은 파일 시각이 꼬여도(다른 파일이 더 새로워 보여도) 지우지 않는다
+  (KEEP=1; touch -d '2099-01-01 00:00:00' "$BACKUP_DIR"/wlm-*.dump; sleep 1; do_backup >/dev/null)
+  just=$(ls "$BACKUP_DIR"/wlm-*.dump | sort | tail -n 1)
+  check "$(ls "$BACKUP_DIR"/wlm-*.dump | wc -l | tr -d ' ')|$(sql "SELECT target FROM audit_log WHERE action = 'backup.create' ORDER BY id DESC LIMIT 1")" \
+    "2|$(basename "$just")" "방금 만든 백업은 정리하지 않음"
+  (BACKUP_DIR=$(mktemp -d); do_verify >/dev/null); check "$?" 1 "백업이 하나도 없으면 실패로 기록"
 
   log "시험 4: 감사로그"
-  check "$(psql_q -d "$PGDATABASE" -c "SELECT count(*) FROM audit_log WHERE action = 'backup.create'")" 4 "backup.create 4건"
-  check "$(psql_q -d "$PGDATABASE" -c "SELECT count(*) FROM audit_log WHERE action = 'backup.verify' AND (detail->>'ok')::bool")" 2 "복구 시험 성공 2건"
-  check "$(psql_q -d "$PGDATABASE" -c "SELECT count(*) FROM audit_log WHERE action = 'backup.verify' AND NOT (detail->>'ok')::bool")" 4 "복구 시험 실패 4건 (사유 기록)"
+  check "$(sql "SELECT count(*) FROM audit_log WHERE action = 'backup.create'")" 5 "backup.create 5건"
+  check "$(sql "SELECT count(*) FROM audit_log WHERE action = 'backup.verify' AND (detail->>'ok')::bool")" 2 "복구 시험 성공 2건"
+  check "$(sql "SELECT count(*) FROM audit_log WHERE action = 'backup.verify' AND NOT (detail->>'ok')::bool")" 10 "복구 시험 실패 10건 (사유 기록)"
+  check "$(sql "SELECT count(*) FROM audit_log WHERE action = 'backup.verify' AND detail->>'reason' LIKE '%공간 부족%'")" 1 "공간 부족 사유"
 
   log "시험 5: 복원 (장애 복구)"
-  do_restore "$(newest_dump)" >/dev/null 2>&1; check "$?" 2 "--yes 없이는 복원하지 않음"
-  psql_q -d "$PGDATABASE" -c "DELETE FROM users WHERE username = 'kim'" >/dev/null
-  do_restore "$(newest_dump)" --yes; check "$?" 0 "백업으로 되돌림"
-  check "$(psql_q -d "$PGDATABASE" -c "SELECT count(*) FROM users")" 2 "지운 행이 돌아옴"
-  check "$(psql_q -d "$PGDATABASE" -c "SELECT count(*) FROM audit_log WHERE action = 'backup.restore'")" 1 "복원 기록"
-
+  target=$(newest_dump)
+  do_restore "$target" >/dev/null 2>&1; check "$?" 2 "--yes 없이는 복원하지 않음"
+  sql "DELETE FROM users WHERE username = 'kim'" >/dev/null
+  # 연결된 세션(api 등)이 있으면 거부
+  psql_q -d "$PGDATABASE" -c "SELECT pg_sleep(4)" >/dev/null 2>&1 &
+  sleeper=$!
+  sleep 1
+  do_restore "$target" --yes >/dev/null; check "$?" 1 "운영 DB 에 연결된 세션이 있으면 거부"
+  check "$(ls "$BACKUP_DIR"/before-restore-* 2>/dev/null | wc -l | tr -d ' ')" 0 "거부는 아무것도 하기 전에 (안전 사본도 만들지 않음)"
+  wait "$sleeper"
+  check "$(sql "SELECT count(*) FROM users")" 1 "거부했을 때 운영 DB 는 그대로"
+  # 해시는 맞지만 깨진 파일 → 임시 DB 에서 실패하고 운영 DB 는 그대로
+  head -c 4000 "$target" > "$BACKUP_DIR/wlm-broken.dump"
+  (cd "$BACKUP_DIR" && sha256sum wlm-broken.dump > wlm-broken.dump.sha256)
+  do_restore "$BACKUP_DIR/wlm-broken.dump" --yes >/dev/null; check "$?" 1 "깨진 백업은 복원 실패"
+  check "$(sql "SELECT count(*) FROM users")" 1 "복원이 실패해도 운영 DB 는 그대로"
+  rm -f "$BACKUP_DIR"/wlm-broken.dump*
+  do_restore "$target" --yes; check "$?" 0 "백업으로 되돌림"
+  check "$(sql "SELECT count(*) FROM users")" 2 "지운 행이 돌아옴"
+  check "$(sql "SELECT count(*) FROM audit_log WHERE action = 'backup.restore'")" 1 "복원 기록"
+  safety=$(ls "$BACKUP_DIR"/before-restore-*.dump 2>/dev/null | head -n 1)
+  check "$([ -n "$safety" ] && cd "$BACKUP_DIR" && sha256sum -c "$(basename "$safety").sha256" >/dev/null 2>&1 && echo ok)" ok "복원 전 DB 의 안전 사본 (해시 포함)"
+  check "$(sql "SELECT count(*) FROM pg_database WHERE datname LIKE '${PGDATABASE}\_%'")" 0 "임시·교체 DB 가 남지 않음"
+  check "$(sql "SELECT datallowconn FROM pg_database WHERE datname = '$PGDATABASE'")" t "복원한 DB 에 접속 가능"
 
   dropdb --if-exists "$PGDATABASE" >/dev/null 2>&1
   rm -rf "$BACKUP_DIR" "$CONFIG_DIR"
@@ -299,10 +538,10 @@ cmd=${1:-daemon}
 [ $# -gt 0 ] && shift
 case $cmd in
   daemon) daemon ;;
-  backup) do_backup; exit $? ;;
+  backup) check_settings || exit 2; do_backup; exit $? ;;
   verify) do_verify "${1:-}"; exit $? ;;
   list) do_list ;;
-  restore) do_restore "${1:-}" "${2:-}"; exit $? ;;
+  restore) do_restore "${1:-}" "${2:-}" "${3:-}"; exit $? ;;
   selftest) selftest ;;
-  *) echo "사용법: backup.sh [daemon|backup|verify [파일]|list|restore 파일 --yes|selftest]" >&2; exit 2 ;;
+  *) echo "사용법: backup.sh [daemon|backup|verify [파일]|list|restore 파일 --yes [--no-safety-dump]|selftest]" >&2; exit 2 ;;
 esac

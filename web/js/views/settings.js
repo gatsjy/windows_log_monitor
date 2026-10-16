@@ -619,6 +619,14 @@ const mb = (bytes) => `${(bytes / 1024 / 1024).toLocaleString('ko-KR', { maximum
 const day = (iso) => fmtTime(iso, { seconds: false }).slice(0, 10);
 
 /** DB 백업 카드 (backup 서비스가 남긴 감사로그 기준, ADR-031) */
+// 문제가 없을 때의 문구. 복구 시험을 아직 안 했거나 마지막 시험이 실패(8일 넘게 지나 경고에서 빠짐)면 '정상'이라고 하지 않는다
+function verifyNote(b) {
+  const v = b.last_verify;
+  if (v?.ok) return '✓ 백업과 복구 시험이 정상입니다.';
+  const how = b.schedule.verify_day ? `매주 ${b.schedule.verify_day}요일에 자동으로 합니다.` : '자동 복구 시험이 꺼져 있으니 시험 서버에서 직접 확인하세요.';
+  return v ? `✓ 백업은 정상입니다. 마지막 복구 시험(8일 넘게 지남)은 실패였습니다 — ${how}` : `✓ 백업은 정상입니다. 복구 시험 기록은 아직 없습니다 — ${how}`;
+}
+
 function backupCard(b) {
   const sch = b.schedule;
   const last = b.last_backup;
@@ -629,12 +637,14 @@ function backupCard(b) {
     <p class="muted" style="font-size:12.5px;margin:0 0 10px">매일 ${sch.time} (${sch.tz}) 에 백업하고 최근 ${sch.keep}개를 남깁니다.
       ${sch.verify_day ? `매주 ${sch.verify_day}요일에는 임시 DB 에 실제로 복원해 확인합니다.` : '자동 복구 시험은 꺼져 있습니다.'}</p>
     ${b.problems.length ? b.problems.map((t) => html`<div class="error-box" style="margin-bottom:8px">${t}</div>`)
-      : html`<div class="hint-box" style="margin-bottom:10px">✓ 백업과 복구 시험이 정상입니다.</div>`}
+      : html`<div class="hint-box" style="margin-bottom:10px">${verifyNote(b)}</div>`}
     <dl class="kv" style="margin-bottom:10px">
       <dt>마지막 백업</dt><dd style="flex-wrap:wrap">${last ? html`${fmtTime(last.at)} <span class="muted">(${fmtRelative(last.at)} · ${mb(last.bytes)} · ${fmtNum(last.seconds)}초)</span>` : '없음'}</dd>
       ${last ? html`<dt>파일</dt><dd class="mono" style="font-size:12.5px" title="SHA-256 ${last.sha256}">backups/${last.file}</dd>` : ''}
-      <dt>복구 시험</dt><dd style="flex-wrap:wrap">${v ? html`${fmtTime(v.at)} — ${v.ok ? html`<span class="tag-good">성공</span> <span class="muted">(${counts(v.counts)})</span>`
-        : html`<span class="tag-bad">실패</span> <span class="muted">${v.reason ?? ''}</span>`}` : '아직 없음'}</dd>
+      <dt>복구 시험</dt><dd style="flex-wrap:wrap">${v ? html`${fmtTime(v.at)} — ${v.ok ? html`<span class="tag-good">성공</span> <span class="muted">(${v.file} · ${counts(v.counts)})</span>`
+        : html`<span class="tag-bad">실패</span> <span class="muted">${v.file} · ${v.reason ?? ''}</span>`}` : '아직 없음'}</dd>
+      ${b.last_restore ? html`<dt>복원</dt><dd style="flex-wrap:wrap">${fmtTime(b.last_restore.at)} — ${b.last_restore.file} 로 되돌림
+        ${b.last_restore.safety_dump ? html`<span class="muted">(복원 전 DB: backups/${b.last_restore.safety_dump})</span>` : ''}</dd>` : ''}
     </dl>
     <p class="muted" style="font-size:12.5px;margin:0">지금 백업 <code>docker compose exec backup backup.sh backup</code> ·
       복구 시험 <code>docker compose exec backup backup.sh verify</code> · 기록은 감사 로그(DB 백업·백업 복구 시험)에 남습니다.

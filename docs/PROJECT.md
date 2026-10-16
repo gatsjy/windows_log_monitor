@@ -591,10 +591,10 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 - **폐쇄망 배포·업그레이드·되돌리기:** [AIRGAP.md](AIRGAP.md) (`deploy/airgap/make-bundle.sh` → 반입 → `deploy/airgap/install.sh`)
   - 이미지 태그는 `WLM_API_IMAGE`(.env, 기본 `log-monitor-api:latest`)로 고정합니다. 개발은 `log-monitor-api:dev`.
 
-- **백업 (ADR-031):** `backup` 서비스가 매일 `WLM_BACKUP_TIME`(02:30)에 `backups/wlm-<시각>.dump`(+ `.sha256`, `config/` 묶음)를 만들고 최근 `WLM_BACKUP_KEEP`(14)개를 남깁니다.
-  - 매주 `WLM_BACKUP_VERIFY_WEEKDAY`(일요일) 백업 뒤 **임시 DB 에 실제로 복원**해 해시·마이그레이션 버전·주요 테이블 행 수(백업 직전보다 적지 않은지)를 확인합니다.
-  - 결과는 감사로그 `backup.create`·`backup.failed`·`backup.verify`·`backup.restore` 와 환경설정 > 로그 보관 화면. 백업이 36시간 넘게 없거나, 마지막 백업·복구 시험이 실패했거나, 8일 넘게 성공한 복구 시험이 없으면 경고합니다.
-  - 명령: `docker compose exec backup backup.sh backup | verify [파일] | list`, 장애 복구 `docker compose stop api && docker compose run --rm backup restore <파일> --yes`, 자체 시험 `docker compose run --rm backup selftest` (docs/AIRGAP.md §11).
+- **백업 (ADR-031):** `backup` 서비스가 매일 `WLM_BACKUP_TIME`(02:30)이 지나면 그날 한 번 `backups/wlm-<시각>.dump`(+ `.sha256`, `config/` 묶음)를 만들고 최근 `WLM_BACKUP_KEEP`(14, 1 이상)개를 남깁니다. 놓친 날은 켜진 뒤 바로 합니다(`backups/.last-run`).
+  - 매주 `WLM_BACKUP_VERIFY_WEEKDAY`(일요일) 백업 뒤 **임시 DB 에 실제로 복원**해 해시·마이그레이션 버전·주요 테이블 행 수를 확인합니다. 행 수는 pg_dump 와 같은 스냅숏에서 세어 두었으므로 정확히 같아야 합니다. DB 디스크 여유(DB 크기 + 1GB)가 없으면 시험하지 않고 실패로 남깁니다.
+  - 결과는 감사로그 `backup.create`·`backup.failed`·`backup.verify`·`backup.restore` 와 환경설정 > 로그 보관 화면. 백업이 36시간 넘게 없거나(복원했으면 복원 시각부터), 마지막 백업이 실패했거나, 복구 시험 실패가 같은·더 새 백업의 성공으로 풀리지 않았거나, 8일 넘게 성공한 복구 시험이 없으면 경고합니다.
+  - 명령: `docker compose exec backup backup.sh backup | verify [파일] | list`, 장애 복구 `docker compose stop api && docker compose run --rm backup restore <파일> --yes`(연결된 세션이 있으면 거부, 지금 DB 를 `before-restore-*.dump` 로 남기고 임시 DB 에 복원한 뒤 바꿔 끼움), 자체 시험 `docker compose run --rm backup selftest` (docs/AIRGAP.md §11).
 - **보관기간·로테이션:** §9 참고.
   - `backups/`·`archive/` 는 다른 매체로 복사합니다. `.env`(암호화 키)는 DB 백업과 **따로** 보관합니다(ISMS 2.7.2).
 - **알림 운영:**

@@ -132,8 +132,12 @@ services:
         condition: service_healthy
     entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh"]
     command: ["daemon"]
+    # 멈출 때(재부팅·업그레이드) 신호를 pg_dump·pg_restore 까지 보내야 스크립트가 만들던 파일·임시 DB 를 지우고 끝난다
+    init: true
+    stop_grace_period: 30s
     mem_limit: ${WLM_BACKUP_MEM_LIMIT:-256m}
     environment:
+      TINI_KILL_PROCESS_GROUP: "1"
       PGHOST: db
       PGUSER: ${POSTGRES_USER:-wlm}
       PGPASSWORD: ${POSTGRES_PASSWORD:-wlm-dev-password}
@@ -146,6 +150,7 @@ services:
       - ./deploy/backup/backup.sh:/usr/local/bin/backup.sh:ro
       - ./backups:/backups                 # 백업 파일 — 이 폴더를 다른 디스크·NAS 로 옮겨 보관 (B-17)
       - ./config:/config:ro                # 대시보드·알림 규칙도 함께 묶는다
+      - pgdata:/pgdata:ro                  # 남은 공간 확인용 (복구 시험·복원은 DB 크기만큼 같은 디스크를 더 쓴다). 읽지 않는다
 
   # 네트워크 장비 / Linux 서버의 syslog 를 받아 api 로 전달하는 수신기 (선택)
   collector:

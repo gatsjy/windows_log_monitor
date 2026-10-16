@@ -717,13 +717,25 @@ async def latest_audit(actions: list[str]) -> dict[str, dict]:
 async def backup_audit() -> dict[str, Any]:
     """백업 상태(화면 '로그 보관'·점검 보고서): 행위별 최근 기록 + 마지막 성공한 복구 시험 + 첫 백업 시각.
     backup 서비스가 남긴 audit_log 를 읽는다 — 백업 파일은 api 컨테이너에서 보이지 않아도 된다."""
-    latest = await latest_audit(["backup.create", "backup.failed", "backup.verify"])
+    latest = await latest_audit(["backup.create", "backup.failed", "backup.verify", "backup.restore"])
     verify_ok = await db.fetch_one(
         "SELECT at, target, detail FROM audit_log WHERE action = 'backup.verify' AND detail->>'ok' = 'true'"
         " ORDER BY at DESC LIMIT 1"
     )
+    verify_failed = await db.fetch_one(
+        "SELECT at, target, detail FROM audit_log WHERE action = 'backup.verify' AND detail->>'ok' = 'false'"
+        " ORDER BY at DESC LIMIT 1"
+    )
+    # 실패한 복구 시험은 그 뒤에 '같은 파일이나 더 새 백업'이 성공해야 풀린다. 옛 백업을 직접 시험해 성공한 것으로는
+    # 최신 백업의 실패가 가려지지 않게. 파일 이름(wlm-YYYYMMDD-HHMMSS)은 만든 순서대로 정렬된다 (before-*·(없음) 은 그보다 앞)
+    superseded = verify_failed is not None and await db.fetch_one(
+        "SELECT 1 AS ok FROM audit_log WHERE action = 'backup.verify' AND detail->>'ok' = 'true' AND at > %s"
+        " AND target COLLATE \"C\" >= %s LIMIT 1",
+        (verify_failed["at"], verify_failed["target"]),
+    ) is not None
     first = await db.fetch_one("SELECT min(at) AS at FROM audit_log WHERE action = 'backup.create'")
-    return {"latest": latest, "verify_ok": verify_ok, "first_backup_at": first["at"] if first else None}
+    return {"latest": latest, "verify_ok": verify_ok, "verify_failed": verify_failed,
+            "verify_failed_superseded": superseded, "first_backup_at": first["at"] if first else None}
 
 
 async def audit_actions() -> list[str]:

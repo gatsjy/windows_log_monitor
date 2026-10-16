@@ -20,17 +20,26 @@ async def backup_status(now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     data = await repository.backup_audit()
     latest = data["latest"]
-    created, failed, verify = latest.get("backup.create"), latest.get("backup.failed"), latest.get("backup.verify")
+    created, failed, restored = latest.get("backup.create"), latest.get("backup.failed"), latest.get("backup.restore")
+    verify = latest.get("backup.verify")
     problems = []
-    if created is None:
+    # 백업으로 복원하면 감사로그도 그 백업 시점으로 돌아가 '마지막 백업'이 예전 것이 된다 → 복원 뒤로는 복원 시각부터 잰다
+    after_restore = restored is not None and (created is None or restored["at"] > created["at"])
+    since = restored["at"] if after_restore else created["at"] if created else None
+    if since is None:
         problems.append("백업 기록이 없습니다. backup 서비스가 떠 있는지 확인하세요 (docker compose ps backup)")
-    elif now - created["at"] > BACKUP_STALE:
-        hours = int((now - created["at"]).total_seconds() // 3600)
-        problems.append(f"마지막 백업이 {hours}시간 전입니다. 매일 {settings.backup_time} 에 돌아야 합니다 — backup 서비스 로그를 확인하세요")
+    elif now - since > BACKUP_STALE:
+        hours = int((now - since).total_seconds() // 3600)
+        what = f"백업으로 복원한 뒤 {hours}시간 동안 새 백업이 없습니다" if after_restore else f"마지막 백업이 {hours}시간 전입니다"
+        problems.append(f"{what}. 매일 {settings.backup_time} 에 돌아야 합니다 — backup 서비스 로그를 확인하세요")
     if failed and (created is None or failed["at"] > created["at"]):
         problems.append(f"마지막 백업이 실패했습니다: {str(failed['detail'].get('error', ''))[:300]}")
-    if verify and not verify["detail"].get("ok"):
-        problems.append(f"마지막 복구 시험이 실패했습니다: {str(verify['detail'].get('reason', ''))[:300]}")
+    # 실패한 복구 시험: 더 새 백업의 성공으로 풀리기 전까지 경고. 자동 복구 시험을 끈 뒤에는 8일이 지나면 경고에서 뺀다
+    # (끄고 나면 새 시험이 없어 옛 실패가 영영 남는다)
+    vf = data["verify_failed"]
+    if vf and not data["verify_failed_superseded"] and (settings.backup_verify_weekday or now - vf["at"] <= VERIFY_STALE):
+        file = f" ({vf['target']})" if str(vf["target"]).endswith(".dump") else ""
+        problems.append(f"복구 시험이 실패했습니다{file}: {str(vf['detail'].get('reason', ''))[:300]}")
     # 백업을 시작한 지 8일이 넘었는데 성공한 복구 시험이 없으면 (처음 설치 직후에는 경고하지 않는다)
     if (settings.backup_verify_weekday and data["first_backup_at"] and now - data["first_backup_at"] > VERIFY_STALE
             and (data["verify_ok"] is None or now - data["verify_ok"]["at"] > VERIFY_STALE)):
@@ -46,5 +55,6 @@ async def backup_status(now: datetime | None = None) -> dict[str, Any]:
         "last_backup": row(created, ("bytes", "seconds", "sha256", "counts", "migration")),
         "last_verify": row(verify, ("ok", "reason", "seconds", "counts")),
         "last_verify_ok_at": data["verify_ok"]["at"] if data["verify_ok"] else None,
+        "last_restore": row(restored, ("safety_dump",)) if after_restore else None,
         "problems": problems,
     }

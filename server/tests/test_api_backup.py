@@ -78,7 +78,7 @@ def test_backup_status_problems_over_time(client):
     # 복구 시험 실패는 사유와 함께 경고
     audit("backup.verify", NOW + timedelta(minutes=3), {"ok": False, "reason": "해시가 다릅니다"})
     later = status(client, NOW + timedelta(minutes=4))
-    assert later["problems"] == ["마지막 복구 시험이 실패했습니다: 해시가 다릅니다"]
+    assert later["problems"] == ["복구 시험이 실패했습니다 (wlm-x.dump): 해시가 다릅니다"]
     assert later["last_verify_ok_at"] is not None  # 마지막 '성공' 시각은 따로 남는다
 
     # 하루 반이 지나도록 백업이 없으면 경고 (backup 서비스가 멈춘 경우)
@@ -86,15 +86,55 @@ def test_backup_status_problems_over_time(client):
     assert any("마지막 백업이 41시간 전입니다" in p for p in stale["problems"])
 
 
+def test_verify_failure_is_cleared_only_by_same_or_newer_backup(client):
+    """옛 백업을 직접 시험해 성공해도 최신 백업의 복구 시험 실패는 가려지지 않는다."""
+    t = NOW + timedelta(hours=2)
+    audit("backup.create", t, {"bytes": 1, "seconds": 1, "sha256": "d"}, "wlm-20261017-020000.dump")
+    audit("backup.verify", t + timedelta(minutes=1), {"ok": False, "reason": "복원 실패: end of file"}, "wlm-20261017-020000.dump")
+    failing = ["복구 시험이 실패했습니다 (wlm-20261017-020000.dump): 복원 실패: end of file"]
+    assert status(client, t + timedelta(minutes=2))["problems"] == failing
+    audit("backup.verify", t + timedelta(minutes=2), {"ok": True}, "wlm-20261016-020000.dump")  # 하루 전 백업
+    s = status(client, t + timedelta(minutes=3))
+    assert s["problems"] == failing and s["last_verify"]["ok"] is True
+    audit("backup.verify", t + timedelta(minutes=3), {"ok": True}, "wlm-20261017-020000.dump")  # 그 백업을 다시 시험해 성공
+    assert status(client, t + timedelta(minutes=4))["problems"] == []
+
+
+def test_status_after_restore(client):
+    """복원하면 감사로그가 백업 시점으로 돌아간다 → '백업이 멈췄다'는 잘못된 경고 대신 복원 시각부터 잰다."""
+    r = NOW + timedelta(hours=3)
+    audit("backup.restore", r, {"file": "wlm-20261016-020000.dump", "safety_dump": "before-restore-x.dump"},
+          "wlm-20261016-020000.dump")
+    s = status(client, r + timedelta(hours=30))  # 마지막 backup.create(NOW+2h)에서는 31시간
+    assert s["problems"] == [] and s["last_restore"]["file"] == "wlm-20261016-020000.dump"
+    assert s["last_restore"]["safety_dump"] == "before-restore-x.dump"
+    assert status(client, r + timedelta(hours=37))["problems"][0].startswith("백업으로 복원한 뒤 37시간 동안 새 백업이 없습니다")
+    audit("backup.create", r + timedelta(hours=38), {"bytes": 1, "seconds": 1, "sha256": "e"}, "wlm-20261018-020000.dump")
+    s = status(client, r + timedelta(hours=39))
+    assert s["problems"] == [] and s["last_restore"] is None
+
+
 def test_verify_stale_warning_can_be_turned_off(client, monkeypatch):
     from dataclasses import replace
 
     from app import backups
 
+    # 이 테스트만 따로 돌려도 되게 필요한 기록을 직접 넣는다: 12일 전부터 백업, 어제도 백업, 성공한 복구 시험은 없거나 오래됨
+    c = NOW + timedelta(days=30)
+    audit("backup.create", c - timedelta(days=12), {"bytes": 1, "seconds": 1, "sha256": "f"}, "wlm-20991201-000000.dump")
+    audit("backup.create", c - timedelta(hours=1), {"bytes": 1, "seconds": 1, "sha256": "g"}, "wlm-20991212-000000.dump")
+    audit("backup.verify", c - timedelta(days=9), {"ok": False, "reason": "공간 부족"}, "wlm-20991203-000000.dump")
+    on = status(client, c)["problems"]
+    assert "최근 8일 안에 성공한 복구 시험이 없습니다" in on
+    assert "복구 시험이 실패했습니다 (wlm-20991203-000000.dump): 공간 부족" in on
+
     # 설정 객체는 바꿀 수 없어서(frozen) 이 모듈이 보는 설정만 바꿔 끼운다
     monkeypatch.setattr(backups, "settings", replace(backups.settings, backup_verify_weekday=0))
-    s = status(client, NOW + timedelta(days=20))
-    assert not any("복구 시험이 없습니다" in p for p in s["problems"]) and s["schedule"]["verify_day"] is None
+    s = status(client, c)
+    # 자동 복구 시험을 끄면: '없음' 경고도, 8일 지난 옛 실패도 남지 않는다 (끈 뒤에는 새 시험이 없어 영영 남으므로)
+    assert s["problems"] == [] and s["schedule"]["verify_day"] is None
+    # 8일 안의 실패는 끈 뒤에도 보인다 (직접 시험해 실패한 경우)
+    assert status(client, c - timedelta(days=2))["problems"] == ["복구 시험이 실패했습니다 (wlm-20991203-000000.dump): 공간 부족"]
 
 
 def test_backup_actions_have_audit_labels(client):

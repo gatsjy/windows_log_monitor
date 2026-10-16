@@ -12,7 +12,7 @@ import logging
 import re
 from datetime import UTC, datetime, timedelta
 
-from psycopg import sql
+from psycopg import errors, sql
 
 from . import db
 from .config import settings
@@ -21,6 +21,10 @@ log = logging.getLogger(__name__)
 
 _NAME_RE = re.compile(r"^events_(\d{4})_(\d{2})$")
 _LOCK_ID = 727_002
+# 파티션 만들기·지우기는 events 전체에 배타 잠금이 필요하다. 백업(pg_dump)이 events 를 읽는 동안 이 잠금을 기다리면
+# 그 뒤에 오는 수집 INSERT·검색이 모두 줄을 서서 멈춘다 → 잠깐만 기다리고 다음 주기(1시간)에 다시 한다.
+# 파티션은 미리(WLM_PARTITION_MONTHS_AHEAD) 만들어 두므로 한두 번 미뤄져도 수집에는 문제가 없다.
+DDL_LOCK_TIMEOUT = "5s"
 
 
 def _month_start(year: int, month: int) -> datetime:
@@ -39,11 +43,14 @@ async def ensure_partitions(conn, now: datetime | None = None) -> None:
         start = _add_months(first, i)
         end = _add_months(start, 1)
         name = f"events_{start:%Y_%m}"
-        await conn.execute(
-            sql.SQL("CREATE TABLE IF NOT EXISTS {} PARTITION OF events FOR VALUES FROM ({}) TO ({})").format(
-                sql.Identifier(name), sql.Literal(start), sql.Literal(end)
+        try:
+            await conn.execute(
+                sql.SQL("CREATE TABLE IF NOT EXISTS {} PARTITION OF events FOR VALUES FROM ({}) TO ({})").format(
+                    sql.Identifier(name), sql.Literal(start), sql.Literal(end)
+                )
             )
-        )
+        except errors.LockNotAvailable:
+            log.warning("파티션 %s 만들기를 미룸: events 잠금을 얻지 못함 (백업 중일 수 있음) — 다음 주기에 다시 시도", name)
 
 
 def archiving_enabled() -> bool:
@@ -99,7 +106,11 @@ async def drop_expired(conn, now: datetime | None = None) -> list[str]:
             await db.audit("system", "retention.archive_partition", meta["file"],
                            {k: meta[k] for k in ("partition", "rows", "sha256", "bytes", "from", "to")})
             archived = True
-        await conn.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(name)))
+        try:
+            await conn.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(name)))
+        except errors.LockNotAvailable:
+            log.warning("파티션 %s 삭제를 미룸: events 잠금을 얻지 못함 (백업 중일 수 있음) — 다음 주기에 다시 시도", name)
+            continue
         await conn.execute("DELETE FROM partition_holds WHERE name = %s", (name,))
         dropped.append(name)
         log.warning("DB 보관기간 만료 파티션 삭제: %s (약 %s건, 보관 파일 %s)", name, part["rows_estimate"],
@@ -162,6 +173,7 @@ async def run_maintenance() -> None:
         if not (await cur.fetchone())["ok"]:
             return  # 다른 인스턴스가 실행 중
         try:
+            await conn.execute(sql.SQL("SET lock_timeout = {}").format(sql.Literal(DDL_LOCK_TIMEOUT)))
             await ensure_partitions(conn)
             await drop_expired(conn)
             await purge_alerts()
