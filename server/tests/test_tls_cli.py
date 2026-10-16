@@ -26,7 +26,7 @@ def test_init_renew_status(tmp_path, monkeypatch, capsys):
                       "--name", "logmon.corp.local", "--ip", "10.0.0.10")
     assert code == 0 and "logmon.corp.local" in text and "오프라인" in text and "[오류]" not in text
     mode = lambda p: stat.S_IMODE(p.stat().st_mode)
-    assert mode(ca_dir / "ca.key") == 0o600 and mode(out / "server.key") == 0o640 and mode(out / "ca.crt") == 0o644
+    assert mode(ca_dir / "ca.key") == 0o600 and mode(out / "server.key") == 0o600 and mode(out / "ca.crt") == 0o644
     assert not (out / "ca.key").exists()   # CA 개인키는 api 가 읽는 폴더에 두지 않는다
     leaf, ca_in_chain = tlsutil.load_certs(str(out / "server.crt"))
     assert ca_in_chain == tlsutil.load_certs(str(out / "ca.crt"))[0]

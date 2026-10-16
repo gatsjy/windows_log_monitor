@@ -80,7 +80,7 @@ def preflight(s: Any) -> list[str]:
             errors.append(f"WLM_TLS=on 인데 인증서·키 파일이 없습니다: {exc.filename or s.tls_cert_file}. "
                           "python -m app.cli tls-init 으로 만들거나 사내 인증서를 tls/ 에 두세요 (docs/AIRGAP.md §7.5).")
         except PermissionError as exc:
-            errors.append(f"인증서·키 파일을 읽을 수 없습니다(권한): {exc.filename}. 키는 0640 root:10001 로 두세요.")
+            errors.append(f"인증서·키 파일을 읽을 수 없습니다(권한): {exc.filename}. 키는 소유자를 api 계정(uid 10001), 권한 0600 으로 두세요.")
         except ssl.SSLError as exc:
             errors.append(f"인증서와 키가 짝이 맞지 않거나 PEM 형식이 아닙니다 ({exc.reason or exc}): "
                           f"{s.tls_cert_file}, {s.tls_key_file}")
@@ -197,7 +197,7 @@ def _read_status(s: Any, now: datetime) -> TlsStatus:
     try:
         mode = os.stat(s.tls_key_file).st_mode
         if mode & stat.S_IROTH:
-            problems.append(("warn", "서버 키 파일을 누구나 읽을 수 있습니다. 0640 root:10001 로 두세요."))
+            problems.append(("warn", "서버 키 파일을 누구나 읽을 수 있습니다. 소유자 api 계정(uid 10001), 권한 0600 으로 두세요."))
     except OSError:
         pass
 

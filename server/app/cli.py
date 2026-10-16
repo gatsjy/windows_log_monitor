@@ -139,16 +139,16 @@ def main() -> None:
     asyncio.run(_run(args))
 
 
-def _write_atomic(path: Path, data: bytes, mode: int, group: int | None = None) -> None:
+def _write_atomic(path: Path, data: bytes, mode: int, owner: int | None = None) -> None:
     """임시 파일 → 권한 → 이름 바꾸기. 쓰는 도중에 api 가 반쯤 쓴 키를 읽거나, 실패해 옛 키를 잃지 않게."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         os.fchmod(fd, mode)
-        if group is not None and os.geteuid() == 0:
+        if owner is not None and os.geteuid() == 0:
             try:
-                os.fchown(fd, 0, group)
+                os.fchown(fd, owner, 0)
             except OSError as exc:   # macOS 바인드 마운트 등
-                print(f"  경고: {path.name} 의 그룹을 {group} 으로 바꾸지 못했습니다 ({exc}). api(uid 10001)가 읽는지 확인하세요.")
+                print(f"  경고: {path.name} 의 소유자를 {owner} 로 바꾸지 못했습니다 ({exc}). api(uid {owner})가 읽는지 확인하세요.")
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
         os.replace(tmp, path)
@@ -157,12 +157,13 @@ def _write_atomic(path: Path, data: bytes, mode: int, group: int | None = None) 
         raise
 
 
-API_GID = 10001   # server/Dockerfile 의 wlm 계정 — 키는 0640 root:10001
+# server/Dockerfile 의 wlm 계정. 그룹 번호는 이미지마다 다를 수 있어(지금 999) 키는 소유자로 준다 — 0600 10001:root
+API_UID = 10001
 
 
 def _write_server(out: Path, key, cert, ca) -> None:
     out.mkdir(parents=True, exist_ok=True)
-    _write_atomic(out / "server.key", tlsutil.key_pem(key), 0o640, API_GID)
+    _write_atomic(out / "server.key", tlsutil.key_pem(key), 0o600, API_UID)
     # 리프 + CA: 중간 CA 가 없는 자체 CA 라 CA 를 붙여 두면 브라우저·에이전트가 연쇄를 바로 만든다
     _write_atomic(out / "server.crt", tlsutil.cert_pem(cert) + tlsutil.cert_pem(ca), 0o644)
     _write_atomic(out / "ca.crt", tlsutil.cert_pem(ca), 0o644)

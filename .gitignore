@@ -13,3 +13,6 @@ backups/
 deploy/airgap/agent-installers/*
 !deploy/airgap/agent-installers/README.md
 agent-installers/
+# TLS 인증서·개인키, CA 개인키 (ADR-036) — 저장소·이미지에 넣지 않는다
+tls/
+tls-ca/

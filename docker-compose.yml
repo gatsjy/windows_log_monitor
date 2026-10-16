@@ -74,7 +74,14 @@ services:
       MALLOC_ARENA_MAX: "2"
       WLM_DATABASE_URL: postgresql://${POSTGRES_USER:-wlm}:${POSTGRES_PASSWORD:-wlm-dev-password}@db:5432/${POSTGRES_DB:-wlm}
       WLM_INGEST_API_KEYS: ${WLM_INGEST_API_KEYS:-dev-ingest-key}
-      WLM_INGEST_PORT: ${WLM_INGEST_PORT:-6976}   # 에이전트 설치 묶음에 적어 줄 수집 포트
+      WLM_INGEST_PORT: ${WLM_INGEST_PORT:-6976}   # 에이전트 설치 묶음에 적어 줄 수집 포트 (평문)
+      # HTTPS·에이전트 TLS (ADR-036, docs/AIRGAP.md §7.5) — 인증서는 ./tls/
+      WLM_TLS: ${WLM_TLS:-off}
+      WLM_INGEST_TLS_PORT: ${WLM_INGEST_TLS_PORT:-6977}
+      WLM_INGEST_PLAIN: ${WLM_INGEST_PLAIN:-on}
+      WLM_INGEST_KEEPALIVE_SEC: ${WLM_INGEST_KEEPALIVE_SEC:-75}
+      WLM_TRUSTED_PROXIES: ${WLM_TRUSTED_PROXIES:-}
+      WLM_HSTS_MAX_AGE: ${WLM_HSTS_MAX_AGE:-0}
       # 로그 로테이션: DB 에서 바로 검색 → (지나면) 압축 보관 파일 → (지나면) 삭제
       WLM_DB_RETENTION_DAYS: ${WLM_DB_RETENTION_DAYS:-90}
       WLM_RETENTION_DAYS: ${WLM_RETENTION_DAYS:-365}
@@ -111,8 +118,10 @@ services:
       - path: .env
         required: false
     ports:
-      - "${WLM_PORT:-8080}:8000"          # 웹 화면 + API (관리자·사용자)
-      - "${WLM_INGEST_PORT:-6976}:8001"   # 에이전트 로그 수집 전용 (/api/ingest 만 열림)
+      - "${WLM_PORT:-8080}:8000"          # 웹 화면 + API (관리자·사용자). WLM_TLS=on 이면 https 만
+      - "${WLM_INGEST_PORT:-6976}:8001"   # 에이전트 로그 수집 전용 평문 (/api/ingest 만 열림, WLM_INGEST_PLAIN=off 면 연결 거부)
+      - "${WLM_INGEST_TLS_PORT:-6977}:8002"   # 에이전트 로그 수집 전용 TLS (WLM_TLS=off 면 연결 거부)
+      # 8003(수집기 전용 내부 수집)은 게시하지 않는다 — 같은 compose 망의 collector 만
     volumes:
       - ./server/app:/app/app                         # 코드 변경 시 이미지 재빌드 없이 바로 반영 (폐쇄망 핫픽스 지원)
       - ./server/migrations:/app/migrations           # DB 마이그레이션 자동 반영
@@ -120,6 +129,9 @@ services:
       - ./config:/app/config                           # 대시보드·알림 규칙·tnsnames.ora (화면에서 저장하면 이 폴더에 기록됨)
       - ./archive:/app/archive                         # 로그 보관 파일 (*.jsonl.gz + SHA-256 메타). 백업·별도 보관 대상
       - ./agent-installers:/app/agent-installers:ro   # Fluent Bit 설치 파일 → 에이전트 설치 묶음에 포함 (docs/AIRGAP.md)
+      # TLS 인증서 (server.crt·server.key·ca.crt). 폴더로 마운트 — 파일로 하면 없을 때 Docker 가 그 이름의 폴더를 만든다.
+      # CA 개인키(tls-ca/)는 절대 마운트하지 않는다 (서버가 뚫려도 가짜 인증서를 만들 수 없게)
+      - ./tls:/app/tls:ro
 
   # DB 정기 백업 + 주 1회 복구 시험 (deploy/backup/backup.sh, ADR-031). db 와 같은 이미지라 폐쇄망 묶음에 이미 들어 있다.
   #   결과는 audit_log(backup.create / backup.verify / backup.failed) → 화면 '환경설정 > 로그 보관'

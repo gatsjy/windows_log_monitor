@@ -97,7 +97,7 @@ class Settings:
     # on: 화면(8000)과 TLS 수집(8002)을 api 가 직접 TLS 로. 그 밖의 값이면 기동 거부(app.tlsutil.preflight)
     tls_mode: str = _env("TLS", "off").strip().lower()
     tls_cert_file: str = _env("TLS_CERT_FILE", "/app/tls/server.crt")   # 리프 먼저, 중간 CA 포함
-    tls_key_file: str = _env("TLS_KEY_FILE", "/app/tls/server.key")     # 암호 없는 PEM, 0640 root:10001
+    tls_key_file: str = _env("TLS_KEY_FILE", "/app/tls/server.key")     # 암호 없는 PEM, 0600 소유자 10001(api)
     tls_ca_file: str = _env("TLS_CA_FILE", "/app/tls/ca.crt")           # 에이전트 설치 묶음에 넣는 루트 CA(공개값)
     # X-Forwarded-For/Proto 를 믿을 리버스 프록시 IP·CIDR. 비우면 프록시 헤더를 보지 않는다('*'·/0 은 기동 거부)
     trusted_proxies: tuple[str, ...] = _list("TRUSTED_PROXIES")

@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # 폐쇄망 서버 설치·업그레이드 — 반입 묶음을 푼 폴더에서 실행한다. 자세한 절차: docs/AIRGAP.md
 #
-#   처음 설치:  sudo ./deploy/airgap/install.sh --public-url http://logmon.corp.local:8080 [--syslog]
+#   처음 설치:  sudo ./deploy/airgap/install.sh --public-url https://logmon.corp.local:8080 [--tls-ip 10.0.0.10] [--syslog]
 #   업그레이드: sudo ./deploy/airgap/install.sh --upgrade [--syslog]
 #
 #   --target DIR      설치 위치 (기본 /opt/log-monitor). 묶음 폴더와 달라도 된다.
-#   --public-url URL  사용자가 접속하는 주소 (알림 메일의 링크). 처음 설치 때 필요
+#   --public-url URL  사용자가 접속하는 주소 (알림 메일의 링크). 처음 설치 때 필요. https 면 TLS 로 설치(평문 수집 닫힘)
 #   --port N          웹 화면 포트 (기본 8080, 사용자가 접속)
-#   --ingest-port N   에이전트 로그 수집 전용 포트 (기본 6976, 수집 API 만 열림)
+#   --ingest-port N   에이전트 로그 수집 전용 평문 포트 (기본 6976, 수집 API 만 열림)
 #   --syslog          syslog 수신기(514/udp·tcp, 1514/tcp)도 기동
 #   --upgrade         기존 설치를 새 버전으로: DB 백업 → 이미지 → 프로그램 파일 교체 → 재기동
-#                     .env, config/(화면에서 고친 대시보드·규칙), archive/ 는 그대로 둔다.
+#                     .env, config/(화면에서 고친 대시보드·규칙), archive/, tls/ 는 그대로 둔다.
+#   TLS 인증서 (docs/AIRGAP.md §7.5) — 업그레이드에 주면 인증서만 준비하고 켜지는 않는다:
+#   --tls-name N      자체 CA 로 만들 서버 DNS 이름 (여러 번). DNS 에 없는 이름이어도 됨. 기본: https 주소의 호스트
+#   --tls-ip IP       인증서에 넣을 서버 IP (여러 번, 브라우저가 IP 로 접속할 때)
+#   --tls-cert F --tls-key F --tls-ca F   사내 PKI 인증서(리프+중간)·개인키·루트 CA 를 그대로 쓴다
 #
 # 인터넷에 접속하지 않는다 (이미지는 묶음에서 불러오고, 기동 시 내려받기를 막는다).
 set -euo pipefail
@@ -22,6 +26,11 @@ PORT=""
 INGEST_PORT=""
 SYSLOG=0
 UPGRADE=0
+TLS_NAMES=()
+TLS_IPS=()
+TLS_CERT=""
+TLS_KEY=""
+TLS_CA=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --target) TARGET=$2; shift 2 ;;
@@ -30,7 +39,12 @@ while [ $# -gt 0 ]; do
     --ingest-port) INGEST_PORT=$2; shift 2 ;;
     --syslog) SYSLOG=1; shift ;;
     --upgrade) UPGRADE=1; shift ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    --tls-name) TLS_NAMES+=("$2"); shift 2 ;;
+    --tls-ip) TLS_IPS+=("$2"); shift 2 ;;
+    --tls-cert) TLS_CERT=$2; shift 2 ;;
+    --tls-key) TLS_KEY=$2; shift 2 ;;
+    --tls-ca) TLS_CA=$2; shift 2 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "알 수 없는 옵션: $1 (--help 참고)" >&2; exit 2 ;;
   esac
 done
@@ -60,7 +74,25 @@ if [ "$UPGRADE" = 1 ]; then
   [ -f "$TARGET/.env" ] || die "업그레이드할 설치가 없습니다: $TARGET/.env"
 else
   [ ! -f "$TARGET/.env" ] || die "이미 설치되어 있습니다: $TARGET — 새 버전이면 --upgrade 를 붙이세요"
-  [ -n "$PUBLIC_URL" ] || die "--public-url 이 필요합니다 (예: http://logmon.corp.local:8080)"
+  [ -n "$PUBLIC_URL" ] || die "--public-url 이 필요합니다 (예: https://logmon.corp.local:8080)"
+fi
+if [ -n "$TLS_CERT$TLS_KEY$TLS_CA" ]; then
+  for f in "$TLS_CERT" "$TLS_KEY" "$TLS_CA"; do
+    [ -n "$f" ] && [ -f "$f" ] || die "--tls-cert·--tls-key·--tls-ca 는 셋 다 있는 파일이어야 합니다 (사내 PKI)"
+  done
+  [ ${#TLS_NAMES[@]} -eq 0 ] || die "--tls-name 은 자체 CA 용입니다. 사내 PKI 인증서와 함께 쓸 수 없습니다"
+fi
+if [ "$UPGRADE" = 0 ]; then
+  case "$PUBLIC_URL" in
+    https://*)
+      if [ ${#TLS_NAMES[@]} -eq 0 ] && [ -z "$TLS_CERT" ]; then
+        # https 주소의 호스트로 자체 CA 인증서를 만든다. IP 면 에이전트가 확인할 DNS 이름이 따로 있어야 한다(ADR-036)
+        URL_HOST=$(printf '%s' "$PUBLIC_URL" | sed -E 's#^https://(\[[^]]+\]|[^:/]+).*#\1#' | tr -d '[]')
+        if printf '%s' "$URL_HOST" | grep -Eq '^[0-9.]+$|:'; then TLS_NAMES=(logmon.internal); TLS_IPS+=("$URL_HOST")
+        else TLS_NAMES=("$URL_HOST"); fi
+      fi ;;
+    *) { [ ${#TLS_NAMES[@]} -eq 0 ] && [ -z "$TLS_CERT" ]; } || die "TLS 로 설치하려면 --public-url 을 https://… 로 주세요" ;;
+  esac
 fi
 echo "  Docker $(docker version --format '{{.Server.Version}}'), $(docker compose version --short 2>/dev/null || docker compose version)"
 
@@ -100,7 +132,7 @@ mkdir -p "$TARGET"
 if [ "$BUNDLE" != "$(cd "$TARGET" && pwd)" ]; then
   # 설정(config/)·.env·보관 파일·백업은 덮어쓰지 않는다. 이미지 파일은 이미 불러왔으므로 복사하지 않는다.
   (cd "$BUNDLE" && tar -cf - --exclude=./images --exclude=./config --exclude=./.env --exclude=./archive \
-     --exclude=./backups --exclude=./SHA256SUMS .) | (cd "$TARGET" && tar -xf -)
+     --exclude=./backups --exclude=./tls --exclude=./tls-ca --exclude=./SHA256SUMS .) | (cd "$TARGET" && tar -xf -)
 fi
 mkdir -p "$TARGET/config" "$TARGET/archive" "$TARGET/backups"
 chmod 700 "$TARGET/backups"   # DB 백업에는 로그·계정 정보가 들어 있다
@@ -152,6 +184,46 @@ if [ "$UPGRADE" = 1 ] && ! grep -q '^WLM_DB_MEM_LIMIT=' "$TARGET/.env"; then
   fi
 fi
 
+# ------------------------------------------------------------------ 6.5 TLS 인증서
+if [ ${#TLS_NAMES[@]} -gt 0 ] || [ -n "$TLS_CERT" ]; then
+  step "6.5 TLS 인증서 (docs/AIRGAP.md §7.5)"
+  # tls/ 는 api(uid 10001)만 읽는다(api 에는 읽기 전용 마운트). 이미지의 wlm 그룹 번호는 정해져 있지 않아 소유자로 준다.
+  # tls-ca/(CA 개인키)는 root 만 — api 에는 마운트하지 않는다
+  mkdir -p "$TARGET/tls" "$TARGET/tls-ca"
+  chmod 750 "$TARGET/tls"
+  chmod 700 "$TARGET/tls-ca"
+  [ "$(id -u)" != 0 ] || chown 10001:0 "$TARGET/tls"
+  if command -v getenforce >/dev/null && [ "$(getenforce)" = Enforcing ]; then
+    chcon -R -t container_file_t "$TARGET/tls" "$TARGET/tls-ca"
+  fi
+  if [ -n "$TLS_CERT" ]; then
+    install -m 644 "$TLS_CERT" "$TARGET/tls/server.crt"
+    install -m 600 "$TLS_KEY" "$TARGET/tls/server.key"
+    install -m 644 "$TLS_CA" "$TARGET/tls/ca.crt"
+    [ "$(id -u)" != 0 ] || chown 10001:0 "$TARGET/tls/server.key"
+    echo "  사내 PKI 인증서를 복사했습니다 → $TARGET/tls/"
+  else
+    ARGS=()
+    for n in "${TLS_NAMES[@]}"; do ARGS+=(--name "$n"); done
+    for ip in ${TLS_IPS[@]+"${TLS_IPS[@]}"}; do ARGS+=(--ip "$ip"); done
+    # CA 가 이미 있으면 새로 만들지 않는다 — 새 CA 는 모든 에이전트 재배포를 뜻한다
+    if [ -f "$TARGET/tls-ca/ca.key" ]; then CMD=(tls-renew --dir /out); else CMD=(tls-init --out /out); fi
+    docker run --rm --network none --user 0 -v "$TARGET/tls:/out" -v "$TARGET/tls-ca:/ca" \
+      --entrypoint python "$API_IMAGE" -m app.cli "${CMD[@]}" --ca-dir /ca "${ARGS[@]}" \
+      || die "인증서를 만들지 못했습니다 (위 오류 참고)"
+  fi
+  # api 와 같은 계정(uid 10001)으로 읽어 본다 — 키를 못 읽으면 api 가 기동하지 못한다
+  docker run --rm --network none -v "$TARGET/tls:/app/tls:ro" --entrypoint python "$API_IMAGE" -m app.cli tls-status \
+    || die "인증서에 문제가 있습니다 (위 [오류] 참고, docs/AIRGAP.md §7.5)"
+  if [ "$UPGRADE" = 0 ]; then
+    # 새 설치에는 평문 에이전트가 없다 → 처음부터 TLS 만
+    env_set WLM_TLS on
+    env_set WLM_INGEST_PLAIN off
+  elif [ "$(env_get WLM_TLS)" != on ]; then
+    echo "  인증서만 준비했습니다. 켜기·에이전트 전환 순서: docs/AIRGAP.md §7.5 (WLM_TLS=on, WLM_PUBLIC_URL=https://…, up -d api)"
+  fi
+fi
+
 # ------------------------------------------------------------------ 7. 권한
 step "7. 폴더 권한"
 if [ "$(id -u)" = 0 ]; then
@@ -159,6 +231,7 @@ if [ "$(id -u)" = 0 ]; then
   if command -v getenforce >/dev/null && [ "$(getenforce)" = Enforcing ]; then
     # backups/ 는 backup 서비스가 쓰고, deploy/backup/backup.sh 는 그 서비스가 읽는다
     chcon -R -t container_file_t "$TARGET/config" "$TARGET/archive" "$TARGET/collector" "$TARGET/backups" "$TARGET/deploy/backup"
+    [ ! -d "$TARGET/tls" ] || chcon -R -t container_file_t "$TARGET/tls"
     echo "  SELinux: 컨테이너가 읽고 쓸 수 있게 레이블 지정"
   fi
   echo "  config/, archive/ → uid 10001"
@@ -171,7 +244,8 @@ step "8. 기동"
 compose up -d --no-build --pull never --remove-orphans
 printf '  상태 확인 '
 for _ in $(seq 1 60); do
-  if compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)" >/dev/null 2>&1; then
+  # TLS 면 화면 포트가 https 만 받는다 — 설정을 읽는 상태 확인 모듈로 (Dockerfile HEALTHCHECK 와 같다)
+  if compose exec -T api python -m app.healthcheck >/dev/null 2>&1; then
     OK=1; break
   fi
   printf '.'; sleep 2
@@ -184,7 +258,25 @@ step "완료 — 버전 ${VERSION}"
 PORT=$(env_get WLM_PORT); PORT=${PORT:-8080}
 IPORT=$(env_get WLM_INGEST_PORT); IPORT=${IPORT:-6976}
 echo "  웹 화면: $(env_get WLM_PUBLIC_URL)  (포트 ${PORT}, 사용자·관리자 PC 에서만 접근하도록 방화벽 권장)"
-echo "  에이전트 수집 포트: ${IPORT}/tcp  (모든 PC·서버 → 이 서버)"
+if [ "$(env_get WLM_TLS)" = on ]; then
+  TPORT=$(env_get WLM_INGEST_TLS_PORT); TPORT=${TPORT:-6977}
+  echo "  에이전트 수집 포트: ${TPORT}/tcp TLS  (모든 PC·서버 → 이 서버)"
+  if [ "$(env_get WLM_INGEST_PLAIN)" = off ]; then echo "  평문 수집 ${IPORT}: 닫힘"
+  else echo "  평문 수집 ${IPORT}: 열림 (전환용 — 수집 PC 화면에서 평문 PC 0대를 확인한 뒤 WLM_INGEST_PLAIN=off, AIRGAP §7.5)"; fi
+  STATUS=$(compose exec -T api python -m app.cli tls-status 2>&1 || true)
+  printf '%s\n' "$STATUS" | sed 's/^/  /'
+  DAYS=$(printf '%s' "$STATUS" | sed -n 's/.*(D-\([0-9-]*\)).*/\1/p' | head -1)
+  if [ -n "$DAYS" ] && [ "$DAYS" -le 60 ]; then
+    echo "  [확인 필요] 서버 인증서가 ${DAYS}일 뒤 만료됩니다 — tls-renew (docs/AIRGAP.md §7.5)"
+  fi
+  if [ -f "$TARGET/tls-ca/ca.key" ]; then
+    echo "  브라우저 신뢰: $TARGET/tls/ca.crt 를 GPO(신뢰할 수 있는 루트 인증 기관)로 배포하세요"
+    echo "  CA 개인키 $TARGET/tls-ca/ 는 오프라인 매체로 옮겨 따로 보관하세요 (2년마다 인증서 갱신에 필요)"
+  fi
+else
+  echo "  에이전트 수집 포트: ${IPORT}/tcp  (모든 PC·서버 → 이 서버)"
+  [ "$UPGRADE" = 0 ] || echo "  [확인 필요] 평문(HTTP) 운영 중입니다 — HTTPS·에이전트 TLS 켜기: docs/AIRGAP.md §7.5"
+fi
 if [ "$UPGRADE" = 0 ]; then
   echo "  첫 로그인: 아이디 admin, 임시 비밀번호는 아래 한 줄 (첫 로그인 때 변경)"
   compose logs api 2>/dev/null | grep -m1 -o '임시 비밀번호 [^ ]*' | sed 's/^/    /' \
