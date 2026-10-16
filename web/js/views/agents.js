@@ -74,7 +74,7 @@ export async function mount(root, params) {
               html`<li class="${p.level === 'error' ? 'tag-bad' : ''}">${p.text}</li>`)}</ul>` : ''}</div>
           <label class="field"><span>인증서 이름 (에이전트가 서버를 확인할 이름)</span>
             <select class="input" data-name>${tls.server_names.map((n) => html`<option value="${n}" ${n === opt.name ? 'selected' : ''}>${n}</option>`)}</select></label>
-          ${isIp(opt.server) ? html`<p class="muted" style="margin:0;font-size:12.5px">서버 주소가 IP 라도 됩니다. 인증서 이름은 확인용이라 DNS 에 등록되어 있지 않아도 됩니다.</p>` : ''}`
+          <p class="muted" style="margin:0;font-size:12.5px;visibility:${isIp(opt.server) ? 'visible' : 'hidden'}" data-ip-hint>서버 주소가 IP 라도 됩니다. 인증서 이름은 확인용이라 DNS 에 등록되어 있지 않아도 됩니다.</p>`
         : html`<p class="hint-box" style="margin-top:4px" data-plain-note><b class="tag-bad">평문 전송</b>입니다 — 로그와 수집 키가 암호화되지 않습니다(ISMS 2.7.1).
             서버에서 TLS 를 켜면 이 창이 TLS 묶음을 만듭니다 (docs/AIRGAP.md §7.5).</p>`;
       el.innerHTML = html`
@@ -116,8 +116,15 @@ export async function mount(root, params) {
           </ul></details>`;
       el.querySelectorAll('[data-os] button').forEach((b) => b.addEventListener('click', () => { opt.os = b.dataset.v; draw(); }));
       el.querySelector('[data-server]').addEventListener('input', (e) => { opt.server = e.target.value.trim(); });
-      // 주소를 다 쓰고 나면 그 주소에 맞는 인증서 이름으로 (입력 중에 다시 그리면 커서를 잃는다)
-      el.querySelector('[data-server]').addEventListener('change', () => { if (tls) { opt.name = pickName(); draw(); } });
+      // 주소를 다 쓰고 나면 그 주소에 맞는 인증서 이름으로. 창을 다시 그리지 않는다 — 칸을 벗어나는 클릭(내려받기)이
+      // 다시 그리기에 먹혀 사라지지 않게 그 자리에서 바꾼다
+      el.querySelector('[data-server]').addEventListener('change', () => {
+        if (!tls) return;
+        opt.name = pickName();
+        el.querySelector('[data-name]').value = opt.name;
+        // 자리는 늘 차지하고 보이기만 바꾼다 (줄이 생기고 없어지면 단추가 움직여 클릭이 빗나간다)
+        el.querySelector('[data-ip-hint]').style.visibility = isIp(opt.server) ? 'visible' : 'hidden';
+      });
       el.querySelector('[data-name]')?.addEventListener('change', (e) => { opt.name = e.target.value; });
       el.querySelector('[data-port]').addEventListener('input', (e) => { opt.port = Number(e.target.value) || info.port; });
       el.querySelector('[data-iis]')?.addEventListener('change', (e) => { opt.iis = e.target.checked; });
