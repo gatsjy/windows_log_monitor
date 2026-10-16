@@ -146,6 +146,8 @@ curl -s localhost:8080/healthz
 - 알림 규칙이 감시하는 분류는 `Rule.categories`(match.category + match.query 의 `category:`)입니다. 조회 범위 판단(`alerts/visibility.py`)은 이것만 봅니다.
 - **새 API 의 권한:** 관리자만이면 `require_admin`, 그룹으로 위임할 수 있는 기능이면 `require_permission("권한")`(auth/groups.py PERMISSIONS 에 추가). 화면은 `auth.can("권한")` 으로 버튼을 숨긴다.
 - **이벤트를 돌려주는 새 API 는 반드시 `routers/query._filter(request)` 로 필터를 만든다.** 그래야 사용자 그룹의 조회 범위(`scopes`)가 붙는다. 단건 조회는 `filters.scopes_allow` 로 확인.
+  - 시간 상한도 걸어야 한다: `routers/query.py` 라우터의 GET 은 자동, 다른 라우터나 POST 로 읽는 API 는 엔드포인트에 `dependencies=[Depends(read_time_limit)]`(ADR-035). 의존성은 async 여야 컨텍스트 변수가 엔드포인트로 넘어간다. 시험 `test_search_routes_have_time_limit` 에 경로를 더한다.
+  - 상한이 걸린 조회는 `db.SEARCH_SLOTS`(6)개 연결까지만 동시에 쓴다. 풀 크기(`db.POOL_MAX`)를 바꾸면 수집 몫(4개 이상)이 남는지 본다.
   - 알림·무음을 돌려주거나 바꾸는 API 는 `alerts/visibility.py`(`alert_visible`·`silence_visible`·`count_by_status`)로 범위를 확인한다. 알림 수를 새로 셀 때도 마찬가지.
 - 알림 처리 기록(`alert_notes`)은 `audit_log` 처럼 트리거로 수정·삭제·TRUNCATE 를 막는다(알림이 보관기간 만료로 지워질 때만 함께 삭제). 테스트에서도 지울 수 없다.
 - 웹훅 오류·연결 실패 문구는 `WebhookNotifier.redact()` 를 거친다(받는 쪽이 토큰이 든 경로를 돌려준다). 새 전송기도 오류 문구에 주소를 그대로 넣지 않는다.

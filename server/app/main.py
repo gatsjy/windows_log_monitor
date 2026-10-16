@@ -137,6 +137,27 @@ async def _query_rejected(_: Request, exc: query.QueryRejected) -> JSONResponse:
     return JSONResponse(exc.body(), status_code=400)
 
 
+def _timeout_message(path: str, exc: db.QueryTimeout) -> str:
+    """그 화면에서 할 수 있는 고치는 방법만 안내한다 (수집 PC·규칙 미리보기에는 검색 문장 칸이 없다)."""
+    if exc.busy:
+        return f"조회가 몰려 {exc.seconds}초 안에 차례가 오지 않았습니다. 잠시 뒤 다시 시도하세요."
+    if path.startswith(("/api/events", "/api/stats")):
+        return (f"검색이 {exc.seconds}초 안에 끝나지 않아 멈췄습니다. 기간을 줄이거나 PC·이벤트 ID 같은 조건을 더해 보세요."
+                " 2글자 이하 단어는 색인을 쓰지 못해 느립니다 — 붙어 있는 말이면 따옴표로 묶으세요.")
+    if path.startswith("/api/alerts/rules/preview"):
+        return (f"미리보기가 {exc.seconds}초 안에 끝나지 않아 멈췄습니다. 규칙의 조건을 좁혀 보세요"
+                " (2글자 이하 단어는 따옴표로 묶기).")
+    return f"조회가 {exc.seconds}초 안에 끝나지 않아 멈췄습니다. 기간을 줄여 보세요."
+
+
+@app.exception_handler(db.QueryTimeout)
+async def _query_timeout(request: Request, exc: db.QueryTimeout) -> JSONResponse:
+    # 경고 줄은 경로만 — 전체 주소(조건)는 같은 요청의 접근 로그 줄에, 검색 조건은 감사로그(events.search)에도 있다
+    log.warning("조회 시간 상한 %s초 %s: %s %s", exc.seconds, "자리 대기 초과" if exc.busy else "초과",
+                request.method, request.url.path)
+    return JSONResponse({"detail": _timeout_message(request.url.path, exc)}, status_code=503)
+
+
 app.include_router(ingest.router)
 app.include_router(auth.router)
 app.include_router(query.router, dependencies=[Depends(require_user)])

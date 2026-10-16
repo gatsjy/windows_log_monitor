@@ -47,6 +47,9 @@ class Settings:
     heartbeat_online_sec: int = _int("HEARTBEAT_ONLINE_SEC", 90)
     heartbeat_stale_sec: int = _int("HEARTBEAT_STALE_SEC", 900)
     max_body_mb: int = _int("MAX_BODY_MB", 20)
+    # 화면 검색·통계 쿼리 하나의 최대 시간(초, 0 = 없음). 연결 풀(10개)을 수집과 나눠 쓰므로 느린 검색이 쌓여
+    # 수집까지 막히지 않게 한다. 알림 엔진·점검 보고서는 놓치면 안 되는 작업이라 걸지 않는다 (ADR-035)
+    search_timeout_sec: int = _int("SEARCH_TIMEOUT_SEC", 30)
     dashboard_dir: str = _env("DASHBOARD_DIR", "/app/config/dashboards")
     web_dir: str = _env("WEB_DIR", "/app/web")
     # 에이전트 설치 묶음(수집 PC 화면 > 내려받기): 에이전트 스크립트 위치, Fluent Bit 설치 파일 위치(반입 묶음의 agent-installers)

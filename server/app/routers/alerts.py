@@ -28,6 +28,7 @@ from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
 from ..csvexport import csv_response
 from ..filters import FilterError, parse_time
+from .query import read_time_limit
 
 router = APIRouter(tags=["alerts"])
 
@@ -323,7 +324,7 @@ async def toggle_rules(body: ToggleBody, request: Request, admin: User = Depends
     return {"ok": True, "count": len(body.names)}
 
 
-@router.post("/api/alerts/rules/preview")
+@router.post("/api/alerts/rules/preview", dependencies=[Depends(read_time_limit)])
 async def preview_rule(body: PreviewBody, admin: User = Depends(require_permission("alerts.manage"))):
     """최근 N시간 데이터에 이 규칙을 적용했다면: 맞는 이벤트 수, 알림 횟수(재알림 간격 반영, 근사), 대상별."""
     rule = _check_one(_clean_rule({**body.rule, "name": body.rule.get("name") or "(미리보기)"}), need_notify=False)

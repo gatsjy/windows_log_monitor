@@ -35,7 +35,21 @@ from ..normalizers.base import LEVEL_NAMES
 from ..normalizers.categories import CATEGORIES
 from ..querylang import format_query, parse_terms
 
-router = APIRouter(tags=["query"])
+
+async def read_time_limit() -> None:
+    """이 요청의 DB 쿼리마다 시간 상한과 조회 자리 (WLM_SEARCH_TIMEOUT_SEC, ADR-035) — 넘으면 main 이 503 과 안내.
+    async 여야 한다: 동기 의존성은 스레드에서 돌아 컨텍스트 변수가 엔드포인트로 넘어오지 않는다."""
+    db.limit_statement_time(settings.search_timeout_sec)
+
+
+async def search_time_limit(request: Request) -> None:
+    """조회(GET)에만 상한. PC 삭제 같은 쓰기는 잠금을 기다려서라도 끝내야 해서 걸지 않는다."""
+    if request.method == "GET":
+        await read_time_limit()
+
+
+# 이벤트를 읽는 화면 API 는 이 라우터에 모여 있다 → 라우터 전체에 (POST 로 읽는 규칙 미리보기는 read_time_limit 을 직접)
+router = APIRouter(tags=["query"], dependencies=[Depends(search_time_limit)])
 
 # 시계열 자동 간격 후보 (초)
 _NICE_STEPS = (10, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 604800)
@@ -97,21 +111,31 @@ async def list_events(request: Request, limit: int = Query(100, ge=1, le=1000), 
             position = (datetime.fromisoformat(ts_text), int(id_text))
         except ValueError as exc:
             raise HTTPException(400, "cursor 형식 오류") from exc
-    rows = await repository.list_events(f, limit + 1, position)
+    try:
+        rows = await repository.list_events(f, limit + 1, position)
+    except db.QueryTimeout as exc:
+        # 끝나지 않은 검색도 접속기록에 남긴다 — 시도한 조건이 기록에서 빠지지 않게 (ISMS 2.9.4)
+        if cursor is None:
+            await _audit_search(request, user, {"timeout_sec": exc.seconds, "busy": exc.busy})
+        raise
     has_more = len(rows) > limit
     rows = rows[:limit]
     next_cursor = f"{rows[-1]['ts'].isoformat()}|{rows[-1]['id']}" if has_more else None
-    if cursor is None:
-        # 접속기록: 누가 어떤 조건으로 로그를 검색했는지 (다음 페이지 요청은 같은 검색이라 생략)
-        # 같은 이름이 여러 번 오면 모두 (실행한 조건과 기록이 어긋나지 않게 — ISMS 2.9.4)
-        grouped: dict[str, list[str]] = {}
-        for k, v in request.query_params.multi_items():
-            if k not in ("limit", "cursor"):
-                grouped.setdefault(k, []).append(v)
-        conditions = {k: v[0] if len(v) == 1 else v for k, v in grouped.items()}
-        await db.audit(user.username, "events.search", None, {"query": conditions, "rows": len(rows)},
-                       actor_ip=client_ip(request))
+    if cursor is None:   # 다음 페이지 요청은 같은 검색이라 생략
+        await _audit_search(request, user, {"rows": len(rows)})
     return {"items": rows, "next_cursor": next_cursor}
+
+
+async def _audit_search(request: Request, user: User, outcome: dict) -> None:
+    """접속기록: 누가 어떤 조건으로 로그를 검색했는지.
+    같은 이름이 여러 번 오면 모두 (실행한 조건과 기록이 어긋나지 않게 — ISMS 2.9.4)."""
+    grouped: dict[str, list[str]] = {}
+    for k, v in request.query_params.multi_items():
+        if k not in ("limit", "cursor"):
+            grouped.setdefault(k, []).append(v)
+    conditions = {k: v[0] if len(v) == 1 else v for k, v in grouped.items()}
+    await db.audit(user.username, "events.search", None, {"query": conditions, **outcome},
+                   actor_ip=client_ip(request))
 
 
 @router.get("/api/events/{event_id}")

@@ -45,7 +45,16 @@ export async function mount(root, params) {
 
   async function loadMore() {
     const my = token;
-    const page = await api.get('/api/events', { ...state, limit: 100, cursor });
+    let page;
+    try {
+      page = await api.get('/api/events', { ...state, limit: 100, cursor });
+    } catch (err) {
+      if (my !== token) return;
+      // 이미 받은 결과는 두고 안내 + 다시 시도 단추 (뒤 페이지일수록 오래 걸려 시간 상한에 걸릴 수 있다)
+      footEl.innerHTML = html`${errorBox(err)}<button class="btn" data-more>다시 시도</button>`;
+      footEl.querySelector('[data-more]').addEventListener('click', loadMore);
+      return;
+    }
     if (my !== token) return;
     const start = items.length;
     items = items.concat(page.items);
@@ -54,14 +63,20 @@ export async function mount(root, params) {
     renderFoot();
   }
 
+  // 결과를 못 얻었을 때 이전 검색의 건수·막대가 새 조건의 결과처럼 남지 않게 비운다
+  function clearResults() {
+    root.querySelector('[data-count]').textContent = '';
+    root.querySelector('[data-hist]').innerHTML = '<div class="empty">결과를 불러오지 못했습니다.</div>';
+  }
+
   async function load() {
     const my = ++token;
     loadedAt = new Date();
     rowsEl.innerHTML = '';
     // 문장이 틀렸으면 서버에 묻지 않는다 (입력 칸이 틀린 곳을 보여 준다) — 옛 링크·손으로 고친 주소로 들어온 경우
     try { parseTerms(state.query ?? ''); } catch {
+      clearResults();
       footEl.innerHTML = html`<span class="muted">검색 문장을 고치면 결과가 보입니다.</span>`;
-      root.querySelector('[data-count]').textContent = '';
       return;
     }
     footEl.innerHTML = '<div class="skeleton" style="height:120px"></div>';
@@ -91,6 +106,7 @@ export async function mount(root, params) {
       renderFoot();
     } catch (err) {
       if (my !== token) return;
+      clearResults();
       footEl.innerHTML = errorBox(err);
       bar?.showServerError(err);   // 문장 오류면 입력 칸에서 틀린 곳을 칠한다
     }

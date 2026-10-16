@@ -90,3 +90,131 @@ def test_search_requires_login(client):
     from app.main import app
 
     assert TestClient(app).get("/api/events").status_code == 401
+
+
+def test_search_time_limit(client, monkeypatch):
+    """화면 조회 쿼리는 WLM_SEARCH_TIMEOUT_SEC 를 넘으면 멈추고 503 + 그 화면에 맞는 안내 (ADR-035).
+    상한은 그 요청에만 걸린다 — 같은 연결을 다음에 쓰는 수집·알림 엔진에는 남지 않는다."""
+    import time
+    from dataclasses import replace
+
+    from app import db, repository
+    from app.routers import query
+
+    monkeypatch.setattr(query, "settings", replace(query.settings, search_timeout_sec=1))
+
+    async def slow(*_args, **_kwargs):
+        await db.fetch_one("SELECT pg_sleep(3)")
+
+    monkeypatch.setattr(repository, "count", slow)
+    started = time.monotonic()
+    r = client.get("/api/stats/count", params={"since": "1h"}, headers=CSRF)
+    assert r.status_code == 503 and "1초" in r.json()["detail"] and "따옴표" in r.json()["detail"]
+    assert time.monotonic() - started < 2.5
+    # 검색 문장 칸이 없는 화면에는 그 화면에서 할 수 있는 안내만
+    monkeypatch.setattr(repository, "agents", slow)
+    r = client.get("/api/agents", params={"since": "30d"}, headers=CSRF)
+    assert r.status_code == 503 and "기간을 줄여" in r.json()["detail"] and "따옴표" not in r.json()["detail"]
+    # 끝나지 않은 검색도 접속기록에 남는다 (ISMS 2.9.4)
+    monkeypatch.setattr(repository, "list_events", slow)
+    r = client.get("/api/events", params={"since": "1h", "query": "user:timeout-check"}, headers=CSRF)
+    assert r.status_code == 503
+    row = client.portal.call(db.fetch_one, "SELECT detail FROM audit_log WHERE action = 'events.search'"
+                                           " ORDER BY id DESC LIMIT 1")
+    assert row["detail"]["query"]["query"] == "user:timeout-check" and row["detail"]["timeout_sec"] == 1
+    # 요청 밖(알림 엔진·보고서처럼 앱 안의 작업)은 상한 없음, 풀의 연결마다 SET LOCAL 이 남지 않음
+    assert client.portal.call(db.fetch_one, "SELECT 1 AS ok FROM pg_sleep(1.2)")["ok"] == 1
+    for _ in range(10):
+        assert client.portal.call(db.fetch_one, "SHOW statement_timeout")["statement_timeout"] == "0"
+    # 상한 안이면 그대로
+    monkeypatch.undo()
+    assert client.get("/api/stats/count", params={"since": "1h"}, headers=CSRF).status_code == 200
+
+
+def test_search_slots_keep_connections_for_ingest(client):
+    """상한이 걸린 조회는 SEARCH_SLOTS 개까지만 연결을 쓴다 — 느린 검색이 몰려도 수집·엔진 몫(4개)은 남는다.
+    자리를 못 얻으면 상한 시간 뒤 '몰림' 안내. 자리는 시험이 직접 잡아 시간에 기대지 않는다."""
+    import time
+
+    from app import db
+
+    async def limited(sql):
+        db.limit_statement_time(1)
+        return await db.fetch_one(sql)
+
+    async def hold(n):
+        for _ in range(n):
+            await db._search_slots.acquire()
+
+    async def free(n):
+        for _ in range(n):
+            db._search_slots.release()
+
+    client.portal.call(hold, db.SEARCH_SLOTS)
+    try:
+        started = time.monotonic()
+        with pytest.raises(db.QueryTimeout) as info:
+            client.portal.call(limited, "SELECT 1")
+        assert info.value.busy and 0.9 < time.monotonic() - started < 2
+        # 상한 없는 작업(수집·알림 엔진)은 자리와 무관하게 바로
+        started = time.monotonic()
+        assert client.portal.call(db.fetch_one, "SELECT 1 AS ok")["ok"] == 1
+        assert time.monotonic() - started < 0.5
+    finally:
+        client.portal.call(free, db.SEARCH_SLOTS)
+    assert client.portal.call(limited, "SELECT 1 AS ok")["ok"] == 1
+    assert db.POOL_MAX - db.SEARCH_SLOTS >= 4
+
+
+def test_other_cancel_is_not_a_timeout(client):
+    """관리자의 pg_cancel_backend 같은 다른 취소는 '시간 초과' 안내로 바꾸지 않는다."""
+    import asyncio
+
+    import psycopg
+
+    from app import db
+
+    async def run():
+        db.limit_statement_time(30)
+
+        async def cancel_soon():
+            await asyncio.sleep(0.5)
+            async with await db.connect_autocommit() as conn:
+                await conn.execute("SELECT pg_cancel_backend(pid) FROM pg_stat_activity"
+                                   " WHERE query = 'SELECT pg_sleep(5)' AND pid <> pg_backend_pid()")
+
+        task = asyncio.create_task(cancel_soon())
+        try:
+            await db.fetch_one("SELECT pg_sleep(5)")
+        finally:
+            await task
+
+    with pytest.raises(psycopg.errors.QueryCanceled) as info:
+        client.portal.call(run)
+    assert not isinstance(info.value, db.QueryTimeout)
+
+
+def test_search_routes_have_time_limit(client, monkeypatch):
+    """이벤트를 읽는 화면 API 는 모두 시간 상한을 건다. 수집·로그인·쓰기(PC 삭제)는 걸지 않는다 (실제로 불러서 확인)."""
+    from app import db
+
+    seen = []
+    monkeypatch.setattr(db, "limit_statement_time", seen.append)
+
+    def limited(method, path, **kw):
+        seen.clear()
+        client.request(method, path, **{"headers": CSRF, **kw})
+        return bool(seen)
+
+    for path in ("/api/events?since=1h", "/api/events/999999", "/api/stats/count?since=1h",
+                 "/api/stats/timeseries?since=1h", "/api/stats/top?since=1h&field=host", "/api/stats/summary",
+                 "/api/agents", "/api/fields", "/api/search/parse?query=host:A"):
+        assert limited("GET", path), path
+    rule = {"name": "미리보기", "severity": "error", "match": {"event_id": "4625"}, "group_by": "ip",
+            "window_sec": 600, "threshold": 2, "cooldown_sec": 3600}
+    assert limited("POST", "/api/alerts/rules/preview", json={"rule": rule})
+    assert not limited("POST", "/api/ingest", json=[], headers=KEY)
+    assert not limited("GET", "/api/auth/me")
+    # 쓰기는 잠금을 기다려서라도 끝낸다
+    assert not limited("DELETE", "/api/agents/NO-SUCH-PC")
+    assert not limited("POST", "/api/agents/delete", json={"hosts": ["NO-SUCH-PC"]})

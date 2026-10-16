@@ -33,6 +33,8 @@ os.environ.update({
     "WLM_ALERTS_FILE": "/tmp/wlm-bench/alerts.yaml",   # 알림 엔진은 규칙 없이 (메일 안 보냄)
     "WLM_DASHBOARD_DIR": "/tmp/wlm-bench/dashboards",
     "WLM_INGEST_API_KEYS": "bench-key",
+    "WLM_REPORT_SCHEDULER": "off",   # 측정 중에 점검 보고서(전날·지난주 집계)가 돌면 그 시나리오 수치가 흔들린다
+    "WLM_SEARCH_TIMEOUT_SEC": "0",   # 상한 없이 실제 시간을 잰다 (30초를 넘는 시나리오가 503 으로 측정을 멈추지 않게)
 })
 sys.path.insert(0, "/app")
 
