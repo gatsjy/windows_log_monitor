@@ -1,6 +1,7 @@
 # Log Monitor - Linux agent (Fluent Bit)
-# install.sh 가 @SERVER_HOST@ / @SERVER_PORT@ / @API_KEY@ / @AGENT_HOST@ 를 바꿔서
-# /etc/wlm-agent/fluent-bit.yaml 로 복사한다.
+# install.sh 가 @SERVER_HOST@ / @SERVER_PORT@ / @API_KEY@ / @AGENT_HOST@ / @TLS_SERVER_NAME@ 를 바꿔서
+# /etc/wlm-agent/fluent-bit.yaml 로 복사한다. TLS 면 http 출력 끝의 TLS 블록 주석도 푼다.
+# config_version(하트비트): 이 파일을 바꾸면 올린다 ('수집 PC' 화면에 보임).
 
 service:
   flush: 2
@@ -24,7 +25,7 @@ pipeline:
     # 하트비트 (조용한 서버도 '온라인'으로 보이게)
     - name: dummy
       tag: heartbeat
-      dummy: '{"type":"heartbeat","config_version":"0.1.1"}'
+      dummy: '{"type":"heartbeat","config_version":"0.2.0"}'
       interval_sec: 30
 
     # (선택) 텍스트 로그 파일. 앞의 '#' 을 지우면 활성화
@@ -66,3 +67,14 @@ pipeline:
       # 서버 장애가 길어져도 버퍼 파일이 디스크를 다 쓰지 않게 상한 (넘치면 오래된 것부터 버림)
       storage.total_limit_size: 1G
       log_response_payload: false
+    # @@TLS_BEGIN  서버로 HTTPS 전송. install.sh 에 TLS_CA_FILE 을 주면 켠다 (설치 묶음의 install-configured.sh 가 줌)
+    # Fluent Bit 의 tls.verify_hostname 기본값은 off 라서, 켜지 않으면 같은 CA 가 발급한 어떤 인증서든 통과한다.
+    # tls.vhost 는 서버 인증서의 DNS 이름이다 (서버 주소가 IP 여도 이 이름으로 검증한다).
+    # CA 파일은 install.sh 가 tls.ca_file 위치로 복사한다. 검증을 끄지 말고 이름이나 CA 를 바로잡는다.
+    #   tls: on
+    #   tls.verify: on
+    #   tls.verify_hostname: on
+    #   tls.vhost: @TLS_SERVER_NAME@
+    #   tls.ca_file: /etc/wlm-agent/ca.crt
+    #   tls.min_version: TLSv1.2
+    # @@TLS_END

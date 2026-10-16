@@ -7,6 +7,7 @@
 
 1. Log Monitor 화면 **수집 PC > 에이전트 설치** 에서 설치 묶음(zip)을 내려받습니다 (관리자 또는 '에이전트 배포' 권한).
    - 서버 주소·수집 포트(6976)·API 키가 `settings.json` 에, Fluent Bit 설치 파일이 `fluent-bit\` 에 들어 있습니다.
+   - 서버가 HTTPS 를 켰으면 묶음에 CA 인증서 `ca.crt` 가 함께 들어 있고, 포트는 6977 입니다. 에이전트는 TLS 로 보냅니다([HTTPS(TLS) 전송](#httpstls-전송)).
 2. PC 에 복사해서 압축을 풀고 `install.cmd` 를 **관리자 권한으로 실행**합니다.
    - 여러 대: `install.cmd /quiet` 를 GPO 시작 스크립트·SCCM·사내 배포 도구로 실행합니다.
    - Fluent Bit 이 없으면 묶음의 zip 을 `C:\Program Files\fluent-bit` 에 풀어 설치합니다. 인터넷이 필요 없습니다.
@@ -24,7 +25,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -Ap
 | 옵션 | 기본값 | 설명 |
 |---|---|---|
 | `-ServerHost` | `settings.json` | Log Monitor 서버 주소 |
-| `-ServerPort` | **6976** | 서버의 **수집 전용 포트** (`.env` 의 `WLM_INGEST_PORT`). 화면 포트(8080)와 다릅니다 |
+| `-ServerPort` | **6976** (TLS 면 **6977**) | 서버의 **수집 전용 포트** (`.env` 의 `WLM_INGEST_PORT`, TLS 는 `WLM_INGEST_TLS_PORT`). 화면 포트(8080)와 다릅니다 |
 | `-ApiKey` | `settings.json` | 서버 `.env` 의 `WLM_INGEST_API_KEYS` 중 하나 |
 | `-Channels` | System, Application, Security, PowerShell/Operational, Windows Defender/Operational, TerminalServices-LocalSessionManager/Operational | 수집할 이벤트 로그 채널 (콤마로 구분, 없는 채널은 무시) |
 | `-Iis` | 끔 | IIS W3C 접속 로그 수집 |
@@ -33,8 +34,34 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -Ap
 | `-MssqlErrorlogPath` | `C:\Program Files\Microsoft SQL Server\**\ERRORLOG` 자동 탐색 | ERRORLOG 경로 (콤마로 구분, 이름 있는 인스턴스 여러 개 가능) |
 | `-FluentBitExe` | C:\Program Files\fluent-bit\bin\fluent-bit.exe | Fluent Bit 실행 파일 경로 |
 | `-Settings` | 스크립트 옆 `settings.json` | 설치 묶음의 설정 파일. 명령줄 값이 우선 |
+| `-CaFile` | `settings.json` 의 `CaFile` | 서버 인증서를 발급한 CA 인증서(PEM). 주면 **HTTPS(TLS)** 로 보내고 서버 인증서와 이름을 검증합니다. `settings.json` 의 상대 경로는 그 파일이 있는 폴더 기준 |
+| `-TlsServerName` | `settings.json`, 없으면 `-ServerHost` | 서버 인증서의 **DNS 이름**. 서버 주소가 IP 면 필수입니다. DNS 에 등록되지 않은 이름이어도 됩니다 |
+| `-RenderOnly <파일>` | 끔 | 채운 설정 파일만 그 경로에 쓰고 끝냅니다. Fluent Bit·`ProgramData`·권한·서비스를 건드리지 않고 관리자 권한도 필요 없습니다 (미리 보기·CI) |
 
 30초 안에 웹 화면의 **수집 PC** 목록에 나타납니다(하트비트 주기).
+
+## HTTPS(TLS) 전송
+
+서버가 HTTPS 를 켜면(`WLM_TLS=on`, docs/AIRGAP.md §7.5) 설치 묶음이 TLS 설정을 담아 줍니다.
+
+- 묶음 내용: `ca.crt`, 그리고 `settings.json` 의 `CaFile`·`TlsServerName`(인증서 이름)·`CaSha256`(CA 지문). 포트는 6977 입니다.
+- `install.ps1` 이 설치 전에 확인하는 것 (하나라도 틀리면 아무것도 바꾸지 않고 멈춥니다):
+  - `ca.crt` 가 PEM 형식의 **CA** 인증서이고 만료되지 않았는지 (`server.crt` 를 잘못 넣으면 거부)
+  - `ca.crt` 의 SHA-256 이 `settings.json` 의 `CaSha256` 과 같은지 — 다르면 다른 서버의 묶음과 파일이 섞인 것입니다
+  - 인증서 이름이 DNS 이름인지 (서버 주소가 IP 인데 이름이 없으면 중단)
+- CA 는 `C:\ProgramData\wlm-agent\ca.crt` 로 복사되고, 폴더 권한(SYSTEM·Administrators)이 함께 걸립니다.
+- 에이전트는 **인증서 체인과 이름을 모두 검증**합니다(`tls.verify`, `tls.verify_hostname`). 검증을 끄는 옵션은 두지 않습니다.
+  - Fluent Bit 은 이름 검증의 기본값이 꺼져 있어 설정 틀에서 켭니다. 꺼져 있으면 같은 CA 가 발급한 어떤 인증서든 통과합니다.
+  - 서버 주소가 IP 여도 이름은 `tls.vhost`(인증서 이름)로 검증합니다. Fluent Bit 은 IP 로 인증서를 검증하지 못합니다.
+- 방화벽에서 서버 **6977/tcp** 아웃바운드를 허용합니다. 서버 화면 **수집 PC** 의 '연결' 칸이 TLS 로 바뀌면 된 것입니다.
+
+수동 설치 예 (묶음 없이):
+
+```powershell
+.\install.ps1 -ServerHost 10.0.0.10 -ApiKey <수집 API 키> -CaFile .\ca.crt -TlsServerName logmon.corp.local
+# 설정만 미리 보기 (설치하지 않음)
+.\install.ps1 -ServerHost 10.0.0.10 -ApiKey <키> -CaFile .\ca.crt -TlsServerName logmon.corp.local -RenderOnly .\preview.yaml
+```
 
 ## 수집 채널 추가 예시
 
@@ -108,6 +135,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -Ap
 | 읽은 위치 기록 | `winevtlog.sqlite`, `tail-iis.sqlite`, `tail-mssql.sqlite` (재시작해도 중복/누락 없음) |
 | 이벤트 필드 | `string_inserts: true` — 이벤트 상세 정보를 StringInserts 로 전달 (서버가 사용자·IP 자동 추출) |
 | 장애 대비 | 서버에 연결할 수 없으면 `buffer\` 에 디스크로 쌓아 두었다가 복구되면 전송 |
+| 전송 | 평문 HTTP(6976), 또는 묶음에 `ca.crt` 가 있으면 HTTPS(6977, CA·이름 검증, TLS 1.2 이상) |
 | 시작 시점 | 설치 이후 발생한 이벤트부터 수집 (`read_existing_events: false`) |
 
 ## 이벤트 로그 크기와 로테이션 (중요)
@@ -151,8 +179,20 @@ Stop-Service knuh-agent
 ```
 
 - 서버 쪽 로그 `[401]`: API 키가 틀렸습니다.
-- 연결 실패: 방화벽에서 서버 수집 포트(**6976**) 아웃바운드를 허용합니다. `Test-NetConnection <서버> -Port 6976` 으로 확인합니다.
+- 연결 실패: 방화벽에서 서버 수집 포트(**6976**, TLS 는 **6977**) 아웃바운드를 허용합니다. `Test-NetConnection <서버> -Port 6977` 으로 확인합니다.
 - 예전 설치(8080 으로 보내던 PC)도 계속 수집됩니다. 화면 포트와 방화벽을 나누려면 새 묶음으로 다시 설치합니다.
+
+TLS 오류는 `C:\ProgramData\wlm-agent\fluent-bit.log` 에 `[tls]`·`X509 code` 로 남습니다.
+
+| 로그 | 뜻 | 할 일 |
+|---|---|---|
+| `hostname mismatch (X509 code: 62)` | 인증서 이름(`-TlsServerName`)이 서버 인증서의 DNS 이름과 다름 | 서버에서 `docker compose exec api python -m app.cli tls-status` 로 이름을 보고 새 묶음으로 다시 설치 |
+| `X509 code: 19`·`20`·`21` | `ca.crt` 가 서버 인증서를 발급한 CA 가 아님 | 서버에서 새 묶음을 받아 다시 설치 |
+| `X509 code: 47` | 이름이 CA 의 이름 제한 밖 | 서버 인증서 이름 확인 (docs/AIRGAP.md §7.5) |
+| `X509 code: 10` | 서버 인증서 만료 | 서버에서 `tls-renew` (에이전트 재설치는 필요 없음) |
+| `X509 code: 9` | 인증서 시작 시각보다 PC 시계가 이름 | PC 시간 동기화 |
+| `[tls] error`, `unexpected EOF` | TLS 를 평문 포트(6976)로 보냄 | 포트 6977 확인 |
+| 서비스가 시작 직후 계속 다시 시작 | `ca.crt` 를 읽지 못함 (Fluent Bit 이 기동하지 못함) | `install.ps1` 을 다시 실행 |
 
 ## 제거
 

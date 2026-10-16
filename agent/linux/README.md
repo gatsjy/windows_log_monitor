@@ -9,15 +9,29 @@ Linux 서버에 Fluent Bit(Apache 2.0)를 `wlm-agent` 서비스로 설치합니�
 
 **권장 (폐쇄망 포함):** 화면 **수집 PC > 에이전트 설치** 에서 Linux 를 골라 설치 묶음을 받고, 압축을 푼 뒤 `sudo ./install-configured.sh`.
 서버 주소·수집 포트·API 키가 채워져 있고, `packages/` 에 Fluent Bit 패키지가 있으면 먼저 설치합니다.
+서버가 HTTPS 를 켰으면 묶음에 `ca.crt` 가 들어 있고, `install-configured.sh` 가 아래 TLS 변수를 채워 부릅니다(포트 6977).
 
 ```bash
 # 수동: 1) Fluent Bit 설치 (배포판 패키지)  2) 이 폴더를 서버에 복사한 뒤
 sudo ./install.sh 10.0.0.10 6976 <수집 API 키>     # 6976 = 서버의 수집 전용 포트 (WLM_INGEST_PORT)
+
+# HTTPS(TLS): CA 인증서와 서버 인증서의 DNS 이름을 준다 (포트를 비우면 6977)
+sudo TLS_CA_FILE=./ca.crt TLS_SERVER_NAME=logmon.corp.local ./install.sh 10.0.0.10 6977 <수집 API 키>
 ```
+
+| 환경변수 | 뜻 |
+|---|---|
+| `TLS_CA_FILE` | 서버 인증서를 발급한 CA 인증서(PEM). 주면 HTTPS 로 보내고 서버 인증서와 이름을 검증합니다(`tls.verify`, `tls.verify_hostname`) |
+| `TLS_SERVER_NAME` | 서버 인증서의 **DNS 이름**. 비우면 서버 주소를 씁니다. 서버 주소가 IP 면 필수이고, DNS 에 등록되지 않은 이름이어도 됩니다 |
+
+- `install.sh` 는 설치 전에 CA 파일이 PEM 인증서인지, 이름이 DNS 이름인지 확인합니다. `openssl` 이 있으면 CA 의 이름·만료일·SHA-256 지문을 보여 주고, 만료된 CA 는 거부합니다.
+- 서버 주소가 IP 여도 이름은 `tls.vhost` 로 검증합니다. Fluent Bit 은 IP 로 인증서를 검증하지 못합니다.
+- 검증을 끄는 옵션은 두지 않습니다. 오류는 `journalctl -u wlm-agent | grep -E 'X509|tls'` 로 봅니다. code 62 는 이름 불일치, 19·20·21 은 다른 CA, 10 은 만료입니다.
 
 | 항목 | 위치 |
 |---|---|
 | 설정 | `/etc/wlm-agent/fluent-bit.yaml` (권한 600, API 키 포함) |
+| CA 인증서 (TLS) | `/etc/wlm-agent/ca.crt` |
 | 읽은 위치 / 장애 시 버퍼 | `/var/lib/wlm-agent/` |
 | 서비스 | `systemctl status wlm-agent`, `journalctl -u wlm-agent` |
 

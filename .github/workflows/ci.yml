@@ -85,12 +85,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: 설정 틀 채우기 (설치 스크립트와 같은 규칙)
+      # TLS 정적 검사도 여기서 한다 (--dry-run 은 없는 tls.ca_file·키 오타·verify_hostname 누락을 통과시킨다)
+      - name: 설정 틀 채우기 + TLS 정적 검사 (설치 스크립트와 같은 규칙)
         run: python3 tools/ci/render_agent_configs.py /tmp/agent-render
       - name: dry-run
         run: |
           docker run --rm -v /tmp/agent-render:/cfg:ro "fluent/fluent-bit:4.0" /fluent-bit/bin/fluent-bit -c /cfg/linux.yaml --dry-run
+          docker run --rm -v /tmp/agent-render:/cfg:ro "fluent/fluent-bit:4.0" /fluent-bit/bin/fluent-bit -c /cfg/linux-tls.yaml --dry-run
           docker run --rm -e WLM_INGEST_API_KEY=ci -v "$PWD/collector:/cfg:ro" "fluent/fluent-bit:4.0" /fluent-bit/bin/fluent-bit -c /cfg/collector.yaml --dry-run
+          docker run --rm -e SERVER_HOST=logmon.ci.internal -e SERVER_PORT=6977 -e TLS_SERVER_NAME=logmon.ci.internal -e API_KEY=ci -e PROBE_HOST=tls-probe-ci \
+            -v "$PWD/tools/ci/tls-probe.yaml:/probe.yaml:ro" -v "$PWD/tools/ci/fixtures/ci-ca.crt:/tls/ca.crt:ro" \
+            "fluent/fluent-bit:4.0" /fluent-bit/bin/fluent-bit -c /probe.yaml --dry-run
 
   agents-windows:
     name: 윈도 에이전트 설정 (Fluent Bit --dry-run, 윈도 빌드)
@@ -98,8 +103,35 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: 설정 틀 채우기 (IIS·MSSQL 묶음을 켠 것과 기본)
+      - name: 설정 틀 채우기 (IIS·MSSQL 묶음을 켠 것과 기본, TLS 판) + TLS 정적 검사
         run: python tools/ci/render_agent_configs.py agent-render
+      # install.cmd 가 부르는 Windows PowerShell 5.1 로 install.ps1 의 TLS 경로를 돈다 (-RenderOnly: 설치·ACL·서비스 없음).
+      # pwsh 7 과 다를 수 있는 곳(PEM→DER, X509Certificate2, SHA-256, 정규식)을 실제 5.1 에서 확인하려는 것.
+      # 렌더 결과는 TLS 정적 검사와 아래 dry-run 에 넣는다. 실패해야 하는 경우 두 개:
+      #   IP 서버 주소에 인증서 이름 없음 / settings.json 의 CaSha256 과 다른 CA 파일(다른 서버의 묶음과 섞임)
+      # 스크립트 본문은 영어만 (5.1 이 임시 .ps1 을 ANSI 로 읽을 수 있다 — AGENTS.md 규칙 8)
+      - name: install.ps1 TLS 렌더·부정 사례 (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          # Judge by exit code: stderr of the child powershell must not become a terminating error here
+          $ErrorActionPreference = "Continue"
+          "PowerShell $($PSVersionTable.PSVersion)"
+          $ps = "agent\windows\install.ps1"
+          & powershell -NoProfile -ExecutionPolicy Bypass -File $ps -RenderOnly agent-render\windows-ps-tls.yaml -ServerHost 10.0.0.10 -ApiKey ci -CaFile tools\ci\fixtures\ci-ca.crt -TlsServerName logmon.ci.internal -Settings none.json
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -RenderOnly (TLS) failed: $LASTEXITCODE" }
+          python tools/ci/render_agent_configs.py --check-tls agent-render\windows-ps-tls.yaml
+          if ($LASTEXITCODE -ne 0) { throw "TLS static check failed on the install.ps1 render" }
+          # Must fail: IP server address without a certificate name
+          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $ps -RenderOnly agent-render\neg-ip.yaml -ServerHost 10.0.0.10 -ApiKey ci -CaFile tools\ci\fixtures\ci-ca.crt -Settings none.json 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch "IP host needs -TlsServerName") { $out; throw "IP host without -TlsServerName must fail" }
+          # Must fail: CA file differs from settings.json CaSha256
+          $bad = Join-Path $env:RUNNER_TEMP "settings-bad-ca.json"
+          @{ ServerHost = "logmon.ci.internal"; ApiKey = "ci"; CaFile = (Resolve-Path tools\ci\fixtures\ci-ca.crt).Path; CaSha256 = ("0" * 64) } | ConvertTo-Json | Set-Content -Encoding UTF8 $bad
+          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $ps -RenderOnly agent-render\neg-sha.yaml -Settings $bad 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch "differs from the one packaged") { $out; throw "CaSha256 mismatch must fail" }
+          if ((Test-Path agent-render\neg-ip.yaml) -or (Test-Path agent-render\neg-sha.yaml)) { throw "a failed run must not write a config" }
+          "negative cases ok"
+          exit 0
       # winevtlog 입력은 윈도 빌드에만 있다. 폐쇄망 묶음과 같은 zip 을 받아 저장소의 SHA-256 으로 확인한다
       - name: Fluent Bit 받기 (해시 확인)
         shell: pwsh
@@ -114,7 +146,7 @@ jobs:
         shell: pwsh
         run: |
           $exe = Get-ChildItem fb -Recurse -Filter fluent-bit.exe | Select-Object -First 1
-          foreach ($cfg in "agent-render\windows.yaml", "agent-render\windows-min.yaml") {
+          foreach ($cfg in "agent-render\windows.yaml", "agent-render\windows-min.yaml", "agent-render\windows-tls.yaml", "agent-render\windows-ps-tls.yaml") {
             & $exe.FullName -c $cfg --dry-run
             if ($LASTEXITCODE -ne 0) { throw "dry-run failed: $cfg" }
           }

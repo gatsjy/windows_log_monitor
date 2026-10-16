@@ -1,6 +1,6 @@
 # Log Monitor - Windows agent (Fluent Bit)
-# install.ps1 fills @SERVER_HOST@ / @SERVER_PORT@ / @API_KEY@ / @CHANNELS@ / @IIS_PATH@ / @MSSQL_PATH@,
-# uncomments the optional IIS / MSSQL blocks when requested, and writes the result to
+# install.ps1 fills @SERVER_HOST@ / @SERVER_PORT@ / @API_KEY@ / @CHANNELS@ / @IIS_PATH@ / @MSSQL_PATH@ / @TLS_SERVER_NAME@,
+# uncomments the optional IIS / MSSQL / TLS blocks when requested, and writes the result to
 # C:\ProgramData\wlm-agent\fluent-bit.yaml
 # config_version (in the heartbeat below): bump when this file changes (shown on the "수집 PC" page).
 
@@ -36,7 +36,7 @@ pipeline:
     # Heartbeat every 30s so the server knows this PC is alive even when it is quiet
     - name: dummy
       tag: heartbeat
-      dummy: '{"type":"heartbeat","config_version":"0.2.2"}'
+      dummy: '{"type":"heartbeat","config_version":"0.3.0"}'
       interval_sec: 30
 
     # @@IIS_BEGIN  IIS access logs (W3C). Enabled by: install.ps1 -Iis
@@ -102,6 +102,14 @@ pipeline:
       # Cap the on-disk buffer during long outages (oldest chunks are dropped first)
       storage.total_limit_size: 1G
       log_response_payload: false
-      # For HTTPS (reverse proxy in front of the server):
-      # tls: on
-      # tls.verify: on
+    # @@TLS_BEGIN  HTTPS to the server. Enabled by install.ps1 when settings.json has "CaFile" (or -CaFile).
+    # tls.verify_hostname is OFF by default in Fluent Bit: without it any certificate from the CA is accepted.
+    # tls.vhost is the DNS name in the server certificate (checked even when the host is an IP address).
+    # install.ps1 copies the CA file to tls.ca_file. Never turn verification off: fix the name or the CA instead.
+    #   tls: on
+    #   tls.verify: on
+    #   tls.verify_hostname: on
+    #   tls.vhost: @TLS_SERVER_NAME@
+    #   tls.ca_file: C:\ProgramData\wlm-agent\ca.crt
+    #   tls.min_version: TLSv1.2
+    # @@TLS_END

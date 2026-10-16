@@ -1,0 +1,54 @@
+# B-06 TLS 수집 확인용 Fluent Bit 설정 — 개발 실측과 CI 에서 씀 (에이전트 틀과 같은 TLS 키 묶음)
+#
+#   docker run --rm -v "$PWD/tls/ca.crt:/tls/ca.crt:ro" -v "$PWD/tools/ci/tls-probe.yaml:/probe.yaml:ro" \
+#     -e SERVER_HOST=api -e SERVER_PORT=8002 -e TLS_SERVER_NAME=logmon.dev.internal \
+#     -e API_KEY=dev-ingest-key -e PROBE_HOST=tls-probe-a --network log-monitor_default \
+#     fluent/fluent-bit:4.0 /fluent-bit/bin/fluent-bit -c /probe.yaml
+#
+# 성공하면 로그에 'HTTP status=200' 이 찍히고, 서버 '수집 PC' 화면에 PROBE_HOST 가 연결 TLS 로 보인다.
+# 실패 예: 이름 불일치 'X509 code: 62', 다른 CA 19·20, 이름 제한 47, 평문 포트에 TLS '[tls] error'.
+# TLS 키는 tools/ci/render_agent_configs.py 가 정적으로 검사한다 (--dry-run 은 없는 ca_file·키 오타를 통과시킴).
+
+service:
+  flush: 1
+  log_level: info
+
+pipeline:
+  inputs:
+    # 하트비트: 서버가 이 소켓을 보고 PC 의 전송 방식(tls/plain)을 기록한다.
+    # flush_on_startup 은 쓰지 않는다: 4.0.14 에서 필터가 준비되기 전에 레코드를 내보내 modify 필터가 SIGSEGV (실측)
+    - name: dummy
+      tag: heartbeat
+      dummy: '{"type":"heartbeat","config_version":"tls-probe"}'
+      interval_sec: 5
+
+    # 검색에서 확인할 이벤트 (개발 DB 를 채우지 않게 3건만)
+    - name: dummy
+      tag: probe
+      dummy: '{"log_source":"file","log_channel":"tls-probe","message":"B-06 TLS probe"}'
+      interval_sec: 5
+      samples: 3
+
+  filters:
+    - name: modify
+      match: '*'
+      add: agent_host ${PROBE_HOST}
+
+  outputs:
+    - name: http
+      match: '*'
+      host: ${SERVER_HOST}
+      port: ${SERVER_PORT}
+      uri: /api/ingest
+      format: json
+      json_date_key: date
+      json_date_format: iso8601
+      compress: gzip
+      header: X-API-Key ${API_KEY}
+      log_response_payload: false
+      tls: on
+      tls.verify: on
+      tls.verify_hostname: on
+      tls.vhost: ${TLS_SERVER_NAME}
+      tls.ca_file: /tls/ca.crt
+      tls.min_version: TLSv1.2
