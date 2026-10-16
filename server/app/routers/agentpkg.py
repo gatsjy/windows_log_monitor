@@ -3,11 +3,14 @@
   log-monitor-agent-windows/
     install.cmd            관리자 권한으로 실행 (GPO·SCCM 은 install.cmd /quiet)
     install.ps1, fluent-bit.yaml, README.md
-    settings.json          이 서버의 주소·수집 포트(6976)·API 키·선택 항목
+    settings.json          이 서버의 주소·수집 포트·API 키·선택 항목 (TLS 면 CaFile·TlsServerName·CaSha256, 포트 6977)
+    ca.crt                 TLS 면: 서버 인증서를 확인할 루트 CA (공개값)
     fluent-bit/            Fluent Bit 설치 파일 (반입 묶음의 agent-installers 에 있으면)
     설치방법.txt
 
-API 키가 들어가므로 관리자만 받을 수 있고, 내려받을 때마다 감사로그에 남긴다(키 값은 기록하지 않음).
+API 키가 들어가므로 권한(agents.deploy)이 있어야 받을 수 있고, 내려받을 때마다 감사로그에 남긴다(키 값은 기록하지 않음).
+TLS 를 켠 서버는 TLS 묶음만 만든다 — 전환 기간에도 새 평문 PC 가 생기지 않게, 그리고 확인할 수 없는 CA·이름으로
+수백 대에 잘못 배포되지 않게 만들기 전에 막는다 (ADR-036).
 """
 
 from __future__ import annotations
@@ -23,13 +26,15 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from .. import __version__, db
+from .. import __version__, db, tlsutil
 from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
 from ..config import settings
 
 router = APIRouter(tags=["agents"])
 
+# 에이전트 폴더에 실수로 들어간 개인키가 묶음(수백 대)에 섞이지 않게
+_NEVER_PACK = (".key", ".pfx", ".p12", ".pem")
 _HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9.\-]{0,252}|\[?[0-9A-Fa-f:]{2,45}\]?")
 INSTALLER_PATTERNS = {
     "windows": ("fluent-bit-*-win64.zip", "fluent-bit-*-win64.exe"),
@@ -50,7 +55,7 @@ def _installers(os_name: str) -> list[Path]:
     return [f for f in found if f.is_file()]
 
 
-def _guide(os_name: str, server: str, port: int, installers: list[Path]) -> str:
+def _guide(os_name: str, server: str, port: int, installers: list[Path], tls: dict | None = None) -> str:
     fb = ", ".join(f.name for f in installers) or "없음 — Fluent Bit 을 먼저 설치하세요"
     if os_name == "windows":
         steps = [
@@ -69,7 +74,9 @@ def _guide(os_name: str, server: str, port: int, installers: list[Path]) -> str:
     lines = [
         "Log Monitor 에이전트 설치 묶음",
         f"만든 시각: {datetime.now(UTC):%Y-%m-%d %H:%M} UTC · 서버 버전 {__version__}",
-        f"보낼 곳: {server}:{port} (수집 전용 포트)",
+        f"보낼 곳: {server}:{port} (수집 전용 포트, {'TLS' if tls else '평문 — 암호화하지 않음'})",
+        *([f"서버 인증서 이름: {tls['name']} (확인용 — DNS 에 등록되어 있지 않아도 됩니다)",
+           f"CA 지문(SHA-256): {tls['ca_sha256'][:16]}… — 설치 스크립트가 ca.crt 와 대조합니다"] if tls else []),
         f"Fluent Bit 설치 파일: {fb}",
         "",
         *steps,
@@ -85,12 +92,40 @@ async def package_info(admin: User = Depends(require_permission("agents.deploy")
     """내려받기 창에 보여 줄 정보: 기본 서버 주소·포트, 들어갈 설치 파일."""
     from urllib.parse import urlsplit
 
+    st = tlsutil.status(settings)
     return {
         "server": urlsplit(settings.public_url).hostname or "",
-        "port": settings.ingest_public_port,
+        "port": settings.ingest_tls_public_port if st.enabled else settings.ingest_public_port,
         "installers": {os_name: [f.name for f in _installers(os_name)] for os_name in INSTALLER_PATTERNS},
         "has_key": bool(settings.ingest_api_keys),
+        "tls": {**st.as_dict(), "port": settings.ingest_tls_public_port} if st.enabled else {"enabled": False},
     }
+
+
+def _tls_bundle(server: str, name: str | None) -> dict:
+    """TLS 묶음에 넣을 값. 에이전트가 이 CA·이름으로 서버를 확인하지 못할 묶음은 만들지 않는다."""
+    st = tlsutil.status(settings)
+    if st.ca_sha256 is None:
+        raise HTTPException(409, f"CA 인증서({settings.tls_ca_file})가 없어 TLS 설치 묶음을 만들 수 없습니다 (docs/AIRGAP.md §7.5)")
+    errors = [text for level, text in st.problems if level == "error"]
+    if errors:
+        raise HTTPException(409, errors[0])
+    if not st.usable_names:
+        raise HTTPException(409, "서버 인증서에 DNS 이름이 없어 에이전트가 서버를 확인할 수 없습니다 — "
+                                 "python -m app.cli tls-renew --name <이름> 으로 이름을 넣으세요")
+    if name:
+        name = name.strip().lower().rstrip(".")
+        if tlsutil.is_ip(name):
+            raise HTTPException(422, "인증서 이름은 DNS 이름이어야 합니다 (에이전트는 IP 로 서버를 확인하지 못합니다)")
+        if not any(tlsutil.name_matches(n, name) for n in st.dns_names):
+            raise HTTPException(422, f"서버 인증서에 없는 이름입니다. 가능한 이름: {', '.join(st.usable_names)}")
+    else:
+        name = tlsutil.pick_server_name(st, server)
+    try:
+        ca = Path(settings.tls_ca_file).read_bytes()
+    except OSError as exc:
+        raise HTTPException(409, f"CA 인증서를 읽을 수 없습니다: {exc}") from exc
+    return {"name": name, "ca_sha256": st.ca_sha256, "ca": ca}
 
 
 @router.get("/api/agents/package")
@@ -101,6 +136,7 @@ async def agent_package(
     port: int | None = Query(None, ge=1, le=65535),
     iis: bool = False,
     mssql: bool = False,
+    name: str | None = Query(None, max_length=253, description="TLS: 에이전트가 확인할 서버 인증서의 DNS 이름"),
     admin: User = Depends(require_permission("agents.deploy")),
 ):
     server = server.strip()
@@ -108,7 +144,8 @@ async def agent_package(
         raise HTTPException(422, "서버 주소는 호스트 이름 또는 IP 만 적습니다 (예: logmon.corp.local, 10.0.0.10)")
     if not settings.ingest_api_keys:
         raise HTTPException(409, "서버에 수집 API 키(WLM_INGEST_API_KEYS)가 설정되어 있지 않습니다")
-    port = port or settings.ingest_public_port
+    tls = _tls_bundle(server, name) if settings.tls else None
+    port = port or (settings.ingest_tls_public_port if tls else settings.ingest_public_port)
     key = settings.ingest_api_keys[0]
     source = Path(settings.agent_dir) / os
     if not source.is_dir():
@@ -119,10 +156,14 @@ async def agent_package(
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(source.rglob("*")):
-            if path.is_file() and "__pycache__" not in path.parts:
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix.lower() not in _NEVER_PACK:
                 zf.write(path, f"{prefix}/{path.relative_to(source).as_posix()}")
+        if tls:
+            zf.writestr(f"{prefix}/ca.crt", tls["ca"])
         if os == "windows":
             conf = {"ServerHost": server, "ServerPort": port, "ApiKey": key, "Iis": iis, "MssqlErrorlog": mssql}
+            if tls:   # install.ps1 이 CaFile 이 있을 때만 TLS 를 켜고, CaSha256 으로 ca.crt 가 바뀌지 않았는지 본다
+                conf.update(CaFile="ca.crt", TlsServerName=tls["name"], CaSha256=tls["ca_sha256"])
             zf.writestr(f"{prefix}/settings.json", json.dumps(conf, ensure_ascii=False, indent=2))
             for f in installers:
                 zf.write(f, f"{prefix}/fluent-bit/{f.name}")
@@ -135,18 +176,21 @@ async def agent_package(
                 "    [ -e \"$pkg\" ] || continue\n"
                 "    case \"$pkg\" in *.rpm) rpm -Uvh \"$pkg\" ;; *.deb) dpkg -i \"$pkg\" ;; esac\n"
                 "    break\n  done\nfi\n"
-                f"exec ./install.sh {shlex.quote(server)} {port} {shlex.quote(key)}\n"
+                + (f"TLS_CA_FILE=\"$PWD/ca.crt\" TLS_SERVER_NAME={shlex.quote(tls['name'])} " if tls else "")
+                + f"exec ./install.sh {shlex.quote(server)} {port} {shlex.quote(key)}\n"
             )
             info = zipfile.ZipInfo(f"{prefix}/install-configured.sh")
             info.external_attr = 0o755 << 16
             zf.writestr(info, script)
             for f in installers:
                 zf.write(f, f"{prefix}/packages/{f.name}")
-        zf.writestr(f"{prefix}/설치방법.txt", _guide(os, server, port, installers))
+        zf.writestr(f"{prefix}/설치방법.txt", _guide(os, server, port, installers, tls))
 
     await db.audit(admin.username, "agents.package.download", os,
                    {"server": server, "port": port, "iis": iis, "mssql": mssql,
-                    "installers": [f.name for f in installers]}, actor_ip=client_ip(request))
+                    "installers": [f.name for f in installers], "tls": bool(tls),
+                    **({"server_name": tls["name"], "ca_sha256": tls["ca_sha256"]} if tls else {})},
+                   actor_ip=client_ip(request))
     filename = f"{prefix}-{server}.zip"
     return Response(buffer.getvalue(), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"})

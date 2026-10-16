@@ -161,7 +161,7 @@ def name_matches(pattern: str, host: str) -> bool:
     return pattern == host
 
 
-def _is_ip(text: str) -> bool:
+def is_ip(text: str) -> bool:
     try:
         ipaddress.ip_address(text)
     except ValueError:
@@ -261,7 +261,7 @@ def _issued_by(cert: x509.Certificate, issuer: x509.Certificate) -> bool:
 
 def pick_server_name(st: TlsStatus, host: str | None) -> str | None:
     """에이전트의 tls.vhost: 접속 주소가 인증서 이름이면 그것, 아니면(IP 등) 인증서의 첫 DNS 이름."""
-    if host and not _is_ip(host) and any(name_matches(n, host) for n in st.dns_names):
+    if host and not is_ip(host) and any(name_matches(n, host) for n in st.dns_names):
         return host.lower()
     return st.usable_names[0] if st.usable_names else None
 
@@ -272,7 +272,7 @@ def check_names(names: list[str], ips: list[str]) -> tuple[list[str], list[ipadd
     clean: list[str] = []
     for raw in names:
         name = raw.strip().lower().rstrip(".")
-        if _is_ip(name):
+        if is_ip(name):
             raise TlsError(f"{raw!r} 은 IP 입니다. IP 는 --ip 로 주세요(에이전트는 DNS 이름으로 서버를 확인합니다).")
         if not _DNS_RE.match(name) or not re.search(r"[a-z]", name):
             raise TlsError(f"{raw!r} 은 DNS 이름 형식이 아닙니다 (영문자·숫자·하이픈과 점, 와일드카드 없이).")

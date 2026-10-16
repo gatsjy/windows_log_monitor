@@ -130,3 +130,90 @@ def test_delete_agents_bulk(client):
 
     audits = client.get("/api/audit", params={"since": "1h", "action": "agent.delete"}, headers=CSRF).json()["items"]
     assert {"BULK-A", "BULK-B", "BULK/C"} <= {a["target"] for a in audits}
+
+
+@pytest.fixture
+def tls_on(tmp_path, monkeypatch):
+    """TLS 를 켠 서버 흉내: 자체 CA + 서버 인증서(logmon.corp.local, 10.0.0.10), 에이전트 폴더에 실수로 든 개인키."""
+    import shutil
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+
+    from app import tlsutil
+    from app.config import settings
+    from app.routers import agentpkg
+
+    def make(name="logmon.corp.local", now=None, other_ca=False):
+        ca_key, ca = tlsutil.issue_ca([name], ["10.0.0.10"], now=now)
+        key, cert = tlsutil.issue_server(ca_key, ca, [name], ["10.0.0.10"], now=now)
+        d = tmp_path / f"tls-{name}-{bool(now)}-{other_ca}"
+        d.mkdir()
+        (d / "server.crt").write_bytes(tlsutil.cert_pem(cert) + tlsutil.cert_pem(ca))
+        (d / "server.key").write_bytes(tlsutil.key_pem(key))
+        (d / "server.key").chmod(0o640)
+        shown_ca = tlsutil.issue_ca([name], [])[1] if other_ca else ca
+        (d / "ca.crt").write_bytes(tlsutil.cert_pem(shown_ca))
+        agent = tmp_path / "agent"
+        if not agent.exists():
+            shutil.copytree(settings.agent_dir, agent)
+            (agent / "windows" / "leak.key").write_text("-----BEGIN PRIVATE KEY-----")
+        monkeypatch.setattr(agentpkg, "settings", replace(
+            settings, tls_mode="on", tls_cert_file=str(d / "server.crt"), tls_key_file=str(d / "server.key"),
+            tls_ca_file=str(d / "ca.crt"), public_url=f"https://{name}:8080", agent_dir=str(agent)))
+        return d, shown_ca
+
+    make.past = datetime.now(UTC) - timedelta(days=800)
+    return make
+
+
+def test_tls_windows_package(client, tls_on):
+    import hashlib
+
+    from cryptography.hazmat.primitives import serialization
+
+    d, ca = tls_on()
+    info = client.get("/api/agents/package/info", headers=CSRF).json()
+    der = ca.public_bytes(serialization.Encoding.DER)
+    assert info["port"] == 6977 and info["tls"]["enabled"] and info["tls"]["server_names"] == ["logmon.corp.local"]
+    assert info["tls"]["ca_sha256"] == hashlib.sha256(der).hexdigest() and info["tls"]["problems"] == []
+    # 서버 주소가 IP 여도 에이전트는 인증서의 DNS 이름으로 확인한다
+    z = unzip(client.get("/api/agents/package", params={"server": "10.0.0.10"}, headers=CSRF))
+    prefix = "log-monitor-agent-windows/"
+    conf = json.loads(z.read(f"{prefix}settings.json"))
+    assert conf == {"ServerHost": "10.0.0.10", "ServerPort": 6977, "ApiKey": "test-key", "Iis": False,
+                    "MssqlErrorlog": False, "CaFile": "ca.crt", "TlsServerName": "logmon.corp.local",
+                    "CaSha256": hashlib.sha256(der).hexdigest()}
+    assert z.read(f"{prefix}ca.crt") == (d / "ca.crt").read_bytes()
+    assert not [n for n in z.namelist() if n.endswith(".key")]   # 에이전트 폴더의 개인키는 묶음에 넣지 않는다
+    guide = z.read(f"{prefix}설치방법.txt").decode("utf-8-sig")
+    assert "10.0.0.10:6977" in guide and "TLS" in guide and "logmon.corp.local" in guide
+    audit = client.get("/api/audit", params={"since": "1h", "action": "agents.package.download"},
+                       headers=CSRF).json()["items"][0]["detail"]
+    assert audit["tls"] is True and audit["server_name"] == "logmon.corp.local"
+    assert audit["ca_sha256"] == conf["CaSha256"] and "test-key" not in json.dumps(audit)
+
+
+def test_tls_names_and_linux(client, tls_on):
+    tls_on()
+    get = lambda **p: client.get("/api/agents/package", params={"server": "logmon.corp.local", **p}, headers=CSRF)
+    r = get(name="other.corp.local")
+    assert r.status_code == 422 and "가능한 이름: logmon.corp.local" in r.json()["detail"]
+    assert get(name="10.0.0.10").status_code == 422
+    z = unzip(get(os="linux", name="LogMon.corp.local."))
+    script = z.read("log-monitor-agent-linux/install-configured.sh").decode()
+    assert 'TLS_CA_FILE="$PWD/ca.crt" TLS_SERVER_NAME=logmon.corp.local exec ./install.sh logmon.corp.local 6977 test-key' \
+        in script
+    assert "log-monitor-agent-linux/ca.crt" in z.namelist()
+
+
+def test_tls_refuses_bundles_agents_cannot_verify(client, tls_on):
+    d, _ = tls_on()
+    (d / "ca.crt").unlink()
+    r = client.get("/api/agents/package", params={"server": "logmon.corp.local"}, headers=CSRF)
+    assert r.status_code == 409 and "CA 인증서" in r.json()["detail"]
+    tls_on(other_ca=True)
+    r = client.get("/api/agents/package", params={"server": "logmon.corp.local"}, headers=CSRF)
+    assert r.status_code == 409 and "다른 CA" in r.json()["detail"]
+    tls_on(now=tls_on.past)
+    r = client.get("/api/agents/package", params={"server": "logmon.corp.local"}, headers=CSRF)
+    assert r.status_code == 409 and "만료" in r.json()["detail"]

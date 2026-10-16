@@ -59,8 +59,24 @@ export async function mount(root, params) {
       return;
     }
     const opt = { os: 'windows', server: info.server && info.server !== 'localhost' ? info.server : '', port: info.port, iis: false, mssql: false };
+    const tls = info.tls?.enabled ? info.tls : null;
+    // 에이전트가 서버 인증서를 확인할 DNS 이름: 서버 주소가 인증서 이름이면 그것, 아니면(IP 등) 첫 이름 — 서버도 같은 규칙
+    const pickName = () => (tls?.server_names.includes(opt.server.toLowerCase()) ? opt.server.toLowerCase() : tls?.server_names[0] || '');
+    opt.name = pickName();
+    const isIp = (v) => /^[0-9.]+$|:/.test(v);
     const draw = () => {
       const files = info.installers[opt.os] || [];
+      const tlsBox = tls
+        ? html`<div class="hint-box" style="margin-top:4px" data-tls>
+            <b>TLS 수집</b> (포트 ${tls.port}) · 서버 인증서 만료 ${tls.not_after ? fmtTime(tls.not_after, { seconds: false }) : '–'}
+            ${tls.days_left != null ? html`(D-${tls.days_left})` : ''} · CA 지문 <code>${(tls.ca_sha256 || '').slice(0, 16)}</code>
+            ${tls.problems.length ? html`<ul class="ref-list" style="margin:6px 0 0">${tls.problems.map((p) =>
+              html`<li class="${p.level === 'error' ? 'tag-bad' : ''}">${p.text}</li>`)}</ul>` : ''}</div>
+          <label class="field"><span>인증서 이름 (에이전트가 서버를 확인할 이름)</span>
+            <select class="input" data-name>${tls.server_names.map((n) => html`<option value="${n}" ${n === opt.name ? 'selected' : ''}>${n}</option>`)}</select></label>
+          ${isIp(opt.server) ? html`<p class="muted" style="margin:0;font-size:12.5px">서버 주소가 IP 라도 됩니다. 인증서 이름은 확인용이라 DNS 에 등록되어 있지 않아도 됩니다.</p>` : ''}`
+        : html`<p class="hint-box" style="margin-top:4px" data-plain-note><b class="tag-bad">평문 전송</b>입니다 — 로그와 수집 키가 암호화되지 않습니다(ISMS 2.7.1).
+            서버에서 TLS 를 켜면 이 창이 TLS 묶음을 만듭니다 (docs/AIRGAP.md §7.5).</p>`;
       el.innerHTML = html`
         <div class="pkg">
           <div class="pkg-form">
@@ -71,6 +87,7 @@ export async function mount(root, params) {
               <label class="field"><span>서버 주소 (PC 에서 보이는 이름·IP)</span><input class="input" data-server value="${opt.server}" placeholder="logmon.corp.local 또는 10.0.0.10"></label>
               <label class="field" style="max-width:150px"><span>수집 포트</span><input class="input num" data-port type="number" value="${opt.port}"></label>
             </div>
+            ${tlsBox}
             ${opt.os === 'windows' ? html`<div class="field"><span>함께 수집</span><div class="check-list">
               <label><input type="checkbox" data-iis ${opt.iis ? 'checked' : ''}>IIS 접속 로그 (웹 서버)</label>
               <label><input type="checkbox" data-mssql ${opt.mssql ? 'checked' : ''}>SQL Server ERRORLOG (DB 서버)</label></div></div>` : ''}
@@ -82,6 +99,7 @@ export async function mount(root, params) {
             <ul class="ref-list">
               <li>${opt.os === 'windows' ? html`<code>install.cmd</code> — 관리자 권한으로 실행 (여러 대: <code>install.cmd /quiet</code> 를 GPO·SCCM 으로)` : html`<code>install-configured.sh</code> — <code>sudo</code> 로 실행`}</li>
               <li>서버 주소·수집 포트·<b>수집 API 키</b>가 채워진 설정 (${opt.os === 'windows' ? 'settings.json' : 'install-configured.sh'})</li>
+              ${tls ? html`<li><code>ca.crt</code> — 서버 인증서를 확인할 CA (설치 스크립트가 지문을 대조하고 PC 에 복사)</li>` : ''}
               <li>Fluent Bit 설치 파일: ${files.length ? html`<span class="tag-good">${files.join(', ')}</span>`
                 : html`<span class="tag-bad">없음</span> — 서버의 <code>agent-installers/</code> 에 넣으면 함께 들어갑니다 (docs/AIRGAP.md)`}</li>
               <li><code>설치방법.txt</code></li>
@@ -93,23 +111,49 @@ export async function mount(root, params) {
         <details class="manual"><summary>네트워크 장비 syslog · 수동 설치</summary>
           <ul class="ref-list">
             <li>네트워크 장비: 서버에서 <code>docker compose --profile syslog up -d</code> 후, 장비의 syslog 대상을 <code>${opt.server || '<서버IP>'}:514</code> (UDP/TCP)</li>
-            <li>Windows 수동: <code>install.ps1 -ServerHost ${opt.server || '<서버IP>'} -ApiKey &lt;키&gt;</code> (포트 기본 ${opt.port})</li>
-            <li>Linux 수동: <code>sudo ./install.sh ${opt.server || '<서버IP>'} ${opt.port} &lt;키&gt;</code></li>
+            <li>Windows 수동: <code>install.ps1 -ServerHost ${opt.server || '<서버IP>'} -ApiKey &lt;키&gt;${tls ? html` -CaFile ca.crt -TlsServerName ${opt.name}` : ''}</code> (포트 기본 ${opt.port})</li>
+            <li>Linux 수동: <code>sudo ${tls ? html`TLS_CA_FILE=ca.crt TLS_SERVER_NAME=${opt.name} ` : ''}./install.sh ${opt.server || '<서버IP>'} ${opt.port} &lt;키&gt;</code></li>
           </ul></details>`;
       el.querySelectorAll('[data-os] button').forEach((b) => b.addEventListener('click', () => { opt.os = b.dataset.v; draw(); }));
       el.querySelector('[data-server]').addEventListener('input', (e) => { opt.server = e.target.value.trim(); });
+      // 주소를 다 쓰고 나면 그 주소에 맞는 인증서 이름으로 (입력 중에 다시 그리면 커서를 잃는다)
+      el.querySelector('[data-server]').addEventListener('change', () => { if (tls) { opt.name = pickName(); draw(); } });
+      el.querySelector('[data-name]')?.addEventListener('change', (e) => { opt.name = e.target.value; });
       el.querySelector('[data-port]').addEventListener('input', (e) => { opt.port = Number(e.target.value) || info.port; });
       el.querySelector('[data-iis]')?.addEventListener('change', (e) => { opt.iis = e.target.checked; });
       el.querySelector('[data-mssql]')?.addEventListener('change', (e) => { opt.mssql = e.target.checked; });
-      el.querySelector('[data-download]').addEventListener('click', () => {
+      el.querySelector('[data-download]').addEventListener('click', async (e) => {
         const msg = el.querySelector('[data-msg]');
         if (!opt.server) {
           msg.innerHTML = html`<div class="error-box" style="margin-top:8px">서버 주소를 입력하세요. PC 에서 이 서버에 접속할 때 쓰는 이름이나 IP 입니다.</div>`;
           return;
         }
         const q = new URLSearchParams({ os: opt.os, server: opt.server, port: String(opt.port), iis: String(opt.iis), mssql: String(opt.mssql) });
-        location.href = `/api/agents/package?${q}`; // 파일 내려받기 (쿠키 인증, 화면은 그대로)
-        msg.innerHTML = html`<div class="hint-box" style="margin-top:8px">내려받기를 시작했습니다. 설정 파일에 API 키가 들어 있으니 배포 후 지우세요.</div>`;
+        if (tls && opt.name) q.set('name', opt.name);
+        // 주소로 이동하지 않고 받아서 저장한다 — 서버가 묶음을 거절하면(인증서 만료·없는 이름 등) 화면을 떠나지 않고 이유를 보인다
+        const button = e.currentTarget;
+        button.disabled = true;
+        try {
+          const res = await fetch(`/api/agents/package?${q}`);
+          if (!res.ok) {
+            let detail = `${res.status} ${res.statusText}`;
+            try {
+              const body = await res.json();
+              detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join(', ') : body.detail || detail;
+            } catch { /* 본문이 JSON 이 아님 */ }
+            msg.innerHTML = html`<div class="error-box" style="margin-top:8px">${detail}</div>`;
+            return;
+          }
+          const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '')?.[1] || 'log-monitor-agent.zip';
+          const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await res.blob()), download: name });
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+          msg.innerHTML = html`<div class="hint-box" style="margin-top:8px">내려받았습니다 (${name}). 설정 파일에 API 키가 들어 있으니 배포 후 지우세요.</div>`;
+        } catch (err) {
+          msg.innerHTML = errorBox(err);
+        } finally {
+          button.disabled = false;
+        }
       });
     };
     draw();
