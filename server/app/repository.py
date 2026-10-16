@@ -703,15 +703,21 @@ async def list_audit(since: datetime, limit: int, actor: str | None = None, acti
     )
 
 
-async def backup_audit() -> dict[str, Any]:
-    """백업 상태(화면 '로그 보관'): 행위별 최근 기록 + 마지막 성공한 복구 시험 + 첫 백업 시각.
-    backup 서비스가 남긴 audit_log 를 읽는다 — 백업 파일은 api 컨테이너에서 보이지 않아도 된다. (action, at) 인덱스를 탄다."""
+async def latest_audit(actions: list[str]) -> dict[str, dict]:
+    """행위별 가장 최근 감사로그 한 줄 (백업 상태·보관 파일 무결성 확인 등). (action, at) 인덱스를 탄다."""
     rows = await db.fetch_all(
-        "SELECT a.action, l.at, l.target, l.detail FROM unnest(%s::text[]) AS a(action)"
-        " CROSS JOIN LATERAL (SELECT at, target, detail FROM audit_log WHERE action = a.action ORDER BY at DESC LIMIT 1) l",
-        (["backup.create", "backup.failed", "backup.verify"],),
+        "SELECT a.action, l.at, l.actor, l.target, l.detail FROM unnest(%s::text[]) AS a(action)"
+        " CROSS JOIN LATERAL (SELECT at, actor, target, detail FROM audit_log WHERE action = a.action"
+        "                     ORDER BY at DESC LIMIT 1) l",
+        (actions,),
     )
-    latest = {r.pop("action"): r for r in rows}
+    return {r.pop("action"): r for r in rows}
+
+
+async def backup_audit() -> dict[str, Any]:
+    """백업 상태(화면 '로그 보관'·점검 보고서): 행위별 최근 기록 + 마지막 성공한 복구 시험 + 첫 백업 시각.
+    backup 서비스가 남긴 audit_log 를 읽는다 — 백업 파일은 api 컨테이너에서 보이지 않아도 된다."""
+    latest = await latest_audit(["backup.create", "backup.failed", "backup.verify"])
     verify_ok = await db.fetch_one(
         "SELECT at, target, detail FROM audit_log WHERE action = 'backup.verify' AND detail->>'ok' = 'true'"
         " ORDER BY at DESC LIMIT 1"
@@ -730,4 +736,94 @@ async def purge_audit(cutoff: datetime) -> int:
     async with db.pool().connection() as conn:
         await conn.execute("SET LOCAL wlm.audit_purge = 'on'")
         cur = await conn.execute("DELETE FROM audit_log WHERE at < %s", (cutoff,))
+        return cur.rowcount
+
+
+# ---------------------------------------------------------------- reports (정기 점검 보고서, ADR-032)
+
+async def report_alert_summary(start: datetime, end: datetime) -> dict[str, Any]:
+    """기간 안에 발생한 알림의 심각도·처리 상태별 수, 보고서를 만들 때 해결 안 된 알림, 해결까지 걸린 시간(중앙값)."""
+    fired = await db.fetch_all(
+        "SELECT severity, status, count(*) AS n FROM alerts WHERE fired_at >= %s AND fired_at < %s GROUP BY 1, 2",
+        (start, end),
+    )
+    open_by_severity = await db.fetch_all(
+        "SELECT severity, count(*) AS n FROM alerts WHERE status <> 'resolved' AND fired_at < %s GROUP BY 1", (end,)
+    )
+    # 심각한 것부터, 같은 심각도는 오래된 것부터 — 점검자가 먼저 볼 순서
+    oldest = await db.fetch_all(
+        "SELECT id, fired_at, rule, severity, group_key, status FROM alerts WHERE status <> 'resolved' AND fired_at < %s"
+        " ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'error' THEN 2 WHEN 'warning' THEN 3 ELSE 4 END, fired_at"
+        " LIMIT 10",
+        (end,),
+    )
+    resolved = await db.fetch_one(
+        "SELECT count(*) AS n, percentile_cont(0.5) WITHIN GROUP"
+        " (ORDER BY extract(epoch FROM resolved_at - fired_at)) AS median_sec"
+        " FROM alerts WHERE resolved_at >= %s AND resolved_at < %s",
+        (start, end),
+    )
+    return {"fired": fired, "open_by_severity": open_by_severity, "oldest_unresolved": oldest,
+            "resolved_in_period": resolved["n"], "median_resolve_sec": resolved["median_sec"]}
+
+
+_REPORT_LIST_COLUMNS = (
+    "id, kind, scheduled, period_start, period_end, created_at, created_by, attention, deliveries,"
+    " reviewed_by, reviewed_at, review_note, payload->>'title' AS title"
+)
+
+
+async def insert_report(kind: str, scheduled: bool, start: datetime, end: datetime, payload: dict,
+                        attention: int, created_by: str) -> int | None:
+    """정기 보고서는 같은 기간이 이미 있으면 None (여러 인스턴스·재시작에도 한 번만)."""
+    row = await db.fetch_one(
+        "INSERT INTO reports (kind, scheduled, period_start, period_end, payload, attention, created_by)"
+        " VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)"
+        " ON CONFLICT (kind, period_start) WHERE scheduled DO NOTHING RETURNING id",
+        (kind, scheduled, start, end, _json(payload), attention, created_by),
+    )
+    return row["id"] if row else None
+
+
+async def scheduled_report_exists(kind: str, start: datetime) -> bool:
+    row = await db.fetch_one(
+        "SELECT 1 AS x FROM reports WHERE scheduled AND kind = %s AND period_start = %s", (kind, start)
+    )
+    return row is not None
+
+
+async def set_report_deliveries(report_id: int, deliveries: list[dict]) -> None:
+    await db.fetch_one("UPDATE reports SET deliveries = %s::jsonb WHERE id = %s RETURNING id",
+                       (_json(deliveries), report_id))
+
+
+async def list_reports(limit: int) -> list[dict]:
+    return await db.fetch_all(f"SELECT {_REPORT_LIST_COLUMNS} FROM reports ORDER BY created_at DESC, id DESC LIMIT %s",
+                              (limit,))
+
+
+async def get_report(report_id: int) -> dict | None:
+    return await db.fetch_one(f"SELECT {_REPORT_LIST_COLUMNS}, payload FROM reports WHERE id = %s", (report_id,))
+
+
+async def review_report(report_id: int, actor: str, note: str) -> bool:
+    """점검 확인은 한 번만 (두 사람이 동시에 눌러도). 이미 확인했으면 False."""
+    row = await db.fetch_one(
+        "UPDATE reports SET reviewed_by = %s, reviewed_at = now(), review_note = %s"
+        " WHERE id = %s AND reviewed_at IS NULL RETURNING id",
+        (actor, note, report_id),
+    )
+    return row is not None
+
+
+async def count_unreviewed_reports(since: datetime) -> int:
+    row = await db.fetch_one("SELECT count(*) AS n FROM reports WHERE reviewed_at IS NULL AND created_at >= %s", (since,))
+    return row["n"]
+
+
+async def purge_reports(cutoff: datetime) -> int:
+    """보관기간 만료 보고서 삭제. 삭제 방지 트리거의 예외 스위치를 이 트랜잭션에서만 켠다 (감사로그와 같은 방식)."""
+    async with db.pool().connection() as conn, conn.transaction():
+        await conn.execute("SET LOCAL wlm.report_purge = 'on'")
+        cur = await conn.execute("DELETE FROM reports WHERE created_at < %s", (cutoff,))
         return cur.rowcount

@@ -8,7 +8,7 @@ import { confirmModal, errorBox, fmtNum, fmtRelative, fmtTime, html, navigate, p
 
 const TABS = [
   ['contacts', '수신자'], ['groups', '수신 그룹'], ['channels', '외부 연동 (웹훅·Oracle)'], ['smtp', '메일 서버'],
-  ['retention', '로그 보관'],
+  ['reports', '점검 보고서'], ['retention', '로그 보관'],
 ];
 const SECRET_HINT = '저장되어 있음 — 바꿀 때만 입력';
 const MIN_SEVERITY = [['info', '모든 알림 (정보 이상)'], ['warning', '경고 이상'], ['error', '오류 이상'], ['critical', '심각만']];
@@ -66,7 +66,7 @@ export async function mount(root, params, sub) {
       서버에 <code>WLM_SECRET_KEY</code> 가 없어 비밀번호(메일 서버·Oracle)와 웹훅 주소를 저장할 수 없습니다. <code>.env</code> 에 설정 후 서버를 다시 시작하세요.</div>`;
   }
 
-  const renderers = { contacts, groups, channels, smtp, retention };
+  const renderers = { contacts, groups, channels, smtp, reports: reportSettings, retention };
   await renderers[tab](body, meta);
 }
 
@@ -519,6 +519,49 @@ function editOracle(c, meta, aliases, done) {
 }
 
 // ============================================================== 메일 서버
+
+/** 점검 보고서 일정·받는 곳 (ADR-032). 받는 곳이 없어도 보고서는 만들어 저장한다 */
+async function reportSettings(body) {
+  const s = await api.get('/api/settings/report');
+  const c = s.config;
+  const days = ['월', '화', '수', '목', '금', '토', '일'];
+  body.innerHTML = html`
+    <section class="card"><div class="card-body">
+      <div class="hint-box" style="margin-bottom:14px">정해진 시각에 <b>일간(어제 하루)</b>·<b>주간(지난주 월~일)</b> 점검 보고서를 만들어 저장하고, 고른 곳으로 보냅니다.
+        받는 곳이 없어도 보고서는 저장됩니다(점검 증적). 수신 그룹은 메일(전체 내용), 웹훅은 요약과 링크를 받습니다. 시각은 ${s.tz} 기준입니다.
+        <a href="#/reports">보고서 이력 보기 →</a></div>
+      <form class="auth-form" style="max-width:560px">
+        <div class="form-row">
+          <label style="flex-direction:row;align-items:center;gap:8px;flex:1"><input type="checkbox" name="daily" ${c.daily.enabled ? 'checked' : ''}> 일간 보고서</label>
+          <label style="flex:1">매일<input class="input" type="time" name="daily_time" value="${c.daily.time}"></label>
+        </div>
+        <div class="form-row">
+          <label style="flex-direction:row;align-items:center;gap:8px;flex:1"><input type="checkbox" name="weekly" ${c.weekly.enabled ? 'checked' : ''}> 주간 보고서</label>
+          <label style="flex:1">요일<select class="select" name="weekday">${days.map((d, i) => html`<option value="${i + 1}" ${c.weekly.weekday === i + 1 ? 'selected' : ''}>${d}요일</option>`)}</select></label>
+          <label style="flex:1">시각<input class="input" type="time" name="weekly_time" value="${c.weekly.time}"></label>
+        </div>
+        <div class="field"><span>받는 곳 (수신 그룹·웹훅)</span>
+          ${s.targets.length ? html`<div class="check-list">${s.targets.map((t) => html`
+            <label><input type="checkbox" data-target="${t}" ${c.targets.includes(t) ? 'checked' : ''}>${t}</label>`)}</div>`
+            : html`<span class="muted">수신 그룹이나 웹훅이 없습니다 — 다른 탭에서 먼저 만드세요.</span>`}</div>
+        <div data-error></div>
+        <div class="toolbar"><button class="btn primary" type="submit">저장</button></div>
+      </form>
+    </div></section>`;
+  const form = body.querySelector('form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api.send('PUT', '/api/settings/report', {
+        daily: { enabled: form.daily.checked, time: form.daily_time.value },
+        weekly: { enabled: form.weekly.checked, weekday: Number(form.weekday.value), time: form.weekly_time.value },
+        targets: [...form.querySelectorAll('[data-target]:checked')].map((x) => x.dataset.target),
+      });
+      toast('점검 보고서 설정을 저장했습니다.', { type: 'success' });
+      reportSettings(body);
+    } catch (err) { form.querySelector('[data-error]').innerHTML = errorBox(err); }
+  });
+}
 
 async function smtp(body) {
   const s = await api.get('/api/settings/smtp');

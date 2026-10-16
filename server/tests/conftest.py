@@ -28,3 +28,5 @@ os.environ["WLM_INGEST_PORT"] = "6976"
 os.environ["WLM_DB_RETENTION_DAYS"] = "90"
 os.environ["WLM_RETENTION_DAYS"] = "365"
 os.environ["WLM_SECRET_KEY"] = "test-secret-key-0123456789abcdef"
+# 점검 보고서 정기 실행은 실제 시각으로 돌아 테스트 DB 에 보고서를 만들어 버린다 → 끄고, 테스트가 tick(now) 을 직접 부른다
+os.environ["WLM_REPORT_SCHEDULER"] = "off"

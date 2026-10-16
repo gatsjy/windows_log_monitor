@@ -45,7 +45,7 @@ def client():
 
 
 def status(client, at=NOW):
-    from app.routers.settings import backup_status
+    from app.backups import backup_status
 
     return client.portal.call(backup_status, at)
 
@@ -89,10 +89,10 @@ def test_backup_status_problems_over_time(client):
 def test_verify_stale_warning_can_be_turned_off(client, monkeypatch):
     from dataclasses import replace
 
-    from app.routers import settings as settings_router
+    from app import backups
 
-    # 설정 객체는 바꿀 수 없어서(frozen) 라우터가 보는 설정만 바꿔 끼운다
-    monkeypatch.setattr(settings_router, "settings", replace(settings_router.settings, backup_verify_weekday=0))
+    # 설정 객체는 바꿀 수 없어서(frozen) 이 모듈이 보는 설정만 바꿔 끼운다
+    monkeypatch.setattr(backups, "settings", replace(backups.settings, backup_verify_weekday=0))
     s = status(client, NOW + timedelta(days=20))
     assert not any("복구 시험이 없습니다" in p for p in s["problems"]) and s["schedule"]["verify_day"] is None
 

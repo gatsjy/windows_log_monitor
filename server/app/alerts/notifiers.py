@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 from .. import oracle
-from .message import AlertMessage
+from .message import AlertMessage, Notice
 from .messenger import FORMATS
 
 
@@ -56,6 +56,10 @@ class Notifier:
 
     async def send(self, message: AlertMessage) -> None:
         raise NotImplementedError
+
+    async def send_notice(self, notice: Notice) -> None:
+        """공지(점검 보고서). 메일·웹훅만 받는다 — Oracle 은 알림 표에 넣는 연동이라 보고서를 보내지 않는다."""
+        raise NotifierError(f"'{self.name}' ({self.type}) 은(는) 보고서를 받을 수 없습니다 — 수신 그룹이나 웹훅을 고르세요")
 
 
 # ------------------------------------------------------------------- 메일
@@ -112,6 +116,21 @@ class EmailNotifier(Notifier):
 
     async def send(self, message: AlertMessage) -> None:
         await asyncio.to_thread(self._send, self.build(message))
+
+    def build_notice(self, notice: Notice) -> EmailMessage:
+        mail = EmailMessage()
+        mail["Subject"] = f"{self.subject_prefix} {notice.title}".strip()
+        mail["From"] = self.smtp.sender
+        mail["To"] = ", ".join(self.to)
+        mail["Date"] = formatdate(localtime=False)
+        mail["Message-ID"] = make_msgid(domain=self.smtp.sender.rsplit("@", 1)[-1] or "log-monitor")
+        mail.set_content(notice.plain())
+        if notice.html:
+            mail.add_alternative(notice.html, subtype="html")
+        return mail
+
+    async def send_notice(self, notice: Notice) -> None:
+        await asyncio.to_thread(self._send, self.build_notice(notice))
 
 
 # ------------------------------------------------------------------- 웹훅
@@ -205,7 +224,13 @@ class WebhookNotifier(Notifier):
             raise NotifierError(f"웹훅 전송 실패 ({self.target()}): {self.redact(str(exc))[:300]}") from exc
 
     async def send(self, message: AlertMessage) -> None:
-        body = json.dumps(self.payload(message), ensure_ascii=False, default=str).encode("utf-8")
+        await self._deliver(self.payload(message))
+
+    async def send_notice(self, notice: Notice) -> None:
+        await self._deliver(FORMATS[self.format].notice(notice))
+
+    async def _deliver(self, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         interval = FORMATS[self.format].min_interval_sec
         if not interval:
             await asyncio.to_thread(self._post, body)

@@ -142,6 +142,23 @@ class AlertMessage:
         )
 
 
+@dataclass
+class Notice:
+    """알림이 아닌 공지 (점검 보고서 등, ADR-032): 제목·요약 줄·링크. 메일은 html·text 본문을 따로 받는다.
+    severity 는 색만 정한다 (점검 필요가 있으면 warning·error, 없으면 info)."""
+
+    title: str
+    lines: list[str]
+    link: str = ""
+    severity: str = "info"
+    html: str = ""
+    text: str = ""
+
+    def plain(self) -> str:
+        body = self.text or "\n".join([self.title, "", *self.lines])
+        return f"{body}\n\n자세히 보기: {self.link}" if self.link and self.link not in body else body
+
+
 def _dt(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value

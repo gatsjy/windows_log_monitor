@@ -23,6 +23,7 @@ PERMISSIONS = {
     "dashboards.edit": "대시보드 편집",
     "settings.manage": "환경설정 (수신자·수신 그룹·외부 연동·메일 서버·로그 보관)",
     "audit.view": "감사 로그 보기·내려받기",
+    "reports.view": "점검 보고서 보기·점검 확인·지금 만들기 (조회 범위가 없는 사용자만)",
     "agents.deploy": "에이전트 설치 묶음 내려받기 (수집 API 키 포함)",
 }
 

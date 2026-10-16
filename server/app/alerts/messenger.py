@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .message import LEVEL_LABELS, SEVERITY_COLORS, AlertMessage, _dt, local
+from .message import LEVEL_LABELS, SEVERITY_COLORS, AlertMessage, Notice, _dt, local
 
 SAMPLE_LINE_MAX = 160     # 샘플 이벤트 한 줄 (메신저 화면에서 한두 줄로 보이게)
 LINK_TITLE = "Log Monitor 에서 자세히 보기"
@@ -226,6 +226,64 @@ def build_jandi(m: AlertMessage) -> dict[str, Any]:
     return {"body": body, "connectColor": SEVERITY_COLORS[m.severity].upper(), "connectInfo": info}
 
 
+# ------------------------------------------------------------------- 공지 (점검 보고서)
+# 보고서 같은 공지는 제목·요약 몇 줄·링크만 보낸다 (자세한 내용은 화면과 메일 HTML). 줄은 우리가 만든 문구지만
+# PC 이름 등 로그에서 온 값이 섞일 수 있어 알림과 같은 무력화를 한다.
+
+def _notice_lines(n: Notice) -> list[str]:
+    return [_cut(line, FACT_MAX) for line in n.lines[:20]]
+
+
+def notice_json(n: Notice) -> dict[str, Any]:
+    return {"source": "log-monitor", "type": "notice", "title": n.title, "text": "\n".join(n.lines), "link": n.link}
+
+
+def notice_text(n: Notice) -> dict[str, Any]:
+    text = "\n".join([_cut(n.title, TITLE_MAX), *_notice_lines(n)])
+    return {"text": f"{text}\n{n.link}" if n.link else text}
+
+
+def notice_slack(n: Notice) -> dict[str, Any]:
+    details: list[dict[str, Any]] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": _mrkdwn("\n".join(_notice_lines(n)) or n.title, 3000)}}]
+    if n.link:
+        details.append({"type": "context", "elements": [
+            {"type": "mrkdwn", "text": f"<{_slack_url(n.link)}|{LINK_TITLE}>"}]})
+    fallback = _mrkdwn(n.title, 3000)
+    return {"text": fallback, "blocks": [{"type": "header", "text": {"type": "plain_text", "text": _cut(n.title, 150)}}],
+            "attachments": [{"color": SEVERITY_COLORS.get(n.severity, SEVERITY_COLORS["info"]), "fallback": fallback,
+                             "blocks": details}]}
+
+
+def notice_teams(n: Notice) -> dict[str, Any]:
+    body: list[dict[str, Any]] = [
+        {"type": "Container", "style": TEAMS_STYLE.get(n.severity, "accent"), "bleed": True, "items": [
+            {"type": "TextBlock", "text": _no_md_link(_cut(n.title, TITLE_MAX)), "weight": "Bolder", "size": "Medium",
+             "wrap": True}]},
+        *({"type": "TextBlock", "text": _no_md_link(line), "wrap": True, "spacing": "None"} for line in _notice_lines(n)),
+    ]
+    card: dict[str, Any] = {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard",
+                            "version": "1.4", "msteams": {"width": "Full"}, "body": body}
+    if n.link:
+        card["actions"] = [{"type": "Action.OpenUrl", "title": LINK_TITLE, "url": n.link}]
+    return {"type": "message", "attachments": [
+        {"contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None, "content": card}]}
+
+
+def notice_dooray(n: Notice) -> dict[str, Any]:
+    attachment: dict[str, Any] = {"title": LINK_TITLE if n.link else "요약", "text": _no_md_link("\n".join(_notice_lines(n))),
+                                  "color": SEVERITY_COLORS.get(n.severity, SEVERITY_COLORS["info"])}
+    if n.link:
+        attachment["titleLink"] = n.link
+    return {"botName": "Log Monitor", "text": _no_md_link(_cut(n.title, TITLE_MAX)), "attachments": [attachment]}
+
+
+def notice_jandi(n: Notice) -> dict[str, Any]:
+    body = _no_md_link(_cut(n.title, TITLE_MAX)) + (f"\n[{LINK_TITLE}]({n.link})" if n.link else "")
+    return {"body": body, "connectColor": SEVERITY_COLORS.get(n.severity, SEVERITY_COLORS["info"]).upper(),
+            "connectInfo": [{"title": "요약", "description": _no_md_link("\n".join(_notice_lines(n)))}]}
+
+
 # ------------------------------------------------------------------------ 목록
 
 @dataclass(frozen=True)
@@ -237,20 +295,21 @@ class WebhookFormat:
     headers: dict[str, str] = field(default_factory=dict)  # 서비스가 요구하는 헤더 (사용자가 넣은 헤더가 우선)
     https_only: bool = False                     # 클라우드 메신저: 주소의 토큰이 평문으로 나가지 않게 (http 로도 받아 버림)
     min_interval_sec: float = 0.0                # 같은 주소로 보내는 최소 간격 (넘으면 버리거나 429 를 주는 서비스)
+    notice: Callable[[Notice], dict[str, Any]] = notice_json  # 공지(점검 보고서) 본문
 
 
 FORMATS: dict[str, WebhookFormat] = {f.key: f for f in (
     WebhookFormat("json", "json — 알림 전체 데이터 (사내 시스템 연동)", build_json),
-    WebhookFormat("text", "text — {\"text\": \"...\"} (Mattermost·Rocket.Chat 등)", build_text),
+    WebhookFormat("text", "text — {\"text\": \"...\"} (Mattermost·Rocket.Chat 등)", build_text, notice=notice_text),
     WebhookFormat("slack", "Slack — 수신 웹훅 (색 막대·항목·최근 이벤트)", build_slack,
-                  ("hooks.slack.com", "hooks.slack-gov.com"), https_only=True, min_interval_sec=1.0),
+                  ("hooks.slack.com", "hooks.slack-gov.com"), https_only=True, min_interval_sec=1.0, notice=notice_slack),
     WebhookFormat("teams", "Microsoft Teams — 워크플로 웹훅 (Adaptive Card)", build_teams,
-                  ("environment.api.powerplatform.com",), https_only=True, min_interval_sec=0.3),
+                  ("environment.api.powerplatform.com",), https_only=True, min_interval_sec=0.3, notice=notice_teams),
     WebhookFormat("dooray", "두레이 — 메신저 Incoming", build_dooray,
                   ("hook.dooray.com", "hook.gov-dooray.com", "hook.dooray.co.kr", "hook.gov-dooray.co.kr"),
-                  https_only=True, min_interval_sec=1.1),
+                  https_only=True, min_interval_sec=1.1, notice=notice_dooray),
     WebhookFormat("jandi", "잔디 — Incoming 웹훅", build_jandi, ("wh.jandi.com",),
-                  {"Accept": "application/vnd.tosslab.jandi-v2+json"}, https_only=True, min_interval_sec=1.0),
+                  {"Accept": "application/vnd.tosslab.jandi-v2+json"}, https_only=True, min_interval_sec=1.0, notice=notice_jandi),
 )}
 
 # 주소로 알 수 있는 '쓰면 안 되는' 웹훅 — 화면에서 경고 (저장은 막지 않는다: 사내 프록시 등 예외가 있을 수 있다)

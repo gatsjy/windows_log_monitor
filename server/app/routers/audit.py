@@ -73,6 +73,11 @@ ACTION_LABELS = {
     "backup.failed": "DB 백업 실패",
     "backup.verify": "백업 복구 시험",
     "backup.restore": "백업으로 DB 복원",
+    "report.create": "점검 보고서 만들기",
+    "report.review": "점검 보고서 확인",
+    "report.send": "점검 보고서 다시 보내기",
+    "settings.report.save": "점검 보고서 설정",
+    "retention.purge_reports": "보관기간 만료 점검 보고서 삭제",
 }
 
 

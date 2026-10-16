@@ -139,6 +139,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `alert_deliveries` | 알림 대상별 전송 상태 (002) | `pending/sent/failed/gave_up/skipped`, 시도 횟수, 마지막 오류(건너뛴 사유: 받을 최소 수준·무음) |
 | `alert_notes` | 알림 처리 기록 (009) | 확인·해결·다시 열기·메모 타임라인. **수정·삭제 불가 트리거**(알림이 보관기간 만료로 지워질 때만 함께 삭제) |
 | `alert_silences` | 알림 무음 (009) | 규칙·대상(NULL = 전체)·시작·끝·사유·만든 사람. 해제는 행을 지우지 않고 끝 시각만 앞당김 |
+| `reports` | 점검 보고서 (011) | 일간·주간·기간·`payload`(내용 전체)·점검 필요 수·전송 결과·점검 확인. **내용·기간 수정, 삭제·TRUNCATE 불가 트리거**(확인은 한 번만, 보관기간 만료 정리만 삭제) |
 | `schema_migrations` | 적용된 마이그레이션 | 자동 관리 |
 
 **events 인덱스:**
@@ -194,6 +195,11 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `PUT /api/alerts/config` | 본문 = YAML. 검증 실패 시 422 + 오류 내용, 파일은 그대로 (저장은 audit_log 기록) |
 | `POST /api/alerts/test/{notifier}` | 알림 대상 연결 테스트 (audit_log 기록) |
 | `POST /api/settings/webhook-preview` | `{format, severity?}` 웹훅 형식별 예시 본문·헤더 (보내지 않음) — `settings.manage` |
+| `GET /api/reports` · `GET /api/reports/{id}` | 점검 보고서 목록(확인 안 한 수, 일정) · 상세(내용·요약·내용 해시) — `reports.view`, 조회 범위 없는 사용자만 |
+| `GET /api/reports/{id}/html` | 메일과 같은 보고서 문서 (화면 iframe·인쇄용, CSP 로 스크립트 차단) — `reports.view` |
+| `POST /api/reports` · `POST /api/reports/{id}/review` | 지금 만들기 `{kind: daily|weekly}`(보내지 않음) · 점검 확인 `{note}`(한 번만) — `reports.view` |
+| `POST /api/reports/{id}/send` | 설정된 받는 곳으로 (다시) 보내기 — `settings.manage` |
+| `GET/PUT /api/settings/report` | 점검 보고서 일정·받는 곳 — `settings.manage` |
 | `PUT /api/alerts/rules` | 규칙 한 개 추가·수정 (`{original?, rule}`), 그 규칙 블록만 바꿈 — `alerts.manage` |
 | `DELETE /api/alerts/rules/{이름}` · `POST /api/alerts/rules/enabled` | 삭제 · 켜기/끄기 (`{names, enabled}`, 묶음 단위 가능) — `alerts.manage` |
 | `POST /api/alerts/rules/preview` | 최근 N시간 데이터로 규칙 미리보기 (맞는 로그·예상 알림·대상별) — `alerts.manage` |
@@ -207,7 +213,7 @@ OpenAPI 문서는 `http://<서버>:8080/docs` 에 있습니다.
 ## 5. UI
 
 - **기술:** 순수 HTML/CSS/ES 모듈. 빌드, npm, 외부 CDN 없이 동작합니다(폐쇄망에서도 동작).
-- **라우팅:** `#/dashboard/<이름>`, `#/live`, `#/events?<필터>`, `#/alerts`, `#/agents`, `#/fields?source=&path=`
+- **라우팅:** `#/dashboard/<이름>`, `#/live`, `#/events?<필터>`, `#/alerts`, `#/agents`, `#/fields?source=&path=`, `#/reports/<번호>`
   - 필터는 URL에 남기 때문에 주소를 공유하면 같은 화면이 열립니다.
 - **디자인 토큰:** `web/css/app.css` 의 `:root` 에 있습니다. 라이트/다크 모두 정의되어 있고 사이드바에서 전환합니다.
 - **차트 규칙 (`web/js/charts.js`):**
@@ -381,10 +387,33 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 - **웹훅:** 로컬 수신기로 json 수신을 확인했습니다.
 - **메신저 형식 (2026-10-15):** Slack·Teams(워크플로)·두레이·잔디 공식 문서와 실제 응답(가짜 토큰으로 오류 응답만)으로 본문·헤더·제한을 확인하고, 형식별 본문 스냅샷과 로컬 수신기 시험(헤더·간격·토큰 가림)으로 고정했습니다.
   - **각 서비스의 실제 채널로 보내 보는 시험은 아직입니다(BACKLOG B-04).** 받는 쪽 화면(색 막대·카드·줄바꿈)은 실채널에서 한 번씩 확인해야 합니다.
+- **점검 보고서 (2026-10-16):** 개발 서버에서 주간(기동 직후, 지난주분)·일간(09:00, 어제분) 보고서가 자동으로 만들어졌고, 수신 그룹 '운영팀'으로 보낸 메일이 Mailpit 에 도착(HTML·평문·보고서 링크), 화면 열람·점검 확인·휴대폰 폭을 확인했습니다.
 - **Oracle:** `gvenzl/oracle-free:23-slim-faststart` 시험 컨테이너의 `LOGMON_ALERTS` 에 INSERT 했습니다.
   - CLOB 4000자 초과, 한글, 재전송 시 중복 무시를 확인했습니다.
   - 이 컨테이너는 시험에만 썼고 구성에는 넣지 않았습니다.
   - **사내 Oracle 버전과 계정 권한으로 다시 시험해야 합니다.**
+
+### 6.6 정기 점검 보고서 (ISMS 2.9.5, ADR-032)
+
+```
+1분마다 (app/reports/scheduler.py, advisory lock 으로 1곳에서만)
+  일간: 매일 09:00 이 지나면 어제(0~24시) / 주간: 월요일 09:00 이 지나면 지난주(월~일)   — 시간대 WLM_DISPLAY_TZ
+  → 같은 기간 보고서가 없으면 만들기 (reports 고유 색인: 재시작·여러 대여도 한 번만)
+  → 저장(내용 고칠 수 없음) + 감사로그 report.create(내용 해시) → 받는 곳으로 보내기(결과는 보고서 행에)
+```
+
+- **내용(`app/reports/builder.py`):** 맨 위 **점검 필요**(없으면 '특이 사항 없음') →
+  - 로그 현황: 수준별 건수, 직전 기간 대비, 시간·일별 추이, 오류가 많은 PC, 분류별
+  - 보안 이벤트: 로그온 실패(계정·출발지 IP 상위), 계정 잠금, 계정 생성·삭제·변경, 보안 그룹 구성원 추가, 감사·시스템 로그 삭제, 감사 정책 변경, 서비스 설치, 예약 작업, SQL Server 로그인 실패
+  - 알림 처리: 발생(심각도별), 처리 상태, 지금 해결 안 된 알림(심각한 것·오래된 것부터), 해결까지 걸린 시간(중앙값)
+  - 수집 PC(온라인·지연·연락 끊김 목록), 로그 보관(파티션·보관 파일·마지막 무결성 확인), DB 백업·복구 시험
+- **점검 필요가 되는 것:** 로그 0건(수집 멈춤), 직전 기간보다 절반 이하, 백업 문제, 로그 삭제(bad)·감사 정책 변경·보안 그룹 추가(warn), 해결 안 된 심각·오류 알림, 연락 끊긴 PC, 없는 보관 파일·무결성 문제.
+- **보내기:** 수신 그룹은 메일(HTML 전체 + 평문), 웹훅은 형식별 요약 몇 줄 + 보고서 링크(`#/reports/<번호>`). Oracle 연동은 보고서를 받지 않습니다. 받는 곳이 없어도 보고서는 만들어 저장합니다.
+- **화면 '점검 보고서'(`#/reports`, `reports.view`):** 이력(점검 필요 수·전송 결과·점검 확인), 열람(서버가 만든 메일과 같은 문서를 sandbox iframe 으로), **점검 확인**(무엇을 보았고 어떻게 조치했는지, 한 번만·고칠 수 없음), 인쇄용으로 열기(PDF 저장), 지금 만들기(어제·지난주, 보내지 않음), 설정된 받는 곳으로 보내기(`settings.manage`).
+- **환경설정 '점검 보고서':** 일간 사용·시각, 주간 사용·요일·시각, 받는 곳(수신 그룹·웹훅).
+- 보고서는 모든 PC·분류를 담으므로 조회 범위가 정해진 사용자는 `reports.view` 가 있어도 볼 수 없습니다.
+- 보관기간(`WLM_RETENTION_DAYS`)이 지나면 지우고 감사로그 `retention.purge_reports` 를 남깁니다.
+- `WLM_REPORT_SCHEDULER=off` 면 정기 실행을 하지 않습니다(지금 만들기만). 여러 대 중 한 대만 돌리거나 테스트에서 씁니다.
 
 ## 7. 인증과 권한 (Phase 2)
 
@@ -415,7 +444,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
   - 공개: `/api/ingest`(API 키), `/api/auth/login`, `/api/auth/info`, `/healthz`
   - 그 외 `/api/*` 는 로그인 필수
   - 로그인한 사용자 누구나: 볼 수 있는 알림의 확인·메모
-  - 관리자 또는 해당 권한 그룹: 알림 규칙 관리(`alerts.manage`), 알림 처리(`alerts.handle`: 해결·다시 열기·무음), 대시보드 편집(`dashboards.edit`), 환경설정(`settings.manage`), 감사로그(`audit.view`), 에이전트 설치 묶음(`agents.deploy`)
+  - 관리자 또는 해당 권한 그룹: 알림 규칙 관리(`alerts.manage`), 알림 처리(`alerts.handle`: 해결·다시 열기·무음), 대시보드 편집(`dashboards.edit`), 환경설정(`settings.manage`), 감사로그(`audit.view`), 점검 보고서(`reports.view`, 조회 범위 없는 사용자만), 에이전트 설치 묶음(`agents.deploy`)
   - 관리자만: 사용자·사용자 그룹 관리 (권한 상승 방지)
 - **감사로그(audit_log):**
   - 기록 대상: 로그인 성공·실패·잠금·로그아웃·세션 만료, 비밀번호 변경, 사용자 관리, 이벤트 검색 조건·상세 조회, 모든 설정 변경, Oracle 쿼리 실행, 보관·삭제
@@ -434,7 +463,7 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 
 | 항목 | 내용 |
 |---|---|
-| 기능 권한 | `alerts.manage` 알림 규칙 관리 · `alerts.handle` 알림 처리(해결·다시 열기·무음) · `dashboards.edit` 대시보드 편집 · `settings.manage` 환경설정 · `audit.view` 감사 로그 · `agents.deploy` 에이전트 설치 묶음 (`app/auth/groups.py` PERMISSIONS) |
+| 기능 권한 | `alerts.manage` 알림 규칙 관리 · `alerts.handle` 알림 처리(해결·다시 열기·무음) · `dashboards.edit` 대시보드 편집 · `settings.manage` 환경설정 · `audit.view` 감사 로그 · `reports.view` 점검 보고서 · `agents.deploy` 에이전트 설치 묶음 (`app/auth/groups.py` PERMISSIONS) |
 | 조회 범위 | 분류(예: DB(MSSQL)) 와 PC 이름(쉼표, `MED-*` 처럼 `*` 사용, 대소문자 무시). 둘 다 정하면 '그 분류이면서 그 PC' |
 | 여러 그룹 | 권한은 합치고, 범위는 합집합. 범위가 비어 있는 그룹에 속하거나 그룹이 없으면 전체 |
 | 관리자 | 그룹과 상관없이 모든 권한·모든 로그 |

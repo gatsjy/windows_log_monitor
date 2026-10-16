@@ -14,12 +14,13 @@ import * as dashboard from './views/dashboard.js';
 import * as events from './views/events.js';
 import * as fields from './views/fields.js';
 import * as live from './views/live.js';
+import * as reports from './views/reports.js';
 import * as settingsView from './views/settings.js';
 import * as users from './views/users.js';
 
-const VIEWS = { dashboard, live, events, alerts, agents, fields, users, audit, settings: settingsView };
+const VIEWS = { dashboard, live, events, alerts, agents, fields, users, audit, reports, settings: settingsView };
 // 화면별 필요한 권한 ('admin' = 관리자만). 서버도 같은 권한으로 API 를 막는다
-const VIEW_PERMS = { users: 'admin', audit: 'audit.view', settings: 'settings.manage' };
+const VIEW_PERMS = { users: 'admin', audit: 'audit.view', reports: 'reports.view', settings: 'settings.manage' };
 const allowedView = (name) => !VIEW_PERMS[name] || (VIEW_PERMS[name] === 'admin' ? auth.isAdmin() : auth.can(VIEW_PERMS[name]));
 const root = document.getElementById('view');
 let unmount = null;

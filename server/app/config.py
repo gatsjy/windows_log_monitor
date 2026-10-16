@@ -40,6 +40,8 @@ class Settings:
     backup_time: str = _env("BACKUP_TIME", "02:30")
     backup_keep: int = _int("BACKUP_KEEP", 14)
     backup_verify_weekday: int = _int("BACKUP_VERIFY_WEEKDAY", 7)  # 1=월 … 7=일, 0=자동 복구 시험 안 함
+    # 점검 보고서 정기 실행 (일정·받는 곳은 환경설정 화면). 끄면 '지금 만들기'만 된다 — 테스트, 또는 여러 대 중 한 대만 돌릴 때
+    report_scheduler: bool = _env("REPORT_SCHEDULER", "on").lower() in ("1", "on", "true", "yes")
     # 마지막 수신 후 이 시간(초) 이내면 '온라인', stale 이내면 '지연', 그 이후는 '오프라인'
     heartbeat_online_sec: int = _int("HEARTBEAT_ONLINE_SEC", 90)
     heartbeat_stale_sec: int = _int("HEARTBEAT_STALE_SEC", 900)

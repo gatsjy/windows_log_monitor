@@ -138,6 +138,18 @@ async def purge_audit(now: datetime | None = None) -> None:
                        {"deleted": deleted, "retention_days": settings.retention_days, "cutoff": cutoff.isoformat()})
 
 
+async def purge_reports(now: datetime | None = None) -> None:
+    """점검 보고서도 로그와 같은 보관기간 (ISMS 점검 증적). 지운 사실은 감사로그에 남긴다."""
+    from . import repository
+
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.retention_days)
+    deleted = await repository.purge_reports(cutoff)
+    if deleted:
+        log.warning("보관기간 만료 점검 보고서 삭제: %s건", deleted)
+        await db.audit("system", "retention.purge_reports", "reports",
+                       {"deleted": deleted, "retention_days": settings.retention_days, "cutoff": cutoff.isoformat()})
+
+
 async def purge_sessions() -> None:
     from .auth import service
 
@@ -154,6 +166,7 @@ async def run_maintenance() -> None:
             await drop_expired(conn)
             await purge_alerts()
             await purge_audit()
+            await purge_reports()
             await purge_sessions()
         finally:
             await conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
