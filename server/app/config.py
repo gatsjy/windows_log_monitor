@@ -101,7 +101,8 @@ class Settings:
     tls_ca_file: str = _env("TLS_CA_FILE", "/app/tls/ca.crt")           # 에이전트 설치 묶음에 넣는 루트 CA(공개값)
     # X-Forwarded-For/Proto 를 믿을 리버스 프록시 IP·CIDR. 비우면 프록시 헤더를 보지 않는다('*'·/0 은 기동 거부)
     trusted_proxies: tuple[str, ...] = _list("TRUSTED_PROXIES")
-    hsts_max_age: int = _int("HSTS_MAX_AGE", 0)   # https 응답의 HSTS 초 (0 = 보내지 않음)
+    # https 응답의 HSTS 초. 비우면 보내지 않음, 0 이면 'max-age=0' 을 보내 브라우저에 남은 HSTS 를 지운다(되돌릴 때)
+    hsts_max_age: int | None = int(_env("HSTS_MAX_AGE", "").strip()) if _env("HSTS_MAX_AGE", "").strip() else None
 
     @property
     def tls(self) -> bool:

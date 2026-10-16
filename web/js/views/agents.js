@@ -7,6 +7,9 @@ import { confirmModal, errorBox, fmtCompact, fmtDuration, fmtNum, fmtRelative, f
 // 마지막 하트비트의 전송 방식. syslog 장비처럼 하트비트가 없으면 '–'. TLS 를 켠 서버에서 평문이면 경고 색
 function transportLabel(value, serverTls) {
   if (value === 'tls') return html`<span class="tag-good" title="TLS 로 암호화해 보냅니다">TLS</span>`;
+  if (value === 'web') {
+    return html`<span class="tag-bad" title="화면 포트(8080)로 보냅니다 — 0.4 이전 설치 묶음. TLS 를 켜면 끊기니 새 묶음으로 다시 설치하세요">평문(화면 포트)</span>`;
+  }
   if (value === 'plain') {
     return serverTls
       ? html`<span class="tag-bad" title="평문 — 새 설치 묶음(TLS)으로 다시 설치하세요">평문</span>`
@@ -61,7 +64,13 @@ export async function mount(root, params) {
     const opt = { os: 'windows', server: info.server && info.server !== 'localhost' ? info.server : '', port: info.port, iis: false, mssql: false };
     const tls = info.tls?.enabled ? info.tls : null;
     // 에이전트가 서버 인증서를 확인할 DNS 이름: 서버 주소가 인증서 이름이면 그것, 아니면(IP 등) 첫 이름 — 서버도 같은 규칙
-    const pickName = () => (tls?.server_names.includes(opt.server.toLowerCase()) ? opt.server.toLowerCase() : tls?.server_names[0] || '');
+    // 와일드카드(*.corp.local)뿐이면 그 아래 이름을 직접 적는다 — 서버 주소가 맞으면 그것으로 채운다
+    const wildMatch = (host) => tls?.wildcards.some((w) => host.endsWith(w.slice(1)) && !host.slice(0, -w.length + 1).includes('.'));
+    const pickName = () => {
+      const host = opt.server.toLowerCase();
+      if (tls?.server_names.includes(host) || wildMatch(host)) return host;
+      return tls?.server_names[0] || '';
+    };
     opt.name = pickName();
     const isIp = (v) => /^[0-9.]+$|:/.test(v);
     const draw = () => {
@@ -73,7 +82,9 @@ export async function mount(root, params) {
             ${tls.problems.length ? html`<ul class="ref-list" style="margin:6px 0 0">${tls.problems.map((p) =>
               html`<li class="${p.level === 'error' ? 'tag-bad' : ''}">${p.text}</li>`)}</ul>` : ''}</div>
           <label class="field"><span>인증서 이름 (에이전트가 서버를 확인할 이름)</span>
-            <select class="input" data-name>${tls.server_names.map((n) => html`<option value="${n}" ${n === opt.name ? 'selected' : ''}>${n}</option>`)}</select></label>
+            ${tls.server_names.length
+              ? html`<select class="input" data-name>${tls.server_names.map((n) => html`<option value="${n}" ${n === opt.name ? 'selected' : ''}>${n}</option>`)}</select>`
+              : html`<input class="input" data-name value="${opt.name}" placeholder="${tls.wildcards[0] ? `예: logmon.${tls.wildcards[0].slice(2)} (${tls.wildcards[0]} 에 맞는 이름)` : 'DNS 이름'}">`}</label>
           <p class="muted" style="margin:0;font-size:12.5px;visibility:${isIp(opt.server) ? 'visible' : 'hidden'}" data-ip-hint>서버 주소가 IP 라도 됩니다. 인증서 이름은 확인용이라 DNS 에 등록되어 있지 않아도 됩니다.</p>`
         : html`<p class="hint-box" style="margin-top:4px" data-plain-note><b class="tag-bad">평문 전송</b>입니다 — 로그와 수집 키가 암호화되지 않습니다(ISMS 2.7.1).
             서버에서 TLS 를 켜면 이 창이 TLS 묶음을 만듭니다 (docs/AIRGAP.md §7.5).</p>`;
@@ -125,7 +136,7 @@ export async function mount(root, params) {
         // 자리는 늘 차지하고 보이기만 바꾼다 (줄이 생기고 없어지면 단추가 움직여 클릭이 빗나간다)
         el.querySelector('[data-ip-hint]').style.visibility = isIp(opt.server) ? 'visible' : 'hidden';
       });
-      el.querySelector('[data-name]')?.addEventListener('change', (e) => { opt.name = e.target.value; });
+      el.querySelector('[data-name]')?.addEventListener('change', (e) => { opt.name = e.target.value.trim(); });
       el.querySelector('[data-port]').addEventListener('input', (e) => { opt.port = Number(e.target.value) || info.port; });
       el.querySelector('[data-iis]')?.addEventListener('change', (e) => { opt.iis = e.target.checked; });
       el.querySelector('[data-mssql]')?.addEventListener('change', (e) => { opt.mssql = e.target.checked; });
@@ -187,10 +198,14 @@ export async function mount(root, params) {
       const present = new Set(items.map((a) => a.host));
       [...selected].forEach((h) => { if (!present.has(h)) selected.delete(h); });
       // TLS 를 켠 서버에서 아직 평문으로 보내는 PC — 평문 수집을 닫기 전에 0 이 되어야 한다 (ADR-036)
-      const plain = transport?.tls ? items.filter((a) => a.last_transport === 'plain').length : 0;
+      const plain = transport?.tls ? items.filter((a) => a.last_transport === 'plain' || a.last_transport === 'web').length : 0;
+      // 화면 포트로 보내는 옛 묶음(0.4 이전)은 TLS 를 켜는 순간 끊긴다 — 켜기 전에 알린다
+      const web = transport?.tls ? 0 : items.filter((a) => a.last_transport === 'web').length;
       table.innerHTML = html`${plain ? html`<p class="hint-box" style="margin:12px 16px 0" data-plain>
           <b class="tag-bad">평문으로 보내는 PC ${fmtNum(plain)}대</b> — '에이전트 설치'에서 새 설치 묶음(TLS)을 받아 다시 설치하세요.
           모두 옮긴 뒤 평문 수집을 닫습니다(docs/AIRGAP.md §7.5).</p>` : ''}
+        ${web ? html`<p class="hint-box" style="margin:12px 16px 0" data-web>
+          <b class="tag-bad">화면 포트(8080)로 보내는 PC ${fmtNum(web)}대</b> — 0.4 이전 설치 묶음입니다. TLS 를 켜면 끊기니 먼저 새 묶음으로 다시 설치하세요.</p>` : ''}
         ${admin ? html`<div class="toolbar" data-bulk style="padding:10px 16px;justify-content:space-between">
           <span class="muted" data-bulk-count></span>
           <span class="toolbar">

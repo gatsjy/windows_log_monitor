@@ -102,7 +102,8 @@ class IngestPortGuard:
 
 class SecurityHeaders:
     """기본 보안 헤더 (순수 ASGI 미들웨어 — SSE 스트리밍에 영향 없음).
-    HSTS 는 https 응답에만, WLM_HSTS_MAX_AGE 가 0 보다 클 때만 — 그 이름의 모든 포트에 걸리고 되돌리기 어려워 기본은 끈다.
+    HSTS 는 https 응답에만, WLM_HSTS_MAX_AGE 를 정했을 때만 — 그 이름의 모든 포트에 걸리고 되돌리기 어려워 기본은 끈다.
+    되돌릴 때는 0 으로 두어 'max-age=0' 을 보내야 브라우저가 지운다(헤더를 아예 안 보내면 기억이 남는다).
     includeSubDomains 는 넣지 않는다(같은 도메인의 다른 사내 서비스까지 묶지 않게)."""
 
     def __init__(self, app):
@@ -118,7 +119,7 @@ class SecurityHeaders:
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("Referrer-Policy", "same-origin")
-                if settings.hsts_max_age > 0 and scope.get("scheme") == "https":
+                if settings.hsts_max_age is not None and scope.get("scheme") == "https":
                     headers.setdefault("Strict-Transport-Security", f"max-age={settings.hsts_max_age}")
             await send(message)
 

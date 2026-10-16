@@ -91,7 +91,8 @@ if [ "$UPGRADE" = 0 ]; then
         if printf '%s' "$URL_HOST" | grep -Eq '^[0-9.]+$|:'; then TLS_NAMES=(logmon.internal); TLS_IPS+=("$URL_HOST")
         else TLS_NAMES=("$URL_HOST"); fi
       fi ;;
-    *) { [ ${#TLS_NAMES[@]} -eq 0 ] && [ -z "$TLS_CERT" ]; } || die "TLS 로 설치하려면 --public-url 을 https://… 로 주세요" ;;
+    *) { [ ${#TLS_NAMES[@]} -eq 0 ] && [ ${#TLS_IPS[@]} -eq 0 ] && [ -z "$TLS_CERT" ]; } \
+         || die "TLS 로 설치하려면 --public-url 을 https://… 로 주세요" ;;
   esac
 fi
 echo "  Docker $(docker version --format '{{.Server.Version}}'), $(docker compose version --short 2>/dev/null || docker compose version)"
@@ -185,7 +186,7 @@ if [ "$UPGRADE" = 1 ] && ! grep -q '^WLM_DB_MEM_LIMIT=' "$TARGET/.env"; then
 fi
 
 # ------------------------------------------------------------------ 6.5 TLS 인증서
-if [ ${#TLS_NAMES[@]} -gt 0 ] || [ -n "$TLS_CERT" ]; then
+if [ ${#TLS_NAMES[@]} -gt 0 ] || [ ${#TLS_IPS[@]} -gt 0 ] || [ -n "$TLS_CERT" ]; then
   step "6.5 TLS 인증서 (docs/AIRGAP.md §7.5)"
   # tls/ 는 api(uid 10001)만 읽는다(api 에는 읽기 전용 마운트). 이미지의 wlm 그룹 번호는 정해져 있지 않아 소유자로 준다.
   # tls-ca/(CA 개인키)는 root 만 — api 에는 마운트하지 않는다
@@ -204,16 +205,27 @@ if [ ${#TLS_NAMES[@]} -gt 0 ] || [ -n "$TLS_CERT" ]; then
     echo "  사내 PKI 인증서를 복사했습니다 → $TARGET/tls/"
   else
     ARGS=()
-    for n in "${TLS_NAMES[@]}"; do ARGS+=(--name "$n"); done
+    for n in ${TLS_NAMES[@]+"${TLS_NAMES[@]}"}; do ARGS+=(--name "$n"); done
     for ip in ${TLS_IPS[@]+"${TLS_IPS[@]}"}; do ARGS+=(--ip "$ip"); done
-    # CA 가 이미 있으면 새로 만들지 않는다 — 새 CA 는 모든 에이전트 재배포를 뜻한다
-    if [ -f "$TARGET/tls-ca/ca.key" ]; then CMD=(tls-renew --dir /out); else CMD=(tls-init --out /out); fi
+    # CA 가 이미 있으면 새로 만들지 않는다 — 새 CA 는 모든 에이전트 재배포를 뜻한다 (갱신은 지금 이름을 유지하고 더한다)
+    if [ -f "$TARGET/tls-ca/ca.key" ]; then
+      CMD=(tls-renew --dir /out)
+    elif [ -f "$TARGET/tls/ca.crt" ]; then
+      # 안내대로 CA 개인키를 오프라인으로 옮긴 설치 — 여기서 새 CA 를 만들면 배포된 모든 에이전트가 끊긴다
+      die "배포된 CA($TARGET/tls/ca.crt)가 있는데 CA 개인키($TARGET/tls-ca/ca.key)가 없습니다. 오프라인으로 옮겨 둔 tls-ca/ 를 되돌려 놓고 다시 실행하세요. 새 CA 로 바꾸려면(전체 에이전트 재배포) tls/ 를 비운 뒤 실행합니다 (docs/AIRGAP.md §7.5)"
+    elif [ ${#TLS_NAMES[@]} -eq 0 ]; then
+      die "--tls-ip 만으로는 인증서를 만들 수 없습니다 — 에이전트가 확인할 DNS 이름을 --tls-name 으로 함께 주세요 (DNS 에 없는 이름이어도 됨)"
+    else
+      CMD=(tls-init --out /out)
+    fi
     docker run --rm --network none --user 0 -v "$TARGET/tls:/out" -v "$TARGET/tls-ca:/ca" \
-      --entrypoint python "$API_IMAGE" -m app.cli "${CMD[@]}" --ca-dir /ca "${ARGS[@]}" \
+      --entrypoint python "$API_IMAGE" -m app.cli "${CMD[@]}" --ca-dir /ca ${ARGS[@]+"${ARGS[@]}"} \
       || die "인증서를 만들지 못했습니다 (위 오류 참고)"
   fi
-  # api 와 같은 계정(uid 10001)으로 읽어 본다 — 키를 못 읽으면 api 가 기동하지 못한다
-  docker run --rm --network none -v "$TARGET/tls:/app/tls:ro" --entrypoint python "$API_IMAGE" -m app.cli tls-status \
+  # api 와 같은 계정(uid 10001)으로 실제 핸드셰이크까지 해 본다 — 키를 못 읽거나 짝이 아니거나 에이전트가 믿지 않을
+  # 인증서면 여기서 멈춘다(켠 뒤에 api 가 재시작을 되풀이하지 않게). 공개 주소 점검은 .env 의 값으로
+  docker run --rm --network none -v "$TARGET/tls:/app/tls:ro" -e WLM_PUBLIC_URL="$(env_get WLM_PUBLIC_URL)" \
+    --entrypoint python "$API_IMAGE" -m app.cli tls-status \
     || die "인증서에 문제가 있습니다 (위 [오류] 참고, docs/AIRGAP.md §7.5)"
   if [ "$UPGRADE" = 0 ]; then
     # 새 설치에는 평문 에이전트가 없다 → 처음부터 TLS 만

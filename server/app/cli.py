@@ -198,6 +198,10 @@ def _tls(args: argparse.Namespace) -> int:
         if (ca_dir / "ca.key").exists() and not args.force:
             raise tlsutil.TlsError(f"이미 CA 가 있습니다({ca_dir / 'ca.key'}). 새 CA 를 만들면 모든 에이전트를 다시 배포해야 합니다. "
                                    "서버 인증서만 새로 만들려면 tls-renew, 정말 새로 만들려면 --force.")
+        # CA 개인키를 오프라인으로 옮겨 둔 설치: 배포된 CA(ca.crt)가 있는데 키만 없다 — 새 CA 로 덮으면 모든 에이전트가 끊긴다
+        if (out / "ca.crt").exists() and not args.force:
+            raise tlsutil.TlsError(f"이미 배포된 CA 가 있습니다({out / 'ca.crt'}). 오프라인으로 옮긴 CA 개인키(tls-ca/)를 되돌려 놓고 "
+                                   "tls-renew 로 갱신하세요. 새 CA 로 바꾸려면(전체 에이전트 재배포) --force.")
         ca_key, ca = tlsutil.issue_ca(args.name, args.ip)
         key, cert = tlsutil.issue_server(ca_key, ca, args.name, args.ip, days=args.days)
         ca_dir.mkdir(parents=True, exist_ok=True)

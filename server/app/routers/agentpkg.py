@@ -103,27 +103,34 @@ async def package_info(admin: User = Depends(require_permission("agents.deploy")
 
 
 def _tls_bundle(server: str, name: str | None) -> dict:
-    """TLS 묶음에 넣을 값. 에이전트가 이 CA·이름으로 서버를 확인하지 못할 묶음은 만들지 않는다."""
+    """TLS 묶음에 넣을 값. 에이전트가 이 CA·이름으로 서버를 확인하지 못할 묶음은 만들지 않는다
+    (status 가 에이전트와 같은 OpenSSL 로 핸드셰이크해 본 결과 — 만료·용도·이름 제한·중간 CA·키 짝)."""
     st = tlsutil.status(settings)
+    errors = [text for level, text in st.problems if level == "error"]
+    if errors:   # 서버 인증서를 못 읽음·만료·에이전트가 믿지 않음 등 — 진짜 원인을 먼저
+        raise HTTPException(409, errors[0])
     if st.ca_sha256 is None:
         raise HTTPException(409, f"CA 인증서({settings.tls_ca_file})가 없어 TLS 설치 묶음을 만들 수 없습니다 (docs/AIRGAP.md §7.5)")
-    errors = [text for level, text in st.problems if level == "error"]
-    if errors:
-        raise HTTPException(409, errors[0])
-    if not st.usable_names:
+    if not st.dns_names:
         raise HTTPException(409, "서버 인증서에 DNS 이름이 없어 에이전트가 서버를 확인할 수 없습니다 — "
                                  "python -m app.cli tls-renew --name <이름> 으로 이름을 넣으세요")
     if name:
         name = name.strip().lower().rstrip(".")
         if tlsutil.is_ip(name):
             raise HTTPException(422, "인증서 이름은 DNS 이름이어야 합니다 (에이전트는 IP 로 서버를 확인하지 못합니다)")
+        # 와일드카드 SAN 에 맞더라도 그대로 설정 파일·스크립트에 들어가므로 DNS 이름 모양만 받는다
+        if not tlsutil.is_dns_name(name):
+            raise HTTPException(422, "인증서 이름은 DNS 이름(영문자·숫자·하이픈과 점)만 됩니다 (와일드카드·공백 불가)")
         if not any(tlsutil.name_matches(n, name) for n in st.dns_names):
-            raise HTTPException(422, f"서버 인증서에 없는 이름입니다. 가능한 이름: {', '.join(st.usable_names)}")
+            raise HTTPException(422, f"서버 인증서에 없는 이름입니다. 가능한 이름: {', '.join(st.dns_names)}")
     else:
         name = tlsutil.pick_server_name(st, server)
+        if not name:   # 와일드카드(*.corp.local)만 있고 서버 주소가 IP 등이라 고를 수 없다
+            raise HTTPException(409, f"서버 인증서에 와일드카드 이름({', '.join(st.wildcards)})만 있습니다 — "
+                                     "그 아래의 서버 이름(예: logmon.corp.local)을 '인증서 이름'으로 지정하세요")
     try:
-        ca = Path(settings.tls_ca_file).read_bytes()
-    except OSError as exc:
+        ca = tlsutil.ca_bundle_pem(settings.tls_ca_file)   # 인증서만 다시 써서 (개인키가 섞인 파일도 퍼지지 않게)
+    except (OSError, ValueError) as exc:
         raise HTTPException(409, f"CA 인증서를 읽을 수 없습니다: {exc}") from exc
     return {"name": name, "ca_sha256": st.ca_sha256, "ca": ca}
 

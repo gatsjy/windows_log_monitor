@@ -35,3 +35,10 @@ os.environ["WLM_BACKUP_VERIFY_WEEKDAY"] = "7"
 os.environ["WLM_SECRET_KEY"] = "test-secret-key-0123456789abcdef"
 # 점검 보고서 정기 실행은 실제 시각으로 돌아 테스트 DB 에 보고서를 만들어 버린다 → 끄고, 테스트가 tick(now) 을 직접 부른다
 os.environ["WLM_REPORT_SCHEDULER"] = "off"
+# 개발 서버를 TLS 로 띄워 둔 채(WLM_TLS=on, AIRGAP.md §13) 시험을 돌려도 평문 전제의 시험이 흔들리지 않게 고정한다
+os.environ["WLM_TLS"] = "off"
+os.environ["WLM_INGEST_PLAIN"] = "on"
+os.environ["WLM_TRUSTED_PROXIES"] = ""
+os.environ["WLM_HSTS_MAX_AGE"] = ""
+os.environ["WLM_COOKIE_SECURE"] = "false"
+os.environ["WLM_SEARCH_TIMEOUT_SEC"] = "30"

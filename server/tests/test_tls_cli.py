@@ -35,6 +35,10 @@ def test_init_renew_status(tmp_path, monkeypatch, capsys):
     # 두 번째 init 은 CA 를 덮지 않는다
     code, _ = _cli(monkeypatch, capsys, "tls-init", "--out", str(out), "--ca-dir", str(ca_dir), "--name", "x.local")
     assert "이미 CA 가 있습니다" in str(code)
+    # CA 개인키를 오프라인으로 옮긴 뒤(tls-ca/ 없음) 다시 init 해도 배포된 CA 를 덮지 않는다
+    code, _ = _cli(monkeypatch, capsys, "tls-init", "--out", str(out), "--ca-dir", str(tmp_path / "moved-away"),
+                   "--name", "logmon.corp.local")
+    assert "이미 배포된 CA" in str(code) and not (tmp_path / "moved-away" / "ca.key").exists()
     # CA 키를 tls/ 에 두려 하면 거부
     code, _ = _cli(monkeypatch, capsys, "tls-init", "--out", str(out), "--ca-dir", str(out), "--name", "x.local")
     assert "다른 곳" in str(code)

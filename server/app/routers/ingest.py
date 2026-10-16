@@ -83,8 +83,14 @@ async def ingest(request: Request, x_api_key: str | None = Header(default=None, 
         (heartbeats if isinstance(item, Heartbeat) else events).append(item)
 
     client_ip = request.client.host if request.client else None
-    # TLS 리스너(또는 TLS 를 끝낸 신뢰 프록시 — X-Forwarded-Proto)로 왔는지. 하트비트에만 기록된다 (ADR-036)
-    transport = "tls" if request.url.scheme == "https" else "plain"
+    # TLS 리스너(또는 TLS 를 끝낸 신뢰 프록시 — X-Forwarded-Proto)로 왔는지. 하트비트에만 기록된다 (ADR-036).
+    # 화면 포트(8080)로 오는 평문은 0.4 이전 설치 묶음이다 — TLS 를 켜면 그 포트가 https 만 받아 끊기므로 따로 표시한다
+    if request.url.scheme == "https":
+        transport = "tls"
+    elif (request.scope.get("server") or (None, None))[1] == settings.web_listen_port:
+        transport = "web"
+    else:
+        transport = "plain"
     await repository.insert_batch(events, heartbeats, client_ip, transport)
 
     live.ingest_rate.add(len(events))

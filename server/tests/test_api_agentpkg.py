@@ -217,3 +217,68 @@ def test_tls_refuses_bundles_agents_cannot_verify(client, tls_on):
     tls_on(now=tls_on.past)
     r = client.get("/api/agents/package", params={"server": "logmon.corp.local"}, headers=CSRF)
     assert r.status_code == 409 and "만료" in r.json()["detail"]
+
+
+def test_tls_bundle_carries_only_certificates(client, tls_on):
+    """사내 PKI 의 full.pem 처럼 CA 파일에 개인키가 섞여 있으면 묶음을 만들지 않고, 묶음에는 늘 인증서만 들어간다."""
+    from app import tlsutil
+
+    d, _ = tls_on()
+    pem = (d / "ca.crt").read_bytes()
+    (d / "ca.crt").write_bytes(pem + tlsutil.key_pem(tlsutil.load_key(str(d / "server.key"))))
+    r = client.get("/api/agents/package", params={"server": "logmon.corp.local"}, headers=CSRF)
+    assert r.status_code == 409 and "개인키" in r.json()["detail"]
+    assert b"PRIVATE KEY" not in tlsutil.ca_bundle_pem(str(d / "ca.crt"))
+
+
+def test_tls_wildcard_certificate_and_name_checks(client, tls_on, monkeypatch):
+    """와일드카드(*.corp.local)뿐인 사내 인증서: 서버 주소가 그 아래 이름이면 그것으로, IP 면 이름을 지정하게.
+    이름은 DNS 모양만 받는다 (설정 파일·스크립트에 그대로 들어가므로)."""
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    from app import tlsutil
+    from app.routers import agentpkg
+
+    d, _ = tls_on()
+    root_key, root = tlsutil.issue_ca(["corp.local"], [])
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.now(UTC)
+    leaf = (x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "corp")]))
+            .issuer_name(root.subject).public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=300))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("*.corp.local")]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(
+                root.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value), critical=False)
+            .sign(root_key, hashes.SHA256()))
+    (d / "server.crt").write_bytes(tlsutil.cert_pem(leaf))
+    (d / "server.key").write_bytes(tlsutil.key_pem(key))
+    (d / "ca.crt").write_bytes(tlsutil.cert_pem(root))
+    monkeypatch.setattr(agentpkg, "settings", replace(agentpkg.settings, public_url="https://logmon.corp.local"))
+    info = client.get("/api/agents/package/info", headers=CSRF).json()["tls"]
+    assert info["server_names"] == [] and info["wildcards"] == ["*.corp.local"] and info["ca_ok"]
+    get = lambda **p: client.get("/api/agents/package", params=p, headers=CSRF)
+    conf = json.loads(unzip(get(server="logmon.corp.local")).read("log-monitor-agent-windows/settings.json"))
+    assert conf["TlsServerName"] == "logmon.corp.local"
+    r = get(server="10.0.0.10")
+    assert r.status_code == 409 and "와일드카드" in r.json()["detail"]
+    conf = json.loads(unzip(get(server="10.0.0.10", name="LogMon.corp.local.")).read(
+        "log-monitor-agent-windows/settings.json"))
+    assert conf["TlsServerName"] == "logmon.corp.local"
+    for bad in ("*.corp.local", "a b.corp.local", "x\n tls: off\n#.corp.local", "$(id).corp.local"):
+        r = get(server="10.0.0.10", name=bad)
+        assert r.status_code == 422 and "DNS 이름" in r.json()["detail"], bad
+
+
+def test_tls_unreadable_server_cert_names_the_real_cause(client, tls_on):
+    d, _ = tls_on()
+    (d / "server.crt").write_bytes(b"")
+    r = client.get("/api/agents/package", params={"server": "logmon.corp.local"}, headers=CSRF)
+    assert r.status_code == 409 and "서버 인증서" in r.json()["detail"] and "CA 인증서" not in r.json()["detail"]

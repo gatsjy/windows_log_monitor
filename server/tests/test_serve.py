@@ -77,7 +77,9 @@ def test_hsts_only_on_https_when_enabled(monkeypatch):
     h = _headers({"scheme": "https"}, monkeypatch, hsts_max_age=15552000)
     assert h["strict-transport-security"] == "max-age=15552000"   # includeSubDomains 없음
     assert "strict-transport-security" not in _headers({"scheme": "http"}, monkeypatch, hsts_max_age=15552000)
-    assert "strict-transport-security" not in _headers({"scheme": "https"}, monkeypatch, hsts_max_age=0)
+    assert "strict-transport-security" not in _headers({"scheme": "https"}, monkeypatch, hsts_max_age=None)   # 기본
+    # 되돌릴 때: 0 이면 'max-age=0' 을 보내 브라우저가 기억을 지운다 (아예 안 보내면 기억이 남는다)
+    assert _headers({"scheme": "https"}, monkeypatch, hsts_max_age=0)["strict-transport-security"] == "max-age=0"
     assert h["x-frame-options"] == "DENY"
 
 

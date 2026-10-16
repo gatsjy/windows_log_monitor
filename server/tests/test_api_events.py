@@ -104,13 +104,13 @@ def test_search_time_limit(client, monkeypatch):
     monkeypatch.setattr(query, "settings", replace(query.settings, search_timeout_sec=1))
 
     async def slow(*_args, **_kwargs):
-        await db.fetch_one("SELECT pg_sleep(3)")
+        await db.fetch_one("SELECT pg_sleep(10)")   # 상한(1초)보다 훨씬 길게 — 느린 CI 에서도 '멈췄는지'만 본다
 
     monkeypatch.setattr(repository, "count", slow)
     started = time.monotonic()
     r = client.get("/api/stats/count", params={"since": "1h"}, headers=CSRF)
     assert r.status_code == 503 and "1초" in r.json()["detail"] and "따옴표" in r.json()["detail"]
-    assert time.monotonic() - started < 2.5
+    assert time.monotonic() - started < 6
     # 검색 문장 칸이 없는 화면에는 그 화면에서 할 수 있는 안내만
     monkeypatch.setattr(repository, "agents", slow)
     r = client.get("/api/agents", params={"since": "30d"}, headers=CSRF)
@@ -155,11 +155,11 @@ def test_search_slots_keep_connections_for_ingest(client):
         started = time.monotonic()
         with pytest.raises(db.QueryTimeout) as info:
             client.portal.call(limited, "SELECT 1")
-        assert info.value.busy and 0.9 < time.monotonic() - started < 2
-        # 상한 없는 작업(수집·알림 엔진)은 자리와 무관하게 바로
+        assert info.value.busy and 0.9 < time.monotonic() - started < 6
+        # 상한 없는 작업(수집·알림 엔진)은 자리와 무관하게 바로 (잘못 자리를 기다리면 여기서 멈춘다)
         started = time.monotonic()
         assert client.portal.call(db.fetch_one, "SELECT 1 AS ok")["ok"] == 1
-        assert time.monotonic() - started < 0.5
+        assert time.monotonic() - started < 3
     finally:
         client.portal.call(free, db.SEARCH_SLOTS)
     assert client.portal.call(limited, "SELECT 1 AS ok")["ok"] == 1
@@ -177,15 +177,20 @@ def test_other_cancel_is_not_a_timeout(client):
     async def run():
         db.limit_statement_time(30)
 
-        async def cancel_soon():
-            await asyncio.sleep(0.5)
+        async def cancel_when_running():
+            # 쿼리가 실제로 돌기 시작한 뒤에 취소한다 (정해 둔 시간만 기다리면 느린 CI 에서 취소가 먼저 와 빗나간다)
             async with await db.connect_autocommit() as conn:
-                await conn.execute("SELECT pg_cancel_backend(pid) FROM pg_stat_activity"
-                                   " WHERE query = 'SELECT pg_sleep(5)' AND pid <> pg_backend_pid()")
+                for _ in range(200):
+                    cur = await conn.execute("SELECT pg_cancel_backend(pid) AS ok FROM pg_stat_activity"
+                                             " WHERE query = 'SELECT pg_sleep(30)' AND state = 'active'"
+                                             " AND pid <> pg_backend_pid()")
+                    if await cur.fetchone():
+                        return
+                    await asyncio.sleep(0.05)
 
-        task = asyncio.create_task(cancel_soon())
+        task = asyncio.create_task(cancel_when_running())
         try:
-            await db.fetch_one("SELECT pg_sleep(5)")
+            await db.fetch_one("SELECT pg_sleep(30)")
         finally:
             await task
 
@@ -229,7 +234,11 @@ def test_agent_transport_from_heartbeat(client):
     assert client.post("/api/ingest", json=[plain_hb], headers=KEY).status_code == 200
     # 같은 PC 의 이벤트가 평문(수집기 등)으로 와도 TLS 기록은 그대로
     assert client.post("/api/ingest", json=[_win("TLS-PC", 4624, {})], headers=KEY).status_code == 200
+    # 화면 포트(8000)로 온 평문 = 0.4 이전 묶음 — TLS 를 켜면 끊기므로 따로 표시
+    web_hb = {**hb, "agent_host": "WEB-PORT-PC"}
+    assert client.post("http://testserver:8000/api/ingest", json=[web_hb], headers=KEY).status_code == 200
     r = client.get("/api/agents", params={"since": "1h"}, headers=CSRF).json()
     by_host = {a["host"]: a["last_transport"] for a in r["items"]}
     assert by_host["TLS-PC"] == "tls" and by_host["PLAIN-PC"] == "plain" and by_host["WIN-T"] is None
+    assert by_host["WEB-PORT-PC"] == "web"
     assert r["transport"] == {"tls": False, "ingest_plain": True}

@@ -86,6 +86,9 @@ async def main() -> None:
     from .main import app  # 기동 전 점검이 실패하면 앱을 불러오지도 않는다
 
     specs = listener_specs(settings)
+    if settings.tls:
+        # 파일만 바꾸고 재시작을 빠뜨리면 옛 인증서를 계속 내보낸다 — 매일 점검이 그 차이를 알리게 기억해 둔다
+        tlsutil.remember_served(settings)
     servers = [(spec, _Server(uvicorn.Config(app, **uvicorn_kwargs(settings, spec)))) for spec in specs]
     web = servers[0][1]
 
