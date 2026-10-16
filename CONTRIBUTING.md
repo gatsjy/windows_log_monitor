@@ -25,7 +25,11 @@ python3 tools/simulate.py           # 테스트 데이터
 ```bash
 docker compose exec api python -m pytest                   # 테스트
 docker compose exec api ruff check --no-cache app tests    # 린트
+node --test 'server/tests/js/*.test.mjs'                   # 검색 문장 화면 시험 (npm 없음)
+docker compose run --rm backup selftest                    # 백업 스크립트를 고쳤으면
 ```
+
+- push·PR 마다 GitHub Actions 가 같은 검사를 돌립니다(`.github/workflows/ci.yml`): 테스트·린트(개발 이미지), 백업 자체 시험, 화면 모듈 시험, 에이전트·수집기 설정 `fluent-bit --dry-run`(리눅스·윈도), 운영 이미지 취약점 점검(Trivy). 모두 통과해야 `main` 에 합칠 수 있습니다.
 
 - 관련 화면을 브라우저에서 직접 열어 확인하고, 콘솔 오류가 없는지 봅니다.
 - 동작이 바뀌면 `docs/PROJECT.md`, 설계 결정은 `docs/DECISIONS.md`, 사용자에게 보이는 변경은 `CHANGELOG.md` 의 다음 버전 절에 적습니다.

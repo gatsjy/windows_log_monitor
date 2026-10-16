@@ -83,7 +83,7 @@ def parse_time(value: Any) -> datetime | None:
         dt = None
         for fmt in _TIME_FORMATS:
             try:
-                dt = datetime.strptime(text, fmt)  # noqa: DTZ007 - 모든 형식에 %z 포함
+                dt = datetime.strptime(text, fmt)  # noqa: DTZ007, RUF100 - 모든 형식에 %z 포함 (ruff 0.16 은 이를 몰라 경고)
                 break
             except ValueError:
                 continue

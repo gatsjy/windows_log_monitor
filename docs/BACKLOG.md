@@ -29,7 +29,7 @@
 | B-12 | 사내 SSO (AD/LDAP, OIDC) | P2 | M | ISMS 2.5.x, ADR-013 | 대기 |
 | B-13 | 순서 기반 상관 규칙 | P2 | M | 비교 §2 | 대기 |
 | B-14 | Sigma 규칙 가져오기 | P3 | L | 비교 §2 | 대기 |
-| B-15 | CI (테스트·린트·이미지 점검) + 브랜치 보호 | P1 | S | ISMS 2.8.5, 2.10.x | 대기 |
+| B-15 | CI (테스트·린트·이미지 점검) + 브랜치 보호 — 첫 실행 확인·브랜치 보호 설정 남음 | P1 | S | ISMS 2.8.5, 2.10.x | 진행 중 |
 | B-17 | 보관 파일 외부 저장소 복제 | P2 | S | ISMS 2.9.4 | 대기 |
 | B-18 | 개인정보 마스킹 (수집 단계) | P2 | M | ISMS-P 3.x | 대기 |
 | B-19 | 읽기 전용 API 토큰 (외부 연계) | P3 | S | 확장 | 대기 |
@@ -69,6 +69,8 @@
 - **구현 방향:**
   - 메인 브랜치 보호 규칙(검토·CI 통과 필수).
   - CI(사내 GitLab CI 또는 GitHub Actions): `ruff check`, `pytest`(PostgreSQL 서비스 컨테이너), 에이전트 설정 `fluent-bit --dry-run`, 이미지 취약점 점검 Trivy(Apache 2.0).
+- **한 것 (2026-10-16):** `.github/workflows/ci.yml` — 개발 이미지로 pytest·ruff(PostgreSQL 서비스), 백업 selftest, node 화면 시험(교차 퍼징 포함), 에이전트 설정 채움(`tools/ci/render_agent_configs.py`) 후 `fluent-bit --dry-run`(리눅스 이미지·윈도 4.0.14 zip 해시 확인), 운영 이미지 Trivy(CRITICAL 실패·HIGH 기록). action 은 커밋 해시 고정, ruff 버전 고정(ADR-034). 로컬에서 같은 이미지·새 DB 로 실행해 통과 확인.
+- **남은 것:** push 후 GitHub 에서 첫 실행 결과 확인(특히 윈도 dry-run·Trivy), `main` 브랜치 보호 규칙(CI 통과·검토 필수) 설정 — 저장소 관리자 작업.
 - **완료 기준:** 메인 브랜치에 CI 통과 필수, ISMS.md 2.8.5 상태 갱신.
 
 ---

@@ -1,0 +1,145 @@
+# CI (BACKLOG B-15, ISMS 2.8.5·2.10.x) — 모든 push·PR 에서 테스트·린트·설정 검사·이미지 취약점 점검.
+# 외부 action 은 커밋 해시로 고정한다(태그는 바뀔 수 있다 — 공급망 위험). 갱신할 때는 해시와 주석의 버전을 같이 바꾼다.
+# 권한은 읽기만 (토큰으로 저장소를 바꾸지 않는다).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUENTBIT_VERSION: "4.0.14"   # deploy/airgap/make-bundle.sh 와 같게 (윈도 묶음에 넣는 버전)
+
+jobs:
+  server:
+    name: 서버 테스트·린트 (개발 이미지)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      db:
+        image: postgres:17-alpine
+        env: { POSTGRES_USER: wlm, POSTGRES_PASSWORD: wlm, POSTGRES_DB: wlm }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U wlm" --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # 시험은 컨테이너 안의 배치(/app/app·/app/web·/app/config·/app/tests)를 전제로 한다 → 개발 이미지에서 그대로 돌린다
+      - name: 개발 이미지 빌드
+        run: docker build --target dev -f server/Dockerfile -t wlm-ci:dev .
+      - name: 린트 (ruff)
+        run: docker run --rm wlm-ci:dev ruff check --no-cache app tests
+      - name: 테스트 (pytest — 통합 시험은 <DB>_test 를 만들어 쓴다)
+        run: >-
+          docker run --rm --network host -v "$PWD/tools:/app/tools:ro"
+          -e WLM_DATABASE_URL=postgresql://wlm:wlm@127.0.0.1:5432/wlm
+          wlm-ci:dev python -m pytest -q
+
+  backup:
+    name: 백업 스크립트 자체 시험
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      db:
+        image: postgres:17-alpine
+        env: { POSTGRES_USER: wlm, POSTGRES_PASSWORD: wlm, POSTGRES_DB: wlm }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U wlm" --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # compose 의 backup 서비스와 같은 이미지·같은 스크립트. /pgdata 는 남은 공간 확인용 (실제 DB 볼륨 대신 임시 폴더)
+      - name: backup.sh selftest
+        run: >-
+          mkdir -p /tmp/pgdata &&
+          docker run --rm --network host
+          -e PGHOST=127.0.0.1 -e PGUSER=wlm -e PGPASSWORD=wlm -e PGDATABASE=wlm
+          -v "$PWD/deploy/backup/backup.sh:/usr/local/bin/backup.sh:ro" -v /tmp/pgdata:/pgdata:ro
+          --entrypoint /bin/sh postgres:17-alpine /usr/local/bin/backup.sh selftest
+
+  web:
+    name: 화면 모듈 시험 (node — npm 없음)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with: { node-version: "22" }
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with: { python-version: "3.13" }   # 교차 퍼징이 서버 파서(표준 라이브러리만)를 python3 -I 로 부른다
+      - name: 문법 (빌드 없는 ES 모듈)
+        run: for f in web/js/*.js web/js/*/*.js; do node --check "$f"; done
+      - name: 검색 문장 시험 + node·python3 교차 퍼징
+        run: node --test 'server/tests/js/*.test.mjs'
+
+  agents-linux:
+    name: 에이전트·수집기 설정 (Fluent Bit --dry-run, 리눅스)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: 설정 틀 채우기 (설치 스크립트와 같은 규칙)
+        run: python3 tools/ci/render_agent_configs.py /tmp/agent-render
+      - name: dry-run
+        run: |
+          docker run --rm -v /tmp/agent-render:/cfg:ro "fluent/fluent-bit:4.0" /fluent-bit/bin/fluent-bit -c /cfg/linux.yaml --dry-run
+          docker run --rm -e WLM_INGEST_API_KEY=ci -v "$PWD/collector:/cfg:ro" "fluent/fluent-bit:4.0" /fluent-bit/bin/fluent-bit -c /cfg/collector.yaml --dry-run
+
+  agents-windows:
+    name: 윈도 에이전트 설정 (Fluent Bit --dry-run, 윈도 빌드)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: 설정 틀 채우기 (IIS·MSSQL 묶음을 켠 것과 기본)
+        run: python tools/ci/render_agent_configs.py agent-render
+      # winevtlog 입력은 윈도 빌드에만 있다. 폐쇄망 묶음과 같은 zip 을 받아 저장소의 SHA-256 으로 확인한다
+      - name: Fluent Bit 받기 (해시 확인)
+        shell: pwsh
+        run: |
+          $zip = "fluent-bit-$env:FLUENTBIT_VERSION-win64.zip"
+          Invoke-WebRequest "https://packages.fluentbit.io/windows/$zip" -OutFile $zip
+          $want = (Get-Content "deploy/airgap/agent-installers/$zip.sha256").Split(" ")[0].ToLower()
+          $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $got) { throw "SHA-256 mismatch: $got (expected $want)" }
+          Expand-Archive $zip -DestinationPath fb
+      - name: dry-run
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem fb -Recurse -Filter fluent-bit.exe | Select-Object -First 1
+          foreach ($cfg in "agent-render\windows.yaml", "agent-render\windows-min.yaml") {
+            & $exe.FullName -c $cfg --dry-run
+            if ($LASTEXITCODE -ne 0) { throw "dry-run failed: $cfg" }
+          }
+
+  image:
+    name: 운영 이미지 취약점 점검 (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: 운영 이미지 빌드
+        run: docker build --target runtime -f server/Dockerfile -t wlm-ci:runtime .
+      # 고칠 수 있는 '심각(CRITICAL)'은 실패, '높음(HIGH)'은 기록만 (기반 이미지 갱신 주기와 맞추기 위해)
+      - name: 심각 취약점 (실패)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: wlm-ci:runtime
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: 높음 취약점 (기록)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: wlm-ci:runtime
+          severity: HIGH
+          ignore-unfixed: true
+          exit-code: "0"

@@ -98,6 +98,7 @@ docker compose exec api python -m pytest   # 단위 + 통합 테스트 (통합�
 docker compose exec api ruff check --no-cache app tests
 docker compose run --rm backup selftest     # 백업·복구 시험·복원 스크립트 자체 시험 (시험용 DB 만 씀)
 node --test 'server/tests/js/*.test.mjs'    # 검색 문장 화면 쪽 시험 + node·python3 교차 퍼징 (npm 없음, 개발 PC 에서)
+python3 tools/ci/render_agent_configs.py out  # 에이전트 설정 틀을 채워 보기 (CI 가 fluent-bit --dry-run 에 씀)
 curl -s localhost:8080/healthz
 ```
 
@@ -170,5 +171,6 @@ curl -s localhost:8080/healthz
 - `.env`·`.env.example` 에 `KEY=    # 설명` 처럼 빈 값 뒤 주석을 쓰지 않습니다. compose 가 설명문을 값으로 읽습니다(첫 관리자 비밀번호 사고 사례, docs/AIRGAP.md §13).
 - 컨테이너 이미지·의존성·포트·볼륨을 바꾸면 `deploy/airgap/` 스크립트와 docs/AIRGAP.md 도 확인합니다. 폐쇄망은 인터넷 없이 `--pull never` 로 기동합니다.
   - 실행 중에 인터넷에서 무언가를 내려받는 코드(CDN, 외부 글꼴, pip install 등)를 넣지 않습니다.
+- CI(`.github/workflows/ci.yml`)는 개발 이미지 안에서 시험한다(시험이 `/app/...` 배치를 전제). 외부 action 은 커밋 해시로 고정하고, ruff 는 `requirements-dev.txt` 에 버전을 고정한다 — 올릴 때 새 규칙 위반을 함께 고친다(ADR-034).
 - 성능을 바꾸는 변경(인덱스, 쿼리 형태)은 `tools/bench/bench.py --skip-seed` 로 전후를 재고 docs/PERFORMANCE.md 에 기록합니다.
   - 예: 수신 시각 조건을 추가한 파티션 가지치기는 오히려 10배 느려져 기각했습니다(ADR-017).
