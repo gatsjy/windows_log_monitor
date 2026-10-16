@@ -83,7 +83,9 @@ async def ingest(request: Request, x_api_key: str | None = Header(default=None, 
         (heartbeats if isinstance(item, Heartbeat) else events).append(item)
 
     client_ip = request.client.host if request.client else None
-    await repository.insert_batch(events, heartbeats, client_ip)
+    # TLS 리스너(또는 TLS 를 끝낸 신뢰 프록시 — X-Forwarded-Proto)로 왔는지. 하트비트에만 기록된다 (ADR-036)
+    transport = "tls" if request.url.scheme == "https" else "plain"
+    await repository.insert_batch(events, heartbeats, client_ip, transport)
 
     live.ingest_rate.add(len(events))
     live.broadcaster.publish([e.to_live(now) for e in events])

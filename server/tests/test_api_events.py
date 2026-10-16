@@ -218,3 +218,18 @@ def test_search_routes_have_time_limit(client, monkeypatch):
     # 쓰기는 잠금을 기다려서라도 끝낸다
     assert not limited("DELETE", "/api/agents/NO-SUCH-PC")
     assert not limited("POST", "/api/agents/delete", json={"hosts": ["NO-SUCH-PC"]})
+
+
+def test_agent_transport_from_heartbeat(client):
+    """하트비트가 들어온 전송 방식(TLS 리스너·신뢰 프록시면 https)을 PC 마다 기록 — 평문 수집을 닫을 근거 (ADR-036).
+    이벤트만 오면(수집기를 거친 syslog 등) 바꾸지 않는다."""
+    hb = {"type": "heartbeat", "agent_host": "TLS-PC", "config_version": "0.3.0"}
+    assert client.post("https://testserver/api/ingest", json=[hb], headers=KEY).status_code == 200
+    plain_hb = {**hb, "agent_host": "PLAIN-PC"}
+    assert client.post("/api/ingest", json=[plain_hb], headers=KEY).status_code == 200
+    # 같은 PC 의 이벤트가 평문(수집기 등)으로 와도 TLS 기록은 그대로
+    assert client.post("/api/ingest", json=[_win("TLS-PC", 4624, {})], headers=KEY).status_code == 200
+    r = client.get("/api/agents", params={"since": "1h"}, headers=CSRF).json()
+    by_host = {a["host"]: a["last_transport"] for a in r["items"]}
+    assert by_host["TLS-PC"] == "tls" and by_host["PLAIN-PC"] == "plain" and by_host["WIN-T"] is None
+    assert r["transport"] == {"tls": False, "ingest_plain": True}

@@ -192,7 +192,8 @@ def _field_stats(events: list[Event]) -> list[tuple]:
     return [(src, path, t, n, sample) for (src, path), (t, n, sample) in sorted(stats.items())]
 
 
-async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_ip: str | None) -> None:
+async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_ip: str | None,
+                 transport: str | None = None) -> None:
     async with conn.cursor() as cur:
         if events:
             async with cur.copy(
@@ -223,22 +224,25 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
 
         if heartbeats:
             latest = {hb.host: hb for hb in heartbeats}
+            # 전송 방식은 하트비트에서만 — 에이전트가 직접 보낸 것이 확실하다 (이벤트는 수집기를 거쳐 올 수 있다)
             await cur.executemany(
-                "INSERT INTO agents AS a (host, last_seen, last_heartbeat_at, last_ip, meta)"
-                " VALUES (%s, now(), now(), %s, %s::jsonb)"
+                "INSERT INTO agents AS a (host, last_seen, last_heartbeat_at, last_ip, meta, last_transport)"
+                " VALUES (%s, now(), now(), %s, %s::jsonb, %s)"
                 " ON CONFLICT (host) DO UPDATE SET last_seen = now(), last_heartbeat_at = now(),"
-                " last_ip = COALESCE(EXCLUDED.last_ip, a.last_ip), meta = EXCLUDED.meta",
-                [(host, client_ip, _json(hb.meta)) for host, hb in sorted(latest.items())],
+                " last_ip = COALESCE(EXCLUDED.last_ip, a.last_ip), meta = EXCLUDED.meta,"
+                " last_transport = COALESCE(EXCLUDED.last_transport, a.last_transport)",
+                [(host, client_ip, _json(hb.meta), transport) for host, hb in sorted(latest.items())],
             )
 
 
-async def insert_batch(events: list[Event], heartbeats: list[Heartbeat], client_ip: str | None) -> None:
+async def insert_batch(events: list[Event], heartbeats: list[Heartbeat], client_ip: str | None,
+                       transport: str | None = None) -> None:
     if not events and not heartbeats:
         return
     for attempt in (1, 2):
         try:
             async with db.pool().connection() as conn:
-                await _write(conn, events, heartbeats, client_ip)
+                await _write(conn, events, heartbeats, client_ip, transport)
             return
         except psycopg.errors.CheckViolation:
             # 이번 달 파티션이 아직 없을 때 (월이 바뀐 직후 등): 만들고 한 번 더 시도
@@ -324,7 +328,7 @@ async def agents(since: datetime, scopes=None) -> list[dict]:
             params += host_params
         visible = sql.SQL(" WHERE ") + sql.SQL(" OR ").join(conds)
     query = sql.SQL(
-        "SELECT a.host, a.first_seen, a.last_seen, a.last_event_at, a.last_heartbeat_at, a.last_ip,"
+        "SELECT a.host, a.first_seen, a.last_seen, a.last_event_at, a.last_heartbeat_at, a.last_ip, a.last_transport,"
         "       a.events_total, a.meta, EXTRACT(EPOCH FROM now() - a.last_seen)::bigint AS silent_sec,"
         "       COALESCE(c.total, 0) AS events, COALESCE(c.critical, 0) AS critical,"
         "       COALESCE(c.errors, 0) AS errors, COALESCE(c.warnings, 0) AS warnings,"

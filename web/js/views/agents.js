@@ -4,6 +4,17 @@ import { can, isAdmin } from '../auth.js';
 import { sourceLabel, statusBadge } from '../levels.js';
 import { confirmModal, errorBox, fmtCompact, fmtDuration, fmtNum, fmtRelative, fmtTime, html, navigate, replaceParams, toast } from '../util.js';
 
+// 마지막 하트비트의 전송 방식. syslog 장비처럼 하트비트가 없으면 '–'. TLS 를 켠 서버에서 평문이면 경고 색
+function transportLabel(value, serverTls) {
+  if (value === 'tls') return html`<span class="tag-good" title="TLS 로 암호화해 보냅니다">TLS</span>`;
+  if (value === 'plain') {
+    return serverTls
+      ? html`<span class="tag-bad" title="평문 — 새 설치 묶음(TLS)으로 다시 설치하세요">평문</span>`
+      : html`<span class="muted" title="서버가 TLS 를 켜지 않았습니다">평문</span>`;
+  }
+  return html`<span class="muted">–</span>`;
+}
+
 export async function mount(root, params) {
   let since = params.since || '24h';
   let timer;
@@ -106,7 +117,7 @@ export async function mount(root, params) {
 
   async function load() {
     try {
-      const { items, thresholds } = await api.get('/api/agents', { since });
+      const { items, thresholds, transport } = await api.get('/api/agents', { since });
       const count = (s) => items.filter((a) => a.status === s).length;
       root.querySelector('[data-summary]').innerHTML = html`${[
         ['전체', items.length, ''], ['온라인', count('online'), statusBadge('online')],
@@ -124,14 +135,19 @@ export async function mount(root, params) {
       // 목록에서 사라진 PC(다른 관리자가 지움 등)는 선택에서도 뺀다
       const present = new Set(items.map((a) => a.host));
       [...selected].forEach((h) => { if (!present.has(h)) selected.delete(h); });
-      table.innerHTML = html`${admin ? html`<div class="toolbar" data-bulk style="padding:10px 16px;justify-content:space-between">
+      // TLS 를 켠 서버에서 아직 평문으로 보내는 PC — 평문 수집을 닫기 전에 0 이 되어야 한다 (ADR-036)
+      const plain = transport?.tls ? items.filter((a) => a.last_transport === 'plain').length : 0;
+      table.innerHTML = html`${plain ? html`<p class="hint-box" style="margin:12px 16px 0" data-plain>
+          <b class="tag-bad">평문으로 보내는 PC ${fmtNum(plain)}대</b> — '에이전트 설치'에서 새 설치 묶음(TLS)을 받아 다시 설치하세요.
+          모두 옮긴 뒤 평문 수집을 닫습니다(docs/AIRGAP.md §7.5).</p>` : ''}
+        ${admin ? html`<div class="toolbar" data-bulk style="padding:10px 16px;justify-content:space-between">
           <span class="muted" data-bulk-count></span>
           <span class="toolbar">
             <button class="btn sm" data-select-offline>오프라인 PC 모두 선택</button>
             <button class="btn sm danger" data-bulk-del>선택한 PC 삭제</button>
           </span></div>` : ''}
         <div class="table-wrap"><table class="table">
-        <thead><tr>${admin ? html`<th style="width:32px"><input type="checkbox" data-check-all aria-label="전체 선택"></th>` : ''}<th>상태</th><th>PC</th><th>소스</th><th>IP</th><th>마지막 수신</th><th>하트비트</th>
+        <thead><tr>${admin ? html`<th style="width:32px"><input type="checkbox" data-check-all aria-label="전체 선택"></th>` : ''}<th>상태</th><th>PC</th><th>소스</th><th>IP</th><th>연결</th><th>마지막 수신</th><th>하트비트</th>
           <th class="r">이벤트</th><th class="r">오류</th><th class="r">경고</th><th class="r">누적</th><th>최초 등록</th><th>설정 버전</th>
           ${admin ? html`<th class="r">관리</th>` : ''}</tr></thead>
         <tbody>${items.map((a) => html`<tr class="clickable" data-host="${a.host}">
@@ -140,6 +156,7 @@ export async function mount(root, params) {
           <td class="nowrap"><b>${a.host}</b></td>
           <td class="nowrap ink-2">${a.sources.map(sourceLabel).join(', ') || '–'}</td>
           <td class="nowrap num ink-2">${a.last_ip || '–'}</td>
+          <td class="nowrap">${transportLabel(a.last_transport, transport?.tls)}</td>
           <td class="nowrap" title="${fmtTime(a.last_seen)}">${fmtRelative(a.last_seen)}</td>
           <td class="nowrap ink-2">${a.last_heartbeat_at ? fmtRelative(a.last_heartbeat_at) : '–'}</td>
           <td class="r num">${fmtCompact(a.events)}</td>

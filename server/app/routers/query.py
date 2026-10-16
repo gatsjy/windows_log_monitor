@@ -254,6 +254,8 @@ async def list_agents(request: Request, since: str = "24h"):
     return {
         "items": rows,
         "thresholds": {"online_sec": settings.heartbeat_online_sec, "stale_sec": settings.heartbeat_stale_sec},
+        # 화면이 '평문으로 보내는 PC' 를 경고할지 (TLS 를 켠 서버에서만 의미가 있다, ADR-036)
+        "transport": {"tls": settings.tls, "ingest_plain": settings.ingest_plain or not settings.tls},
     }
 
 
