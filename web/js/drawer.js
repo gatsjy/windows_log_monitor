@@ -20,8 +20,12 @@ function termOf(filter) {
   const term = key.startsWith('f.')
     ? { key: 'f', path: key.slice(2).split('.'), values: [String(value)], neg: false }
     : { key, path: [], values: [INT_KEYS.has(key) ? Number(value) : String(value)], neg: false };
+  // 문장으로 쓴 뒤 다시 읽어 '같은 조건'일 때만 (경로에 ':' 가 든 원본 키 등은 문장으로 못 써서 옛 f. 검색만)
   try {
-    return parseTerms(formatTerm(term)).length === 1 ? term : null;
+    const parsed = parseTerms(formatTerm(term));
+    const p = parsed[0];
+    const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+    return parsed.length === 1 && p.key === term.key && same(p.path, term.path) && same(p.values, term.values) ? term : null;
   } catch {
     return null;
   }
@@ -66,7 +70,8 @@ export function openDrawer({ title, subtitle = '', actions = '' }) {
       </div>
       <div class="drawer-body"></div>
     </aside>`;
-  const onKey = (ev) => { if (ev.key === 'Escape') closeDrawer(); };
+  // 안의 입력 칸이 Esc 를 이미 썼으면(자동완성 닫기·되돌리기) 패널은 닫지 않는다
+  const onKey = (ev) => { if (ev.key === 'Escape' && !ev.defaultPrevented) closeDrawer(); };
   document.addEventListener('keydown', onKey);
   root.querySelector('.drawer-overlay').addEventListener('click', closeDrawer);
   root.querySelector('[data-close]').addEventListener('click', closeDrawer);

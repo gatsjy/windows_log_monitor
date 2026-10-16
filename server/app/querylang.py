@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 # fmt: off
@@ -451,13 +452,34 @@ def format_query(terms: list[Term]) -> str:
 
 # --------------------------------------------------------------------- 원본 JSON
 
-def raw_text(value: Any) -> str:
-    """PostgreSQL `raw #>> path` 와 같은 문자열 표현 (배열·객체는 ', ' · ': ' 구분자)."""
-    if isinstance(value, str):
-        return value
+def _number_text(value: float) -> str:
+    """실수 → PostgreSQL numeric 출력 (지수 표기 없음). 저장할 때 json.dumps(=repr)가 그대로 jsonb 숫자가 되므로
+    repr 의 자릿수를 지수 없이 펼치면 #>> 와 같다: 1e-05 → 0.00001, 1e+21 → 1000…0, 1000.0 → 1000.0."""
+    text = format(Decimal(repr(value)), "f")
+    return text[1:] if text.startswith("-") and Decimal(text) == 0 else text   # numeric 에는 -0 이 없다
+
+
+def _jsonb_text(value: Any) -> str:
+    if value is None:
+        return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
-    return json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
+    if isinstance(value, float):
+        return _number_text(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ", ".join(_jsonb_text(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{json.dumps(str(k), ensure_ascii=False)}: {_jsonb_text(v)}" for k, v in value.items()) + "}"
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def raw_text(value: Any) -> str:
+    """PostgreSQL `raw #>> path` 와 같은 문자열 표현 (배열·객체는 ', ' · ': ' 구분자, 실수는 지수 표기 없이)."""
+    return value if isinstance(value, str) else _jsonb_text(value)
 
 
 def walk_raw(value: Any, path: list[str] | tuple[str, ...]) -> Any:

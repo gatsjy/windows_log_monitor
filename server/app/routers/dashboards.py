@@ -18,7 +18,7 @@ from .. import db
 from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
 from ..config import settings
-from ..filters import MAX_FIELD_FILTERS
+from ..filters import MAX_FIELD_FILTERS, field_filters
 from ..querylang import QueryError, parse_terms
 
 router = APIRouter(tags=["dashboards"])
@@ -49,7 +49,7 @@ def _validate(doc: dict) -> None:
         if text is not None:
             if not isinstance(text, str):
                 raise HTTPException(422, f"widgets[{i}].query.query 는 문자열이어야 합니다")
-            budget = MAX_FIELD_FILTERS - sum(1 for k in widget["query"] if str(k).startswith("f.") and len(k) > 2)
+            budget = MAX_FIELD_FILTERS - len(field_filters({str(k): v for k, v in widget["query"].items()}))
             try:
                 parse_terms(text, field_budget=budget)
             except QueryError as exc:

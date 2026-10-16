@@ -528,8 +528,22 @@ export const formatQuery = (terms) => terms.map(formatTerm).join(' ');
 
 // ------------------------------------------------------------------ 원본 JSON
 
+// 숫자 → PostgreSQL numeric 출력처럼 지수 표기 없이 (1e-7 → 0.0000001, 1e21 → 1000…0).
+// JSON.parse 는 1000.0 과 1000 을 구별하지 못해 서버(1000.0)와 다를 수 있다 (ADR-033 남는 차이)
+function numberText(n) {
+  const m = /^(-?)(\d+)(?:\.(\d+))?e([+-]\d+)$/.exec(String(n));
+  if (!m) return String(n);
+  const [, sign, int, frac = '', exp] = m;
+  const digits = int + frac;
+  const point = int.length + Number(exp);
+  if (point <= 0) return `${sign}0.${'0'.repeat(-point)}${digits}`;
+  if (point >= digits.length) return sign + digits + '0'.repeat(point - digits.length);
+  return `${sign}${digits.slice(0, point)}.${digits.slice(point)}`;
+}
+
 function rawJson(v) {
   if (v === null || v === undefined) return 'null';
+  if (typeof v === 'number') return numberText(v);
   if (Array.isArray(v)) return `[${v.map(rawJson).join(', ')}]`;
   if (typeof v === 'object') return `{${Object.entries(v).map(([k, x]) => `${JSON.stringify(k)}: ${rawJson(x)}`).join(', ')}}`;
   return JSON.stringify(v);
@@ -556,8 +570,26 @@ export function walkRaw(value, path) {
 // ------------------------------------------------------------------ 필터 (server/app/filters.py EventFilter)
 
 const LIST_PARAMS = ['host', 'channel', 'provider', 'source', 'category', 'user', 'ip'];
-const pyStrip = (s) => s.trim();
+// 옛 파라미터 값 정리는 서버(filters._values·q: Python str.strip)와 같은 공백으로 — JS trim 과는 \x1c-\x1f·\x85·\ufeff 가 다르다
+const PY_WS = '\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008'
+  + '\u2009\u200a\u2028\u2029\u202f\u205f\u3000';
+export function pyStrip(text) {
+  let a = 0;
+  let b = text.length;
+  while (a < b && PY_WS.includes(text[a])) a += 1;
+  while (b > a && PY_WS.includes(text[b - 1])) b -= 1;
+  return text.slice(a, b);
+}
 const splitList = (v) => String(v).split(',').map(pyStrip).filter(Boolean);
+// 검색 문장의 앞뒤 띄어쓰기만 (파서가 구분자로 보는 SYNC.ws) — 다른 글자는 뜻이 있으므로 남긴다
+const wsTrim = (text) => {
+  const cps = Array.from(text);
+  let a = 0;
+  let b = cps.length;
+  while (a < b && WS.has(cps[a])) a += 1;
+  while (b > a && WS.has(cps[b - 1])) b -= 1;
+  return cps.slice(a, b).join('');
+};
 
 function emptyFilter() {
   return {
@@ -596,18 +628,31 @@ export function mergeTerms(filter, terms) {
   return f;
 }
 
-function parseIntParam(v) {
-  return /^[+-]?[0-9]+$/.test(v) ? Number(v) : NaN;
+// 유니코드 십진 숫자(전각 '４' 등)의 값 — 숫자 묶음은 늘 0~9 열 개가 이어져 있다
+function digitValue(ch) {
+  const cp = ch.codePointAt(0);
+  let start = cp;
+  while (/\p{Nd}/u.test(String.fromCodePoint(start - 1))) start -= 1;
+  return (cp - start) % 10;
 }
+
+/** Python int() 와 같은 정수 해석 (서버 filters._ints): 부호, 유니코드 숫자, 숫자 사이 '_' */
+export function pyInt(text) {
+  const m = /^([+-]?)(\p{Nd}+(?:_\p{Nd}+)*)$/u.exec(pyStrip(String(text)));
+  if (!m) return NaN;
+  return Number(m[1] + Array.from(m[2].replaceAll('_', '')).map(digitValue).join(''));
+}
+const parseIntParam = pyInt;
 
 /** 조건 객체({host, level, q, 'f.경로', query, …}) → 필터. 서버가 400 을 낼 조건이면 null (EventFilter.from_params) */
 export function buildFilter(params) {
   let f = emptyFilter();
   const fieldFilters = [];
   for (const [key, value] of Object.entries(params ?? {})) {
-    if (key.startsWith('f.') && key.length > 2) {
+    // 빈 값은 화면이 서버로 보내지 않는다(api.get·qs) → 화면 매처도 조건으로 보지 않는다
+    if (key.startsWith('f.') && key.length > 2 && value != null && value !== '') {
       const path = key.slice(2).split('.').filter(Boolean);
-      if (path.length) fieldFilters.push([path, String(value ?? '')]);
+      if (path.length) fieldFilters.push([path, String(value)]);
     }
   }
   if (fieldFilters.length > MAX_FIELD_FILTERS) return null;
@@ -624,7 +669,7 @@ export function buildFilter(params) {
   f.qTerms = q.split('|').map(pyStrip).filter(Boolean);
   f.fields = fieldFilters;
   const text = params.query == null ? '' : String(params.query);
-  if (text.trim()) f = mergeTerms(f, parseTerms(text, { fieldBudget: MAX_FIELD_FILTERS - fieldFilters.length }));
+  if (pyStrip(text)) f = mergeTerms(f, parseTerms(text, { fieldBudget: MAX_FIELD_FILTERS - fieldFilters.length }));
   return f;
 }
 
@@ -709,8 +754,8 @@ function onlyTerm(text) {
 export function foldParams(params) {
   const parts = [];
   const rest = {};
-  const existing = params.query == null ? '' : String(params.query).trim();
-  if (existing) parts.push(existing);
+  const existing = params.query == null ? '' : wsTrim(String(params.query));
+  if (pyStrip(existing)) parts.push(existing);
   for (const key of FOLD_KEYS) {
     const raw = params[key];
     if (raw == null || raw === '') continue;

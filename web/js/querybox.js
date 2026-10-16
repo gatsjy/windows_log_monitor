@@ -89,36 +89,66 @@ function mergeShortWords(terms) {
   };
 }
 
-// 오류마다 빠른 고침 단추 (없으면 null)
-function quickFixes(err) {
+// 오류 위치가 든 토큰(따옴표 안의 띄어쓰기는 토큰 안으로 본다) 범위 [ts, te)
+function tokenSpan(cps, at) {
+  const isWs = (c) => /\s/.test(c);
+  // 처음부터 읽어 오며 따옴표 안·밖을 따진다 — 토큰 경계는 따옴표 밖의 띄어쓰기
+  let ts = 0;
+  let inQuote = false;
+  for (let i = 0; i < Math.min(at, cps.length); i += 1) {
+    if (QUOTE_CHARS.includes(cps[i])) inQuote = !inQuote;
+    else if (!inQuote && isWs(cps[i])) ts = i + 1;
+  }
+  let te = Math.max(at, ts);
+  for (; te < cps.length; te += 1) {
+    if (QUOTE_CHARS.includes(cps[te])) inQuote = !inQuote;
+    else if (!inQuote && isWs(cps[te])) break;
+  }
+  return [ts, te];
+}
+const QUOTE_CHARS = ['"', '“', '”'];
+
+// 오류마다 빠른 고침 단추. 고친 문장이 다시 틀리면(같은 자리 또는 그 앞에서) 내놓지 않는다
+export function quickFixes(err) {
   const fixes = [];
   const cps = Array.from(err.text);
   const splice = (start, end, insert) => cps.slice(0, start).join('') + insert + cps.slice(end).join('');
-  // 오류 위치가 든 토큰(띄어쓰기 사이) 범위
-  let ts = Math.min(err.start, cps.length);
-  while (ts > 0 && !/\s/.test(cps[ts - 1])) ts -= 1;
-  let te = Math.max(err.end, ts);
-  while (te < cps.length && !/\s/.test(cps[te])) te += 1;
+  const [ts, te] = tokenSpan(cps, err.start);
   const neg = cps[ts] === '-' && ts + 1 < te;
-  const token = cps.slice(neg ? ts + 1 : ts, te).join('');
-  if (err.params?.suggest && ['unknown_key', 'bad_category'].includes(err.code)) {
-    const s = err.params.suggest === 'f.경로' ? 'f.' : err.params.suggest;
-    fixes.push({ label: `'${s}' 로 고치기`, apply: () => splice(err.start, err.end, s) });
+  const from = neg ? ts + 1 : ts;
+  const token = cps.slice(from, te).join('');
+  const suggest = err.params?.suggest;
+  if (suggest && suggest !== 'f.경로' && ['unknown_key', 'bad_category'].includes(err.code)) {
+    fixes.push({ label: `'${suggest}' 로 고치기`, apply: () => splice(err.start, err.end, suggest) });
   }
   if (err.code === 'single_quote') {
-    const fixed = err.text.replace(/'([^']*)'/, '"$1"');
-    if (fixed !== err.text) fixes.push({ label: '큰따옴표로 바꾸기', apply: () => fixed });
+    // 이 자리에서 시작하는 '…' 한 쌍만 큰따옴표 구절로 (안의 따옴표는 두 번 쓰기)
+    const close = cps.indexOf("'", err.start + 1);
+    if (close > err.start) {
+      const inner = cps.slice(err.start + 1, close).join('');
+      const quoted = `"${Array.from(inner).map((c) => (QUOTE_CHARS.includes(c) ? c + c : c)).join('')}"`;
+      fixes.push({ label: '큰따옴표로 바꾸기', apply: () => splice(err.start, close + 1, quoted) });
+    }
   }
   if (['unknown_key', 'missing_key', 'wildcard', 'paren', 'reserved_word', 'single_quote', 'operator', 'time_key'].includes(err.code) && token) {
-    const phrase = `"${Array.from(token).map((c) => (c === '"' ? '""' : c)).join('')}"`;
-    fixes.push({ label: '따옴표로 감싸기 (글자 그대로 찾기)', apply: () => splice(neg ? ts + 1 : ts, te, phrase) });
+    const phrase = formatValue(token, 'word');
+    fixes.push({ label: '따옴표로 감싸기 (글자 그대로 찾기)', apply: () => splice(from, te, phrase.startsWith('"') ? phrase : `"${phrase}"`) });
   }
   if (err.code === 'pipe' && token.includes('|')) {
-    const parts = token.split('|').filter(Boolean);
-    if (parts.length > 1) fixes.push({ label: `msg:${parts.join(',')} 로 바꾸기`, apply: () => splice(neg ? ts + 1 : ts, te, `msg:${parts.map((p) => formatValue(p)).join(',')}`) });
+    const colon = token.indexOf(':');
+    const key = colon > 0 ? token.slice(0, colon).toLowerCase() : '';
+    if (key && (KEYS.includes(key) || key.startsWith('f.'))) {
+      // host:A|B → host:A,B (그 키 안의 '또는')
+      fixes.push({ label: `${token.replaceAll('|', ',')} 로 바꾸기`, apply: () => splice(from, te, token.replaceAll('|', ',')) });
+    } else {
+      const parts = token.split('|').filter(Boolean);
+      if (parts.length > 1) fixes.push({ label: `msg:${parts.join(',')} 로 바꾸기`, apply: () => splice(from, te, `msg:${parts.map((p) => formatValue(p)).join(',')}`) });
+    }
   }
   if (err.code === 'space_after_colon') fixes.push({ label: '띄어쓰기 지우기', apply: () => splice(err.start + 1, err.end, '') });
-  return fixes;
+  return fixes.filter((f) => {
+    try { parseTerms(f.apply()); return true; } catch (next) { return next instanceof QueryError && next.start > err.start; }
+  });
 }
 
 function marked(text, start, end) {
@@ -150,8 +180,11 @@ function helpCard() {
  *          suggestions?: () => Record<string, string[]>, fieldBudget?: () => number, placeholder?: string, label?: string,
  *          slashShortcut?: boolean, staleNote?: boolean}} opt   staleNote: 틀린 동안 '이전 결과' 안내 (검색 화면만)
  */
+// 입력 칸(<input>)은 줄바꿈을 말없이 지운다 → 미리 띄어쓰기로 (문장에서 줄바꿈은 띄어쓰기와 같은 뜻)
+const oneLine = (text) => String(text ?? '').replace(/\r\n?|\n/g, ' ');
+
 export function queryBox(el, opt) {
-  let committed = opt.value ?? '';
+  let committed = oneLine(opt.value);
   let terms = null;
   let error = null;
   let acItems = [];
@@ -195,7 +228,9 @@ export function queryBox(el, opt) {
   function render(stale = false) {
     input.setAttribute('aria-invalid', String(Boolean(error)));
     // 같은 내용이면 다시 그리지 않는다 — 단추를 누르는 순간 입력 칸이 포커스를 잃어(change) 다시 그리면 클릭이 사라진다
-    const signature = JSON.stringify([input.value, committed, stale, opt.since?.() ?? '', error?.code, error?.start, error?.display]);
+    // committed 는 '이전 결과' 안내에만 쓰이므로 그때만 비교한다 (Enter 뒤 첫 blur 에 다시 그려 클릭을 잃지 않게)
+    const staleShown = Boolean(error) && opt.staleNote !== false && input.value !== committed;
+    const signature = JSON.stringify([input.value, staleShown, stale, opt.since?.() ?? '', error?.code, error?.start, error?.display]);
     if (signature === lastRendered) return;
     lastRendered = signature;
     if (error) {
@@ -233,7 +268,7 @@ export function queryBox(el, opt) {
 
   /** 밖(드롭다운·수준 칩·상세 패널)에서 문장을 바꿈 */
   function set(text, { commit: doCommit = false } = {}) {
-    input.value = text;
+    input.value = oneLine(text);
     analyze();
     if (doCommit) commit();
     else if (!error) committed = text;
@@ -313,10 +348,11 @@ export function queryBox(el, opt) {
       if (e.key === 'ArrowDown') { e.preventDefault(); moveAc(1); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); moveAc(-1); return; }
       if ((e.key === 'Enter' || e.key === 'Tab') && acIndex >= 0) { e.preventDefault(); choose(acIndex); return; }
-      if (e.key === 'Escape') { e.preventDefault(); closeAc(); return; }
+      // Esc 를 여기서 끝낸다 — 상세 패널(규칙 편집기)이 Esc 로 통째로 닫히지 않게
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeAc(); return; }
     }
     if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); analyze(); commit(); }
-    if (e.key === 'Escape') { e.preventDefault(); set(committed); }
+    if (e.key === 'Escape' && input.value !== committed) { e.preventDefault(); e.stopPropagation(); set(committed); }
   });
   input.addEventListener('change', () => { clearTimeout(timer); analyze(); if (!error) commit(); });
   input.addEventListener('blur', () => setTimeout(closeAc, 150));

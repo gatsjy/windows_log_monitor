@@ -205,6 +205,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
 
   // 검색 문장 칸: 틀린 동안에는 저장·미리보기를 막는다 (서버도 ConfigError 로 거절하지만 위치를 먼저 보여 준다)
   let queryValid = true;
+  let saving = false;   // 저장 요청 중에는 문장을 고쳐도 단추를 다시 켜지 않는다
   function mountQuery() {
     const el = body.querySelector('[data-rule-query]');
     if (!el) return;
@@ -219,7 +220,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
         queryValid = Boolean(terms);
         setMatch('query', (text ?? '').trim());
         body.querySelectorAll('[data-save], [data-preview]').forEach((b) => {
-          b.disabled = !queryValid;
+          b.disabled = !queryValid || (saving && b.hasAttribute('data-save'));
           b.title = queryValid ? '' : '검색 문장의 오류를 먼저 고치세요';
         });
         if (body.querySelector('[data-sig]')) refresh();
@@ -328,6 +329,8 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
   async function save() {
     const msg = body.querySelector('[data-msg]');
     const btn = body.querySelector('[data-save]');
+    if (!queryValid) return;
+    saving = true;
     btn.disabled = true;
     try {
       const res = await api.send('PUT', '/api/alerts/rules', { original: isNew ? null : rule.name, rule: payload() });
@@ -335,7 +338,8 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
       setTimeout(() => { closeDrawer(); onSaved?.(); }, 600);
     } catch (err) {
       msg.innerHTML = errorBox(err);
-      btn.disabled = false;
+      saving = false;
+      btn.disabled = !queryValid;
     }
   }
 

@@ -24,8 +24,8 @@ from typing import Any
 
 from .querylang import FilterError, QueryError, Term, fold, parse_terms, raw_text, walk_raw
 
-__all__ = ["EventFilter", "FilterError", "QueryError", "Scope", "parse_duration", "parse_query", "parse_time",
-           "raw_text", "scopes_allow"]
+__all__ = ["EventFilter", "FilterError", "QueryError", "Scope", "field_filters", "parse_duration", "parse_query",
+           "parse_time", "query_text", "raw_text", "scopes_allow"]
 
 _DURATION_RE = re.compile(r"^(\d+)\s*([smhdw])$")
 _UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
@@ -78,6 +78,28 @@ def _ints(params, name: str) -> list[int]:
 def _host_regex(pattern: str) -> re.Pattern[str]:
     """'MED-*' → 대소문자 무시 전체 일치. * 만 와일드카드."""
     return re.compile("^" + ".*".join(re.escape(part) for part in pattern.split("*")) + "$", re.IGNORECASE)
+
+
+def field_filters(params) -> list[tuple[list[str], str]]:
+    """URL 의 f.<경로>=값 조건 (빈 단계는 버리고, 경로가 남는 것만). 검색 문장의 원본 필드 한도도 이것으로 센다."""
+    items = params.multi_items() if hasattr(params, "multi_items") else params.items()
+    out = []
+    for key, value in items:
+        if key.startswith("f.") and len(key) > 2:
+            path = [p for p in key[2:].split(".") if p]
+            if path:
+                out.append((path, str(value)))
+    return out
+
+
+def query_text(params) -> str:
+    """검색 문장 파라미터 — 한 번만 (빈 값을 하나 더 붙여도 거절: 실행한 문장과 접속기록이 어긋나지 않게).
+    쉼표가 문법 기호라 _values 로 나누지 않는다. 없거나 공백뿐이면 ''."""
+    raw = params.getlist("query") if hasattr(params, "getlist") else [params.get("query")]
+    raw = [v for v in raw if v is not None]
+    if len(raw) > 1:
+        raise FilterError("query 는 한 번만 쓸 수 있습니다")
+    return str(raw[0]) if raw and str(raw[0]).strip() else ""
 
 
 @dataclass(frozen=True)
@@ -136,14 +158,8 @@ class EventFilter:
     def from_params(cls, params, *, default_since: str | None = "24h",
                     now: datetime | None = None) -> EventFilter:
         now = now or datetime.now(UTC)
-        items = params.multi_items() if hasattr(params, "multi_items") else params.items()
-        field_filters = []
-        for key, value in items:
-            if key.startswith("f.") and len(key) > 2:
-                path = [p for p in key[2:].split(".") if p]
-                if path:
-                    field_filters.append((path, str(value)))
-        if len(field_filters) > MAX_FIELD_FILTERS:
+        fields = field_filters(params)
+        if len(fields) > MAX_FIELD_FILTERS:
             raise FilterError(f"필드 필터는 최대 {MAX_FIELD_FILTERS}개입니다")
         since = parse_time(params.get("since") or default_since, now)
         until = parse_time(params.get("until"), now)
@@ -162,15 +178,12 @@ class EventFilter:
             levels=_ints(params, "level"),
             event_ids=_ints(params, "event_id"),
             q=(params.get("q") or "").strip()[:200],
-            fields=field_filters,
+            fields=fields,
         )
-        # 검색 문장: 쉼표가 문법 기호라 _values 로 나누지 않는다. 다른 조건과 AND
-        raw = params.getlist("query") if hasattr(params, "getlist") else [params.get("query")]
-        texts = [str(v) for v in raw if v is not None and str(v).strip()]
-        if len(texts) > 1:
-            raise FilterError("query 는 한 번만 쓸 수 있습니다")
-        if texts:
-            f = f.merged(parse_terms(texts[0], field_budget=MAX_FIELD_FILTERS - len(field_filters)))
+        # 검색 문장: 다른 조건과 AND. 원본 필드 조건은 URL 의 f. 와 합쳐 MAX_FIELD_FILTERS 개
+        text = query_text(params)
+        if text:
+            f = f.merged(parse_terms(text, field_budget=MAX_FIELD_FILTERS - len(fields)))
         return f
 
     def merged(self, terms: list[Term]) -> EventFilter:

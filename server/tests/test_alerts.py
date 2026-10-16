@@ -102,6 +102,12 @@ def test_link_params_include_group():
     assert params == {"since": NOW.isoformat(), "level": "1,2", "host": "WEB-01"}
 
 
+def test_link_params_carry_the_sentence():
+    """알림 메일의 '검색 화면 열기' 링크에 검색 문장도 실린다 (화면이 열면 그대로 같은 조건)."""
+    rule = parse({"rules": [{"name": "r", "match": {"query": '-user:svc "잘못된 암호"'}, "notify": ["x"]}]}).rules[0]
+    assert _link_params(rule, "DC-01", NOW) == {"since": NOW.isoformat(), "query": '-user:svc "잘못된 암호"', "host": "DC-01"}
+
+
 @pytest.mark.parametrize(("last", "expected"), [
     (None, False),                                                                     # 처음
     ({"fired_at": NOW - timedelta(minutes=10), "silenced_until": None}, True),        # 간격 안

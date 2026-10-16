@@ -331,7 +331,8 @@ async def preview_rule(body: PreviewBody, admin: User = Depends(require_permissi
     if rule.kind == "agent_silent":
         rows = await repository.silent_agents(now - rule.silent_for, rule.hosts)
         return {"kind": rule.kind, "silent": [{"host": r["host"], "last_seen": r["last_seen"]} for r in rows]}
-    base = replace(rule.event_filter(), received_since=now - timedelta(hours=body.hours))
+    # 미리보기도 이벤트 수·대상 이름을 돌려주므로 사용자 그룹의 조회 범위를 붙인다 (ADR-025)
+    base = replace(rule.event_filter(), received_since=now - timedelta(hours=body.hours), scopes=admin.scopes)
     window_sec = max(1, _seconds(rule.window))
     matched = (await repository.count(base))["current"]
     rows = await repository.rule_preview(base, rule.group_by, window_sec, rule.threshold)

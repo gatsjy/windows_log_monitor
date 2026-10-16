@@ -3821,11 +3821,98 @@
    ]
   },
   {
-   "name": "옛 f 빈 값",
+   "name": "옛 f 빈 값 (서버는 빈 값과 비교 — 화면은 빈 값을 보내지 않으므로 무시)",
    "params": {
     "f.x": ""
    },
+   "ids": [],
+   "js_ids": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+   ]
+  },
+  {
+   "name": "옛 q 의 Python 공백 (\\x1f 는 지움)",
+   "params": {
+    "q": "timeout\u001f"
+   },
+   "ids": [
+    3,
+    9,
+    13
+   ]
+  },
+  {
+   "name": "옛 q 의 \\ufeff 는 글자 (지우지 않음)",
+   "params": {
+    "q": "﻿timeout"
+   },
    "ids": []
+  },
+  {
+   "name": "옛 PC 값의 \\x85 는 지움",
+   "params": {
+    "host": "DC-01"
+   },
+   "ids": [
+    1,
+    2
+   ]
+  },
+  {
+   "name": "옛 이벤트 ID 전각 숫자 (Python int)",
+   "params": {
+    "event_id": "４６２５"
+   },
+   "ids": [
+    1,
+    2
+   ]
+  },
+  {
+   "name": "옛 수준 숫자 사이 _ (Python int)",
+   "params": {
+    "level": "2,1_0"
+   },
+   "ids": [
+    3,
+    9,
+    13
+   ]
+  },
+  {
+   "name": "문장이 Python 공백뿐이면 조건 없음",
+   "params": {
+    "query": "\u001c"
+   },
+   "ids": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+   ]
   },
   {
    "name": "짧은 단어 AND",
@@ -4129,6 +4216,30 @@
     "source": "winevtlog"
    },
    "query": "source:winevtlog f.EventData.LogonType:10",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "query": "﻿host:A"
+   },
+   "query": "﻿host:A",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "query": "  host:A　"
+   },
+   "query": "host:A",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "q": "timeout"
+   },
+   "query": "timeout",
    "rest": {},
    "same_sql": true
   }

@@ -51,10 +51,11 @@ function selectOf(terms, key) {
 /**
  * @param {HTMLElement} el
  * @param {object} initial  filterState() 의 state
- * @param {{showTime?: boolean, onChange: (state) => void}} opt
+ * @param {{showTime?: boolean, onChange: (state) => void, loadedAt?: () => Date|null}} opt
+ *   loadedAt: 지금 보이는 결과를 불러온 시각 — '링크 복사'가 그 구간으로 고정한다
  * @returns {Promise<{setState(state), showServerError(err), terms(): any[]|null, destroy()}>}
  */
-export async function filterBar(el, initial, { showTime = true, onChange }) {
+export async function filterBar(el, initial, { showTime = true, onChange, loadedAt = () => null }) {
   let state = clean(initial);
   el.innerHTML = '<div class="card filterbar"><div class="skeleton" style="height:32px;flex:1"></div></div>';
 
@@ -86,17 +87,23 @@ export async function filterBar(el, initial, { showTime = true, onChange }) {
     value: state.query ?? '',
     since: () => state.since,
     slashShortcut: true,
-    fieldBudget: () => 10 - Object.keys(state).filter((k) => k.startsWith('f.')).length,
+    // 서버와 같은 셈: 경로가 남는 f. 파라미터만 (filters.from_params)
+    fieldBudget: () => 10 - Object.keys(state).filter((k) => k.startsWith('f.') && k.slice(2).split('.').some(Boolean)).length,
     suggestions: () => ({ host: lists.host, channel: lists.channel, source: sources }),
     onCommit: (text) => commit({ query: text }),
     onAnalyze: () => { if (ready) renderControls(); },
   });
   ready = true;
 
+  let destroyed = false;
+  let undoToast = null;
+
   function emit() { onChange({ ...state }); }
 
   function commit(patch) {
+    const sinceBefore = [state.since, state.until].join('|');
     state = clean({ ...state, ...patch });
+    if ([state.since, state.until].join('|') !== sinceBefore) box.refresh();   // 긴 기간 린트는 기간에 달렸다
     renderControls();
     emit();
   }
@@ -106,7 +113,11 @@ export async function filterBar(el, initial, { showTime = true, onChange }) {
     const before = box.committed;
     box.set(next, { commit: true });
     if (touched.length > 1 || touched.some((t) => t.neg || t.values.length > 1)) {
-      toast(`${label} 조건을 바꿨습니다.`, { action: { label: '되돌리기', onClick: () => box.set(before, { commit: true }) }, duration: 6000 });
+      undoToast?.remove();
+      // 화면을 떠난 뒤 누르면 아무것도 하지 않는다 (떠난 화면의 주소·연결을 되살리지 않게)
+      undoToast = toast(`${label} 조건을 바꿨습니다.`, {
+        action: { label: '되돌리기', onClick: () => { if (!destroyed) box.set(before, { commit: true }); } }, duration: 6000,
+      });
     }
   }
 
@@ -119,9 +130,15 @@ export async function filterBar(el, initial, { showTime = true, onChange }) {
       ${list.map((v) => html`<option value="${v}" ${v === current.value ? 'selected' : ''}>${label(v)}</option>`)}`;
   }
 
+  let lastControls = '';
   function renderControls() {
     let terms = null;
     try { terms = parseTerms(box.value); } catch { /* 문장이 틀리면 컨트롤을 잠근다 */ }
+    // 보이는 것이 같으면 다시 그리지 않는다 — 입력 칸이 포커스를 잃으며(change) 확정할 때 다시 그리면,
+    // 그 순간 누르던 칩·드롭다운·단추가 사라져 첫 클릭이 먹히지 않는다
+    const signature = JSON.stringify([terms && terms.map(({ span, ...t }) => t), Object.entries(state).filter(([k]) => k !== 'query')]);
+    if (signature === lastControls) return;
+    lastControls = signature;
     const locked = !terms;
     const lockTitle = locked ? '문장 오류를 먼저 고치세요' : '';
     const levels = terms ? levelsOf(terms) : null;
@@ -180,9 +197,11 @@ export async function filterBar(el, initial, { showTime = true, onChange }) {
       emit();
     });
     controls.querySelector('[data-copy]')?.addEventListener('click', async () => {
-      // 상대 기간(24h)은 나중에 열면 다른 결과 → 지금 보고 있는 구간으로 고정해서 복사
-      const until = state.until ? new Date(state.until) : new Date();
-      const since = sinceDate(state.since || '24h');
+      // 상대 기간(24h)은 나중에 열면 다른 결과 → 지금 보이는 결과를 불러온 구간으로 고정해서 복사
+      const loaded = loadedAt() ?? new Date();
+      const until = state.until ? new Date(state.until) : loaded;
+      const relative = /^\d+\s*[smhdw]$/.test(state.since || '24h');
+      const since = relative ? new Date(loaded.getTime() - (Date.now() - sinceDate(state.since || '24h').getTime())) : new Date(state.since);
       const params = { ...state, since: since.toISOString(), until: until.toISOString() };
       const url = `${location.origin}${location.pathname}#/events?${qs(params)}`;
       try {
@@ -200,6 +219,7 @@ export async function filterBar(el, initial, { showTime = true, onChange }) {
     setState(next) {
       state = clean(next);
       if ((state.query ?? '') !== box.committed) box.set(state.query ?? '');
+      box.refresh();
       renderControls();
     },
     /** 서버가 400 으로 거절: 문장 오류면 입력 칸에 위치를 칠한다 */
@@ -209,6 +229,10 @@ export async function filterBar(el, initial, { showTime = true, onChange }) {
     /** 상세 패널의 '좁히기·제외': 문장에 조건 하나를 더해 바로 확정 */
     applySentence(text) { box.set(text, { commit: true }); },
     get query() { return box.committed; },
-    destroy() { box.destroy(); },
+    destroy() {
+      destroyed = true;
+      undoToast?.remove();
+      box.destroy();
+    },
   };
 }

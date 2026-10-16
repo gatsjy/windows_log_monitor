@@ -19,7 +19,17 @@ from ..auth import service as auth_service
 from ..auth.deps import client_ip, require_admin, require_user
 from ..auth.service import User
 from ..config import settings
-from ..filters import MAX_FIELD_FILTERS, EventFilter, FilterError, QueryError, parse_duration, parse_time, scopes_allow
+from ..filters import (
+    MAX_FIELD_FILTERS,
+    EventFilter,
+    FilterError,
+    QueryError,
+    field_filters,
+    parse_duration,
+    parse_time,
+    query_text,
+    scopes_allow,
+)
 from ..normalizers import BY_SOURCE
 from ..normalizers.base import LEVEL_NAMES
 from ..normalizers.categories import CATEGORIES
@@ -93,7 +103,12 @@ async def list_events(request: Request, limit: int = Query(100, ge=1, le=1000), 
     next_cursor = f"{rows[-1]['ts'].isoformat()}|{rows[-1]['id']}" if has_more else None
     if cursor is None:
         # 접속기록: 누가 어떤 조건으로 로그를 검색했는지 (다음 페이지 요청은 같은 검색이라 생략)
-        conditions = {k: v for k, v in request.query_params.items() if k not in ("limit", "cursor")}
+        # 같은 이름이 여러 번 오면 모두 (실행한 조건과 기록이 어긋나지 않게 — ISMS 2.9.4)
+        grouped: dict[str, list[str]] = {}
+        for k, v in request.query_params.multi_items():
+            if k not in ("limit", "cursor"):
+                grouped.setdefault(k, []).append(v)
+        conditions = {k: v[0] if len(v) == 1 else v for k, v in grouped.items()}
         await db.audit(user.username, "events.search", None, {"query": conditions, "rows": len(rows)},
                        actor_ip=client_ip(request))
     return {"items": rows, "next_cursor": next_cursor}
@@ -288,9 +303,12 @@ async def search_parse(request: Request):
     """검색 문장 해석만 (데이터 조회 없음 → 감사 안 함). 실시간 화면은 EventSource 가 400 본문을 못 읽어서
     연결이 끊기면 이것으로 오류 위치·문구를 받아 보여 준다. 옛 파라미터 오류도 같은 400 으로 알린다."""
     f = _filter(request, default_since=None)
-    text = request.query_params.get("query") or ""
-    budget = MAX_FIELD_FILTERS - sum(1 for k in request.query_params if k.startswith("f.") and len(k) > 2)
-    terms = parse_terms(text, field_budget=budget) if text.strip() else []
+    # _filter(from_params) 와 같은 문장·같은 한도로 — 이미 통과했으므로 여기서 다시 틀릴 수 없다
+    text = query_text(request.query_params)
+    try:
+        terms = parse_terms(text, field_budget=MAX_FIELD_FILTERS - len(field_filters(request.query_params))) if text else []
+    except QueryError as exc:
+        raise QueryRejected(exc) from exc
     return {"ok": True, "terms": [t.to_json() for t in terms], "canonical": format_query(terms), "never": f.never}
 
 

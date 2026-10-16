@@ -126,9 +126,14 @@ def test_merged_does_not_touch_the_original():
 
 
 def test_query_param_rules():
+    def repeated(*values):
+        return type("P", (Params,), {"getlist": lambda self, k: list(values) if k == "query" else []})()
+
     with pytest.raises(FilterError, match="한 번만"):
-        EventFilter.from_params(type("P", (Params,), {"getlist": lambda self, k: ["a", "b"] if k == "query" else []})(),
-                                default_since=None)
+        EventFilter.from_params(repeated("a", "b"), default_since=None)
+    # 빈 값을 하나 더 붙여도 거절 — 실행한 문장과 접속기록(마지막 값만 남김)이 어긋나지 않게
+    with pytest.raises(FilterError, match="한 번만"):
+        EventFilter.from_params(repeated("user:admin", ""), default_since=None)
     # 원본 필드 조건은 URL 의 f. 와 합쳐 10개
     params = {f"f.u{i}": "1" for i in range(8)}
     with pytest.raises(QueryError) as info:
@@ -154,3 +159,12 @@ def test_live_filter_matches_with_scope():
     f = replace(_filter({"query": "-category:security"}), scopes=(Scope(categories=("security",)),))
     assert not f.matches({"category": "system", "host": "X"})   # 문장으로 범위를 넓힐 수 없다
     assert not f.matches({"category": "security", "host": "X"})
+
+
+def test_raw_text_is_postgresql_text():
+    """#>> 와 같은 글자: 실수는 지수 표기 없이(저장 때 repr 이 jsonb 숫자가 된다), 배열·객체는 ', ' · ': '."""
+    from app.querylang import raw_text
+
+    assert [raw_text(v) for v in (1e-05, 2.5e-05, 1e21, 1000.0, 1000, -0.0, True, None, "그대로")] == \
+        ["0.00001", "0.000025", "1000000000000000000000", "1000.0", "1000", "0.0", "true", "null", "그대로"]
+    assert raw_text([1e-05, "x", {"a": None}]) == '[0.00001, "x", {"a": null}]'

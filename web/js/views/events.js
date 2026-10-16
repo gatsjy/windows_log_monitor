@@ -12,7 +12,9 @@ export async function mount(root, params) {
   const initial = filterState({ since: '24h', ...params }, { showTime: true });
   let state = initial.state;
   if (initial.changed) replaceParams('events', state);
-  let bar = null;
+  let bar = null;        // 필터 막대는 PC·채널 목록을 받은 뒤에 생긴다 — 그 전의 조작은 state 로 받고 생기면 맞춘다
+  let disposed = false;
+  let loadedAt = null;   // 지금 보이는 결과를 불러온 시각 ('링크 복사'가 그 구간으로 고정)
   let items = [];
   let cursor = null;
   let token = 0;
@@ -54,6 +56,7 @@ export async function mount(root, params) {
 
   async function load() {
     const my = ++token;
+    loadedAt = new Date();
     rowsEl.innerHTML = '';
     // 문장이 틀렸으면 서버에 묻지 않는다 (입력 칸이 틀린 곳을 보여 준다) — 옛 링크·손으로 고친 주소로 들어온 경우
     try { parseTerms(state.query ?? ''); } catch {
@@ -95,9 +98,22 @@ export async function mount(root, params) {
 
   filterBar(root.querySelector('[data-filter]'), state, {
     onChange: (next) => { state = next; replaceParams('events', state); load(); },
-  }).then((b) => { bar = b; });
-  // 상세 패널의 '좁히기·제외'가 이 화면의 문장을 고치게
-  setSearchContext({ query: () => bar?.query ?? state.query ?? '', apply: (text) => bar?.applySentence(text) });
+    loadedAt: () => loadedAt,
+  }).then((b) => {
+    if (disposed) { b.destroy(); return; }
+    bar = b;
+    b.setState(state);   // 막대가 생기기 전에 막대 그래프로 구간을 골랐을 수 있다
+  });
+  // 상세 패널의 '좁히기·제외'가 이 화면의 문장을 고치게 (막대가 아직 없으면 state 로 바로)
+  setSearchContext({
+    query: () => bar?.query ?? state.query ?? '',
+    apply: (text) => {
+      if (bar) { bar.applySentence(text); return; }
+      state = { ...state, query: text };
+      replaceParams('events', state);
+      load();
+    },
+  });
   load();
-  return () => { token++; bar?.destroy(); setSearchContext(null); };
+  return () => { disposed = true; token++; bar?.destroy(); setSearchContext(null); };
 }

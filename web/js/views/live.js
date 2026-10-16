@@ -14,6 +14,7 @@ export async function mount(root, params) {
   let state = initial.state;
   if (initial.changed) replaceParams('live', state);
   let bar = null;
+  let disposed = false;
   let source = null;
   let paused = false;
   let pending = [];
@@ -126,13 +127,17 @@ export async function mount(root, params) {
     emptyEl.hidden = rowsEl.children.length > 0;
   }
 
-  filterBar(root.querySelector('[data-filter]'), state, {
-    showTime: false,
-    onChange: (next) => { state = next; replaceParams('live', state); refilter(); connect(); },
-  }).then((b) => { bar = b; });
-  setSearchContext({ query: () => bar?.query ?? state.query ?? '', apply: (text) => bar?.applySentence(text) });
+  const onChange = (next) => { state = next; replaceParams('live', state); refilter(); connect(); };
+  filterBar(root.querySelector('[data-filter]'), state, { showTime: false, onChange }).then((b) => {
+    if (disposed) { b.destroy(); return; }
+    bar = b;
+  });
+  setSearchContext({
+    query: () => bar?.query ?? state.query ?? '',
+    apply: (text) => (bar ? bar.applySentence(text) : onChange({ ...state, query: text })),
+  });
   connect();
   const timer = setInterval(updateRate, 5000);
 
-  return () => { source?.close(); clearInterval(timer); bar?.destroy(); setSearchContext(null); };
+  return () => { disposed = true; source?.close(); clearInterval(timer); bar?.destroy(); setSearchContext(null); };
 }

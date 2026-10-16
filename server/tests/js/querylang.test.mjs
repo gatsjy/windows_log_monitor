@@ -34,9 +34,10 @@ test('parse: 표의 모든 문장 (정상·오류·정규형·왕복)', () => {
 
 test('match: 고정 이벤트에 같은 결과 (compileQuery · livefilter.matchesQuery)', () => {
   for (const c of CASES.match) {
+    const want = c.js_ids ?? c.ids;   // js_ids: 화면이 서버로 보내지 않는 빈 값처럼 화면 쪽이 일부러 다른 경우
     const fn = compileQuery(c.params);
-    assert.deepEqual(CASES.fixtures.filter(fn).map((f) => f.id), c.ids, c.name);
-    assert.deepEqual(CASES.fixtures.filter((f) => matchesQuery(c.params, f)).map((f) => f.id), c.ids, c.name);
+    assert.deepEqual(CASES.fixtures.filter(fn).map((f) => f.id), want, c.name);
+    assert.deepEqual(CASES.fixtures.filter((f) => matchesQuery(c.params, f)).map((f) => f.id), want, c.name);
   }
 });
 
@@ -67,6 +68,10 @@ test('원본 값 글자 표현은 PostgreSQL #>> 와 같다', () => {
   assert.equal(rawText({ a: [1, 2], b: null }), '{"a": [1, 2], "b": null}');
   assert.equal(rawText(true), 'true');
   assert.equal(rawText(4625), '4625');
+  // 실수는 PostgreSQL numeric 처럼 지수 표기 없이 (서버 querylang.raw_text 와 같게)
+  assert.deepEqual([1e-7, 1e-5, 2.5e-5, 1e21, -1e-7, 1.5].map(rawText),
+    ['0.0000001', '0.00001', '0.000025', '1000000000000000000000', '-0.0000001', '1.5']);
+  assert.equal(rawText([1e-5, 2]), '[0.00001, 2]');
   assert.equal(rawText('그대로'), '그대로');
   assert.equal(getPath({ a: ['x', 'y'] }, 'a..1'), 'y');                 // 빈 단계는 버린다 (서버와 같게)
   assert.equal(getPath({ a: ['x'] }, 'a.²'), undefined);
