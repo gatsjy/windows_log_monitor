@@ -9,6 +9,8 @@ TLS 설정을 정적으로 검사한다 (표준 라이브러리만).
       채운 윈도 설정에서 multiline 정의와 MSSQL tail 만 꺼내 실제로 돌려 볼 설정을 만든다 (B-08, test_fluentbit_mssql.sh·윈도 CI).
       바꾸는 것은 경로·db·storage.path·read_from_head·출력(파일, 한 줄에 JSON 하나)뿐. --plain = multiline 을 뺀 0.3.0 방식,
       --down = 출력을 닿지 않는 서버로 (서버가 꺼진 채 멈추기)
+  python3 tools/ci/render_agent_configs.py --derive-winlog <채운 windows.yaml> <출력> --state DIR --out FILE [--channels A,B]
+      winevtlog 입력은 그대로 두고 출력만 파일로 — 윈도 CI 가 실제 이벤트를 일으켜 에이전트 레코드 모양을 기록한다
 
 - linux.yaml        agent/linux/install.sh 의 sed 와 같은 치환 (평문)
 - linux-tls.yaml    같은 치환 + TLS 블록을 켠 것 (TLS_CA_FILE 을 준 설치)
@@ -243,6 +245,27 @@ def derive_mssql(text: str, path: str, state: str, out_file: str, plain: bool = 
     return "\n".join(body)
 
 
+def derive_winlog(text: str, state: str, out_file: str, channels: str | None = None) -> str:
+    """채운 윈도 설정의 winevtlog 입력(설정 그대로) + 파일 출력 — 실제 에이전트가 만드는 레코드 모양을 잡아 보는 용도
+    (B-08 후속: EventData 이름이 오지 않는 문제, 윈도 CI 가 실제 이벤트를 일으켜 기록한다)."""
+    _names, inputs = config_parts(text)
+    wins = [i for i in inputs if i.get("name") == "winevtlog"]
+    if not wins:
+        raise SystemExit("winevtlog 입력이 없습니다")
+    win = dict(wins[0])
+    win.update({"db": f"{state}/winevtlog.sqlite"})
+    if channels:
+        win["channels"] = channels
+    win.pop("mem_buf_limit", None)
+    out_dir, _, out_name = out_file.replace("\\", "/").rpartition("/")
+    body = ["service:", "  flush: 1", "  log_level: warn", f"  storage.path: {state}/buffer", "", "pipeline:", "  inputs:",
+            "    - name: winevtlog"]
+    body += [f"      {k}: {v}" for k, v in win.items() if k != "name"]
+    body += ["  outputs:", "    - name: file", "      match: '*'", f"      path: {out_dir or '.'}", f"      file: {out_name}",
+             "      format: plain", ""]
+    return "\n".join(body)
+
+
 def check_plain(text: str) -> list[str]:
     out = http_output(text)
     if out is None:
@@ -369,6 +392,15 @@ if __name__ == "__main__":
                 opts[item[2:]] = rest.pop(0)
         Path(dst).write_text(derive_mssql(Path(src).read_text(encoding="utf-8"), opts["path"], opts["state"], opts["out"],
                                           bool(opts.get("plain")), bool(opts.get("down"))), encoding="utf-8")
+        sys.exit(0)
+    if args[:1] == ["--derive-winlog"] and len(args) >= 3:
+        src, dst, rest, opts = args[1], args[2], args[3:], {}
+        while rest:
+            item = rest.pop(0)
+            if item.startswith("--") and rest:
+                opts[item[2:]] = rest.pop(0)
+        Path(dst).write_text(derive_winlog(Path(src).read_text(encoding="utf-8"), opts["state"], opts["out"],
+                                           opts.get("channels")), encoding="utf-8")
         sys.exit(0)
     if args[:1] == ["--check-tls"]:
         files, expect, rest = [], {}, args[1:]
