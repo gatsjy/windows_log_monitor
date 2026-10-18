@@ -48,10 +48,13 @@ public static class WlmLogon {
 }
 "@
 $user = "wlmci"
-$pass = "Wl!" + [guid]::NewGuid().ToString("N").Substring(0, 16) + "a9"
+# 14 characters at most: net user asks "longer than 14 characters ... continue? (Y/N)" and fails without a console
+$pass = "Wl!" + [guid]::NewGuid().ToString("N").Substring(0, 9) + "a9"
 try {
     & net user $user $pass /add | Out-Null                       # 4720 (+4722, 4738)
+    if ($LASTEXITCODE -ne 0) { throw "net user /add failed ($LASTEXITCODE)" }
     & net localgroup administrators $user /add | Out-Null         # 4732 TargetSid S-1-5-32-544
+    if ($LASTEXITCODE -ne 0) { throw "net localgroup /add failed ($LASTEXITCODE)" }
     foreach ($type in 2, 3) {                                     # 4625 interactive, network
         $t = [IntPtr]::Zero
         [WlmLogon]::LogonUser($user, ".", "wrong-password", $type, 0, [ref]$t) | Out-Null
