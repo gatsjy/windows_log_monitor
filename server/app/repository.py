@@ -18,7 +18,7 @@ from psycopg import sql
 
 from . import db, partitions
 from .filters import EventFilter
-from .normalizers import Event, Heartbeat
+from .normalizers import Event, Heartbeat, IisContext
 
 log = logging.getLogger(__name__)
 
@@ -193,7 +193,7 @@ def _field_stats(events: list[Event]) -> list[tuple]:
 
 
 async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_ip: str | None,
-                 transport: str | None = None) -> None:
+                 transport: str | None = None, layouts: dict | None = None) -> None:
     async with conn.cursor() as cur:
         if events:
             async with cur.copy(
@@ -234,15 +234,26 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
                 [(host, client_ip, _json(hb.meta), transport) for host, hb in sorted(latest.items())],
             )
 
+        if layouts:
+            # 이벤트와 같은 트랜잭션 — 이벤트가 거절되면 머리줄도 남지 않고, 에이전트가 청크째 다시 보낼 때 다시 배운다.
+            # 잠금 순서는 agents → field_stats → iis_layouts, 같은 표 안에서는 정렬 순서 (동시 요청끼리 교착 방지)
+            await cur.executemany(
+                "INSERT INTO iis_layouts (host, file, dir, fields) VALUES (%s, %s, %s, %s)"
+                " ON CONFLICT (host, file) DO UPDATE SET fields = EXCLUDED.fields, dir = EXCLUDED.dir, seen_at = now()",
+                [(host, file, directory, " ".join(fields))
+                 for (host, file), (directory, fields) in sorted(layouts.items())],
+            )
+
 
 async def insert_batch(events: list[Event], heartbeats: list[Heartbeat], client_ip: str | None,
-                       transport: str | None = None) -> None:
-    if not events and not heartbeats:
+                       transport: str | None = None, layouts: dict | None = None) -> None:
+    """layouts = IisContext.learned — 이 요청에서 만난 IIS 머리줄 (머리줄만 든 요청도 저장해야 한다)."""
+    if not events and not heartbeats and not layouts:
         return
     for attempt in (1, 2):
         try:
             async with db.pool().connection() as conn:
-                await _write(conn, events, heartbeats, client_ip, transport)
+                await _write(conn, events, heartbeats, client_ip, transport, layouts)
             return
         except psycopg.errors.CheckViolation:
             # 이번 달 파티션이 아직 없을 때 (월이 바뀐 직후 등): 만들고 한 번 더 시도
@@ -250,6 +261,71 @@ async def insert_batch(events: list[Event], heartbeats: list[Heartbeat], client_
                 raise
             log.warning("파티션 없음 → 생성 후 재시도")
             await partitions.run_maintenance()
+
+
+# IIS 열 순서 캐시 (ADR-037). 정본은 iis_layouts 표 — 이것은 요청마다 DB 에 묻지 않기 위한 것뿐이라
+# 커밋한 뒤에만 넣는다(remember_iis_layouts). None = DB 에도 없음 (그것도 기억해야 매 요청 묻지 않는다).
+# 워커 1개 전제(ADR-006) — 여러 워커가 되면 TTL 이 필요하다(B-20)
+_IIS_FILE: dict[tuple[str, str], tuple[str, ...] | None] = {}
+_IIS_SITE: dict[tuple[str, str], tuple[str, ...] | None] = {}
+_IIS_CACHE_MAX = 20000
+
+
+async def iis_context(keys: set[tuple[str, str, str]]) -> IisContext:
+    """(host, file, dir) 들의 저장된 열 순서와 같은 폴더의 최신 열 순서. 캐시에 없는 것만 DB 에 한 번 묻는다."""
+    ctx = IisContext()
+    if not keys:
+        return ctx
+    if len(_IIS_FILE) > _IIS_CACHE_MAX or len(_IIS_SITE) > _IIS_CACHE_MAX:
+        # 비우는 것은 고르기 전에 — 고른 뒤에 비우면 이미 캐시에 있던 이 요청의 열 순서까지 사라진다(검토에서 재현)
+        _IIS_FILE.clear()
+        _IIS_SITE.clear()
+    missing = sorted(k for k in keys if (k[0], k[1]) not in _IIS_FILE or (k[0], k[2]) not in _IIS_SITE)
+    if missing:
+        rows = await db.fetch_all(
+            "WITH k AS (SELECT * FROM unnest(%s::text[], %s::text[], %s::text[]) AS k(host, file, dir))"
+            " SELECT 'file' AS kind, l.host, l.file AS name, l.fields FROM k JOIN iis_layouts l USING (host, file)"
+            " UNION ALL"
+            " SELECT 'site', d.host, d.dir, s.fields FROM (SELECT DISTINCT host, dir FROM k) d"
+            " CROSS JOIN LATERAL (SELECT fields FROM iis_layouts l WHERE l.host = d.host AND l.dir = d.dir"
+            "                     ORDER BY seen_at DESC LIMIT 1) s",
+            ([k[0] for k in missing], [k[1] for k in missing], [k[2] for k in missing]),
+        )
+        found = {(r["kind"], r["host"], r["name"]): tuple(r["fields"].split()) for r in rows}
+        for host, file, directory in missing:
+            # setdefault: 조회하는 사이 다른 요청이 커밋해 넣은 새 값을 이 조회의 '없음'으로 덮지 않는다
+            _IIS_FILE.setdefault((host, file), found.get(("file", host, file)))
+            _IIS_SITE.setdefault((host, directory), found.get(("site", host, directory)))
+    for host, file, directory in keys:
+        if stored := _IIS_FILE.get((host, file)):
+            ctx.stored[(host, file)] = stored
+        if site := _IIS_SITE.get((host, directory)):
+            ctx.site[(host, directory)] = site
+    return ctx
+
+
+def remember_iis_layouts(learned: dict[tuple[str, str], tuple[str, tuple[str, ...]]]) -> None:
+    """insert_batch 가 커밋한 뒤에 부른다 — 실패한 요청의 머리줄이 캐시에만 남아 DB 와 어긋나지 않게."""
+    for (host, file), (directory, fields) in learned.items():
+        _IIS_FILE[(host, file)] = fields
+        _IIS_SITE[(host, directory)] = fields
+
+
+def forget_iis_layouts() -> None:
+    """캐시 비우기 (시험에서 '서버 재시작'을 흉내 낼 때)."""
+    _IIS_FILE.clear()
+    _IIS_SITE.clear()
+
+
+async def purge_iis_layouts(cutoff: datetime) -> int:
+    """오래된 열 순서 삭제 — 단, 폴더마다 가장 최근 것은 남긴다(월 단위 파일·나누지 않는 파일은 머리줄이 처음 한 번뿐)."""
+    async with db.pool().connection() as conn:
+        cur = await conn.execute(
+            "DELETE FROM iis_layouts l WHERE l.seen_at < %s AND EXISTS"
+            " (SELECT 1 FROM iis_layouts n WHERE n.host = l.host AND n.dir = l.dir AND n.seen_at > l.seen_at)",
+            (cutoff,),
+        )
+        return cur.rowcount
 
 
 # ------------------------------------------------------------------ read

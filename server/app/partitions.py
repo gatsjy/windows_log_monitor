@@ -161,6 +161,19 @@ async def purge_reports(now: datetime | None = None) -> None:
                        {"deleted": deleted, "retention_days": settings.retention_days, "cutoff": cutoff.isoformat()})
 
 
+IIS_LAYOUT_KEEP_DAYS = 35  # 하루 단위 파일이면 한 달 남짓 — 그보다 오래된 파일에 줄이 다시 올 일은 드물다
+
+
+async def purge_iis_layouts(now: datetime | None = None) -> None:
+    """IIS 열 순서(ADR-037)는 로그가 아니라 해석용 문맥이라 감사로그를 남기지 않는다."""
+    from . import repository
+
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=IIS_LAYOUT_KEEP_DAYS)
+    deleted = await repository.purge_iis_layouts(cutoff)
+    if deleted:
+        log.info("오래된 IIS 열 순서 %s건 삭제 (폴더마다 최신 1건은 남김)", deleted)
+
+
 async def purge_sessions() -> None:
     from .auth import service
 
@@ -179,6 +192,7 @@ async def run_maintenance() -> None:
             await purge_alerts()
             await purge_audit()
             await purge_reports()
+            await purge_iis_layouts()
             await purge_sessions()
         finally:
             await conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))

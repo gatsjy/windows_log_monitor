@@ -36,8 +36,9 @@ DETECTORS: list[tuple[Callable[[dict], bool], Normalizer]] = [
 ]
 
 
-def normalize(record: dict, now: datetime) -> Event | Heartbeat | None:
-    """None = 저장하지 않는 줄 (IIS 머리줄, 빈 줄 등)."""
+def normalize(record: dict, now: datetime, iis_ctx: iis.IisContext | None = None) -> Event | Heartbeat | None:
+    """None = 저장하지 않는 줄 (IIS 머리줄, 빈 줄 등).
+    iis_ctx = 한 수집 요청의 IIS 열 순서 문맥 (routers/ingest 가 repository.iis_context 로 만든다, ADR-037)."""
     if record.get("type") == "heartbeat":
         meta = {k: v for k, v in record.items() if k not in ("type", "agent_host", "date")}
         return Heartbeat(host=pick_host(record, "host", "hostname"), meta=meta)
@@ -47,10 +48,13 @@ def normalize(record: dict, now: datetime) -> Event | Heartbeat | None:
         handler = BY_SOURCE.get(str(source), generic.normalize)
     else:
         handler = next((fn for detect, fn in DETECTORS if detect(record)), generic.normalize)
-    event = handler(record, now)
+    event = iis.normalize(record, now, iis_ctx) if handler is iis.normalize else handler(record, now)
     if event is not None and not event.category:
         event.category = classify(event.source, event.channel, event.provider)
     return event
 
 
-__all__ = ["Event", "Heartbeat", "normalize"]
+IisContext = iis.IisContext
+layout_keys = iis.layout_keys
+
+__all__ = ["Event", "Heartbeat", "IisContext", "layout_keys", "normalize"]

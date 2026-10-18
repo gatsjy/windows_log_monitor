@@ -17,7 +17,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from .. import live, repository
 from ..config import settings
-from ..normalizers import Event, Heartbeat, normalize
+from ..normalizers import Event, Heartbeat, layout_keys, normalize
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["ingest"])
@@ -74,10 +74,12 @@ async def ingest(request: Request, x_api_key: str | None = Header(default=None, 
     records = _parse_records(await _read_body(request))
 
     now = datetime.now(UTC)
+    # IIS 열 순서: 이 요청에 든 파일들의 저장된 순서를 한 번에 (ADR-037). IIS 가 없으면 DB 에 묻지 않는다
+    iis_ctx = await repository.iis_context(layout_keys(records))
     events: list[Event] = []
     heartbeats: list[Heartbeat] = []
     for record in records:
-        item = normalize(record, now)
+        item = normalize(record, now, iis_ctx)
         if item is None:  # 저장하지 않는 줄 (IIS 머리줄 등)
             continue
         (heartbeats if isinstance(item, Heartbeat) else events).append(item)
@@ -91,7 +93,8 @@ async def ingest(request: Request, x_api_key: str | None = Header(default=None, 
         transport = "web"
     else:
         transport = "plain"
-    await repository.insert_batch(events, heartbeats, client_ip, transport)
+    await repository.insert_batch(events, heartbeats, client_ip, transport, iis_ctx.learned)
+    repository.remember_iis_layouts(iis_ctx.learned)
 
     live.ingest_rate.add(len(events))
     live.broadcaster.publish([e.to_live(now) for e in events])

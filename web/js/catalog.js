@@ -54,8 +54,10 @@ export const FIELD_DOCS = {
   'iis:iis.time_taken': '처리 시간 (ms)',
   'iis:iis.user_agent': '브라우저/프로그램 (User-Agent)',
   'iis:iis.win32_status': 'Windows 오류 코드 (0 = 정상)',
+  'iis:iis._layout': '열 순서를 추정해 읽음 — site: 같은 사이트 폴더의 최신 순서, default: IIS 기본 순서 (그 파일의 #Fields: 머리줄을 아직 못 받음)',
   // SQL Server ERRORLOG (raw.mssql)
-  'mssql:log': 'ERRORLOG 원래 한 줄',
+  'mssql:log': 'ERRORLOG 원문 (에이전트 설정 0.4.0 부터는 시작 배너·여러 줄 메시지가 한 레코드로 묶여 여러 줄일 수 있음)',
+  'mssql:mssql.lines': '묶여 온 줄 수 (여러 줄 레코드일 때만) — 시각·프로세스·오류 번호는 첫 줄로 읽음',
   'mssql:mssql.process': '기록한 프로세스 (Logon, spid51, Backup …)',
   'mssql:mssql.error': 'SQL Server 오류 번호',
   'mssql:mssql.severity': '심각도 (20 이상 치명적, 17~19 리소스·하드웨어, 11~16 사용자 오류)',
