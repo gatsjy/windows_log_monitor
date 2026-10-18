@@ -94,6 +94,10 @@ jobs:
           for img in rockylinux/rockylinux:9 debian:13-slim; do
             docker run --rm --network none -v "$PWD:/repo:ro" -v /tmp/agent-render:/render:ro "$img" bash /repo/tools/ci/test_install_sh.sh
           done
+      # SQL Server ERRORLOG 묶음(multiline, B-08)은 실제로 돌린다: 고정 ERRORLOG 를 묶은 결과가 기대값과 같은지,
+      # 서버가 꺼진 채 묶던 중에 멈췄다 다시 띄워도 레코드가 정확히 한 번 나오는지 (storage.type: memory 면 실패)
+      - name: Fluent Bit MSSQL multiline 실행 시험
+        run: tools/ci/test_fluentbit_mssql.sh /tmp/agent-render/windows.yaml
       - name: dry-run
         run: |
           docker run --rm -v /tmp/agent-render:/cfg:ro "fluent/fluent-bit:4.0" /fluent-bit/bin/fluent-bit -c /cfg/linux.yaml --dry-run
@@ -150,9 +154,26 @@ jobs:
             & $exe.FullName -c $cfg --dry-run
             if ($LASTEXITCODE -ne 0) { throw "dry-run failed: $cfg" }
           }
+      # Windows build: UTF-16 ERRORLOG + multiline must give the same records as the Linux image (expected values
+      # from tools/ci/test_fluentbit_mssql.sh). Only the MSSQL tail is taken from the rendered config (B-08).
+      - name: MSSQL multiline (Windows build)
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem fb -Recurse -Filter fluent-bit.exe | Select-Object -First 1).FullName
+          $w = Join-Path $env:RUNNER_TEMP "fb-mssql"
+          foreach ($d in "logs", "state", "out") { New-Item -ItemType Directory -Force -Path (Join-Path $w $d) | Out-Null }
+          Copy-Item server\tests\fixtures\mssql\ERRORLOG.utf16 (Join-Path $w "logs\ERRORLOG")
+          python tools/ci/render_agent_configs.py --derive-mssql agent-render\windows.yaml "$w\fb.yaml" --path "$w\logs\ERRORLOG" --state "$w\state" --out "$w\out\records.jsonl"
+          if ($LASTEXITCODE -ne 0) { throw "derive failed" }
+          $p = Start-Process $exe -ArgumentList "-c", "$w\fb.yaml" -PassThru -NoNewWindow
+          Start-Sleep -Seconds 12
+          Stop-Process -Id $p.Id -Force
+          python -c "import json,sys; rd=lambda f:[json.loads(l)['log'] for l in open(f,encoding='utf-8') if l.strip()]; got,want=rd(sys.argv[1]),rd(sys.argv[2]); print(len(got),'records'); assert got==want,(got,want)" "$w\out\records.jsonl" server\tests\fixtures\mssql\fb-ml.jsonl
+          if ($LASTEXITCODE -ne 0) { throw "Windows multiline output differs from fb-ml.jsonl" }
       # 러너는 관리자라 실제 설치를 돌 수 있다: 서비스 등록·폴더 권한·CA 정리·서비스 기동을 확인하고 지운다 (B-28 실기의 일부).
       # 일반 사용자가 폴더를 미리 만들어 둔 경우를 흉내 낸다(다른 SID 의 명시 ACE) — 설치가 소유자·권한을 다시 잡아야 한다.
       # CA 는 UTF-16 으로 저장한 것 (PS 5.1 '>' 의 기본) — 설치된 ca.crt 는 OpenSSL 이 읽는 ASCII PEM 이어야 한다.
+      # MSSQL ERRORLOG 묶음도 켠다: multiline 파서 이름·정의가 틀리면 dry-run 은 통과하고 서비스가 뜨지 않는다 (B-08).
       - name: 실제 설치·권한·서비스 (Windows PowerShell 5.1)
         shell: powershell
         run: |
@@ -163,7 +184,10 @@ jobs:
           $exe = (Get-ChildItem fb -Recurse -Filter fluent-bit.exe | Select-Object -First 1).FullName
           $ca16 = Join-Path $env:RUNNER_TEMP "ca-utf16.crt"
           Get-Content tools\ci\fixtures\ci-ca.crt | Out-File -Encoding Unicode $ca16
-          & powershell -NoProfile -ExecutionPolicy Bypass -File agent\windows\install.ps1 -ServerHost 127.0.0.1 -ApiKey ci -CaFile $ca16 -TlsServerName logmon.ci.internal -FluentBitExe $exe -Settings none.json
+          $errlog = Join-Path $env:RUNNER_TEMP "mssql\ERRORLOG"
+          New-Item -ItemType Directory -Force -Path (Split-Path $errlog) | Out-Null
+          Copy-Item server\tests\fixtures\mssql\ERRORLOG.utf16 $errlog
+          & powershell -NoProfile -ExecutionPolicy Bypass -File agent\windows\install.ps1 -ServerHost 127.0.0.1 -ApiKey ci -CaFile $ca16 -TlsServerName logmon.ci.internal -FluentBitExe $exe -Settings none.json -MssqlErrorlog -MssqlErrorlogPath $errlog
           if ($LASTEXITCODE -ne 0) { throw "install failed: $LASTEXITCODE" }
           try {
             $acl = Get-Acl $data
@@ -181,6 +205,9 @@ jobs:
             $svc = Get-Service knuh-agent
             "service: $($svc.Status)"
             if ($svc.Status -ne "Running") { Get-Content "$data\fluent-bit.log" -ErrorAction SilentlyContinue | Select-Object -Last 30; throw "agent service is not running" }
+            if (-not (Select-String -Path "$data\fluent-bit.yaml" -SimpleMatch "multiline.parser: mssql_errorlog" -Quiet)) { throw "MSSQL block not enabled" }
+            $bad = Select-String -Path "$data\fluent-bit.log" -Pattern "not registered|initialization failed" -ErrorAction SilentlyContinue
+            if ($bad) { $bad; throw "Fluent Bit reported an input/parser error" }
           } finally {
             & powershell -NoProfile -ExecutionPolicy Bypass -File agent\windows\uninstall.ps1 -RemoveData
           }

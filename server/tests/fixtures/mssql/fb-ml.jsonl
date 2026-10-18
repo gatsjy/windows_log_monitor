@@ -1,0 +1,12 @@
+{"log": "2026-10-04 10:00:00.11 Server      Microsoft SQL Server 2022 (RTM-CU14) (KB5038325) - 16.0.4135.4 (X64) \n\tJul 10 2024 14:09:09 \n\tCopyright (C) 2022 Microsoft Corporation\n\tDeveloper Edition (64-bit) on Windows Server 2022 Datacenter 10.0 <X64> (Build 20348: ) (Hypervisor)\n\r\n"}
+{"log": "2026-10-04 10:00:00.11 Server      UTC adjustment: 9:00\n"}
+{"log": "2026-10-04 10:00:00.11 Server      (c) Microsoft Corporation.\n"}
+{"log": "2026-10-04 10:00:00.12 Server      Registry startup parameters: \n\t -d C:\\Program Files\\Microsoft SQL Server\\MSSQL16.MSSQLSERVER\\MSSQL\\DATA\\master.mdf\n\t -e C:\\Program Files\\Microsoft SQL Server\\MSSQL16.MSSQLSERVER\\MSSQL\\Log\\ERRORLOG\n\t -l C:\\Program Files\\Microsoft SQL Server\\MSSQL16.MSSQLSERVER\\MSSQL\\DATA\\mastlog.ldf\n"}
+{"log": "2026-10-04 10:00:01.50 spid9s      Starting up database 'master'.\n"}
+{"log": "2026-10-04 10:15:22.53 Logon       Error: 18456, Severity: 14, State: 8.\n"}
+{"log": "2026-10-04 10:15:22.53 Logon       Login failed for user 'sa'. Reason: Password did not match that for the login provided. [CLIENT: 10.0.0.5]\n"}
+{"log": "2026-10-04 10:16:00.00 spid51      Error: 50000, Severity: 16, State: 1.\n"}
+{"log": "2026-10-04 10:16:00.00 spid51      야간 작업 실패: 3단계\nsecond line of the RAISERROR WITH LOG message\n\tthird line (indented)\n"}
+{"log": "2026-10-04 10:17:00.00 spid9s      Error: 9002, Severity: 17, State: 2.\n"}
+{"log": "2026-10-04 10:17:00.00 spid9s      The transaction log for database 'ERP' is full due to 'LOG_BACKUP'.\n"}
+{"log": "2026-10-04 10:18:00.00 Backup      Log was backed up. Database: ERP, creation date(time): 2026/10/01(09:00:00).\n"}

@@ -91,12 +91,17 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
   - `pri` → syslog
   - 그 외 → generic
 - 형식이 이상해도 **버리지 않습니다**. host가 없으면 `unknown` 으로 저장합니다.
-  - 예외: IIS 의 `#Fields:` 같은 머리줄은 저장하지 않고 열 순서만 기억합니다(파일마다).
-- **IIS (`normalizers/iis.py`):** 기본 열 순서(IIS 10 기본 W3C)로 읽고, `#Fields:` 머리줄을 보면 그 파일의 열 순서로 바꿉니다.
+  - 예외: IIS 의 `#Fields:` 같은 머리줄은 이벤트로 저장하지 않고 열 순서만 `iis_layouts` 에 저장합니다(파일마다).
+- **IIS (`normalizers/iis.py`, ADR-037):** 줄마다 열 순서 후보를 차례로 대 봅니다 — 같은 요청의 `#Fields:` 머리줄 → 그 파일의 저장된 열 순서 → 같은 폴더(`W3SVC<n>`)의 최신 열 순서 → 기본 순서(IIS 10 기본 W3C).
+  - 칸 수와 **값 모양**(날짜·시각·상태 코드 100–999·정수 필드·IP)이 맞는 첫 후보로 읽습니다. 그 파일의 순서면 요청자가 정하는 값(method·URI·UA·사용자)은 모양을 보지 않습니다.
+  - 추정한 순서(같은 폴더·기본)는 더 엄격합니다: IIS 가 늘 쓰는 필드가 비어 있지 않고, method·URI 가 요청 모양이며, 요청자 값 칸(사용자·UA·Referer·query)에 숫자나 IP 만 있지 않아야 합니다(칸이 밀린 것을 잡기 위해).
+  - 맞는 후보가 없으면 원문 그대로 저장합니다(사용자·IP 를 틀린 자리 값으로 채우지 않음). 같은 폴더·기본 순서로 읽었으면 `raw.iis._layout` 이 `site`·`default` 입니다.
+  - 열 순서는 DB 에 있어 서버·에이전트를 다시 시작해도 이어집니다. 프로세스 안 캐시는 커밋한 뒤에만 채웁니다.
   - 메시지는 `GET /경로 → 500 (1234ms) · User-Agent` 형태로 만듭니다.
   - 열 이름 매핑: `c-ip`→`client_ip`, `sc-status`→`status`, `time-taken`→`time_taken`, `cs(User-Agent)`→`user_agent` …
 - **MSSQL ERRORLOG (`normalizers/mssql.py`):** 오류는 `Error: 번호, Severity, State` 머리줄 + 본문 줄 두 줄입니다.
-  - 머리줄은 '상세'(5)·번호 없음으로 저장하고, 번호·심각도는 같은 시각·프로세스의 다음 본문 줄에 붙입니다(이중 집계 방지).
+  - 머리줄은 '상세'(5)·번호 없음으로 저장하고, 번호·심각도는 같은 파일·시각·프로세스의 다음 본문 줄에 붙입니다(이중 집계 방지).
+  - 여러 줄 레코드(시작 배너·시작 인자·여러 줄 메시지, 에이전트 multiline)는 첫 줄로 시각·프로세스·번호를 읽고 나머지 줄은 메시지에 붙입니다(`raw.mssql.lines` = 줄 수). 줄마다 온 레코드와 같은 방식으로 셉니다(ADR-037).
   - SQL Server 는 중요한 오류·로그인 실패를 Windows 응용 프로그램 로그(공급자 `MSSQLSERVER`)에도 남깁니다. 에이전트만 설치해도 `mssql` 분류로 들어옵니다.
 
 #### 분류 (`category`, `normalizers/categories.py`)
@@ -134,6 +139,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `events` | 로그 이벤트 | `received_at` 월별 RANGE 파티션 (`events_YYYY_MM`), PK `(id, received_at)` |
 | `agents` | 로그 보낸 PC 목록 | `last_seen` 으로 상태 판정, `meta` = 하트비트 내용 |
 | `field_stats` | 원본 필드 카탈로그 | `(source, path)` 별 타입·횟수·예시. 중첩은 점 경로(3단계까지) |
+| `iis_layouts` | IIS 열 순서 (014) | `(host, file)` 별 `#Fields:` 이름들, 폴더(`dir`)·마지막 머리줄 시각. 이벤트와 같은 트랜잭션에 저장, 35일 지난 것은 정리(폴더마다 최신 1개는 남김) |
 | `audit_log` | 시스템 감사 기록 | 대시보드·알림 설정 저장, 알림 테스트 발송, 보관기간 만료 삭제 |
 | `alerts` | 발생한 알림 (002) | 규칙, 심각도, 대상(group_key), 건수, `payload` = 보낸 메시지 전체. 처리 상태 `status`(open/acked/resolved)·처리자·처리 시각, 무음 중 발생이면 `silence_id` (009) |
 | `alert_deliveries` | 알림 대상별 전송 상태 (002) | `pending/sent/failed/gave_up/skipped`, 시도 횟수, 마지막 오류(건너뛴 사유: 받을 최소 수준·무음) |
@@ -644,7 +650,7 @@ HTTPS·에이전트 TLS (ADR-036, AIRGAP.md §7.5):
 | 하고 싶은 것 | 위치 |
 |---|---|
 | Windows 채널 추가 | 에이전트 `-Channels` 인자 (기본에 PowerShell/Operational, Defender, RDP 포함. Sysmon 등 추가) |
-| IIS / SQL Server 로그 | 에이전트 설치 시 `-Iis` (W3SVC 폴더 자동 탐색, `-IisLogPath`), `-MssqlErrorlog` (`-MssqlErrorlogPath`) |
+| IIS / SQL Server 로그 | 에이전트 설치 시 `-Iis` (W3SVC 폴더 자동 탐색, `-IisLogPath`), `-MssqlErrorlog` (`-MssqlErrorlogPath`). ERRORLOG 는 설정 0.4.0 부터 여러 줄을 묶어 보냄(`multiline_parsers` 의 `mssql_errorlog`, tail 은 `storage.type: filesystem` 필수 — `render_agent_configs` 가 검사) |
 | 분류 추가 | `normalizers/categories.py` + `web/js/levels.js` + 기존 데이터 UPDATE 마이그레이션 |
 | 새 로그 소스 | `server/app/normalizers/` + `BY_SOURCE` 등록 + 테스트 |
 | 텍스트 로그 파일 | 에이전트 yaml 의 `tail` 예시 주석 해제 + `log_source: file`, `log_channel` |
@@ -718,9 +724,14 @@ HTTPS·에이전트 TLS (ADR-036, AIRGAP.md §7.5):
 - 긴 기간(30일 이상) 집계는 행 수에 비례해 느려집니다(PERFORMANCE.md). 시간별 집계 테이블은 로드맵에 있습니다.
 - 알림 규칙은 `received_at`(수신 시각) 기준입니다.
   - 에이전트가 장애 후 몰아서 보낸 과거 오류도 '새로 들어온 오류'로 알립니다(의도한 동작).
-- IIS 열 순서(`#Fields:`)와 MSSQL 오류 머리줄은 프로세스 메모리에 기억합니다.
-  - 서버 재시작 직후, 사용자 지정 열 순서의 IIS 파일은 다음 머리줄(새 파일·IIS 재시작)이 올 때까지 기본 순서로 읽힙니다. 원본은 `raw` 에 남습니다.
-- MSSQL ERRORLOG 의 여러 줄 메시지(스택 등)는 줄마다 따로 저장됩니다(BACKLOG 참고).
+- IIS 열 순서는 DB 에 저장하지만, 에이전트는 머리줄을 파일 처음에만 받습니다(ADR-037).
+  - 첫 설치 당일, 그리고 에이전트가 멈춘 사이 새로 생긴 파일은 머리줄이 오지 않습니다(tail 이 끝부터 읽음). 같은 폴더의 열 순서가 있으면 그것으로 읽고, 없으면 사용자 지정 열 순서 사이트는 다음 파일(00:00 UTC)까지 원문으로 남습니다(BACKLOG B-32).
+  - 정수 열끼리만 순서가 바뀐 경우(`sc-bytes`↔`time-taken`)는 값 모양으로 가리지 못합니다.
+- MSSQL 오류 머리줄 짝(`_pending`)은 프로세스 메모리입니다. 서버 재시작이 머리줄과 본문 사이에 끼면 본문에 번호가 붙지 않습니다(B-20).
+  - 에이전트 0.4.0 은 머리줄과 본문을 다른 요청으로 보내는 일이 잦아, 장애 뒤 재전송 순서가 바뀌면 번호가 빠지거나(드물게) 같은 시각·프로세스의 다음 줄에 붙을 수 있습니다. 로그인 실패(18456)는 영향이 없고, 중요한 오류는 응용 프로그램 이벤트 로그에도 남습니다(ADR-037).
+- IIS 열 순서를 추정하는 동안(그 파일의 머리줄을 아직 못 받음) UA·Referer·사용자 이름 등이 숫자나 IP '뿐'인 줄은 원문으로 저장됩니다(칸이 밀렸을 때 틀린 IP 로 읽지 않기 위해). 몇몇 드문 열 구성에서는 그 기간에 요청자가 자기 줄의 상태 코드를 정할 수 있습니다(ADR-037 대가).
+- **이 버전으로 업그레이드한 직후**에는 저장된 IIS 열 순서가 없습니다. 사용자 지정 열 순서 사이트는 다음 로그 파일(하루 단위면 09:00 KST)까지 원문으로 남아 IIS 대시보드·규칙에 잡히지 않습니다. 09:00 KST 직전에 올리면 공백이 짧습니다.
+- MSSQL ERRORLOG 의 여러 줄 메시지는 에이전트 설정 0.4.0 부터 한 레코드로 묶입니다. 그 전 에이전트는 줄마다 따로 저장합니다. 스택 덤프·교착 그래프는 줄마다 시각이 붙는 형식이라 묶이지 않습니다(실제 샘플로 확인 예정).
 - 사용자 그룹 범위는 이벤트 데이터 API 에 적용됩니다. 사이드바의 PC 온라인 수·분당 수집량은 전체 기준입니다(확인하지 않은 알림 수는 범위 반영).
 - 알림 화면의 심각도별 수와 규칙별 발생 수는 전체 기준입니다(처리 상태별 수는 범위 반영).
 - 알림 이력의 범위 판단은 규칙의 분류 조건과 대상(PC) 이름으로 합니다. 분류 조건이 없는 규칙(예: 수준만 보는 규칙)은 PC 범위가 맞을 때만 보입니다.

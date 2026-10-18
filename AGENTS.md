@@ -104,6 +104,7 @@ node --test 'server/tests/js/*.test.mjs'    # 검색 문장 화면 쪽 시험 + 
 python3 tools/ci/render_agent_configs.py out  # 에이전트 설정 틀을 채워 보기 (CI 가 fluent-bit --dry-run 에 씀)
 docker run --rm --network none -v "$PWD:/repo:ro" -v "$PWD/out:/render:ro" rockylinux/rockylinux:9 bash /repo/tools/ci/test_install_sh.sh   # install.sh 실행 시험
 docker run --rm --network none -v "$PWD:/repo:ro" -v "$PWD/out:/render:ro" mcr.microsoft.com/powershell:lts-alpine-3.20 pwsh -File /repo/tools/ci/test_install_ps1.ps1 -RenderDir /render -CaSha256 $(python3 tools/ci/render_agent_configs.py --ca-sha256 tools/ci/fixtures/ci-ca.crt) -Work /tmp/w   # install.ps1 (CI 는 5.1)
+tools/ci/test_fluentbit_mssql.sh out/windows.yaml   # ERRORLOG 묶음(multiline)을 Fluent Bit 컨테이너로 실제 실행 (기대값 다시 만들기: --update)
 curl -s localhost:8080/healthz
 # TLS 로 띄워 보기 (개발, .env 는 그대로): 인증서 → WLM_TLS=on 으로 up → https 확인 → 그냥 up 으로 평문 복귀 (AIRGAP.md §13)
 docker compose run --rm --no-deps --user 0 -v "$PWD/tls:/out" -v "$PWD/tls-ca:/ca" api python -m app.cli tls-init --out /out --ca-dir /ca --name logmon.dev.internal --name localhost --ip 127.0.0.1
@@ -186,7 +187,15 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - 알림 규칙을 화면에서 저장하면 그 규칙 블록만 다시 쓴다(`ruleedit.py`). 블록 안의 주석은 그 규칙을 화면에서 저장하면 사라진다(켜기/끄기만은 보존).
 - UI 디자인 값은 `web/css/app.css` 의 토큰(`:root`)만 쓴다. 좁은 화면 기준: 1000px(상단 바), 700px(표→카드), 600px(휴대폰).
 - 정규화기는 `None` 을 돌려 레코드를 저장하지 않을 수 있습니다(IIS `#Fields:` 머리줄). 그 외에는 버리지 않습니다.
-- IIS 열 순서와 MSSQL `Error:` 머리줄은 프로세스 메모리에 기억합니다(워커 1개 전제). 테스트에서 순서에 의존하는 경우 같은 `host`·파일을 씁니다.
+- IIS 열 순서는 DB `iis_layouts` 가 정본입니다(ADR-037). `repository._IIS_FILE`·`_IIS_SITE` 캐시는 커밋한 뒤에만 채우고(`remember_iis_layouts`), 시험에서 '서버 재시작'은 `forget_iis_layouts()` 로 흉내 냅니다.
+  - 그 파일의 순서(머리줄)는 서버 필드 모양만 봅니다(`iis.plausible` — 요청자 값으로 해석이 깨지지 않게). 추정한 순서(같은 폴더·기본)는 `iis.plausible_guess` 로 더 엄격히 봅니다 — 칸이 밀리면 요청자 값('-'·IP 모양 UA)이 서버 칸을 통과해 공격자가 `src_ip` 를 정할 수 있었습니다(검토에서 재현).
+  - 모양 규칙(`_SHAPES`·`_ALWAYS`·`_REQUEST_SHAPES`·`_REQUESTER_TEXT`)을 바꾸면 `tests/test_iis_context.py` 의 고정 목록(ALWAYS·SHAPES·REQUESTER_TEXT)도 고칩니다. 목록마다 항목 하나를 빼면 그것만으로 실패하는 동작 시험이 있습니다 — 시험 매개변수를 모듈의 목록에서 만들지 않습니다(항목을 빼면 시험도 같이 사라짐).
+  - `_is_ip` 캐시에는 64자 이하만 넣습니다(요청자가 정하는 긴 UA 가 캐시에 남아 메모리를 채움 — 검토에서 재현).
+  - 수집 요청 하나에 들어온 값 때문에 SQL 이 실패하면 그 요청의 다른 이벤트까지 거절되고 에이전트가 끝없이 다시 보냅니다. 표에 넣는 값은 NUL·길이를 먼저 거릅니다(`iis._storable`).
+- MSSQL `Error:` 머리줄 짝(`_pending`)만 프로세스 메모리입니다(워커 1개 전제, 키는 PC·파일·프로세스). 테스트에서 순서에 의존하는 경우 같은 `host`·파일을 씁니다. 여러 줄 레코드는 첫 줄로 해석합니다.
+- **에이전트 multiline (ADR-037):** `multiline.parser` 이름 오타는 `--dry-run` 을 통과하고 기동 때 엔진 전체(윈도 이벤트 포함)가 멈춘다 → `render_agent_configs.check_multiline` 이 막는다. multiline tail 은 `storage.type: filesystem` 필수(서버가 꺼진 채 멈추면 묶던 것·못 보낸 것을 잃는다 — `tools/ci/test_fluentbit_mssql.sh` 가 재현).
+  - 틀의 `mssql_errorlog` 시작 정규식과 서버 `mssql._LINE` 은 같은 줄을 시각 줄로 봐야 한다(`tests/test_agent_sync.py`). 고정 자료 `tests/fixtures/mssql/fb-*.jsonl` 은 Fluent Bit 실제 출력 — Fluent Bit 을 올리면 `test_fluentbit_mssql.sh … --update` 후 서버 시험.
+  - 에이전트 설정 버전 0.4.0 은 서버보다 먼저 배포하지 않는다(옛 서버는 묶인 레코드를 잘못 읽음).
 - MSSQL ERRORLOG 의 `Error:` 머리줄은 번호 없이 '상세'(5)로 저장됩니다. 오류 번호로 세는 규칙·위젯은 본문 줄 기준입니다(이중 집계 방지).
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - 알림 엔진은 앱 안의 백그라운드 작업입니다. `uvicorn --reload` 로 재시작되면 다음 주기에 이어서 평가합니다.

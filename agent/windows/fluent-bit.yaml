@@ -16,6 +16,22 @@ service:
   # Max 2MB chunks kept in memory (default 128 = ~256MB). The rest waits on disk -> agent stays small
   storage.max_chunks_up: 16
 
+# SQL Server ERRORLOG: a record starts at a line beginning with a timestamp; the other lines (startup banner,
+# startup parameters, multi-line messages) are appended to it. Must agree with the server (normalizers/mssql.py _LINE,
+# checked by server/tests/test_agent_sync.py). Always defined: unused unless the MSSQL block below is enabled.
+# Server first: a 0.4.0 agent sending grouped records to an older server loses the time and error numbers (ADR-037).
+multiline_parsers:
+  - name: mssql_errorlog
+    type: regex
+    flush_timeout: 2000
+    rules:
+      - state: start_state
+        regex: '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?\s/'
+        next_state: cont
+      - state: cont
+        regex: '/^(?!\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?\s)/'
+        next_state: cont
+
 pipeline:
   inputs:
     # Windows Event Log. Missing channels are ignored. Other useful channels:
@@ -36,7 +52,7 @@ pipeline:
     # Heartbeat every 30s so the server knows this PC is alive even when it is quiet
     - name: dummy
       tag: heartbeat
-      dummy: '{"type":"heartbeat","config_version":"0.3.0"}'
+      dummy: '{"type":"heartbeat","config_version":"0.4.0"}'
       interval_sec: 30
 
     # @@IIS_BEGIN  IIS access logs (W3C). Enabled by: install.ps1 -Iis
@@ -54,11 +70,14 @@ pipeline:
 
     # @@MSSQL_BEGIN  SQL Server ERRORLOG (UTF-16). Enabled by: install.ps1 -MssqlErrorlog
     # Optional: SQL Server already writes login failures and serious errors to the Application event log.
+    # Multi-line entries are grouped by mssql_errorlog (above). storage.type: filesystem is required with multiline:
+    # the record being built survives an agent stop (with memory storage it is lost).
     # - name: tail
     #   tag: file.mssql
     #   path: @MSSQL_PATH@
     #   path_key: file
     #   unicode.encoding: UTF-16LE
+    #   multiline.parser: mssql_errorlog
     #   refresh_interval: 30
     #   db: C:\ProgramData\wlm-agent\tail-mssql.sqlite
     #   storage.type: filesystem
