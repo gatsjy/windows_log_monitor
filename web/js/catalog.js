@@ -33,7 +33,8 @@ export const FIELD_DOCS = {
   'syslog:message': '로그 본문',
   'syslog:source_ip': '로그를 보낸 장비의 IP (수신기가 추가)',
   'syslog:raw_message': '파싱 전 원문',
-  // Windows EventData (에이전트 event_data_as_map) — 자주 보는 필드
+  // Windows EventData — 에이전트는 이름 없이 StringInserts 로 보내고 서버가 이름을 붙인다(winevtlog.EventData.*, ADR-038).
+  // 검색은 f.EventData.<이름> (에이전트가 이름을 보내면 그 값, 아니면 서버가 붙인 값)
   'winevtlog:EventData.TargetUserName': '대상 계정 (로그온한/실패한/변경된 계정)',
   'winevtlog:EventData.SubjectUserName': '행위자 계정 (작업을 한 계정)',
   'winevtlog:EventData.IpAddress': '접속해 온 IP (원본 네트워크 주소)',
@@ -71,7 +72,8 @@ export const FIELD_DOCS = {
 };
 
 export function fieldDoc(source, path) {
-  return FIELD_DOCS[`${source}:${path}`] ?? FIELD_DOCS[path] ?? '';
+  const p = path.startsWith('winevtlog.EventData.') ? path.slice('winevtlog.'.length) : path;   // 서버가 붙인 이름 (ADR-038)
+  return FIELD_DOCS[`${source}:${p}`] ?? FIELD_DOCS[p] ?? '';
 }
 
 /** 자주 보는 Windows 이벤트 ID (일반적인 의미) */

@@ -267,6 +267,97 @@
    "raw": {
     "EventID": 2
    }
+  },
+  {
+   "id": 15,
+   "host": "WIN-CI",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4625,
+   "level": 3,
+   "username": "kim",
+   "src_ip": "198.51.100.23",
+   "message": "계정을 로그온하지 못했습니다.",
+   "raw": {
+    "EventID": 4625,
+    "Version": 0,
+    "StringInserts": [
+     "S-1-5-21-1-500",
+     "runneradmin",
+     "WIN-CI",
+     "0xd21e7",
+     "S-1-0-0",
+     "kim",
+     "WIN-CI",
+     "0xc000006d",
+     "%%2313",
+     "0xc000006a",
+     10,
+     "User32",
+     "Negotiate",
+     "WIN-CI",
+     "-",
+     "-",
+     0,
+     "0x27a0",
+     "C:\\Windows\\System32\\svchost.exe",
+     "198.51.100.23",
+     "51022"
+    ],
+    "winevtlog": {
+     "EventData": {
+      "SubjectUserSid": "S-1-5-21-1-500",
+      "SubjectUserName": "runneradmin",
+      "SubjectDomainName": "WIN-CI",
+      "SubjectLogonId": "0xd21e7",
+      "TargetUserSid": "S-1-0-0",
+      "TargetUserName": "kim",
+      "TargetDomainName": "WIN-CI",
+      "Status": "0xc000006d",
+      "FailureReason": "%%2313",
+      "SubStatus": "0xc000006a",
+      "LogonType": 10,
+      "LogonProcessName": "User32",
+      "AuthenticationPackageName": "Negotiate",
+      "WorkstationName": "WIN-CI",
+      "TransmittedServices": "-",
+      "LmPackageName": "-",
+      "KeyLength": 0,
+      "ProcessId": "0x27a0",
+      "ProcessName": "C:\\Windows\\System32\\svchost.exe",
+      "IpAddress": "198.51.100.23",
+      "IpPort": "51022"
+     }
+    }
+   }
+  },
+  {
+   "id": 16,
+   "host": "WIN-CI2",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": null,
+   "src_ip": null,
+   "message": "계정이 로그온했습니다.",
+   "raw": {
+    "EventID": 4624,
+    "EventData": {
+     "LogonType": "3",
+     "TargetSid": null
+    },
+    "winevtlog": {
+     "EventData": {
+      "LogonType": 10,
+      "TargetSid": "S-1-5-32-544"
+     }
+    }
+   }
   }
  ],
  "parse": [
@@ -3237,7 +3328,8 @@
    },
    "ids": [
     1,
-    2
+    2,
+    15
    ]
   },
   {
@@ -3247,7 +3339,8 @@
    },
    "ids": [
     1,
-    2
+    2,
+    15
    ]
   },
   {
@@ -3267,7 +3360,9 @@
     10,
     12,
     13,
-    14
+    14,
+    15,
+    16
    ]
   },
   {
@@ -3305,7 +3400,9 @@
     11,
     12,
     13,
-    14
+    14,
+    15,
+    16
    ]
   },
   {
@@ -3343,7 +3440,8 @@
     10,
     12,
     13,
-    14
+    14,
+    16
    ]
   },
   {
@@ -3364,7 +3462,9 @@
     11,
     12,
     13,
-    14
+    14,
+    15,
+    16
    ]
   },
   {
@@ -3425,7 +3525,9 @@
     10,
     11,
     12,
-    14
+    14,
+    15,
+    16
    ]
   },
   {
@@ -3440,7 +3542,9 @@
     10,
     11,
     12,
-    14
+    14,
+    15,
+    16
    ]
   },
   {
@@ -3537,7 +3641,8 @@
    },
    "ids": [
     1,
-    2
+    2,
+    15
    ]
   },
   {
@@ -3557,7 +3662,8 @@
     11,
     12,
     13,
-    14
+    14,
+    16
    ]
   },
   {
@@ -3605,7 +3711,9 @@
     11,
     12,
     13,
-    14
+    14,
+    15,
+    16
    ]
   },
   {
@@ -3645,7 +3753,9 @@
    "ids": [
     1,
     2,
-    10
+    10,
+    15,
+    16
    ]
   },
   {
@@ -3700,7 +3810,8 @@
     9,
     11,
     12,
-    13
+    13,
+    15
    ]
   },
   {
@@ -3722,7 +3833,9 @@
    },
    "ids": [
     2,
-    10
+    10,
+    15,
+    16
    ]
   },
   {
@@ -3734,7 +3847,9 @@
     1,
     2,
     10,
-    11
+    11,
+    15,
+    16
    ]
   },
   {
@@ -3840,7 +3955,9 @@
     11,
     12,
     13,
-    14
+    14,
+    15,
+    16
    ]
   },
   {
@@ -3878,7 +3995,8 @@
    },
    "ids": [
     1,
-    2
+    2,
+    15
    ]
   },
   {
@@ -3911,7 +4029,9 @@
     11,
     12,
     13,
-    14
+    14,
+    15,
+    16
    ]
   },
   {
@@ -3962,7 +4082,9 @@
     11,
     12,
     13,
-    14
+    14,
+    15,
+    16
    ]
   },
   {
@@ -3974,6 +4096,85 @@
    "ids": [
     10,
     11
+   ]
+  },
+  {
+   "name": "서버가 붙인 EventData 이름 (실제 에이전트는 StringInserts 만 — ADR-038)",
+   "params": {
+    "query": "f.EventData.LogonType:10"
+   },
+   "ids": [
+    1,
+    10,
+    15
+   ]
+  },
+  {
+   "name": "옛 파라미터도 별칭",
+   "params": {
+    "f.EventData.TargetUserName": "kim"
+   },
+   "ids": [
+    15
+   ]
+  },
+  {
+   "name": "에이전트가 보낸 이름이 먼저",
+   "params": {
+    "query": "f.EventData.LogonType:3"
+   },
+   "ids": [
+    2,
+    16
+   ]
+  },
+  {
+   "name": "보낸 값이 JSON null 이면 붙인 값",
+   "params": {
+    "query": "f.EventData.TargetSid:S-1-5-32-544"
+   },
+   "ids": [
+    16
+   ]
+  },
+  {
+   "name": "별칭 제외: 붙인 값도 본다",
+   "params": {
+    "query": "-f.EventData.LogonType:10"
+   },
+   "ids": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    11,
+    12,
+    13,
+    14,
+    16
+   ]
+  },
+  {
+   "name": "별칭 여러 값",
+   "params": {
+    "query": "f.EventData.IpAddress:198.51.100.23,10.0.0.1"
+   },
+   "ids": [
+    15
+   ]
+  },
+  {
+   "name": "붙인 경로를 직접",
+   "params": {
+    "query": "f.winevtlog.EventData.LogonType:10"
+   },
+   "ids": [
+    15,
+    16
    ]
   }
  ],

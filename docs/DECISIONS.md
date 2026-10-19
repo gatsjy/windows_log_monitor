@@ -197,6 +197,7 @@
 - **상태:** 채택 (2026-10-04)
 - **결정:** `events` 에 `category`, `username`, `src_ip` 컬럼을 추가합니다(007). 정규화기가 소스별 원본에서 뽑아 채웁니다.
   - Windows 에이전트는 `event_data_as_map: true` 로 EventData 를 이름 있는 맵으로 보냅니다. 구버전 에이전트는 StringInserts 위치표로 보완합니다.
+  - → **ADR-038 로 개정:** Fluent Bit 4.0 에 그 설정이 없어 에이전트는 StringInserts 만 보낸다(857359e). 이름은 서버가 붙인다.
 - **이유:**
   - '이 IP 가 어디를 두드렸나', '이 계정이 어디서 실패했나' 는 Windows·IIS·MSSQL·SSH 를 가로지르는 질문입니다. 소스마다 원본 경로가 달라 `f.` 필터로는 묶을 수 없습니다.
   - 알림 규칙의 `group_by: ip` (출발지별 무차별 대입) 를 인덱스로 빠르게 셀 수 있습니다.
@@ -463,3 +464,33 @@
   - 서버가 이어지는 줄을 붙잡았다가 합치기 — 원본 보존을 어긴다. 200 을 돌려준 뒤 유실될 수 있고, 요청 사이 순서도 믿을 수 없다.
   - 요청 사이 `Error:` 짝을 DB 로 찾기 — B-20.
   - 에이전트에서 `Error:` 머리줄과 본문까지 합치기 — spid·시각을 비교할 수 없어 끼어든 줄을 잘못 합친다. (짝이 요청 사이로 갈리는 문제를 풀 수 있어, 실제 ERRORLOG 에서 끼어드는 줄이 없는지 확인되면 다시 본다 — B-08)
+
+## ADR-038 Windows EventData 이름은 서버가 붙이고, `f.EventData.<이름>` 은 별칭으로 본다
+- **상태:** 채택 (2026-10-19, ADR-019 개정). 벤치마킹 조사(Windows 탐지 묶음)에서 드러난 결함을 고침.
+- **배경:**
+  - 에이전트는 Fluent Bit 4.0 이라 `event_data_as_map`(5.1.0, 2026-08 부터)이 없어 857359e 에서 빼고 `string_inserts` 만 보낸다.
+    그런데 문서·UI 예시·기본 규칙 1000007(원격 데스크톱 무차별 대입)·1000009(관리자 그룹 추가)·보안 대시보드 위젯이
+    `f.EventData.*` 를 써서 **실제 PC 에서는 맞을 수 없었다**. 시험·시뮬레이터가 EventData 맵을 넣어 보내 아무도 몰랐다.
+  - 윈도 CI 러너에서 실제 이벤트(4624·4625·4688·4697·4720·4726·4732·4733·4738·7045·4104)를 일으켜 에이전트 설정으로 받아 보니:
+    EventData 키가 없고, StringInserts 는 매니페스트 템플릿 순서이며, LogonType 같은 정수는 숫자로 온다.
+    4624 v3 는 RemoteCredentialGuard 를 **중간에** 끼워 '새 필드는 뒤에 붙는다'가 늘 맞지는 않았다.
+- **결정:**
+  1. 서버가 `(공급자, 이벤트 ID[, 버전])` 템플릿(`normalizers/win_templates.py`)으로 StringInserts 에 이름을 붙여
+     `raw.winevtlog.EventData` 에 덧붙인다(원본은 그대로 — AGENTS.md 원본 보존). 에이전트가 EventData 맵을 보내면 붙이지 않는다.
+     배열보다 긴 이름은 버린다(옛 버전). 모르는 이벤트는 위치(`f.StringInserts.N`)로만 볼 수 있다.
+  2. 검색·규칙·대시보드의 `f.EventData.<이름>` 은 **별칭**이다: 에이전트가 보낸 값이 먼저, 없으면(없음·JSON null) 서버가 붙인 값.
+     SQL `COALESCE(raw #>> '{EventData,X}', raw #>> '{winevtlog,EventData,X}')`, Python `querylang.raw_field`,
+     JS `rawField` 가 같은 뜻이다(케이스 표 querylang_cases.json, SYNC `raw_alias`). 별칭이 아닌 경로의 SQL 은 그대로다.
+  3. 화면에서 값을 눌러 검색하면 `f.EventData.<이름>` 으로 만든다(`aliasPath`) — 이름을 보내는 에이전트의 PC 도 같이 맞는다.
+  4. 공통 필드 username 은 이름으로 고른다. 그룹 구성원 변경(4728·4732·4756 등)은 TargetUserName 이 그룹 이름이라 바꾼 사람(SubjectUserName).
+  5. 시험·시뮬레이터는 실제 에이전트 모양을 쓴다: `tests/fixtures/winevtlog/agent-fb4.0.14.jsonl`(윈도 CI 실측),
+     `tools/simulate.py` 의 기본값은 StringInserts 만(`--event-data` 로 이름을 보내는 에이전트 흉내).
+     윈도 CI(`tools/ci/capture_winlog.ps1`)가 매번 실제 이벤트를 받아 고정 자료와 모양(배열 길이·값의 형)을 비교한다.
+- **이유:** 이미 설치된 사이트의 `alerts.yaml`·대시보드·사람이 쓴 검색이 고치지 않고 동작한다. Sigma 등 이름 기반 규칙을 들여올 바탕이 된다.
+  위치 번호로 규칙을 고치는 안(`f.StringInserts.10`)은 버전마다 위치가 바뀌고(4624 v3) 사람이 읽을 수 없어 기각.
+- **대가:** 템플릿이 있는 Windows 이벤트의 원본이 커진다 — 저장 크기(압축 포함) +6~39%(개발 DB 실측, 메시지가 길수록 작음).
+  에이전트를 Fluent Bit 5.1(`event_data_as_map`)로 올리고 `string_inserts` 를 끄면 중복이 사라진다(로드맵). 템플릿은 손으로 늘린다
+  (윈도 CI 의 실측 레코드로 길이를 확인). 같은 이름이 두 경로에 있어 필드 탐색에는 `winevtlog.EventData.*` 로 보인다(설명은 같음).
+- **대안:** 조회할 때 이벤트 ID 별 위치로 바꾸는 SQL(CASE) — 저장은 늘지 않지만 같은 표를 SQL·Python·JS 세 곳에 두어야 하고
+  상세·필드 탐색에 이름이 보이지 않아 기각. 에이전트를 지금 5.1 로 올리기 — 이미 설치된 4.0 PC 는 그대로 남아 서버 쪽이 어차피 필요.
+

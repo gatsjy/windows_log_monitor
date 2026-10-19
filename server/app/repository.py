@@ -19,6 +19,7 @@ from psycopg import sql
 from . import db, partitions
 from .filters import EventFilter
 from .normalizers import Event, Heartbeat, IisContext
+from .querylang import RAW_ALIAS
 
 log = logging.getLogger(__name__)
 
@@ -112,11 +113,13 @@ def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
         clauses.append(sql.SQL("({})").format(sql.SQL(" OR ").join(sql.SQL("message ILIKE %s") for _ in group)))
         params.extend(_like(term) for term in group)
     for path, value in f.fields:
-        clauses.append(sql.SQL("raw #>> %s::text[] = %s"))
-        params.extend([path, value])
+        clause, clause_params = _raw_clause("{raw} = %s", path)
+        clauses.append(clause)
+        params.extend([*clause_params, value])
     for path, values in f.field_any:
-        clauses.append(sql.SQL("raw #>> %s::text[] = ANY(%s::text[])"))
-        params.extend([path, values])
+        clause, clause_params = _raw_clause("{raw} = ANY(%s::text[])", path)
+        clauses.append(clause)
+        params.extend([*clause_params, values])
     # 제외: (포함식) IS NOT TRUE — 값이 없는(NULL·경로 없음) 이벤트는 남긴다. NOT IN / <> ALL 은 NULL 행을 버린다
     for key, column, kind in _EXCLUDE_COLUMNS:
         if f.excludes.get(key):
@@ -124,8 +127,9 @@ def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
             params.append(f.excludes[key])
     for key, values in f.excludes.items():
         if key.startswith("f."):
-            clauses.append(sql.SQL("(raw #>> %s::text[] = ANY(%s::text[])) IS NOT TRUE"))
-            params.extend([key[2:].split("."), values])
+            clause, clause_params = _raw_clause("({raw} = ANY(%s::text[])) IS NOT TRUE", key[2:].split("."))
+            clauses.append(clause)
+            params.extend([*clause_params, values])
     for term in f.msg_not:
         clauses.append(sql.SQL("(message ILIKE %s) IS NOT TRUE"))
         params.append(_like(term))
@@ -138,13 +142,23 @@ def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
     return sql.SQL(" AND ").join(clauses), params
 
 
+def _raw_clause(template: str, path: list[str]) -> tuple[sql.Composable, list[Any]]:
+    """원본 경로의 글자 값을 쓰는 SQL 조각 ({raw} 자리). EventData 처럼 별칭이 있는 경로는 에이전트가 보낸 값이 먼저,
+    없으면 서버가 붙인 값(raw.winevtlog.EventData — ADR-038). querylang.raw_field·web/js rawField 와 같은 뜻.
+    별칭이 없는 경로는 예전과 같은 SQL 한 덩어리 (test_where_snapshot)."""
+    if path and path[0] in RAW_ALIAS:
+        expr = "COALESCE(raw #>> %s::text[], raw #>> %s::text[])"
+        return sql.SQL(template.replace("{raw}", expr)), [path, [*RAW_ALIAS[path[0]], *path[1:]]]
+    return sql.SQL(template.replace("{raw}", "raw #>> %s::text[]")), [path]
+
+
 def _field_expr(field: str) -> tuple[sql.Composable, list[Any]]:
     if field in COLUMN_EXPR:
         return sql.SQL(COLUMN_EXPR[field]), []
     path = [p for p in field.removeprefix("f.").split(".") if p]
     if not path:
         raise ValueError("field 가 비어 있습니다")
-    return sql.SQL("raw #>> %s::text[]"), [path]
+    return _raw_clause("{raw}", path)
 
 
 # ------------------------------------------------------------------ write

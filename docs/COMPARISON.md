@@ -16,7 +16,7 @@
 
 | 영역 | Wazuh | Graylog | ELK/OpenSearch | Loki | **Log Monitor 0.3 (보완 전)** | 0.4 현재 (📋 = [BACKLOG.md](BACKLOG.md) 에 남김) |
 |---|---|---|---|---|---|---|
-| Windows 이벤트 필드 파싱 | 이름 있는 필드(win.eventdata.*) | 추출기/파이프라인 | Winlogbeat 이 ECS 로 변환 | 직접 파싱 | ❌ 위치 번호(StringInserts.5)만 | ✅ EventData 이름 필드(`f.EventData.LogonType`) + 공통 필드 |
+| Windows 이벤트 필드 파싱 | 이름 있는 필드(win.eventdata.*) | 추출기/파이프라인 | Winlogbeat 이 ECS 로 변환 | 직접 파싱 | ❌ 위치 번호(StringInserts.5)만 | ✅ EventData 이름 필드(`f.EventData.LogonType`, 서버가 이름을 붙임 — ADR-038) + 공통 필드 |
 | IIS·SQL Server 로그 | ✅ 디코더 | 콘텐츠 팩 | 모듈(Filebeat) | 직접 파싱 | ❌ (응용 로그의 일부만) | ✅ IIS W3C·MSSQL ERRORLOG 해석 + 분류 + 전용 대시보드 |
 | 공통 스키마 (사용자, IP …) | ✅ | 부분 | ✅ ECS | ❌ | ❌ | ✅ `category`·`username`·`src_ip` 컬럼 (Windows·IIS·MSSQL·SSH 공통) |
 | 검색 언어 | Lucene/DQL | Graylog 검색 문법 | KQL/Lucene | LogQL | ❌ 입력 칸 조합만 (AND) | △ 메시지 OR(`a\|b`), 분류·사용자·IP 필터 · 📋 `필드:값`·제외(-) 문법 (B-01) |
@@ -45,7 +45,7 @@
 ## 4. 보완 결과 (2026-10-04, 0.4.0)
 
 **완료:**
-1. **Windows EventData 이름 필드 + 공통 필드:** 에이전트 `event_data_as_map: true`, `category`·`username`·`src_ip` 컬럼(인덱스 포함). 구버전 에이전트는 StringInserts 위치표로 보완.
+1. **Windows EventData 이름 필드 + 공통 필드:** `category`·`username`·`src_ip` 컬럼(인덱스 포함). (2026-10-19 정정: 에이전트 Fluent Bit 4.0 에는 `event_data_as_map` 이 없어 이름이 오지 않았다 — 서버가 템플릿으로 이름을 붙이게 고침, ADR-038)
 2. **IIS·MSSQL 수집과 분류:** 설치 스위치 `-Iis`, `-MssqlErrorlog`. 서버에서 W3C·ERRORLOG 해석. 웹 서버·DB 대시보드.
 3. **보안 탐지 규칙 팩 20개:** RDP·출발지 IP 별 무차별 대입, 관리자 그룹 추가, 계정·서비스·예약 작업 생성, 로그·감사 정책 변경, 의심 PowerShell, Defender 탐지, IIS 5xx, SQL Server, SSH. 규칙마다 MITRE·ISMS 태그.
 4. **검색 OR:** 메시지 검색에서 `a|b`. 알림 규칙 `q` 에도 적용.

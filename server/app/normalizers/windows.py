@@ -3,10 +3,14 @@
 winevtlog 레코드 키: ProviderName, ProviderGuid, Qualifiers, EventID, Version, Level, Task,
 Opcode, Keywords("0x8020000000000000" 형태 문자열), TimeCreated("2026-10-03 14:22:01 +0900"),
 EventRecordID, ActivityID, RelatedActivityID, ProcessID, ThreadID, Channel, Computer, UserID,
-Message, StringInserts(배열), EventData(이름 있는 맵 — 에이전트 event_data_as_map: true 일 때)
+Message, StringInserts(배열), EventData(이름 있는 맵 — Fluent Bit 5.1+ 의 event_data_as_map 일 때만)
+
+지금 에이전트(Fluent Bit 4.0)는 EventData 를 이름 없이 StringInserts 로만 보낸다(실측, tests/fixtures/winevtlog).
+알려진 이벤트(win_templates)면 서버가 이름을 붙여 raw.winevtlog.EventData 에 덧붙인다 — 원본은 그대로(ADR-038).
+검색·규칙의 f.EventData.<이름> 은 에이전트가 보낸 값이 먼저, 없으면 이 값을 본다(querylang.RAW_ALIAS).
 
 공통 필드:
-  username ← EventData.TargetUserName / SubjectUserName … (없으면 StringInserts 위치표, MSSQL 은 메시지)
+  username ← EventData.TargetUserName / SubjectUserName … (이름 → 서버가 붙인 이름 → StringInserts 위치표, MSSQL 은 메시지)
   src_ip   ← EventData.IpAddress / SourceAddress …
 """
 
@@ -15,6 +19,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+from . import win_templates
 from .base import (
     CRITICAL,
     INFO,
@@ -40,6 +45,10 @@ AUDIT_SUCCESS = 0x20_0000_0000_0000
 USER_FIELDS = ("TargetUserName", "SubjectUserName", "UserName", "User", "AccountName", "SamAccountName")
 IP_FIELDS = ("IpAddress", "SourceAddress", "ClientAddress", "SourceIp", "ClientIP", "Address")
 
+# 그룹 구성원 변경: TargetUserName 은 그룹 이름이다 → 사용자는 바꾼 사람(SubjectUserName)
+SUBJECT_USER_EVENTS = frozenset({4727, 4728, 4729, 4730, 4731, 4732, 4733, 4734, 4735, 4737, 4754, 4755, 4756, 4757,
+                                 4758})
+
 # EventData 맵이 없을 때(구버전 에이전트) StringInserts 위치표: 이벤트 ID → (사용자 위치, IP 위치)
 # Microsoft 문서의 필드 순서 기준. Windows 버전에 따라 다를 수 있어 자주 쓰는 것만 둔다.
 STRING_INSERT_POSITIONS: dict[int, tuple[int | None, int | None]] = {
@@ -56,12 +65,21 @@ STRING_INSERT_POSITIONS: dict[int, tuple[int | None, int | None]] = {
 _MSSQL_LOGIN = re.compile(r"Login (?:failed|succeeded) for user '([^']*)'.*?\[CLIENT: ([^\]]+)\]", re.DOTALL)
 
 
-def common_fields(record: dict, event_id: int | None, message: str) -> tuple[str | None, str | None]:
+def derived_event_data(record: dict, event_id: int | None) -> dict | None:
+    """에이전트가 EventData 맵을 보내지 않았을 때 StringInserts 에 템플릿 이름을 붙인 맵 (모르는 이벤트면 None)."""
+    if isinstance(record.get("EventData"), dict):
+        return None
+    return win_templates.named(record.get("ProviderName"), event_id, record.get("StringInserts"), record.get("Version"))
+
+
+def common_fields(record: dict, event_id: int | None, message: str,
+                  derived: dict | None = None) -> tuple[str | None, str | None]:
     """(username, src_ip) 추출."""
-    data = record.get("EventData")
+    data = record.get("EventData") if isinstance(record.get("EventData"), dict) else derived
     user = ip = None
     if isinstance(data, dict):
-        user = next((u for f in USER_FIELDS if (u := clean_user(data.get(f)))), None)
+        fields = ("SubjectUserName",) if event_id in SUBJECT_USER_EVENTS else USER_FIELDS
+        user = next((u for f in fields if (u := clean_user(data.get(f)))), None)
         ip = next((a for f in IP_FIELDS if (a := clean_ip(data.get(f)))), None)
     inserts = record.get("StringInserts")
     if (user is None or ip is None) and isinstance(inserts, list) and event_id in STRING_INSERT_POSITIONS:
@@ -101,7 +119,8 @@ def normalize(record: dict, now: datetime) -> Event:
     if not message and isinstance(record.get("StringInserts"), list):
         message = clean_text(" | ".join(str(s) for s in record["StringInserts"]))
     event_id = to_int(record.get("EventID"))
-    username, src_ip = common_fields(record, event_id, message)
+    derived = derived_event_data(record, event_id)
+    username, src_ip = common_fields(record, event_id, message, derived)
 
     return Event(
         ts=pick_time(record, "TimeCreated", now=now),
@@ -112,7 +131,7 @@ def normalize(record: dict, now: datetime) -> Event:
         event_id=event_id,
         level=level,
         message=message,
-        raw=record,
+        raw={**record, SOURCE: {"EventData": derived}} if derived and SOURCE not in record else record,
         username=username,
         src_ip=src_ip,
     )

@@ -2,7 +2,8 @@
 """가짜 Windows PC / 웹 서버(IIS) / DB 서버(MSSQL) / Linux 서버가 로그를 보내는 것처럼 흉내 내는 시뮬레이터.
 
 실제 에이전트(Fluent Bit)가 보내는 것과 같은 형태의 레코드를 /api/ingest 로 전송한다.
-  - Windows 이벤트: event_data_as_map 을 켠 에이전트처럼 EventData(이름 있는 필드) + StringInserts
+  - Windows 이벤트: 지금 에이전트(Fluent Bit 4.0)처럼 StringInserts 만 (이름은 서버가 붙인다, ADR-038).
+    --event-data 면 이름을 보내는 에이전트(Fluent Bit 5.1 event_data_as_map)처럼 EventData 맵도
   - IIS: tail 로 읽은 W3C 줄 그대로 (#Fields 머리줄 포함) → 서버가 해석
   - MSSQL: 응용 프로그램 이벤트 로그(MSSQLSERVER) + ERRORLOG 줄
 표준 라이브러리만 사용 — 설치 없이 실행 가능.
@@ -65,6 +66,10 @@ def logon_data(event_id: int, user: str, ip: str, logon_type: str) -> dict:
             "AuthenticationPackageName": "NTLM", "WorkstationName": "-", "LogonGuid": "{00000000-0000-0000-0000-000000000000}",
             "TransmittedServices": "-", "LmPackageName": "NTLM V2", "KeyLength": "128", "ProcessId": "0x0",
             "ProcessName": "-", "IpAddress": ip, "IpPort": str(random.randint(40000, 65000))}
+
+
+EVENT_DATA = False   # --event-data
+_NUMERIC = frozenset({"LogonType", "KeyLength", "ServiceStartType", "MessageNumber", "MessageTotal"})
 
 
 def win_templates():
@@ -236,8 +241,10 @@ def win_record(host: str, at: datetime, fn=None, *args) -> dict:
         "log_source": "winevtlog",
     }
     if isinstance(data, dict):
-        record["EventData"] = data
-        record["StringInserts"] = list(data.values())
+        if EVENT_DATA:
+            record["EventData"] = data
+        # 실제 에이전트는 숫자 필드를 숫자로 보낸다 (LogonType 3, KeyLength 0 — tests/fixtures/winevtlog)
+        record["StringInserts"] = [int(v) if k in _NUMERIC and str(v).isdigit() else v for k, v in data.items()]
     else:
         record["StringInserts"] = data
     return record
@@ -462,7 +469,11 @@ def main() -> None:
     parser.add_argument("--per-hour", type=int, default=120, help="과거 데이터: PC 한 대당 시간당 이벤트 수")
     parser.add_argument("--rate", type=float, default=4, help="실시간: 초당 이벤트 수")
     parser.add_argument("--once", action="store_true", help="과거 데이터만 넣고 종료")
+    parser.add_argument("--event-data", action="store_true",
+                        help="Windows 이벤트에 EventData 맵도 (이름을 보내는 에이전트 흉내 — 지금 에이전트는 보내지 않음)")
     args = parser.parse_args()
+    global EVENT_DATA
+    EVENT_DATA = args.event_data
 
     sender = Sender(args.url, args.key)
     if args.backfill_hours > 0:

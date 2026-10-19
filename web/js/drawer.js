@@ -3,7 +3,7 @@ import * as api from './api.js';
 import { eventDoc } from './catalog.js';
 import { jsonView } from './jsonview.js';
 import { categoryLabel, levelBadge, sourceLabel } from './levels.js';
-import { addTerm, formatTerm, parseTerms } from './querylang.js';
+import { addTerm, aliasPath, formatTerm, parseTerms } from './querylang.js';
 import { errorBox, fmtRelative, fmtTime, html, navigate } from './util.js';
 
 let current = null;
@@ -137,11 +137,11 @@ export async function openEvent(evOrId) {
   }));
   bind(body);
   jsonView(body.querySelector('[data-json]'), ev.raw, (path, value) => {
-    const filter = { [`f.${path}`]: value };
+    const filter = { [`f.${aliasPath(path)}`]: value };
     if (!searchContext) { searchBy(filter); return; }
     // 검색 화면에서는 고를 수 있게: 이 값만 / 좁히기 / 제외
     const picked = body.querySelector('[data-picked]');
-    picked.innerHTML = html`<div class="picked-bar"><code>${path} = ${value}</code>${actions(filter)}</div>`;
+    picked.innerHTML = html`<div class="picked-bar"><code>${aliasPath(path)} = ${value}</code>${actions(filter)}</div>`;
     bind(picked);
   });
   body.querySelector('[data-copy]').addEventListener('click', async (e) => {

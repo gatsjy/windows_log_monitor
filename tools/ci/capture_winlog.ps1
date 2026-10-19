@@ -8,6 +8,8 @@ param(
     [Parameter(Mandatory = $true)] [string] $FluentBitExe,
     [Parameter(Mandatory = $true)] [string] $Rendered,       # agent-render\windows-min.yaml
     [string] $Work = (Join-Path ([System.IO.Path]::GetTempPath()) "wlm-winlog"),
+    # Committed real records (server/tests/fixtures/winevtlog): the fresh capture must have the same shape
+    [string] $Fixture = "",
     [string] $Python = "python"
 )
 $ErrorActionPreference = "Stop"
@@ -89,9 +91,27 @@ for line in open(sys.argv[1], encoding="utf-8"):
     print("WLMCAPTURE " + json.dumps(r, ensure_ascii=True))
 print("WLMSUMMARY " + json.dumps({str(k): v for k, v in sorted(seen.items())}))
 missing = {4625, 4720, 4732} - set(seen)
-sys.exit(1 if missing else 0)
+bad = []
+if len(sys.argv) > 2 and sys.argv[2]:
+    # Same (EventID, Version) -> same StringInserts length and value types as the committed fixture
+    shape = {}
+    for line in open(sys.argv[2], encoding="utf-8"):
+        if line.strip():
+            f = json.loads(line)
+            shape[(f["EventID"], f.get("Version"))] = [type(v).__name__ for v in f["StringInserts"]]
+    for line in open(sys.argv[1], encoding="utf-8"):
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        want = shape.get((r.get("EventID"), r.get("Version")))
+        got = [type(v).__name__ for v in r.get("StringInserts") or []]
+        if want is not None and [t for t in got] != want:
+            bad.append((r.get("EventID"), r.get("Version"), want, got))
+    for b in bad[:5]:
+        print("WLMSHAPE differs from the fixture: " + json.dumps(b))
+sys.exit(1 if missing or bad else 0)
 '@
 $py = Join-Path $Work "show.py"
 Set-Content -Encoding ASCII -Path $py -Value $code
-& $Python $py $out
-if ($LASTEXITCODE -ne 0) { throw "expected 4625, 4720 and 4732 in the agent output" }
+& $Python $py $out $Fixture
+if ($LASTEXITCODE -ne 0) { throw "expected 4625, 4720 and 4732 with the same shape as the fixture in the agent output" }

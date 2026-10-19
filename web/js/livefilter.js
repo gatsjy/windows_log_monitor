@@ -1,14 +1,14 @@
 // 실시간 갱신용: 서버 filters.py 의 matches() 와 같은 규칙으로 이벤트가 위젯 조건에 맞는지 판단.
 // 조건 해석·매칭은 querylang.js (서버 querylang.py·filters.py 와 같은 알고리즘, 케이스 표로 함께 시험).
-import { compileQuery, rawText as queryRawText, walkRaw } from './querylang.js';
+import { compileQuery, rawField, rawText as queryRawText } from './querylang.js';
 
 const FIELD_OF = { user: 'username', ip: 'src_ip' };
 const UNIT_SEC = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 };
 const CACHE_MAX = 100;
 const compiled = new Map();   // JSON(조건) → 술어. 위젯마다 이벤트 묶음이 올 때 문장을 다시 해석하지 않게
 
-/** 원본 JSON 에서 점 경로 값 (서버 _field_expr 처럼 빈 단계는 버림). 배열은 숫자 위치 */
-export const getPath = (obj, path) => walkRaw(obj, path.split('.').filter(Boolean));
+/** 원본 JSON 에서 점 경로 값 (서버 _field_expr 처럼 빈 단계는 버림). 배열은 숫자 위치. EventData 별칭 포함 (ADR-038) */
+export const getPath = (obj, path) => rawField(obj, path.split('.').filter(Boolean));
 
 /** PostgreSQL `raw #>> path` 와 같은 문자열 표현 (배열·객체는 ', ' · ': ' 구분자) */
 export const rawText = queryRawText;

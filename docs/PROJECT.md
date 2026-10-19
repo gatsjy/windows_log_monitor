@@ -124,13 +124,14 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 
 | 소스 | username | src_ip |
 |---|---|---|
-| Windows | EventData `TargetUserName` → `SubjectUserName` → … (없으면 StringInserts 위치표) | EventData `IpAddress` → `SourceAddress` → … |
+| Windows | EventData(에이전트가 보낸 것, 없으면 서버가 붙인 이름) `TargetUserName` → `SubjectUserName` → … (그룹 구성원 변경은 `SubjectUserName`, 이름도 없으면 StringInserts 위치표) | EventData `IpAddress` → `SourceAddress` → … |
 | IIS | `cs-username` | `c-ip` |
 | MSSQL | `Login failed for user '...'` | `[CLIENT: ...]` |
 | SSH (syslog/journald) | `Failed password for (invalid user) X` | `from X` |
 
 - 의미 없는 값은 버립니다: `-`, `N/A`, `S-1-0-0`, `$` 로 끝나는 컴퓨터 계정, `::1`·`127.0.0.1`. `::ffff:` 접두사는 뗍니다.
-- Windows 에이전트는 `event_data_as_map: true` 로 EventData 를 이름 있는 맵으로 보냅니다(`f.EventData.LogonType` 처럼 검색).
+- Windows 에이전트(Fluent Bit 4.0)는 EventData 를 이름 없이 `StringInserts` 배열로만 보냅니다. 서버가 알려진 이벤트(`normalizers/win_templates.py` — 로그온·계정·그룹·서비스·예약 작업·Kerberos·PowerShell 4104 등)에 이름을 붙여 `raw.winevtlog.EventData` 에 덧붙입니다(ADR-038).
+  - 검색·규칙은 `f.EventData.LogonType` 처럼 이름으로 씁니다 — 에이전트가 이름을 보내면 그 값, 아니면 서버가 붙인 값. 템플릿이 없는 이벤트는 `f.StringInserts.N`(0부터).
 
 ### 3.3 데이터 모델 (`server/migrations/`)
 
@@ -245,7 +246,7 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
 | `level` | 수준 | `심각 오류 경고 정보 상세`, `critical error warning info verbose`, `1`~`5` |
 | `event_id` | 이벤트 ID | 0 이상 정수 |
 | `msg` | 메시지 | 부분일치 (위) |
-| `f.<경로>` | 원본 JSON `raw #>> 경로` | 글자로 비교 (숫자 4625 와 문자열 "4625" 모두 맞음). 배열 위치는 `0, 1, 2` |
+| `f.<경로>` | 원본 JSON `raw #>> 경로` | 글자로 비교 (숫자 4625 와 문자열 "4625" 모두 맞음). 배열 위치는 `0, 1, 2`. `f.EventData.X` 는 에이전트가 보낸 값, 없으면 서버가 붙인 `winevtlog.EventData.X` (ADR-038) |
 
 - 같은 키를 포함으로 여러 번 쓰면 교집합입니다(`host:A,B host:B` = `host:B`). 겹치지 않으면(`host:A host:B`) 결과 0건이고 화면이 알려 줍니다.
 - `키처럼 생긴 이름:` 은 키여야 합니다 — 오타(`hots:A`)는 위치와 함께 오류로 알려 주고 '`host` 로 고치기'를 제안합니다. `C:\Windows`, `http://…`, `12:30`, `fe80::1` 처럼 키가 아닌 것은 그대로 메시지 단어입니다. `Error:` 같은 말은 따옴표로.

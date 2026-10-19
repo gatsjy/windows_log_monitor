@@ -45,6 +45,8 @@ SYNC: dict[str, Any] = {
                   "f": "f.경로", "field": "f.경로", "fields": "f.경로", "raw": "f.경로", "원본": "f.경로"},
     "limits": {"max_len": 500, "max_terms": 30, "max_values": 50, "max_value_len": 200, "max_fields": 10,
                "max_msg": 20, "max_segments": 16, "max_segment_len": 100, "max_event_id": 2147483647},
+    # 원본 경로 별칭: f.EventData.X 는 에이전트가 보낸 값이 먼저, 없으면 서버가 붙인 raw.winevtlog.EventData.X (ADR-038)
+    "raw_alias": {"EventData": ["winevtlog", "EventData"]},
     "errors": {
         "too_long": "검색 문장은 {max}자까지 쓸 수 있습니다.",
         "control_char": "보이지 않는 제어 문자가 들어 있습니다. 지우고 다시 입력하세요.",
@@ -90,6 +92,7 @@ RESERVED: dict[str, str] = SYNC["reserved"]
 RESERVED_WORDS = frozenset(SYNC["reserved_words"])
 KEYS: list[str] = SYNC["keys"]
 LIMITS: dict[str, int] = SYNC["limits"]
+RAW_ALIAS: dict[str, list[str]] = SYNC["raw_alias"]
 LEVEL_NAMES = {int(k): v[0] for k, v in SYNC["levels"].items()}           # 2 → '오류' (정규형 표기)
 _LEVEL_OF = {name: int(k) for k, names in SYNC["levels"].items() for name in [k, *names]}
 _IDENT = re.compile(r"[A-Za-z_가-힣][A-Za-z0-9_.가-힣-]*")
@@ -480,6 +483,15 @@ def _jsonb_text(value: Any) -> str:
 def raw_text(value: Any) -> str:
     """PostgreSQL `raw #>> path` 와 같은 문자열 표현 (배열·객체는 ', ' · ': ' 구분자, 실수는 지수 표기 없이)."""
     return value if isinstance(value, str) else _jsonb_text(value)
+
+
+def raw_field(raw: Any, path: list[str] | tuple[str, ...]) -> Any:
+    """검색·규칙이 보는 원본 경로 값. 첫 단계가 별칭(EventData)이고 그 경로에 값이 없으면(없음·JSON null) 서버가 붙인
+    raw.winevtlog.EventData 를 본다 — SQL 의 COALESCE(repository._raw_path)·JS rawField 와 같은 뜻."""
+    value = walk_raw(raw, path)
+    if value is None and path and path[0] in RAW_ALIAS:
+        value = walk_raw(raw, [*RAW_ALIAS[path[0]], *path[1:]])
+    return value
 
 
 def walk_raw(value: Any, path: list[str] | tuple[str, ...]) -> Any:

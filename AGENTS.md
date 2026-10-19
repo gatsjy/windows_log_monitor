@@ -196,6 +196,10 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - **에이전트 multiline (ADR-037):** `multiline.parser` 이름 오타는 `--dry-run` 을 통과하고 기동 때 엔진 전체(윈도 이벤트 포함)가 멈춘다 → `render_agent_configs.check_multiline` 이 막는다. multiline tail 은 `storage.type: filesystem` 필수(서버가 꺼진 채 멈추면 묶던 것·못 보낸 것을 잃는다 — `tools/ci/test_fluentbit_mssql.sh` 가 재현).
   - 틀의 `mssql_errorlog` 시작 정규식과 서버 `mssql._LINE` 은 같은 줄을 시각 줄로 봐야 한다(`tests/test_agent_sync.py`). 고정 자료 `tests/fixtures/mssql/fb-*.jsonl` 은 Fluent Bit 실제 출력 — Fluent Bit 을 올리면 `test_fluentbit_mssql.sh … --update` 후 서버 시험.
   - 에이전트 설정 버전 0.4.0 은 서버보다 먼저 배포하지 않는다(옛 서버는 묶인 레코드를 잘못 읽음).
+- **Windows EventData 이름 (ADR-038):** 에이전트(Fluent Bit 4.0)는 EventData 를 보내지 않고 StringInserts 만 보낸다(LogonType 은 숫자). 서버가 `win_templates` 로 `raw.winevtlog.EventData` 를 붙이고, `f.EventData.X` 는 별칭(보낸 값 → 붙인 값)이다.
+  - 별칭은 세 곳이 같아야 한다: `repository._raw_clause`(SQL COALESCE), `querylang.raw_field`, `web/js/querylang.js` 의 `rawField`(SYNC `raw_alias`). 케이스 표에 줄을 먼저.
+  - Windows 시험 자료는 실제 에이전트 모양으로(`tests/fixtures/winevtlog/agent-fb4.0.14.jsonl`). EventData 맵을 넣은 레코드로만 시험하면 실제 PC 에서 안 맞는 규칙이 통과한다(실제로 그랬다). 시뮬레이터 기본값도 StringInserts 만.
+  - 템플릿을 더하면 윈도 CI 의 실측 레코드로 길이를 확인한다(`test_win_templates.py`). 버전마다 필드가 중간에 끼기도 한다(4624 v3) — `VERSIONED`.
 - MSSQL ERRORLOG 의 `Error:` 머리줄은 번호 없이 '상세'(5)로 저장됩니다. 오류 번호로 세는 규칙·위젯은 본문 줄 기준입니다(이중 집계 방지).
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - 알림 엔진은 앱 안의 백그라운드 작업입니다. `uvicorn --reload` 로 재시작되면 다음 주기에 이어서 평가합니다.

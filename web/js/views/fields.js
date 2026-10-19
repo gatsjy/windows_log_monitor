@@ -2,6 +2,7 @@
 import * as api from '../api.js';
 import { barList } from '../charts.js';
 import { fieldDoc } from '../catalog.js';
+import { aliasPath } from '../querylang.js';
 import { sourceLabel } from '../levels.js';
 import { errorBox, fmtCompact, fmtNum, fmtRelative, fmtTime, html, navigate, replaceParams } from '../util.js';
 
@@ -99,12 +100,12 @@ export async function mount(root, params) {
       return;
     }
     try {
-      const data = await api.get('/api/stats/top', { field: `f.${field.path}`, source: field.source, since, limit: 15 });
+      const data = await api.get('/api/stats/top', { field: `f.${aliasPath(field.path)}`, source: field.source, since, limit: 15 });
       barList(valuesEl, data.items.map((it) => ({
         label: it.value == null ? '(없음)' : it.value.length > 80 ? `${it.value.slice(0, 80)}…` : it.value,
         title: it.value ?? '', value: it.n, raw: it.value,
       })), (row) => {
-        if (row.raw != null) navigate('events', { since, source: field.source, [`f.${field.path}`]: row.raw });
+        if (row.raw != null) navigate('events', { since, source: field.source, [`f.${aliasPath(field.path)}`]: row.raw });
       });
     } catch (err) {
       valuesEl.innerHTML = errorBox(err);

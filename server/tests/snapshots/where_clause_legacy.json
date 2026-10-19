@@ -277,11 +277,12 @@
    "event_id": "4625",
    "f.EventData.LogonType": "10"
   },
-  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])'), SQL(' AND '), SQL('raw #>> %s::text[] = %s')])",
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])'), SQL(' AND '), SQL('COALESCE(raw #>> %s::text[], raw #>> %s::text[]) = %s')])",
   "args": [
    "2026-10-02 05:00:00+00:00",
    "[4625]",
    "['EventData', 'LogonType']",
+   "['winevtlog', 'EventData', 'LogonType']",
    "10"
   ]
  },
@@ -302,11 +303,12 @@
    "event_id": "4732",
    "f.EventData.TargetSid": "S-1-5-32-544"
   },
-  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])'), SQL(' AND '), SQL('raw #>> %s::text[] = %s')])",
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])'), SQL(' AND '), SQL('COALESCE(raw #>> %s::text[], raw #>> %s::text[]) = %s')])",
   "args": [
    "2026-10-02 05:00:00+00:00",
    "[4732]",
    "['EventData', 'TargetSid']",
+   "['winevtlog', 'EventData', 'TargetSid']",
    "S-1-5-32-544"
   ]
  },
@@ -808,11 +810,12 @@
    "event_id": "4625",
    "f.EventData.LogonType": "10"
   },
-  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])'), SQL(' AND '), SQL('raw #>> %s::text[] = %s')])",
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])'), SQL(' AND '), SQL('COALESCE(raw #>> %s::text[], raw #>> %s::text[]) = %s')])",
   "args": [
    "2026-10-02 05:00:00+00:00",
    "[4625]",
    "['EventData', 'LogonType']",
+   "['winevtlog', 'EventData', 'LogonType']",
    "10"
   ]
  },
@@ -891,11 +894,12 @@
    "f.EventData.User": "admin",
    "level": "3"
   },
-  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('level = ANY(%s::int[])'), SQL(' AND '), SQL('raw #>> %s::text[] = %s')])",
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('level = ANY(%s::int[])'), SQL(' AND '), SQL('COALESCE(raw #>> %s::text[], raw #>> %s::text[]) = %s')])",
   "args": [
    "2026-10-02 05:00:00+00:00",
    "[3]",
    "['EventData', 'User']",
+   "['winevtlog', 'EventData', 'User']",
    "admin"
   ]
  },

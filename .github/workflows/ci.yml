@@ -160,7 +160,7 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Get-ChildItem fb -Recurse -Filter fluent-bit.exe | Select-Object -First 1).FullName
-          & tools\ci\capture_winlog.ps1 -FluentBitExe $exe -Rendered agent-render\windows-min.yaml -Work (Join-Path $env:RUNNER_TEMP "wlm-winlog")
+          & tools\ci\capture_winlog.ps1 -FluentBitExe $exe -Rendered agent-render\windows-min.yaml -Work (Join-Path $env:RUNNER_TEMP "wlm-winlog") -Fixture server\tests\fixtures\winevtlog\agent-fb4.0.14.jsonl
           if ($LASTEXITCODE -ne 0) { throw "capture failed" }
       # Windows build: UTF-16 ERRORLOG + multiline must give the same records as the Linux image (expected values
       # from tools/ci/test_fluentbit_mssql.sh). Only the MSSQL tail is taken from the rendered config (B-08).

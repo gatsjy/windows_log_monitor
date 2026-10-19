@@ -157,6 +157,9 @@ const SYNC = /* @sync:begin */ {
     "max_segment_len": 100,
     "max_event_id": 2147483647
   },
+  "raw_alias": {
+    "EventData": ["winevtlog", "EventData"]
+  },
   "errors": {
     "too_long": "검색 문장은 {max}자까지 쓸 수 있습니다.",
     "control_char": "보이지 않는 제어 문자가 들어 있습니다. 지우고 다시 입력하세요.",
@@ -556,6 +559,26 @@ export function rawText(v) {
   return rawJson(v);
 }
 
+/** 검색·규칙이 보는 원본 경로 값 — 첫 단계가 별칭(EventData)이고 값이 없으면(없음·null) 서버가 붙인
+ * raw.winevtlog.EventData 를 본다 (server querylang.raw_field·SQL COALESCE 와 같은 뜻, ADR-038) */
+export function rawField(raw, path) {
+  const cur = walkRaw(raw, path);
+  if (cur == null && path.length && hasOwn(SYNC.raw_alias, path[0])) {
+    return walkRaw(raw, [...SYNC.raw_alias[path[0]], ...path.slice(1)]);
+  }
+  return cur;
+}
+
+/** 서버가 붙인 경로(winevtlog.EventData.X)를 검색에 쓰는 이름(EventData.X)으로 — 화면에서 값을 눌러 검색할 때.
+ * 별칭은 보낸 값이 먼저라, 이름을 보내는 에이전트의 PC 도 같은 조건으로 맞는다 (ADR-038) */
+export function aliasPath(path) {
+  for (const [alias, target] of Object.entries(SYNC.raw_alias)) {
+    const prefix = `${target.join('.')}.`;
+    if (path.startsWith(prefix)) return `${alias}.${path.slice(prefix.length)}`;
+  }
+  return path;
+}
+
 /** 원본 JSON 경로 값 (없으면 undefined). 배열은 ASCII 숫자 위치만 */
 export function walkRaw(value, path) {
   let cur = value;
@@ -703,16 +726,16 @@ export function compileFilter(f) {
     if (q.length && !q.some((t) => message.includes(t))) return false;
     for (const group of msgAll) if (!group.some((v) => message.includes(v))) return false;
     for (const [path, expected] of f.fields) {
-      const cur = walkRaw(ev.raw, path);
+      const cur = rawField(ev.raw, path);
       if (cur == null || rawText(cur) !== expected) return false;
     }
     for (const [path, values] of f.fieldAny) {
-      const cur = walkRaw(ev.raw, path);
+      const cur = rawField(ev.raw, path);
       if (cur == null || !values.includes(rawText(cur))) return false;
     }
     for (const [key, values] of excludes) {
       if (key.startsWith('f.')) {
-        const cur = walkRaw(ev.raw, key.slice(2).split('.'));
+        const cur = rawField(ev.raw, key.slice(2).split('.'));
         if (cur != null && values.includes(rawText(cur))) return false;
       } else {
         const v = eventValue(ev, key);

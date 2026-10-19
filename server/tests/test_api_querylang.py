@@ -167,11 +167,11 @@ def test_search_api_same_result_as_legacy_params(ctx):
     for client in (ctx["admin"], ctx["viewer"]):
         assert ids(client, {"query": "host:DC-01 event_id:4625"}) == ids(client, {"host": "DC-01", "event_id": "4625"}) == [1, 2]
         assert ids(client, {"query": 'msg:"Failed password","Invalid user"'}) == ids(client, {"q": "Failed password|Invalid user"})
-        assert ids(client, {"query": "-user:svc_backup", "category": "security"}) == [2, 10]
+        assert ids(client, {"query": "-user:svc_backup", "category": "security"}) == [2, 10, 15, 16]
     count = ctx["admin"].get("/api/stats/count", params={**window, "query": "level:오류,심각"}).json()
     assert count["current"] == 4
     top = ctx["admin"].get("/api/stats/top", params={**window, "field": "host", "query": "-host:DC-01 category:security"}).json()
-    assert [r["value"] for r in top["items"]] == ["DC-02"]
+    assert [r["value"] for r in top["items"]] == ["DC-02", "WIN-CI", "WIN-CI2"]
     # 접속기록: 검색 문장 원문이 그대로 남는다 (ISMS 2.9.4)
     audit = ctx["admin"].get("/api/audit", params={"since": "1h", "action": "events.search"}, headers=CSRF).json()["items"]
     assert any(a["detail"]["query"].get("query") == "-user:svc_backup" for a in audit)
@@ -213,7 +213,7 @@ def test_scoped_user_cannot_widen_with_a_sentence(ctx):
     scoped = ctx["scoped"]
     assert scoped.get("/api/stats/count", params={**window, "query": "-category:security"}).json()["current"] == 0
     assert scoped.get("/api/stats/count", params={**window, "query": "category:system"}).json()["current"] == 0
-    assert scoped.get("/api/stats/count", params={**window, "query": "-user:svc_backup"}).json()["current"] == 2   # 2, 10
+    assert scoped.get("/api/stats/count", params={**window, "query": "-user:svc_backup"}).json()["current"] == 4   # 2, 10, 15, 16
 
 
 def test_dashboard_widget_sentence_is_checked(ctx):
@@ -248,7 +248,7 @@ def test_alert_rule_with_sentence(ctx):
         assert r.status_code == 200, r.text
         return r.json()["matched"]
 
-    assert matched("category:security") == 4 and matched("category:security -user:svc_backup") == 2
+    assert matched("category:security") == 6 and matched("category:security -user:svc_backup") == 4
 
 
 def test_rule_preview_respects_scope_and_sentence_categories_are_visible(ctx):

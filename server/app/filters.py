@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from functools import cached_property
 from typing import Any
 
-from .querylang import FilterError, QueryError, Term, fold, parse_terms, raw_text, walk_raw
+from .querylang import FilterError, QueryError, Term, fold, parse_terms, raw_field, raw_text
 
 __all__ = ["EventFilter", "FilterError", "QueryError", "Scope", "field_filters", "parse_duration", "parse_query",
            "parse_time", "query_text", "raw_text", "scopes_allow"]
@@ -268,16 +268,16 @@ class EventFilter:
             if not any(v in message for v in group):
                 return False
         for path, expected in self.fields:
-            current = walk_raw(event.get("raw"), path)
+            current = raw_field(event.get("raw"), path)
             if current is None or raw_text(current) != expected:
                 return False
         for path, values in self.field_any:
-            current = walk_raw(event.get("raw"), path)
+            current = raw_field(event.get("raw"), path)
             if current is None or raw_text(current) not in values:
                 return False
         for key, values in self.excludes.items():
             if key.startswith("f."):
-                current = walk_raw(event.get("raw"), key[2:].split("."))
+                current = raw_field(event.get("raw"), key[2:].split("."))
                 if current is not None and raw_text(current) in values:
                     return False
             else:
