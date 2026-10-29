@@ -202,6 +202,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 별칭은 세 곳이 같아야 한다: `repository._raw_clause`(SQL COALESCE), `querylang.raw_field`, `web/js/querylang.js` 의 `rawField`(SYNC `raw_alias`). 케이스 표에 줄을 먼저.
   - Windows 시험 자료는 실제 에이전트 모양으로(`tests/fixtures/winevtlog/agent-fb4.0.14.jsonl`). EventData 맵을 넣은 레코드로만 시험하면 실제 PC 에서 안 맞는 규칙이 통과한다(실제로 그랬다). 시뮬레이터 기본값도 StringInserts 만.
   - 템플릿을 더하면 윈도 CI 의 실측 레코드로 길이를 확인한다(`test_win_templates.py`). 버전마다 필드가 중간에 끼기도 한다(4624 v3) — `VERSIONED`.
+  - 기본 규칙·대시보드의 `f.EventData.<이름>` 은 그 이벤트의 **실측으로 확인한** 템플릿에 있어야 한다(`test_rule_fields.py`). 이름 오타는 검사 없이 통과하고 실제 PC 에서 영영 맞지 않는다.
 - MSSQL ERRORLOG 의 `Error:` 머리줄은 번호 없이 '상세'(5)로 저장됩니다. 오류 번호로 세는 규칙·위젯은 본문 줄 기준입니다(이중 집계 방지).
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - 알림 엔진은 앱 안의 백그라운드 작업입니다. `uvicorn --reload` 로 재시작되면 다음 주기에 이어서 평가합니다.
