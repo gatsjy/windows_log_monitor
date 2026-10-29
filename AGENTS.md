@@ -43,6 +43,7 @@ Fluent Bit 에이전트가 보낸 Windows 이벤트 로그, IIS·SQL Server 로�
 
 ```
 server/app/
+  rejects.py         수집 거절 장부 (메모리에 모아 30초마다 ingest_rejections 에, B-40)
   main.py            앱 진입점, 시작 시 마이그레이션·파티션 준비, 정적 UI 제공, 수집 포트 제한(IngestPortGuard), 보안 헤더(HSTS 선택)
   serve.py           운영 실행: 한 프로세스에 리스너 넷 — 8000 화면·API(TLS 면 https), 8001 평문 수집(6976), 8002 TLS 수집(6977), 8003 수집기 전용 내부
   tlsutil.py         ★ TLS: uvicorn TLS 설정(1.2+, ECDHE+AEAD), 기동 전 점검, 인증서 상태(만료·이름·CA), 자체 CA·서버 인증서 발급 (ADR-036)
@@ -188,6 +189,10 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - 알림 규칙을 화면에서 저장하면 그 규칙 블록만 다시 쓴다(`ruleedit.py`). 블록 안의 주석은 그 규칙을 화면에서 저장하면 사라진다(켜기/끄기만은 보존).
 - UI 디자인 값은 `web/css/app.css` 의 토큰(`:root`)만 쓴다. 좁은 화면 기준: 1000px(상단 바), 700px(표→카드), 600px(휴대폰).
 - 정규화기는 `None` 을 돌려 레코드를 저장하지 않을 수 있습니다(IIS `#Fields:` 머리줄). 그 외에는 버리지 않습니다.
+- **수집 견고성 (ADR-044):** 수집은 `normalize_safely`(정규화 예외 → 일반 로그 + `raw._ingest.error`, `_ingest` 는 서버 예약 키)와 `insert_batch`(값 오류 → 한 트랜잭션·저장점으로 반씩 나눠 문제 레코드만 `ingest_quarantine`, 격리한 이벤트를 돌려줌, 시도 상한 `ISOLATE_BUDGET`)를 거친다. 새 '값 오류' 종류는 `repository._DATA_ERRORS` 에.
+  - 알려진 값 오류는 격리까지 가지 않게 미리 막는다(`normalizers._scrub` 의 범위, 수집의 NaN·서로게이트). 새로 알게 된 것도 그쪽에 — 격리는 모르는 것을 위한 그물이다. 시험은 `_write` 에 DB 값 오류를 넣어 격리를 본다(`test_api_ingest_problems.poison`).
+  - `_json` 은 홀수 개 역슬래시 뒤의 `\u0000` 만 지운다(글자 그대로의 `\u0000` 을 지우면 JSON 이 깨진다 — 재현). 짝 없는 서로게이트는 수집 본문에서 U+FFFD 로.
+  - 수집 거절은 `rejects.note()` 로 메모리에 모았다가 30초마다 `ingest_rejections` 에(인증 전 요청을 요청마다 DB 에 쓰지 않는다). 시험은 `rejects.flush()` 를 직접 부른다.
 - IIS 열 순서는 DB `iis_layouts` 가 정본입니다(ADR-037). `repository._IIS_FILE`·`_IIS_SITE` 캐시는 커밋한 뒤에만 채우고(`remember_iis_layouts`), 시험에서 '서버 재시작'은 `forget_iis_layouts()` 로 흉내 냅니다.
   - 그 파일의 순서(머리줄)는 서버 필드 모양만 봅니다(`iis.plausible` — 요청자 값으로 해석이 깨지지 않게). 추정한 순서(같은 폴더·기본)는 `iis.plausible_guess` 로 더 엄격히 봅니다 — 칸이 밀리면 요청자 값('-'·IP 모양 UA)이 서버 칸을 통과해 공격자가 `src_ip` 를 정할 수 있었습니다(검토에서 재현).
   - 모양 규칙(`_SHAPES`·`_ALWAYS`·`_REQUEST_SHAPES`·`_REQUESTER_TEXT`)을 바꾸면 `tests/test_iis_context.py` 의 고정 목록(ALWAYS·SHAPES·REQUESTER_TEXT)도 고칩니다. 목록마다 항목 하나를 빼면 그것만으로 실패하는 동작 시험이 있습니다 — 시험 매개변수를 모듈의 목록에서 만들지 않습니다(항목을 빼면 시험도 같이 사라짐).

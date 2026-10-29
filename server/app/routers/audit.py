@@ -30,6 +30,8 @@ ACTION_LABELS = {
     "user.unlock": "잠금 해제",
     "events.search": "이벤트 검색",
     "events.view": "이벤트 상세 조회",
+    "events.quarantine.view": "격리한 수집 레코드 열람",
+    "retention.purge_ingest": "격리 레코드·수집 거절 장부 만료 삭제",
     "dashboard.save": "대시보드 저장",
     "alerts.config.save": "알림 규칙 파일 저장",
     "alerts.config.apply": "알림 설정 적용(판본)",

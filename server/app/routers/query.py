@@ -326,6 +326,30 @@ async def delete_agents(body: AgentDeleteBody, request: Request, admin: User = D
     return await _delete_agents(hosts, request, admin)
 
 
+@router.get("/api/agents/problems")
+async def ingest_problems(since: str = "7d", _: User = Depends(require_admin)):
+    """수집 거절 장부와 격리한 레코드 목록 (B-40). 관리자만 — 격리 레코드는 조회 범위를 거치지 않은 원본 로그다."""
+    try:
+        start = parse_time(since, datetime.now(UTC))
+    except FilterError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"rejections": await repository.list_ingest_rejections(start),
+            "quarantine": await repository.list_quarantine(start, 50)}
+
+
+@router.get("/api/agents/quarantine/{quarantine_id}")
+async def quarantine_record(quarantine_id: int, request: Request, admin: User = Depends(require_admin)):
+    """격리한 레코드 원본. 원본 로그 열람이라 접속기록을 남기고, 남기지 못하면 내주지 않는다 (ADR-042)."""
+    row = await repository.get_quarantine(quarantine_id)
+    if row is None:
+        raise HTTPException(404, "격리한 레코드를 찾을 수 없습니다")
+    # 누구의 기록을 봤는지(정보주체)까지 — events.view 와 같게 (ADR-042)
+    await db.audit(admin.username, "events.quarantine.view", f"#{quarantine_id}",
+                   {k: row[k] for k in ("host", "source", "username", "src_ip", "category")},
+                   actor_ip=client_ip(request), required=True)
+    return row
+
+
 @router.get("/api/fields")
 async def list_fields(request: Request):
     items = await repository.fields()

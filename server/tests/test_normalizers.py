@@ -508,3 +508,19 @@ def test_nul_bytes_are_removed_from_every_text_field():
     w = normalize(winevt(Channel="Sec\x00urity", EventData={"TargetUserName": "ki\x00m", "IpAddress": "10.0.0.\x005"}), NOW)
     assert (w.channel, w.username, w.src_ip) == ("Security", "kim", "10.0.0.5")
     assert normalize({"agent_host": "\x00", "log_source": "file", "log": "x"}, NOW).host == "unknown"
+
+
+def test_a_normalizer_failure_keeps_the_record_as_a_generic_log(monkeypatch):
+    """정규화기 예외 하나가 요청 전체를 500 으로 만들지 않는다 (B-40) — 원본은 그대로, 오류는 raw._ingest 에만."""
+    from app import normalizers
+
+    def boom(record, now):
+        raise KeyError("EventData")
+
+    monkeypatch.setitem(normalizers.BY_SOURCE, "syslog", boom)
+    record = {"log_source": "syslog", "host": "PC-1", "message": "hello", "pri": 38}
+    event = normalizers.normalize_safely(record, NOW)
+    assert (event.host, event.source, event.message) == ("PC-1", "syslog", "hello")
+    assert event.raw["_ingest"] == {"error": "KeyError: 'EventData'"} and event.raw["pri"] == 38
+    assert "_ingest" not in record
+    assert normalizers.normalize_safely({"log_source": "file", "message": "ok"}, NOW).raw == {"log_source": "file", "message": "ok"}

@@ -10,14 +10,17 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from datetime import datetime
 
 from . import generic, iis, mssql, syslog, windows
-from .base import Event, Heartbeat, clean_ip, clean_user, pick_host
+from .base import Event, Heartbeat, clean_ip, clean_text, clean_user, pick_host
 from .categories import classify
 
 Normalizer = Callable[[dict, datetime], Event | None]
+log = logging.getLogger(__name__)
 
 # 1순위: 에이전트가 붙인 log_source 값으로 선택
 BY_SOURCE: dict[str, Normalizer] = {
@@ -56,6 +59,40 @@ def normalize(record: dict, now: datetime, iis_ctx: iis.IisContext | None = None
     return event
 
 
+def normalize_safely(record: dict, now: datetime, iis_ctx: iis.IisContext | None = None) -> Event | Heartbeat | None:
+    """정규화기에서 예외가 나도 그 레코드 하나만 일반 로그로 저장한다 (B-40). 예전에는 요청 전체가 500 이 되고 에이전트가 같은
+    청크를 끝없이 다시 보내 그 PC 의 로그가 멈췄다. 원본은 그대로 두고 오류는 raw._ingest 에만 덧붙인다(원본 보존)."""
+    try:
+        return normalize(record, now, iis_ctx)
+    except Exception as exc:  # noqa: BLE001 - 어떤 정규화 실패든 레코드 단위로 가둔다
+        error = f"{type(exc).__name__}: {exc}"[:500]
+        _log_failure(str(record.get("log_source") or "?"), error)
+        raw = {**record, "_ingest": {"error": error}}
+        try:
+            event = generic.normalize(raw, now)
+        except Exception:  # noqa: BLE001 - 일반 정규화까지 실패하면 실패한 단계(시각 등)를 빼고 최소한의 모양으로
+            text = record.get("log") or record.get("message") or record.get("Message") or record.get("msg")
+            event = Event(ts=now, host=str(record.get("agent_host") or record.get("host") or "unknown")[:255],
+                          source=str(record.get("log_source") or generic.SOURCE)[:64], level=4,
+                          message=clean_text(text), raw=raw)
+        event.category = classify(event.source, event.channel, event.provider)
+        _scrub(event)
+        return event
+
+
+_FAILURE_LOGGED: dict[tuple[str, str], float] = {}
+
+
+def _log_failure(source: str, error: str) -> None:
+    """같은 소스·같은 오류는 10분에 한 번만 (정규화기 결함이면 모든 레코드가 실패해 로그가 넘친다)."""
+    key, now = (source, error.split(":", 1)[0]), time.monotonic()
+    if now - _FAILURE_LOGGED.get(key, -1e9) >= 600:
+        if len(_FAILURE_LOGGED) > 1000:
+            _FAILURE_LOGGED.clear()
+        _FAILURE_LOGGED[key] = now
+        log.warning("정규화 실패 → 일반 로그로 저장 (source=%s): %s", source, error)
+
+
 _TEXT_FIELDS = ("host", "source", "category", "channel", "provider", "username", "src_ip", "message")
 
 
@@ -68,6 +105,12 @@ def _scrub(event: Event) -> None:
         if isinstance(value, str) and "\x00" in value:
             cleaned = value.replace("\x00", "")
             setattr(event, name, cleaned or (None if name in _NULLABLE else cleaned))
+    # 칸의 범위를 넘는 숫자는 저장이 실패한다(events.event_id INTEGER, level SMALLINT). 저장하다 실패해 반씩 나누면
+    # 레코드 수에 비례해 DB 를 두드린다(검토에서 재현) — 미리 비운다. 원본 값은 raw 에 그대로 있다
+    if event.event_id is not None and not -(2**31) <= event.event_id < 2**31:
+        event.event_id = None
+    if not 0 <= event.level <= 7:
+        event.level = 4
 
 
 _NULLABLE = frozenset({"username", "src_ip", "channel", "provider", "category"})
@@ -100,4 +143,4 @@ def derive_common(source: str | None, channel: str | None, provider: str | None,
 IisContext = iis.IisContext
 layout_keys = iis.layout_keys
 
-__all__ = ["Event", "Heartbeat", "IisContext", "derive_common", "layout_keys", "normalize"]
+__all__ = ["Event", "Heartbeat", "IisContext", "derive_common", "layout_keys", "normalize", "normalize_safely"]

@@ -1,8 +1,12 @@
 // 수집 PC: 로그를 보내는 모든 PC/서버/장비의 수신 상태 + 에이전트 설치 안내.
 import * as api from '../api.js';
 import { can, isAdmin } from '../auth.js';
+import { openDrawer } from '../drawer.js';
 import { sourceLabel, statusBadge } from '../levels.js';
 import { confirmModal, errorBox, fmtCompact, fmtDuration, fmtNum, fmtRelative, fmtTime, html, navigate, replaceParams, toast } from '../util.js';
+
+// 수집 거절 장부의 상태 (B-40) — 사유는 서버가 준 문구 그대로
+const REJECT_LABELS = { 400: '형식 오류', 401: 'API 키', 413: '너무 큼', 499: '연결 끊김', 500: '서버 오류', 503: '서버 설정' };
 
 // 마지막 하트비트의 전송 방식. syslog 장비처럼 하트비트가 없으면 '–'. TLS 를 켠 서버에서 평문이면 경고 색
 function transportLabel(value, serverTls) {
@@ -35,6 +39,7 @@ export async function mount(root, params) {
     </div>
     <div class="grid" data-summary style="margin-bottom:14px"></div>
     <section class="card" style="margin-bottom:14px"><div class="card-body flush" data-table><div class="skeleton"></div></div></section>
+    <section class="card" style="margin-bottom:14px" data-problems hidden></section>
     <section class="card"><div class="card-head"><h2 class="card-title">에이전트 설치</h2></div>
       <div class="card-body" data-guide></div></section>`;
 
@@ -177,7 +182,62 @@ export async function mount(root, params) {
     draw();
   }
 
+  // 수집 거절·격리 (관리자, B-40): 없으면 칸을 숨긴다. 서버는 30초마다 장부를 쓰므로 조금 늦게 보일 수 있다
+  async function loadProblems() {
+    const box = root.querySelector('[data-problems]');
+    if (!box || !isAdmin()) return;
+    let data;
+    try {
+      data = await api.get('/api/agents/problems', { since });
+    } catch (err) {
+      box.hidden = false;
+      box.innerHTML = errorBox(err);
+      return;
+    }
+    const { rejections, quarantine } = data;
+    box.hidden = !rejections.length && !quarantine.length;
+    if (box.hidden) return;
+    box.innerHTML = html`<div class="card-head"><h2 class="card-title">수집 거절·격리</h2></div>
+      <div class="card-body flush">
+      ${rejections.length ? html`<p class="hint-box" style="margin:12px 16px 0">서버가 받지 않은 수집 요청입니다. <b>API 키</b> 거절은 키를 바꾼 뒤 옛 설치 묶음으로
+        보내는 PC 입니다 — 새 묶음으로 다시 설치하세요. 그동안 그 PC 의 로그는 PC 쪽 버퍼에 쌓입니다.</p>
+      <div class="table-wrap"><table class="table"><thead><tr><th>보낸 곳 IP</th><th>거절</th><th>사유</th>
+        <th class="r">횟수</th><th>처음</th><th>마지막</th></tr></thead>
+        <tbody>${rejections.map((r) => html`<tr><td class="nowrap num"><b>${r.client_ip}</b></td>
+          <td class="nowrap"><span class="${r.status >= 500 ? 'tag-bad' : ''}">${r.status} ${REJECT_LABELS[r.status] ?? ''}</span></td>
+          <td class="ink-2">${r.reason}</td><td class="r num">${fmtNum(r.count)}</td>
+          <td class="nowrap muted">${fmtTime(r.first_at, { seconds: false })}</td>
+          <td class="nowrap" title="${fmtTime(r.last_at)}">${fmtRelative(r.last_at)}</td></tr>`)}</tbody></table></div>` : ''}
+      ${quarantine.length ? html`<p class="hint-box" style="margin:12px 16px 0">값 때문에 저장하지 못한 레코드입니다. 같은 요청의 다른 로그는 저장했고,
+        이 레코드는 원본 그대로 따로 보관합니다(로그 보관기간 동안). 원본을 보면 접속기록에 남습니다.</p>
+      <div class="table-wrap"><table class="table"><thead><tr><th>받은 시각</th><th>PC</th><th>소스</th><th>보낸 곳 IP</th><th>저장하지 못한 이유</th>
+        <th class="r">크기</th><th></th></tr></thead>
+        <tbody>${quarantine.map((q) => html`<tr><td class="nowrap">${fmtTime(q.received_at)}</td><td class="nowrap"><b>${q.host}</b></td>
+          <td class="nowrap ink-2">${sourceLabel(q.source)}</td><td class="nowrap num ink-2">${q.client_ip || '–'}</td>
+          <td class="ink-2">${q.error}</td><td class="r num muted">${fmtNum(q.size)}자</td>
+          <td class="r"><button class="btn sm" data-quarantine="${q.id}">원본 보기</button></td></tr>`)}</tbody></table></div>` : ''}
+      </div>`;
+    box.querySelectorAll('[data-quarantine]').forEach((b) => b.addEventListener('click', () => showQuarantine(b.dataset.quarantine)));
+  }
+
+  async function showQuarantine(id) {
+    const body = openDrawer({ title: `격리한 레코드 #${id}` });
+    body.innerHTML = '<div class="skeleton"></div>';
+    try {
+      const q = await api.get(`/api/agents/quarantine/${id}`);
+      // 서버는 어떤 글자든 저장되게 ASCII 로 이스케이프해 둔다 — 읽기 좋게 풀어서 (잘린 것은 그대로)
+      let record = q.record;
+      try { record = JSON.stringify(JSON.parse(q.record), null, 2); } catch { /* 64KB 에서 잘린 원본 */ }
+      body.innerHTML = html`<dl class="kv"><dt>받은 시각</dt><dd>${fmtTime(q.received_at)}</dd><dt>PC</dt><dd>${q.host}</dd>
+        <dt>보낸 곳 IP</dt><dd class="num">${q.client_ip || '–'}</dd><dt>이유</dt><dd>${q.error}</dd></dl>
+        <pre class="json" style="white-space:pre-wrap;overflow-wrap:anywhere">${record}</pre>`;
+    } catch (err) {
+      body.innerHTML = errorBox(err);
+    }
+  }
+
   async function load() {
+    loadProblems();
     try {
       const { items, thresholds, transport } = await api.get('/api/agents', { since });
       const count = (s) => items.filter((a) => a.status === s).length;

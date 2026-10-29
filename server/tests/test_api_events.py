@@ -259,6 +259,32 @@ def test_nul_bytes_do_not_reject_the_whole_request(client):
     assert (stored["NUL-PC"]["username"], stored["NUL-PC"]["src_ip"], stored["NUL-PC"]["channel"]) == ("evil", "10.0.0.9", "Security")
 
 
+def test_literal_backslash_u0000_text_is_stored_as_is(client):
+    """값에 글자 그대로 든 '\\u0000'(로그온 창에 친 계정 이름 등)을 NUL 로 착각해 지우면 JSON 이 깨져 저장이 실패했다
+    (B-40 이후에는 격리 — 공격자가 자기 이벤트를 규칙·검색에서 뺄 수 있었다, 검토에서 재현)."""
+    rec = {"pri": 38, "host": "LIT-U0", "ident": "sshd", "log_source": "syslog",
+           "message": 'Failed password for ev\\u0000il"x from 203.0.113.70', "note": "a\\u0000\\"}
+    r = client.post("/api/ingest", json=[rec], headers=KEY)
+    assert r.status_code == 200 and r.json() == {"accepted": 1, "heartbeats": 0}, r.text
+    [item] = _items(client, query="host:LIT-U0")
+    detail = client.get(f"/api/events/{item['id']}", headers=CSRF).json()
+    assert detail["raw"]["note"] == "a\\u0000\\" and detail["message"] == rec["message"]
+
+
+def test_lone_surrogates_do_not_reject_the_whole_request(client):
+    """JSON 의 짝 없는 서로게이트(\\ud800)는 UTF-8 로 보낼 수 없어 요청 전체가 500 이 됐다(B-40, 재현) — U+FFFD 로 바꿔 저장한다."""
+    ok = '{"pri": 38, "host": "SUR-OK", "ident": "sshd", "log_source": "syslog", "message": "fine"}'
+    bad = ('{"pri": 38, "host": "SUR-\\ud800X", "ident": "sshd", "log_source": "syslog", "message": "a\\udc00b",'
+           ' "k\\ud83dey": ["v\\ud800", {"x": "\\udfff"}], "pair": "\\ud83d\\ude00"}')
+    r = client.post("/api/ingest", content=f"[{ok}, {bad}]", headers={**KEY, "Content-Type": "application/json"})
+    assert r.status_code == 200 and r.json()["accepted"] == 2, r.text
+    stored = {i["host"]: i for i in _items(client, query="host:SUR-OK,SUR-\ufffdX")}
+    assert set(stored) == {"SUR-OK", "SUR-\ufffdX"}
+    detail = client.get(f"/api/events/{stored['SUR-\ufffdX']['id']}", headers=CSRF).json()
+    assert detail["message"] == "a\ufffdb" and detail["raw"]["pair"] == "\U0001f600"   # 짝이 맞는 것은 그대로
+    assert detail["raw"]["k\ufffdey"] == ["v\ufffd", {"x": "\ufffd"}]
+
+
 def _audit_rows(action):
     with psycopg.connect(os.environ["WLM_DATABASE_URL"]) as conn:
         return conn.execute("SELECT target, detail FROM audit_log WHERE action = %s ORDER BY id", (action,)).fetchall()

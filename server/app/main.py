@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 
-from . import __version__, db, partitions, tlsutil
+from . import __version__, db, partitions, rejects, tlsutil
 from .alerts.engine import engine as alert_engine
 from .auth import service as auth_service
 from .auth.deps import require_user
@@ -65,6 +65,7 @@ async def lifespan(_: FastAPI):
     log_tls_problems()
     task = asyncio.create_task(_maintenance_loop())
     alert_task = asyncio.create_task(alert_engine.run_forever())
+    rejects_task = asyncio.create_task(rejects.run_forever())
     report_task = asyncio.create_task(report_scheduler.run_forever()) if settings.report_scheduler else None
     log.info("Log Monitor %s 시작 (보관기간: 로그 %s일 · 알림 %s일 · 감사로그 %s일 · 점검 보고서 %s일)", __version__,
              settings.retention_days, settings.alert_retention_days, settings.audit_retention_days,
@@ -76,8 +77,13 @@ async def lifespan(_: FastAPI):
     finally:
         task.cancel()
         alert_task.cancel()
+        rejects_task.cancel()
         if report_task:
             report_task.cancel()
+        try:   # 모아 둔 수집 거절을 남기고 끝낸다
+            await rejects.flush()
+        except Exception:
+            log.exception("수집 거절 장부 기록 실패")
         await db.close_pool()
 
 

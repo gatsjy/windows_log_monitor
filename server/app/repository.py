@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -163,9 +164,19 @@ def _field_expr(field: str) -> tuple[sql.Composable, list[Any]]:
 
 # ------------------------------------------------------------------ write
 
+# 진짜 NUL 이스케이프만 (앞의 역슬래시가 짝수 개). 값에 글자 그대로 든 '\u0000'(JSON 으로는 \\u0000)은 건드리지 않는다
+_NUL_ESCAPE = re.compile(r"(?<!\\)((?:\\\\)*)\\u0000")
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
 def _json(value: Any) -> str:
-    # PostgreSQL jsonb 는 \u0000 을 허용하지 않는다
-    return json.dumps(value, ensure_ascii=False, default=str).replace("\\u0000", "")
+    """PostgreSQL jsonb 는 \u0000 을, UTF-8 은 짝 없는 서로게이트를 받지 못한다.
+    예전에는 \\u0000 을 글자로 지워, 값에 글자 그대로 '\u0000' 이 든 로그(로그온 창에 친 계정 이름 등)가 깨진 JSON 이 돼
+    저장이 실패했다(B-40 이후에는 격리 — 공격자가 자기 이벤트를 규칙·검색에서 뺄 수 있었다, 검토에서 재현)."""
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    if "\\u0000" in text:
+        text = _NUL_ESCAPE.sub(r"\1", text)
+    return _SURROGATE.sub("\ufffd", text)
 
 
 def _json_type(value: Any) -> str:
@@ -262,10 +273,136 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
 
 
 async def insert_batch(events: list[Event], heartbeats: list[Heartbeat], client_ip: str | None,
-                       transport: str | None = None, layouts: dict | None = None) -> None:
-    """layouts = IisContext.learned — 이 요청에서 만난 IIS 머리줄 (머리줄만 든 요청도 저장해야 한다)."""
+                       transport: str | None = None, layouts: dict | None = None) -> list[Event]:
+    """layouts = IisContext.learned — 이 요청에서 만난 IIS 머리줄 (머리줄만 든 요청도 저장해야 한다).
+    돌려주는 값 = 저장하지 못해 격리한 이벤트 (B-40). 레코드 하나의 값 때문에 요청 전체가 거절되면 에이전트가 같은 청크를
+    끝없이 다시 보내 그 PC 의 로그가 멈춘다 → 값 오류면 반씩 나눠 저장하며 문제 레코드만 ingest_quarantine 으로 보낸다."""
     if not events and not heartbeats and not layouts:
-        return
+        return []
+    try:
+        await _insert(events, heartbeats, client_ip, transport, layouts)
+        return []
+    except _DATA_ERRORS as exc:
+        if not events:
+            raise
+        first = f"{type(exc).__name__}: {exc}"
+    # 나누기·격리를 한 트랜잭션에서 (시도마다 저장점) — 중간에 연결이 끊기거나 풀이 바닥나 500 이 되면 모두 되돌린다.
+    # 반쯤 커밋한 뒤 500 이면 에이전트가 청크째 다시 보내 앞부분이 두 번 저장됐다(검토에서 재현)
+    budget = [ISOLATE_BUDGET]
+    async with db.pool().connection() as conn:
+        if heartbeats or layouts:   # 여기서도 실패하면 이벤트 문제가 아니므로 예전처럼 거절
+            await _write(conn, [], heartbeats, client_ip, transport, layouts)
+        bad = await _isolate(conn, events, client_ip, budget, first)
+        await _quarantine(conn, bad, client_ip)
+    log.warning("수집 레코드 %d건을 저장하지 못해 격리했습니다 (보낸 곳 %s): %s", len(bad), client_ip, bad[0][1][:200])
+    return [e for e, _ in bad]
+
+
+# 레코드의 값 때문에 저장이 실패하는 오류 — 범위 밖 숫자·잘못된 글자·색인 한도 넘는 값 등 (연결·잠금 문제는 아님).
+# 알려진 것(범위 밖 숫자·NaN·짝 없는 서로게이트)은 정규화·수집 단계에서 미리 막는다 — 여기는 모르는 것을 위한 그물이다
+_DATA_ERRORS = (psycopg.DataError, psycopg.errors.ProgramLimitExceeded, UnicodeError)
+QUARANTINE_RECORD_MAX = 65536
+# 요청 하나에서 실패해도 되는 저장 시도 수. 넘으면 요청을 거절(400)한다 — 키를 가진 쪽이 값 오류 레코드만 잔뜩 보내
+# 레코드 수에 비례해 DB 를 두드리게 할 수 없게 (정상 에이전트의 문제 레코드 몇 건은 넉넉히 들어간다)
+ISOLATE_BUDGET = 256
+
+
+class TooManyBadRecords(Exception):
+    """값 오류 레코드가 너무 많아 나누기를 멈췄다 (routers/ingest 가 400 으로)."""
+
+
+async def _isolate(conn, events: list[Event], client_ip: str | None, budget: list[int],
+                   known_error: str | None = None) -> list[tuple[Event, str]]:
+    """반씩 나눠 저장점 안에서 저장해 보며 실패하는 이벤트만 찾는다 (문제 k건이면 시도 약 2k·log n 번).
+    known_error = 이 묶음 전체가 이미 실패했다 (같은 것을 다시 시도하지 않는다)."""
+    if known_error is None:
+        if budget[0] <= 0:
+            raise TooManyBadRecords
+        try:
+            async with conn.transaction():
+                await _write(conn, events, [], client_ip)
+            return []
+        except _DATA_ERRORS as exc:
+            budget[0] -= 1
+            known_error = f"{type(exc).__name__}: {exc}"
+    if len(events) == 1:
+        return [(events[0], known_error)]
+    mid = len(events) // 2
+    return (await _isolate(conn, events[:mid], client_ip, budget)
+            + await _isolate(conn, events[mid:], client_ip, budget))
+
+
+def _printable(value: Any, limit: int) -> str:
+    """어떤 글자든 TEXT 에 들어가게 (NUL 빼고, 짝 없는 서로게이트는 ?)."""
+    return str(value or "").replace("\x00", "").encode("utf-8", "replace").decode("utf-8")[:limit]
+
+
+async def _quarantine(conn, bad: list[tuple[Event, str]], client_ip: str | None) -> None:
+    def record(raw: dict) -> str:
+        # ASCII 로 이스케이프하면 NUL·서로게이트도 글자 그대로(\u0000) 남는다 — 원본을 고치지 않고 보관
+        text = json.dumps(raw, ensure_ascii=True, default=str)
+        return text if len(text) <= QUARANTINE_RECORD_MAX else text[:QUARANTINE_RECORD_MAX] + " …(잘림)"
+
+    async with conn.cursor() as cur:
+        await cur.executemany(
+            "INSERT INTO ingest_quarantine (client_ip, host, source, category, username, src_ip, error, record)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            [(_printable(client_ip, 64) or None, _printable(e.host, 255), _printable(e.source, 64),
+              _printable(e.category, 64) or None, _printable(e.username, 255) or None, _printable(e.src_ip, 64) or None,
+              _printable(error, 1000), record(e.raw)) for e, error in bad])
+
+
+async def add_ingest_rejections(rows: list[tuple[str, int, str, datetime, int, datetime, datetime]]) -> None:
+    """수집 거절 장부에 더한다 (rejects.flush). rows = (client_ip, status, reason, 시간(정시), 횟수, 처음, 마지막)."""
+    async with db.pool().connection() as conn, conn.cursor() as cur:
+        await cur.executemany(
+            "INSERT INTO ingest_rejections AS r (client_ip, status, reason, hour, count, first_at, last_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (client_ip, status, reason, hour) DO UPDATE SET"
+            " count = r.count + EXCLUDED.count, first_at = LEAST(r.first_at, EXCLUDED.first_at),"
+            " last_at = GREATEST(r.last_at, EXCLUDED.last_at)",
+            [(_printable(ip, 64), status, _printable(reason, 200), hour, n, first, last)
+             for ip, status, reason, hour, n, first, last in sorted(rows)])
+
+
+async def list_ingest_rejections(since: datetime, limit: int = 200) -> list[dict[str, Any]]:
+    """보낸 곳·상태·사유마다 기간 안의 합 (시간 줄을 합친다)."""
+    return await db.fetch_all(
+        "SELECT client_ip, status, reason, sum(count)::bigint AS count, min(first_at) AS first_at, max(last_at) AS last_at"
+        " FROM ingest_rejections WHERE hour >= date_trunc('hour', %s::timestamptz) GROUP BY client_ip, status, reason"
+        " ORDER BY max(last_at) DESC LIMIT %s", (since, limit))
+
+
+async def list_quarantine(since: datetime, limit: int = 100) -> list[dict[str, Any]]:
+    """목록에는 원본을 싣지 않는다 (원본 열람은 get_quarantine — 접속기록을 남기는 곳 하나로)."""
+    return await db.fetch_all(
+        "SELECT id, received_at, client_ip, host, source, error, length(record) AS size FROM ingest_quarantine"
+        " WHERE received_at >= %s ORDER BY id DESC LIMIT %s", (since, limit))
+
+
+async def get_quarantine(quarantine_id: int) -> dict[str, Any] | None:
+    return await db.fetch_one("SELECT id, received_at, client_ip, host, source, category, username, src_ip, error, record"
+                              " FROM ingest_quarantine WHERE id = %s", (quarantine_id,))
+
+
+async def ingest_problem_counts(start: datetime, end: datetime) -> dict[str, Any]:
+    """점검 보고서: 기간 안의 격리 건수, 거절 (상태별 요청 수·보낸 곳 수 — 시간 줄이 기간 안인 것만)."""
+    q = await db.fetch_one("SELECT count(*) AS n FROM ingest_quarantine WHERE received_at >= %s AND received_at < %s",
+                           (start, end))
+    rows = await db.fetch_all(
+        "SELECT status, sum(count) AS n, count(DISTINCT client_ip) AS ips FROM ingest_rejections"
+        " WHERE hour >= %s AND hour < %s GROUP BY status ORDER BY status", (start, end))
+    return {"quarantined": q["n"], "rejected": [{"status": r["status"], "n": int(r["n"]), "ips": r["ips"]} for r in rows]}
+
+
+async def purge_ingest_problems(cutoff: datetime) -> tuple[int, int]:
+    """격리 레코드(원본 로그라 로그 보관기간)와 그보다 오래된 거절 장부 시간 줄."""
+    q = await db.fetch_all("DELETE FROM ingest_quarantine WHERE received_at < %s RETURNING id", (cutoff,))
+    r = await db.fetch_all("DELETE FROM ingest_rejections WHERE hour < %s RETURNING status", (cutoff,))
+    return len(q), len(r)
+
+
+async def _insert(events: list[Event], heartbeats: list[Heartbeat], client_ip: str | None,
+                  transport: str | None = None, layouts: dict | None = None) -> None:
     for attempt in (1, 2):
         try:
             async with db.pool().connection() as conn:

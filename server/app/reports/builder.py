@@ -233,6 +233,15 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
         out.append({"level": "warn", "text": f"화면을 거치지 않고 서버에서 고친 알림 설정 {al['config_changes_direct']:,}건"})
     if al.get("wide_silences_total"):
         out.append({"level": "warn", "text": f"넓은 무음 {al['wide_silences_total']:,}건 (모든 규칙·모든 대상이거나 24시간 넘음)"})
+    ingest = p.get("ingest") or {}
+    if ingest.get("quarantined"):
+        out.append({"level": "warn", "text": f"저장하지 못해 격리한 수집 레코드 {ingest['quarantined']:,}건 — 수집 PC 화면에서 확인하세요"})
+    for r in ingest.get("rejected") or []:
+        if r["status"] == 499:   # 보내는 쪽이 끊음(PC 끄기 등) — 서버가 거절한 것이 아니다
+            continue
+        reason = "API 키가 틀리거나 없어" if r["status"] == 401 else f"{r['status']}"
+        out.append({"level": "warn", "text": f"{reason} 거절된 수집 요청 {r['n']:,}건 (보낸 곳 {r['ips']:,}곳)"
+                                             + (" — 키를 바꾼 뒤 옛 설치 묶음으로 보내는 PC" if r["status"] == 401 else "")})
     if p["agents"]["offline"]:
         out.append({"level": "warn", "text": f"연락이 끊긴 PC {p['agents']['offline']:,}대"})
     if p["retention"]["archives_missing"]:
@@ -257,6 +266,8 @@ async def build(kind: str, start: datetime, end: datetime, now: datetime | None 
         "security": await _security(start, end),
         "alerts": await _alerts(start, end),
         "agents": await _agents(now),
+        # 수집 거절·격리 (B-40) — 에이전트 쪽 로그는 같은 출력이라 서버로 오지 못하니 여기서만 보인다
+        "ingest": await repository.ingest_problem_counts(start, end),
         "retention": await _retention(),
         "backup": {"problems": backup["problems"],
                    "last_backup": _jsonable(backup["last_backup"]), "last_verify": _jsonable(backup["last_verify"]),

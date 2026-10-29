@@ -146,6 +146,18 @@ def retention_warnings() -> list[str]:
     return out
 
 
+async def purge_ingest_problems(now: datetime | None = None) -> None:
+    """격리한 수집 레코드는 원본 로그라 로그 보관기간까지, 수집 거절 장부도 같은 기간 조용하면 지운다 (B-40)."""
+    from . import repository
+
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.retention_days)
+    quarantined, rejections = await repository.purge_ingest_problems(cutoff)
+    if quarantined or rejections:
+        await db.audit("system", "retention.purge_ingest", "ingest_quarantine",
+                       {"quarantined_deleted": quarantined, "rejections_deleted": rejections,
+                        "retention_days": settings.retention_days, "cutoff": cutoff.isoformat()})
+
+
 async def purge_alerts(now: datetime | None = None) -> None:
     """알림 이력(처리 기록·끝난 무음 포함)은 알림 보관기간(기본 = 로그 보관기간)."""
     from . import repository  # 순환 import 방지
@@ -216,5 +228,6 @@ async def run_maintenance() -> None:
             await purge_reports()
             await purge_iis_layouts()
             await purge_sessions()
+            await purge_ingest_problems()
         finally:
             await conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))

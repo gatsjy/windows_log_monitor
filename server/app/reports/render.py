@@ -202,6 +202,12 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
                    ("지연", _n(ag["stale"]), ""), ("연락 끊김", _n(ag["offline"]), "")])
     body += "<div style='margin-top:12px'><b style='font-size:13px'>연락이 끊긴 PC (오래된 것부터)</b>" + _table(
         ["PC", "마지막 수신", "마지막 IP"], [[_e(a["host"]), _e(_t(a["last_seen"])), _e(a["last_ip"] or "-")] for a in ag["silent"]]) + "</div>"
+    if "ingest" in p:   # B-40 이전 보고서에는 없다
+        ig = p["ingest"]
+        body += (f"<div style='margin-top:12px'><b style='font-size:13px'>수집 거절·격리</b>"
+                 f"<p style='color:{MUTED};margin:4px 0'>저장하지 못해 격리한 레코드 {_n(ig['quarantined'])}건</p>"
+                 + _table(["거절", "요청", "보낸 곳"], [[_e(r["status"]), _e(r["n"]), _e(r["ips"])] for r in ig["rejected"]],
+                          right=(1, 2)) + "</div>")
     out.append(_section("수집 PC", body))
 
     # 로그 보관·백업

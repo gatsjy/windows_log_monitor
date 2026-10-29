@@ -75,7 +75,10 @@ def parse_time(value: Any) -> datetime | None:
         return None
     if isinstance(value, (int, float)):
         seconds = value / 1000 if value > 1e11 else value  # epoch ms / s
-        return datetime.fromtimestamp(seconds, tz=UTC)
+        try:
+            return datetime.fromtimestamp(seconds, tz=UTC)
+        except (OverflowError, OSError, ValueError):   # 범위 밖·NaN — 다음 키나 수신 시각으로 (레코드 전체가 실패하지 않게)
+            return None
     text = str(value).strip()
     try:
         dt = datetime.fromisoformat(text)
@@ -91,7 +94,10 @@ def parse_time(value: Any) -> datetime | None:
             return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
+    try:
+        return dt.astimezone(UTC)
+    except OverflowError:   # 0001-01-01T00:00+09:00 처럼 UTC 로 옮기면 범위를 벗어남 (시계가 0 인 장비)
+        return None
 
 
 def pick_time(record: dict, *keys: str, now: datetime) -> datetime:
@@ -123,7 +129,7 @@ def clean_text(value: Any, limit: int = MESSAGE_MAX) -> str:
 def to_int(value: Any) -> int | None:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # inf 도
         return None
 
 
