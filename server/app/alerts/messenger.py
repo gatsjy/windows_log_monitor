@@ -46,7 +46,7 @@ def _summary(m: AlertMessage) -> str:
 
 
 def _description(m: AlertMessage) -> str:
-    return _cut(m.description, TEXT_MAX)
+    return _cut(m.detail, TEXT_MAX)
 
 
 def _link(m: AlertMessage) -> str:
@@ -61,7 +61,9 @@ def _facts(m: AlertMessage) -> list[tuple[str, str]]:
     facts = [("발생 시각", local(m.fired_at))]
     if m.first_event_at:
         facts.append(("이벤트 시각", f"{local(m.first_event_at)} ~ {local(m.last_event_at)}"))
-    if m.kind != "agent_silent" and not m.test:
+    if m.kind == "config":   # 설정 변경 알림(ADR-043)에는 건수 기준이 없다 — 변경 줄 수
+        facts.append(("변경", f"{m.event_count:,}건"))
+    elif m.kind != "agent_silent" and not m.test:
         facts.append(("건수", f"{m.event_count:,}건 (기준 {m.threshold:,}건 이상)"))
     if m.group_key:
         facts.append(("대상", _cut(m.group_key, FACT_MAX)))
@@ -98,6 +100,8 @@ def build_json(m: AlertMessage) -> dict[str, Any]:
 def build_text(m: AlertMessage) -> dict[str, Any]:
     # Mattermost 는 16,383자를 넘으면 여러 글로 쪼갠다 → 다른 메신저 형식과 같은 상한
     text = f"{_title(m)}\n{_summary(m)}"
+    if m.kind == "config" and m.detail:   # 무엇이 바뀌었는지가 본문이다 (요약만으로는 어느 규칙인지 모른다)
+        text += "\n" + _description(m)
     return {"text": f"{text}\n{_link(m)}" if m.link else text}
 
 
@@ -126,7 +130,7 @@ def build_slack(m: AlertMessage) -> dict[str, Any]:
     details: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": _mrkdwn(_summary(m), 3000)}},
     ]
-    if m.description:
+    if m.detail:
         details.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _mrkdwn(_description(m), 3000)}]})
     # 굵은 항목명은 따로 한 줄 — 한글에 바로 붙은 *굵게* 는 굵게 안 보일 때가 있다
     details.append({"type": "section", "fields": [
@@ -164,7 +168,7 @@ def build_teams(m: AlertMessage) -> dict[str, Any]:
         {"type": "Container", "style": TEAMS_STYLE.get(m.severity, "emphasis"), "bleed": True, "items": head},
         {"type": "TextBlock", "text": _no_md_link(_summary(m)), "wrap": True},
     ]
-    if m.description:
+    if m.detail:
         body.append({"type": "TextBlock", "text": _no_md_link(_description(m)), "wrap": True, "isSubtle": True,
                      "spacing": "None"})
     body.append({"type": "FactSet", "facts": [{"title": k, "value": _no_md_link(v)} for k, v in _facts(m)]})
@@ -190,7 +194,7 @@ def build_dooray(m: AlertMessage) -> dict[str, Any]:
     facts = "\n".join(f"{k}: {v}" for k, v in _facts(m))
     color = SEVERITY_COLORS[m.severity]
     # 마크다운은 공식 지원이 아니지만 일부 렌더링된다는 보고가 있어, 로그에서 온 [이름](주소) 는 다른 형식처럼 깨 둔다
-    text = f"{_description(m)}\n{facts}" if m.description else facts
+    text = f"{_description(m)}\n{facts}" if m.detail else facts
     first: dict[str, Any] = {"title": _no_md_link(_summary(m)), "text": _no_md_link(text), "color": color}
     if m.link:
         first["titleLink"] = _link(m)
@@ -212,7 +216,7 @@ def build_jandi(m: AlertMessage) -> dict[str, Any]:
     if m.link:
         body += f"\n[{LINK_TITLE}]({_link(m)})"
     info = [{"title": "요약", "description": _no_md_link(_summary(m))}]
-    if m.description:
+    if m.detail:
         info.append({"title": "설명", "description": _no_md_link(_description(m))})
     info += [{"title": k, "description": _no_md_link(v)} for k, v in _facts(m)]
     samples = _sample_lines(m)

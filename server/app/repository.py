@@ -902,11 +902,67 @@ async def audit_actions() -> list[str]:
 
 
 async def purge_audit(cutoff: datetime) -> int:
-    """보관기간 만료분 삭제. append-only 트리거의 예외 스위치를 이 트랜잭션에서만 켠다."""
+    """보관기간 만료분 삭제. append-only 트리거의 예외 스위치를 이 트랜잭션에서만 켠다.
+    알림 설정 판본(ADR-043)도 같은 보관기간 — 단 마지막 판본은 남긴다(파일이 깨진 채 다시 시작할 때 쓰는 설정)."""
     async with db.pool().connection() as conn:
         await conn.execute("SET LOCAL wlm.audit_purge = 'on'")
         cur = await conn.execute("DELETE FROM audit_log WHERE at < %s", (cutoff,))
+        await conn.execute("DELETE FROM alert_config_versions WHERE applied_at < %s"
+                           " AND id < (SELECT max(id) FROM alert_config_versions)", (cutoff,))
         return cur.rowcount
+
+
+# ---------------------------------------------------------------- 알림 설정 판본 (ADR-043)
+
+async def latest_alert_config_version() -> dict[str, Any] | None:
+    return await db.fetch_one("SELECT id, applied_at, source, actor, sha256, yaml FROM alert_config_versions"
+                              " ORDER BY id DESC LIMIT 1")
+
+
+async def insert_alert_config_version(source: str, actor: str, sha256: str, yaml_text: str,
+                                      changes: list[dict[str, Any]], weakened: bool) -> int:
+    row = await db.fetch_one(
+        "INSERT INTO alert_config_versions (source, actor, sha256, yaml, changes, weakened)"
+        " VALUES (%s, %s, %s, %s, %s::jsonb, %s) RETURNING id",
+        (source, actor, sha256, yaml_text.replace("\x00", ""), _json(changes), weakened))
+    return row["id"]
+
+
+async def alert_config_history(limit: int) -> list[dict[str, Any]]:
+    """최근 판본부터 (다시 켠 규칙이 마지막으로 켜져 있던 모양을 찾을 때)."""
+    return await db.fetch_all("SELECT id, yaml FROM alert_config_versions ORDER BY id DESC LIMIT %s", (limit,))
+
+
+async def silenced_rule_names(now: datetime, names: list[str]) -> set[str]:
+    """그 이름에 지금 걸려 있거나 앞으로 걸릴 무음이 있는 규칙 이름."""
+    rows = await db.fetch_all("SELECT DISTINCT rule FROM alert_silences WHERE rule = ANY(%s) AND ends_at > %s"
+                              " AND ends_at > starts_at AND ended_by IS NULL", (names, now))
+    return {r["rule"] for r in rows}
+
+
+async def report_config_changes(start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """기간 안에 적용한 알림 설정 변경 (처음 기준 판본 — 차이 없음 — 은 빼고)."""
+    return await db.fetch_all(
+        "SELECT id, applied_at, source, actor, weakened, changes FROM alert_config_versions"
+        " WHERE applied_at >= %s AND applied_at < %s AND changes <> '[]'::jsonb ORDER BY id", (start, end))
+
+
+async def covering_silences(rule: str | None, group_key: str | None, now: datetime) -> list[dict[str, Any]]:
+    """이 (규칙, 대상)을 덮는 — 같거나 더 넓은 범위의 — 아직 끝나지 않은 무음 (NULL = 모두)."""
+    return await db.fetch_all(
+        "SELECT starts_at, ends_at FROM alert_silences WHERE ends_at > %s AND ends_at > starts_at"
+        " AND (rule IS NULL OR rule = %s) AND (group_key IS NULL OR group_key = %s)", (now, rule, group_key))
+
+
+async def report_wide_silences(start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """기간 안에 건 넓은 무음 — 걸 때 판단해 감사로그에 남긴 것(이어 붙인 무음까지 합쳐 잰 값, ADR-043)."""
+    return await db.fetch_all(
+        "SELECT (detail->>'id')::bigint AS id, detail->>'rule' AS rule, detail->>'group_key' AS group_key,"
+        " (detail->>'starts_at')::timestamptz AS starts_at,"
+        " COALESCE(detail->>'covered_until', detail->>'ends_at')::timestamptz AS ends_at,"
+        " detail->>'reason' AS reason, actor AS created_by FROM audit_log"
+        " WHERE action = 'alerts.silence.create' AND at >= %s AND at < %s AND (detail->>'wide')::boolean"
+        " ORDER BY id", (start, end))
 
 
 # ---------------------------------------------------------------- reports (정기 점검 보고서, ADR-032)

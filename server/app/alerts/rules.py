@@ -15,6 +15,7 @@ import yaml
 
 from ..filters import EventFilter, FilterError, parse_duration
 from ..repository import COLUMN_EXPR
+from .builtin import BUILTIN_RULES
 
 SEVERITIES = ("critical", "error", "warning", "info")
 RULE_KINDS = ("count", "agent_silent")
@@ -93,6 +94,8 @@ def _check_rule(index: int, raw: Any) -> Rule:
     where = f"rules[{index}] ({name or '이름 없음'})"
     if not name:
         raise ConfigError(f"{where}.name 이 필요합니다")
+    if name in BUILTIN_RULES:
+        raise ConfigError(f"{where}.name: '{name}' 은 내장 알림 이름이라 규칙 이름으로 쓸 수 없습니다")
     kind = raw.get("kind", "count")
     if kind not in RULE_KINDS:
         raise ConfigError(f"{where}.kind 는 {', '.join(RULE_KINDS)} 중 하나여야 합니다")
@@ -178,6 +181,8 @@ def parse(doc: Any) -> AlertConfig:
     if not isinstance(doc, dict):
         raise ConfigError("최상위는 settings / rules 를 가진 객체여야 합니다")
     settings = doc.get("settings") or {}
+    if not isinstance(settings, dict):
+        raise ConfigError("settings 는 interval_sec 등을 가진 객체여야 합니다")
     interval = settings.get("interval_sec", 30)
     if not isinstance(interval, int) or not 5 <= interval <= 3600:
         raise ConfigError("settings.interval_sec 는 5~3600 사이 정수")

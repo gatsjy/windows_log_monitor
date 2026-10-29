@@ -152,7 +152,7 @@ docker compose down                                          # 중지 (데이터
 | [docs/AIRGAP.md](docs/AIRGAP.md) | 폐쇄망 배포·업그레이드·되돌리기 |
 | [docs/ISMS.md](docs/ISMS.md) | ISMS-P 통제 항목 대응, 심사 증적, 알림 규칙과 항목 매핑 |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | 500만 건 검색 성능 측정, 용량 가이드 |
-| [docs/COMPARISON.md](docs/COMPARISON.md) | Wazuh·Graylog·ELK·Loki 와 비교 |
+| [docs/COMPARISON.md](docs/COMPARISON.md) | 다른 모니터링 시스템과 비교·벤치마킹 (2026-10-29) |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 설계 결정 기록 (ADR) |
 | [docs/BACKLOG.md](docs/BACKLOG.md) | 앞으로 만들 것 (우선순위·완료 기준) |
 | [CHANGELOG.md](CHANGELOG.md) | 버전별 변경 내역 |

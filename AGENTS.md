@@ -56,7 +56,7 @@ server/app/
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
-  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·재시도·무음) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
+  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·재시도·무음·설정 판본) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
   backups.py         DB 백업·복구 시험 상태 (backup 서비스가 남긴 audit_log 로) — 로그 보관 화면·점검 보고서 공용
@@ -205,6 +205,11 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 기본 규칙·대시보드의 `f.EventData.<이름>` 은 그 이벤트의 **실측으로 확인한** 템플릿에 있어야 한다(`test_rule_fields.py`). 이름 오타는 검사 없이 통과하고 실제 PC 에서 영영 맞지 않는다.
 - MSSQL ERRORLOG 의 `Error:` 머리줄은 번호 없이 '상세'(5)로 저장됩니다. 오류 번호로 세는 규칙·위젯은 본문 줄 기준입니다(이중 집계 방지).
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
+- **알림 설정 판본 (ADR-043):** 설정을 적용하면 `engine.reload()` 가 `_pending` 을 두고 `await engine.record()` 가 판본(`alert_config_versions`, 추가만)·감사로그·약화 알림을 남긴다. 설정을 바꾸는 새 API 는 `routers/alerts._store` 를 거친다(쓰기 전 파일 직접 수정부터 기록 → `reload(force=True, source="ui", actor=…)`).
+  - 내장 규칙 이름 `engine.CONFIG_RULE`('알림 설정 변경', kind `config`)은 무음을 건너뛴다. 받는 곳은 바뀌기 전 설정의 규칙들 — 새 약화 판단은 `configdiff._rule_changes` 와 `test_configdiff.py` 의 표에 함께.
+  - 엔진은 프로세스에 하나라 시험 모듈마다 `conftest` 가 `engine.forget()`(처음 설치한 서버처럼)을 부른다. 시험에서 '서버 재시작'도 `engine.forget()`.
+  - `record()` 는 잠금 안에서 비교·기록한다. 판본을 남긴 뒤의 감사로그·알림은 `_owed` 로 다시 시도 — 판본을 두 번 넣지 않는다. 파일이 깨졌거나 없으면(`engine.config_error`) 규칙 단위 저장은 409.
+  - 서버에서 고친 것을 기록하지 못한 채 화면 저장이 덮지 않게 `_store` 는 `_record_versions(strict=True)`(실패하면 503). 파일 변경은 (mtime, ctime, 크기, inode) 서명으로 본다.
 - 알림 엔진은 앱 안의 백그라운드 작업입니다. `uvicorn --reload` 로 재시작되면 다음 주기에 이어서 평가합니다.
 - 상태를 바꾸는 API 를 테스트할 때는 `X-WLM-CSRF: 1` 헤더가 있어야 합니다. 로그인 세션은 쿠키(`wlm_session`)로 유지합니다.
 - `audit_log` 는 DB 트리거로 UPDATE·DELETE·TRUNCATE 를 막습니다. 테스트나 마이그레이션에서 지우려 하면 실패합니다.

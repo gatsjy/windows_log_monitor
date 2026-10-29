@@ -10,6 +10,7 @@ from collections import Counter
 from typing import Any
 
 from ..auth.service import User
+from .builtin import BUILTIN_RULES
 from .engine import engine
 
 
@@ -23,6 +24,8 @@ def alert_visible(user: User, alert: dict[str, Any]) -> bool:
     """조회 범위가 있는 사용자: 그 범위의 분류를 감시하는 규칙이거나, 대상(PC)이 범위의 PC 패턴에 맞는 알림만."""
     if user.scopes is None:
         return True
+    if alert["rule"] in BUILTIN_RULES:   # 설정 변경 등 내장 알림은 이 시스템 관리 정보 — 범위가 없는 사용자만 (ADR-043)
+        return False
     cats = _rule_categories(alert["rule"])
     for scope in user.scopes:
         cat_ok = not scope.categories or bool(cats & set(scope.categories))

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import os
 import tempfile
@@ -17,7 +18,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .. import db, repository
-from ..alerts import ruleedit, targets
+from ..alerts import configdiff, ruleedit, targets
 from ..alerts.engine import engine
 from ..alerts.message import local
 from ..alerts.notifiers import SEVERITY_LABELS, NotifierError
@@ -29,6 +30,8 @@ from ..auth.service import User
 from ..csvexport import csv_response, export_reason
 from ..filters import FilterError, parse_time
 from .query import read_time_limit
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["alerts"])
 
@@ -111,7 +114,8 @@ async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
 @router.get("/api/alerts/config")
 async def alert_config(since: str = "24h", user: User = Depends(require_user)):
     """화면용: 엔진 상태 + 규칙 목록(최근 발생 포함) + 알림 대상(비밀값 제외) + 원본 YAML(관리자만)."""
-    engine.reload()
+    # 파일을 다시 읽어 적용하면 판본도 바로 — 적용만 하고 기록이 늦으면 그 사이 되돌린 변경이 흔적 없이 지나간다(검토에서 재현)
+    await _record_versions()
     stats = await repository.alert_stats(_since(since))
     known = await targets.target_names()
     rules = []
@@ -162,20 +166,44 @@ async def _validate(text: str) -> AlertConfig:
 
 
 async def _store(text: str, admin: User, request: Request, action: str, detail: dict[str, Any]) -> None:
-    """검증된 YAML 을 원자적으로 저장하고 엔진에 바로 반영, 감사로그(내용 해시 포함)."""
+    """검증된 YAML 을 원자적으로 저장하고 엔진에 바로 반영, 감사로그(내용 해시 포함).
+    판본(ADR-043)은 쓰기 전에 아직 기록하지 않은 파일 직접 수정부터 남기고, 쓴 뒤에 화면 저장으로 남긴다 —
+    그래야 서버에서 고친 것이 이 사용자가 저장한 것으로 섞이지 않는다."""
+    await _record_versions(strict=True)
     path = engine.path
     path.parent.mkdir(parents=True, exist_ok=True)
+    written = text if text.endswith("\n") else text + "\n"   # 해시도 쓴 내용으로 — 판본(alert_config_versions)과 같게
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text if text.endswith("\n") else text + "\n")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(written)
         os.replace(tmp, path)
     except OSError as exc:
         Path(tmp).unlink(missing_ok=True)
         raise HTTPException(500, f"저장 실패: {exc}") from exc
-    engine.reload(force=True)
+    engine.reload(force=True, source="ui", actor=admin.username)
     await db.audit(admin.username, action, path.name,
-                   {**detail, "sha256": hashlib.sha256(text.encode()).hexdigest()}, actor_ip=client_ip(request))
+                   {**detail, "sha256": hashlib.sha256(written.encode()).hexdigest()}, actor_ip=client_ip(request))
+    await _record_versions()
+
+
+async def _record_versions(*, strict: bool = False) -> None:
+    """strict = 쓰기 전: 서버에서 고친 것을 남기지 못했으면 저장을 거절한다(덮어쓰면 그 변경이 이 사용자 이름으로 기록된다)."""
+    engine.reload()
+    try:
+        await engine.record()
+    except Exception as exc:   # 저장 뒤라면 저장은 끝났다 — 판본 기록은 엔진의 다음 주기가 다시 한다
+        log.exception("알림 설정 판본 기록 실패")
+        if strict and engine.unrecorded_file_change():
+            raise HTTPException(503, "서버에서 고친 알림 설정을 아직 기록하지 못했습니다 — 잠시 뒤 다시 저장하세요") from exc
+
+
+def _require_readable_file() -> None:
+    """파일이 깨졌거나 없으면 규칙 하나만 고치는 저장을 막는다 — 빈 틀에 규칙 하나를 더해 쓰면 나머지 규칙이 모두 사라진다
+    (검토에서 재현). '고급 편집'의 전체 저장으로 파일부터 고친다."""
+    if engine.config_error:
+        raise HTTPException(409, f"알림 설정 파일을 쓸 수 없는 상태입니다: {engine.config_error[:300]} — "
+                                 "'고급 편집'에서 설정 전체를 저장해 먼저 고치세요")
 
 
 def _current_text() -> str:
@@ -290,6 +318,7 @@ class PreviewBody(BaseModel):
 @router.put("/api/alerts/rules")
 async def save_rule(body: RuleBody, request: Request, admin: User = Depends(require_permission("alerts.manage"))):
     """규칙 한 개 추가·수정. 파일에서 그 규칙 블록만 바꾸고(다른 규칙·주석 유지), 전체를 검증한 뒤 저장."""
+    _require_readable_file()
     text = _current_text()
     rule = _clean_rule(body.rule)
     _check_one(rule)
@@ -310,6 +339,7 @@ async def save_rule(body: RuleBody, request: Request, admin: User = Depends(requ
 
 @router.delete("/api/alerts/rules/{name:path}")
 async def delete_rule(name: str, request: Request, admin: User = Depends(require_permission("alerts.manage"))):
+    _require_readable_file()
     try:
         new_text = ruleedit.delete(_current_text(), name)
     except ruleedit.EditError as exc:
@@ -322,6 +352,7 @@ async def delete_rule(name: str, request: Request, admin: User = Depends(require
 @router.post("/api/alerts/rules/enabled")
 async def toggle_rules(body: ToggleBody, request: Request, admin: User = Depends(require_permission("alerts.manage"))):
     """규칙(여러 개 가능 — 묶음 단위 켜기/끄기) 사용 여부만 바꾼다. 블록 안 주석도 그대로."""
+    _require_readable_file()
     text = _current_text()
     try:
         for name in body.names:
@@ -454,6 +485,19 @@ def _silence_state(s: dict[str, Any], now: datetime) -> str:
     return "active" if s["ends_at"] > now else "ended"
 
 
+def _coverage(spans: list[dict[str, Any]], starts_at: datetime, ends_at: datetime, now: datetime) -> tuple[datetime, datetime]:
+    """새 무음과 이어지는(겹치거나 맞닿은) 같거나 더 넓은 무음들을 합친 구간 (지금 이후만)."""
+    lo, hi = starts_at, ends_at
+    grown = True
+    while grown:
+        grown = False
+        for s in spans:
+            a, b = s["starts_at"], s["ends_at"]
+            if a <= hi and b >= lo and (a < lo or b > hi):
+                lo, hi, grown = min(lo, a), max(hi, b), True
+    return max(lo, now), hi
+
+
 def _check_silence_scope(user: User, rule: str | None, group_key: str | None) -> None:
     """조회 범위가 있는 사용자는 자기가 볼 수 있는 규칙·대상에만 무음을 걸고 풀 수 있다 (남의 알림까지 막지 않게)."""
     if user.scopes is None:
@@ -503,11 +547,27 @@ async def create_silence(body: SilenceBody, request: Request, user: User = Depen
     reason = body.reason.strip()
     if not reason:
         raise HTTPException(422, "무음 사유를 입력하세요")
+    # 넓은 무음은 규칙을 끄는 것과 같다 (ADR-043). 길이는 한 줄이 아니라 지금부터 이어서 덮는 구간으로 잰다 —
+    # 24시간짜리를 이어 붙이면 한 줄씩은 짧아도 한 달을 막을 수 있었다(검토에서 재현)
+    covered_from, covered_until = _coverage(await repository.covering_silences(rule, group_key, now), starts_at, ends_at, now)
+    wide = (rule is None and group_key is None) or covered_until - covered_from > configdiff.WIDE_SILENCE
     silence_id = await repository.insert_silence(rule, group_key, starts_at, ends_at, reason, user.username)
     target = f"{rule or '모든 규칙'} · {group_key if group_key is not None else '모든 대상'}"
     await db.audit(user.username, "alerts.silence.create", target,
                    {"id": silence_id, "rule": rule, "group_key": group_key, "starts_at": starts_at.isoformat(),
-                    "ends_at": ends_at.isoformat(), "reason": reason}, actor_ip=client_ip(request))
+                    "ends_at": ends_at.isoformat(), "reason": reason, "wide": wide,
+                    "covered_until": covered_until.isoformat()}, actor_ip=client_ip(request))
+    if wide:
+        # 그 규칙들의 받는 곳에 알린다. 실패해도 무음은 걸린다
+        rules = [r for r in engine.config.rules if r.enabled and (rule is None or r.name == rule)]
+        span = f"{local(covered_from)} ~ {local(covered_until)}"
+        try:
+            await engine.notify_change(
+                f"넓은 무음: {target} ({span})",
+                [f"무음 #{silence_id} {target}: {span}", f"사유: {reason}", f"건 사람: {user.username}"],
+                rules, f"무음 · {user.username}")
+        except Exception:
+            log.exception("넓은 무음 알림 실패 (무음 #%s)", silence_id)
     return {"ok": True, "id": silence_id, "starts_at": starts_at, "ends_at": ends_at}
 
 

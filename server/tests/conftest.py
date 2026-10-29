@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import tempfile
 
+import pytest
+
 _dev_url = os.environ.get("WLM_DATABASE_URL", "postgresql://wlm:wlm@localhost:5432/wlm")
 _base, _, _dbname = _dev_url.rpartition("/")
 TEST_DB_NAME = f"{_dbname}_test"
@@ -42,3 +44,14 @@ os.environ["WLM_TRUSTED_PROXIES"] = ""
 os.environ["WLM_HSTS_MAX_AGE"] = ""
 os.environ["WLM_COOKIE_SECURE"] = "false"
 os.environ["WLM_SEARCH_TIMEOUT_SEC"] = "30"
+os.environ["WLM_SENSITIVE_ACCESS_LOG"] = "off"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _fresh_alert_engine():
+    """통합 시험 모듈마다 시험 DB 를 새로 만든다 → 알림 엔진도 처음 설치한 서버처럼 시작한다.
+    엔진은 프로세스에 하나라, 앞 모듈이 적용한 설정이 다음 모듈의 새 DB 에 '설정 변경'으로 기록·알림되지 않게 (ADR-043)."""
+    from app.alerts.engine import engine
+
+    engine.forget()
+    yield

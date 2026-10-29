@@ -70,6 +70,27 @@ def _table(head: list[str], rows: list[list[str]], right: tuple[int, ...] = ()) 
     return f"<table style='border-collapse:collapse;width:100%;font-size:13px'><tr>{th}</tr>{trs}</table>"
 
 
+CONFIG_SOURCES = {"ui": "화면", "file": "서버 파일 직접 수정", "startup": "서버 시작 때 발견"}
+
+
+def _config_changes(al: dict[str, Any]) -> str:
+    """알림 설정 변경·넓은 무음 (ADR-043). 규칙 이름·사유는 사용자가 쓴 값이라 모두 이스케이프한다."""
+    rows = [[_e(f"#{c['version']}"), _e(_t(c["at"])), _e(CONFIG_SOURCES.get(c["source"], c["source"])), _e(c["actor"]),
+             ("<b>약해짐</b> " if c["weakened"] else "") + "<br>".join(_e(t) for t in c["changes"])
+             + (_e(f" … 외 {c['n'] - len(c['changes']):,}건") if c["n"] > len(c["changes"]) else "")]
+            for c in al["config_changes"]]
+    more = al["config_changes_total"] - len(al["config_changes"])
+    out = ("<div style='margin-top:12px'><b style='font-size:13px'>알림 설정 변경</b>"
+           + _table(["판본", "적용", "방법", "누가", "변경"], rows)
+           + (f"<p style='color:{MUTED};margin:4px 0'>그 전 {more:,}건은 감사로그에 있습니다</p>" if more > 0 else "")
+           + "</div>")
+    silences = [[_e(f"#{s['id']}"), _e(s["rule"] or "모든 규칙"), _e(s["group_key"] if s["group_key"] is not None else "모든 대상"),
+                 _e(f"{_t(s['starts_at'])} ~ {_t(s['ends_at'])}"), _e(s["created_by"]), _e(s["reason"])]
+                for s in al["wide_silences"]]
+    return out + ("<div style='margin-top:12px'><b style='font-size:13px'>넓은 무음 (모든 규칙·대상이거나 24시간 넘음)</b>"
+                  + _table(["무음", "규칙", "대상", "기간", "건 사람", "사유"], silences) + "</div>")
+
+
 def _e(value: Any) -> str:
     return escape(_n(value) if isinstance(value, int) or value is None else str(value))
 
@@ -172,6 +193,8 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
         ["번호", "발생", "심각도", "규칙", "대상", "상태"],
         [[_e(f"#{a['id']}"), _e(_t(a["fired_at"])), _e(SEVERITY_LABELS.get(a["severity"], a["severity"])), _e(a["rule"]),
           _e(a["group_key"] or "-"), _e(STATUS_LABELS.get(a["status"], a["status"]))] for a in al["unresolved_oldest"]]) + "</div>"
+    if "config_changes" in al:   # ADR-043 이전 보고서에는 없다 (보고서는 고칠 수 없으므로 예전 형식도 그린다)
+        body += _config_changes(al)
     out.append(_section("알림 처리", body))
 
     # 수집 PC

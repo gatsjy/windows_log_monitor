@@ -7,11 +7,14 @@
 - 무음(alert_silences) 중이면 알림은 기록하되 보내지 않는다. 무음이 끝난 뒤에도 이벤트가 새로 들어오면
   cooldown 과 상관없이 다음 평가에서 다시 알린다 (무음 중에 쌓인 이벤트만으로는 다시 울리지 않는다).
 - 여러 서버 인스턴스가 떠 있어도 PostgreSQL advisory lock 으로 한 곳에서만 평가한다.
+- 적용한 설정은 판본(alert_config_versions)으로 남기고, 탐지를 약하게 하는 변경이면 바뀌기 전 받는 곳으로 알린다
+  (ADR-043). 서버가 시작될 때 파일이 깨져 있으면 마지막 판본으로 감시를 계속한다.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -21,10 +24,11 @@ from typing import Any
 from .. import db, repository
 from ..config import settings
 from ..filters import EventFilter
-from . import targets
-from .message import AlertMessage, search_link
+from . import configdiff, targets
+from .builtin import CONFIG_RULE
+from .message import AlertMessage, local, search_link
 from .notifiers import SEVERITY_LABELS, Notifier, NotifierError
-from .rules import AlertConfig, ConfigError, Rule, load
+from .rules import AlertConfig, ConfigError, Rule, parse_text
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +37,9 @@ MAX_ATTEMPTS = 5
 RETRY_BACKOFF = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=15), timedelta(hours=1))
 SEND_TIMEOUT_SEC = 30
 SAMPLE_COUNT = 5
+_UNREAD = object()   # 아직 한 번도 읽지 않음 (파일이 없을 때의 서명 None 과 구별 — 시작 때 없는 파일도 읽은 것으로 쳐야 한다)
+HISTORY_VERSIONS = 200   # 다시 켠 규칙을 비교하려고 거슬러 보는 판본 수
+SOURCE_LABELS = {"ui": "화면에서 저장", "file": "서버에서 파일 직접 수정", "startup": "서버 시작 때 발견(꺼져 있는 동안 수정)"}
 
 
 def _with_group(f: EventFilter, group_by: str, key: str) -> EventFilter:
@@ -87,22 +94,218 @@ class AlertEngine:
         self.notifier_errors: dict[str, str] = {}
         self.last_run_at: datetime | None = None
         self.last_error: str | None = None
-        self._mtime: float | None = None
+        self._sig: object = _UNREAD
+        # 판본 기록 (ADR-043). _applied = 마지막으로 기록한 판본 {id, sha, config, text} — None 이면 아직 DB 에서 읽지 않음
+        self._applied: dict[str, Any] | None = None
+        self._first = True                             # 시작한 뒤 첫 비교 (판본과 다르면 꺼져 있는 동안 바뀐 것)
+        self._read: dict[str, Any] | None = None       # 파일에서 마지막으로 읽은 것 — 아직 판본과 비교하지 않음 (가장 새것만)
+        self._invalid_done: dict[str, set[str]] = {}   # 깨진 내용(sha) → 끝낸 일(audit·notify) — 같은 내용은 한 번만
+        self._loaded = False                           # 이번 실행에서 파일을 제대로 읽었나 (아니면 마지막 판본으로)
+        self.fallback_version: int | None = None       # 마지막 판본으로 감시 중이면 그 번호 (화면의 규칙 편집을 막는다)
+        self._owed: list[dict[str, Any]] = []          # 판본은 남겼지만 감사로그·알림을 아직 못 한 것 (다음에 다시)
+        self._parsed: dict[int, AlertConfig | None] = {}  # 예전 판본 읽은 것 (다시 켠 규칙을 비교할 때)
+        self._lock: tuple[Any, asyncio.Lock] | None = None
+        self._fell_back = False
 
     # ------------------------------------------------------------ 설정
-    def reload(self, force: bool = False) -> None:
-        mtime = self.path.stat().st_mtime if self.path.exists() else None
-        if not force and mtime == self._mtime:
-            return
-        self._mtime = mtime
+    def _signature(self) -> tuple | None:
         try:
-            config = load(self.path)
-        except ConfigError as exc:
-            self.config_error = str(exc)
-            log.error("알림 설정 오류 (이전 설정 유지): %s", exc)
+            st = self.path.stat()
+        except FileNotFoundError:
+            return None
+        # 수정 시각만 보면 'touch -r' 로 시각을 되돌린 수정을 놓친다 — 되돌릴 수 없는 ctime·크기·inode 도 본다
+        return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
+
+    def reload(self, force: bool = False, *, source: str = "file", actor: str = "system") -> None:
+        """파일이 바뀌었으면 다시 읽어 적용한다. 기록(판본·감사로그·알림)은 record() 가 한다 — 여기는 동기라서.
+        source·actor 는 화면 저장(_store)이 넘긴다. 그 밖의 변경은 서버에서 파일을 직접 고친 것.
+        깨졌거나 없어진 파일은 적용하지 않는다(이전 설정 유지). 무엇이 실패하든 깨진 파일로 다룬다 — 예외가 새면
+        시각만 바뀐 채 다시 읽지 않아 오류도 기록도 없이 옛 설정으로 돌았다(검토에서 재현)."""
+        sig = self._signature()
+        if not force and sig == self._sig:
             return
-        self.config, self.config_error = config, None
-        log.info("알림 규칙 적용: %d개", len(config.rules))
+        self._sig = sig
+        data: bytes | None = None
+        config, error, text = None, None, ""
+        try:
+            data = self.path.read_bytes()
+            text = data.decode("utf-8")
+            config = parse_text(text) if text.strip() else AlertConfig()
+        except FileNotFoundError:
+            error = "설정 파일이 없습니다"
+        except UnicodeDecodeError:
+            error = "UTF-8 로 저장된 파일이 아닙니다 (메모장이면 '다른 이름으로 저장'에서 인코딩을 UTF-8 로)"
+        except ConfigError as exc:
+            error = str(exc)
+        except Exception as exc:  # noqa: BLE001 - 검증이 예상하지 못한 모양·읽기 오류도 깨진 파일
+            error = f"설정을 읽을 수 없습니다 ({type(exc).__name__}: {exc})"
+        self._read = {"sha": hashlib.sha256(data or b"").hexdigest(), "text": text, "config": config, "error": error,
+                      "missing": data is None, "source": source, "actor": actor}
+        if config is not None:
+            self.config, self.config_error, self._loaded, self.fallback_version = config, None, True, None
+            log.info("알림 규칙 적용: %d개", len(config.rules))
+        elif self._loaded:
+            self.config_error = f"{error} — 이전 설정으로 감시를 계속합니다. 파일을 고치면 바로 반영됩니다"
+            log.error("알림 설정 오류 (이전 설정 유지): %s", error)
+        # 시작할 때 깨졌거나 없으면: record() 가 마지막 판본으로 (처음 설치라 판본이 없으면 규칙 0개)
+
+    def _record_lock(self) -> asyncio.Lock:
+        # 판본 비교·기록은 하나씩 — 기록하는 사이 다른 저장이 끼면 옛 판본과 비교하게 된다(검토에서 재현).
+        # 이벤트 루프마다 새로 (시험은 TestClient 마다 루프가 다르다, db._search_slots 와 같은 이유)
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock[0] is not loop:
+            self._lock = (loop, asyncio.Lock())
+        return self._lock[1]
+
+    async def record(self) -> None:
+        """적용한 설정을 판본으로 남기고(감사로그 alerts.config.apply), 탐지가 약해졌으면 알린다.
+        처음 부르면 DB 의 마지막 판본을 기준으로 삼는다 — 서버가 꺼져 있는 동안 고친 것도 여기서 드러난다."""
+        async with self._record_lock():
+            if self._applied is None:
+                latest = await repository.latest_alert_config_version()
+                self._applied = ({"id": latest["id"], "sha": latest["sha256"], "config": _parse_or_none(latest["yaml"]),
+                                  "text": latest["yaml"], "at": latest["applied_at"]} if latest
+                                 else {"id": None, "sha": None, "config": None, "text": ""})
+            await self._send_owed()
+            original = read = self._read
+            if read is None:
+                return
+            if read["config"] is None and read["missing"] and not self._applied["text"].strip():
+                read = {**read, "config": AlertConfig(), "error": None}   # 처음 설치 — 파일이 없으면 규칙 0개
+            if read["config"] is None:
+                if not self._loaded and not self._fell_back:
+                    self._fall_back(read["error"])
+                await self._record_invalid(read)
+                self._first = False   # 시작 때의 모습은 기록했다 — 그 뒤에 고친 것은 실행 중 수정
+                return
+            await self._record_version(read)
+            if self._read is original:   # 기록하는 사이 새로 읽은 것이 있으면 다음에 그것을
+                self._read = None
+
+    async def _record_version(self, read: dict[str, Any]) -> None:
+        applied = self._applied
+        if read["sha"] == applied["sha"]:
+            self._first = False
+            return
+        source = "startup" if self._first and read["source"] == "file" else read["source"]
+        old, new = applied["config"], read["config"]
+        last_enabled = await self._last_enabled(old, new) if applied["sha"] else {}
+        changes = configdiff.diff(old, new, last_enabled) if applied["sha"] else []   # 판본이 없으면 기준 판본
+        await self._flag_silenced_names(changes)
+        weakened = any(c["weakens"] for c in changes)
+        version = await repository.insert_alert_config_version(source, read["actor"], read["sha"], read["text"],
+                                                               changes, weakened)
+        self._applied = {"id": version, "sha": read["sha"], "config": new, "text": read["text"]}
+        self._first = False
+        rules = configdiff.affected(old, new, changes, last_enabled) if weakened else []
+        self._owed.append({"version": version, "source": source, "actor": read["actor"], "sha": read["sha"],
+                           "previous": applied["sha"], "rules_n": len(new.rules), "changes": changes,
+                           "weakened": weakened, "rules": rules, "done": set()})
+        await self._send_owed()
+
+    async def _send_owed(self) -> None:
+        """판본마다 감사로그와 (약해졌으면) 알림. 실패하면 남겨 두고 다음에 다시 — 판본만 남고 알림이 사라지지 않게."""
+        while self._owed:
+            item = self._owed[0]
+            if "audit" not in item["done"]:
+                await db.audit(item["actor"], "alerts.config.apply", self.path.name,
+                               {"version": item["version"], "source": item["source"], "sha256": item["sha"],
+                                "previous_sha256": item["previous"], "rules": item["rules_n"],
+                                "weakened": item["weakened"], "changes": [c["text"] for c in item["changes"]][:100]})
+                item["done"].add("audit")
+            if item["weakened"] and "notify" not in item["done"]:
+                weak = [c for c in item["changes"] if c["weakens"]]
+                who = SOURCE_LABELS[item["source"]] + (f" · {item['actor']}" if item["source"] == "ui" else "")
+                await self.notify_change(
+                    f"탐지를 약하게 하는 알림 설정 변경 {len(weak):,}건 ({who}, 판본 #{item['version']})",
+                    [c["text"] for c in weak], item["rules"], who)
+                item["done"].add("notify")
+            self._owed.pop(0)
+
+    async def _last_enabled(self, old: AlertConfig | None, new: AlertConfig) -> dict[str, tuple[Rule, int]]:
+        """다시 켜거나 다시 추가한 규칙이 마지막으로 켜져 있던 판본의 모양 (끄고 → 고치고 → 켜는 우회를 막는다)."""
+        wanted = configdiff.needs_history(old, new)
+        if not wanted:
+            return {}
+        found: dict[str, tuple[Rule, int]] = {}
+        for row in await repository.alert_config_history(HISTORY_VERSIONS):
+            if row["id"] not in self._parsed:
+                if len(self._parsed) > 2 * HISTORY_VERSIONS:
+                    self._parsed.clear()
+                self._parsed[row["id"]] = _parse_or_none(row["yaml"])
+            for rule in (self._parsed[row["id"]] or AlertConfig()).rules:
+                key = configdiff.rule_key(rule)
+                if key in wanted and key not in found and rule.enabled:
+                    found[key] = (rule, row["id"])
+            if len(found) == len(wanted):
+                break
+        return found
+
+    async def _flag_silenced_names(self, changes: list[dict]) -> None:
+        """무음·재알림 간격은 규칙 이름이 열쇠다 — 무음이 걸린 이름으로 바꾸면(또는 그 이름으로 추가하면) 그 무음이
+        이 규칙에 걸린다(검토에서 재현). 그 이름 바꾸기는 약해진 것으로 본다."""
+        names = {c["rule"] for c in changes if c["change"] in ("renamed", "added")}
+        if not names:
+            return
+        silenced = await repository.silenced_rule_names(datetime.now(UTC), sorted(names))
+        for c in changes:
+            if c["change"] in ("renamed", "added") and c["rule"] in silenced:
+                c["weakens"] = True
+                c["text"] += " — 이 이름에 걸린 무음이 이 규칙에 적용됩니다"
+
+    def unrecorded_file_change(self) -> bool:
+        """서버에서 고친 내용을 읽었는데 아직 판본으로 남기지 못했나 (화면 저장이 그것을 덮어 이름을 뒤집어쓰지 않게)."""
+        read = self._read
+        return (read is not None and read["source"] != "ui" and read["config"] is not None
+                and (self._applied is None or read["sha"] != self._applied["sha"]))
+
+    def forget(self) -> None:
+        """시험용: 서버를 다시 시작한 것처럼 설정·판본 기억을 지운다 (forget_iis_layouts 와 같은 뜻)."""
+        self.config, self.config_error, self.fallback_version = AlertConfig(), None, None
+        self._sig, self._applied, self._read = _UNREAD, None, None
+        self._first, self._loaded, self._fell_back = True, False, False
+        self._invalid_done, self._owed, self._parsed = {}, [], {}
+
+    def _fall_back(self, error: str | None) -> None:
+        """서버가 시작될 때 파일이 깨졌거나 없었다 → 규칙 0개로 돌지 않고 마지막 판본으로 감시한다."""
+        self._fell_back = True
+        applied = self._applied
+        if applied["config"] is None:
+            self.config_error = (f"{error} — 마지막 판본도 읽을 수 없어 규칙 없이 돌고 있습니다. "
+                                 "'고급 편집'에서 설정 전체를 저장하세요")
+            log.error("알림 설정 파일 오류 — 마지막 판본도 읽을 수 없음")
+            return
+        self.config, self.fallback_version = applied["config"], applied["id"]
+        self.config_error = (f"{error} — 마지막으로 적용한 판본 #{applied['id']}({local(applied.get('at'))})으로 "
+                             "감시를 계속합니다. 파일을 고치거나 '고급 편집'에서 설정 전체를 저장하면 바로 반영됩니다")
+        log.error("알림 설정 파일 오류 — 마지막 판본 #%s 로 감시 계속", applied["id"])
+
+    async def _record_invalid(self, read: dict[str, Any]) -> None:
+        done = self._invalid_done.setdefault(read["sha"], set())
+        if "audit" not in done:
+            await db.audit("system", "alerts.config.invalid", self.path.name,
+                           {"sha256": read["sha"], "error": read["error"][:1000], "missing": read["missing"]})
+            done.add("audit")
+        if "notify" not in done:
+            rules = [r for r in self.config.rules if r.enabled] or [
+                r for r in (self._applied["config"] or AlertConfig()).rules if r.enabled]
+            await self.notify_change(
+                "알림 설정 파일 오류 — 고치기 전까지 파일의 변경이 반영되지 않습니다",
+                [read["error"][:500], "지금은 이전 설정(또는 마지막 판본)으로 감시하고 있습니다"], rules, SOURCE_LABELS["file"])
+            done.add("notify")
+
+    async def notify_change(self, summary: str, lines: list[str], rules: list[Rule], who: str) -> int:
+        """설정 변경·넓은 무음 알림. 받는 곳 = 그 규칙들의 알림을 받던 곳(바뀌기 전 설정) — 바꾼 사람이 받는 곳도
+        같이 지울 수 있으니. 걸린 규칙이 없으면(규칙 0개) 받는 곳 없이 이력에만 남는다."""
+        await self.load_targets()
+        shown = lines[:30] + ([f"… 외 {len(lines) - 30:,}건"] if len(lines) > 30 else [])
+        message = AlertMessage(
+            rule=CONFIG_RULE, severity=configdiff.severity(rules), kind="config", group_by="none", group_key=who,
+            event_count=len(lines), threshold=0, window_sec=0, fired_at=datetime.now(UTC),
+            description=summary + "\n" + "\n".join(f"- {line}" for line in shown),
+            link=f"{settings.public_url}/#/alerts",   # 감사로그 화면은 audit.view 가 있어야 열린다 — 받는 사람 누구나 열 곳으로
+        )
+        return await self.fire(message, configdiff.recipients(rules))
 
     async def load_targets(self) -> None:
         self.notifiers, self.notifier_errors = await targets.load_notifiers()
@@ -120,6 +323,10 @@ class AlertEngine:
 
     async def tick(self) -> None:
         self.reload()
+        try:
+            await self.record()
+        except Exception:   # 기록이 실패해도 탐지는 계속한다 (다음 주기에 다시 기록)
+            log.exception("알림 설정 판본 기록 실패")
         await self.load_targets()
         async with await db.connect_autocommit() as conn:
             cur = await conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (_LOCK_ID,))
@@ -188,7 +395,9 @@ class AlertEngine:
 
     # ------------------------------------------------------------ 전송
     async def fire(self, message: AlertMessage, notify: tuple[str, ...]) -> int:
-        silence = await repository.active_silence(message.rule, message.group_key, message.fired_at)
+        # 설정 변경 알림은 무음으로 막지 않는다 — '모든 규칙' 무음을 건 뒤 규칙을 끄면 아무도 모르게 된다
+        silence = (None if message.kind == "config"
+                   else await repository.active_silence(message.rule, message.group_key, message.fired_at))
         alert_id = await repository.insert_alert(message.to_dict(), notify, silence)
         message.alert_id = alert_id
         if silence:
@@ -252,6 +461,14 @@ class AlertEngine:
             "last_run_at": self.last_run_at,
             "last_error": self.last_error,
         }
+
+
+def _parse_or_none(text: str) -> AlertConfig | None:
+    """예전 판본 읽기. 그 사이 규칙 형식이 바뀌어 읽을 수 없으면 None (비교 불가로 다룬다)."""
+    try:
+        return parse_text(text) if text.strip() else AlertConfig()
+    except ConfigError:
+        return None
 
 
 def _sample(row: dict) -> dict[str, Any]:

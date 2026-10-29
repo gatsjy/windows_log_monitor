@@ -32,6 +32,8 @@ ACTION_LABELS = {
     "events.view": "이벤트 상세 조회",
     "dashboard.save": "대시보드 저장",
     "alerts.config.save": "알림 규칙 파일 저장",
+    "alerts.config.apply": "알림 설정 적용(판본)",
+    "alerts.config.invalid": "알림 설정 파일 오류",
     "alerts.rule.save": "알림 규칙 저장",
     "alerts.rule.delete": "알림 규칙 삭제",
     "alerts.rule.toggle": "알림 규칙 켜기/끄기",

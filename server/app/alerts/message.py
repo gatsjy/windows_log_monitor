@@ -90,6 +90,8 @@ class AlertMessage:
     def summary(self) -> str:
         if self.test:
             return "알림 대상 연결 확인용 테스트 메시지입니다."
+        if self.kind == "config":   # 설정 변경 알림 (ADR-043): 설명 첫 줄이 요약, 나머지가 변경 목록
+            return self.description.split("\n", 1)[0]
         if self.kind == "agent_silent":
             return (f"{self.group_key} 에서 {_window_text(self.window_sec)} 이상 로그/하트비트가 들어오지 않았습니다 "
                     f"(마지막 수신 {local(self.last_event_at)})")
@@ -109,12 +111,19 @@ class AlertMessage:
         more = self.distinct_count - len(self.distinct_values)
         return f"서로 다른 {label}: " + ", ".join(self.distinct_values) + (f" … 외 {more:,}" if more > 0 else "")
 
+    @property
+    def detail(self) -> str:
+        """요약 아래에 붙는 설명. 설정 변경 알림은 첫 줄(요약)을 뺀 변경 목록."""
+        if self.kind == "config":
+            return self.description.split("\n", 1)[1] if "\n" in self.description else ""
+        return self.description
+
     def text(self) -> str:
         lines = [self.title(), "", self.summary()]
         if self.distinct_line():
             lines.append(self.distinct_line())
-        if self.description:
-            lines += ["", self.description]
+        if self.detail:
+            lines += ["", self.detail]
         if self.tags:
             lines += ["", "태그: " + ", ".join(self.tags)]
         lines += ["", f"발생 시각: {local(self.fired_at)}"]
@@ -148,7 +157,7 @@ class AlertMessage:
                  if rows else "")
         link = (f"<p><a href='{e(self.link)}' style='color:#1c5cab'>Log Monitor 에서 자세히 보기 →</a></p>"
                 if self.link else "")
-        desc = f"<p style='color:#52514e'>{e(self.description)}</p>" if self.description else ""
+        desc = (f"<p style='color:#52514e'>{e(self.detail).replace(chr(10), '<br>')}</p>" if self.detail else "")
         if self.distinct_line():
             desc = f"<p style='font-size:13px'>{e(self.distinct_line())}</p>" + desc
         if self.tags:

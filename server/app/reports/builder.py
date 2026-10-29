@@ -13,6 +13,7 @@ from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 
 from .. import archive, backups, db, partitions, repository
+from ..alerts.engine import engine
 from ..config import display_zone, settings
 from ..filters import EventFilter
 
@@ -34,6 +35,10 @@ SECURITY_ITEMS: list[dict[str, Any]] = [
     {"key": "task_created", "label": "예약 작업 생성", "ids": [4698]},
     {"key": "sql_login_failed", "label": "SQL Server 로그인 실패", "ids": [18456]},
 ]
+
+
+CONFIG_ROWS = 20    # 보고서에 싣는 설정 변경·넓은 무음 (최근 것부터 이만큼, 수는 전체)
+CONFIG_LINES = 8
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -125,12 +130,29 @@ async def _alerts(start: datetime, end: datetime) -> dict[str, Any]:
         by_severity[r["severity"]] = by_severity.get(r["severity"], 0) + r["n"]
         by_status[r["status"]] = by_status.get(r["status"], 0) + r["n"]
     median = data["median_resolve_sec"]
+    # 탐지를 바꾼 관리 작업 (ADR-043) — 알림 설정 판본과 넓은 무음
+    versions = await repository.report_config_changes(start, end)
+    silences = await repository.report_wide_silences(start, end)
     return {
         "fired": sum(by_severity.values()), "by_severity": by_severity, "by_status": by_status,
         "unresolved_by_severity": {r["severity"]: r["n"] for r in data["open_by_severity"]},
         "unresolved_oldest": [{**r, "fired_at": _iso(r["fired_at"])} for r in data["oldest_unresolved"]],
         "resolved_in_period": data["resolved_in_period"],
         "median_resolve_min": round(float(median) / 60, 1) if median is not None else None,
+        "config_changes": [
+            {"version": v["id"], "at": _iso(v["applied_at"]), "source": v["source"], "actor": v["actor"],
+             "weakened": v["weakened"], "n": len(v["changes"]),
+             # 약해지는 변경부터 몇 줄만 (나머지는 감사로그·판본에)
+             "changes": [c["text"] for c in sorted(v["changes"], key=lambda c: not c.get("weakens"))][:CONFIG_LINES]}
+            for v in versions[-CONFIG_ROWS:]],
+        "config_changes_total": len(versions),
+        "config_changes_weakened": sum(1 for v in versions if v["weakened"]),
+        "config_changes_direct": sum(1 for v in versions if v["source"] != "ui"),
+        "wide_silences": [{"id": r["id"], "rule": r["rule"], "group_key": r["group_key"], "starts_at": _iso(r["starts_at"]),
+                           "ends_at": _iso(r["ends_at"]), "reason": r["reason"], "created_by": r["created_by"]}
+                          for r in silences[-CONFIG_ROWS:]],
+        "wide_silences_total": len(silences),
+        "config_error": engine.config_error,
     }
 
 
@@ -201,6 +223,16 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
     if serious:
         out.append({"level": "bad" if unresolved.get("critical") else "warn",
                     "text": f"해결 안 된 심각·오류 알림 {serious:,}건"})
+    al = p["alerts"]
+    if al.get("config_error"):
+        out.append({"level": "bad", "text": f"알림 설정 파일 오류: {al['config_error'][:200]}"})
+    if al.get("config_changes_weakened"):
+        out.append({"level": "warn", "text": f"탐지를 약하게 하는 알림 설정 변경 {al['config_changes_weakened']:,}건"
+                                             " — 누가 왜 바꿨는지 확인하세요"})
+    if al.get("config_changes_direct"):
+        out.append({"level": "warn", "text": f"화면을 거치지 않고 서버에서 고친 알림 설정 {al['config_changes_direct']:,}건"})
+    if al.get("wide_silences_total"):
+        out.append({"level": "warn", "text": f"넓은 무음 {al['wide_silences_total']:,}건 (모든 규칙·모든 대상이거나 24시간 넘음)"})
     if p["agents"]["offline"]:
         out.append({"level": "warn", "text": f"연락이 끊긴 PC {p['agents']['offline']:,}대"})
     if p["retention"]["archives_missing"]:
