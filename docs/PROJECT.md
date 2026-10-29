@@ -398,6 +398,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 | `group` | `기타` | 규칙 묶음 (규칙 관리 화면 왼쪽 목록, 묶음 단위 켜기/끄기) |
 | `tags` | `[]` | 분류 태그. 기본 규칙은 `MITRE T1110`, `ISMS 2.11.3` 처럼 공격 기법·ISMS 항목을 적습니다. 메시지와 화면에 표시 |
 | `silent_for`, `hosts` | `10m`, 전체 | (`agent_silent`) 끊김 판정 시간, 대상 PC 목록 |
+| `resolve` | `count` 는 `manual`, `agent_silent` 는 `auto` | `auto` 면 조건이 풀릴 때(집계 기간의 건수가 기준 아래 / PC 가 다시 들어옴) '해결됨(자동)'으로 바꾸고 그 알림을 받은 곳에 해소 통지. 건수 규칙은 마지막 알림 뒤 max(집계 기간, 5분)이 지나야 보고, PC 마다 세는 규칙은 그 PC 가 살아 있어야 함(꺼진 PC 는 회복이 아님). 사람이 다시 연 알림은 자동으로 해결하지 않음. `distinct` 규칙은 불가. 한 번 나는 이벤트·보안 규칙은 `manual` (B-35 2단계, ADR-029 보완) |
 
 **기본 규칙 팩 (23개):** 시스템 심각 오류, 서비스 비정상 종료, 응용 프로그램 오류 다발, 서버 응답 없음,
 로그온 실패 급증, 무차별 대입(출발지 IP 기준), 원격 데스크톱 무차별 대입(LogonType 10), **패스워드 스프레이·없는 계정으로 로그온 시도·한 계정이 여러 서버에 원격 데스크톱(서로 다른 값 수)**, 계정 잠금, 관리자 그룹 구성원 추가,
@@ -405,7 +406,9 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 웹 서버 오류 급증, SQL Server 로그인 실패 급증, SQL Server 심각 오류, Linux SSH 무차별 대입.
 - 일부 규칙은 Windows 감사 정책(로그온·계정 관리·프로세스·PowerShell 스크립트 블록 로깅)이 켜져 있어야 동작합니다(ISMS.md).
 
-- `agent_silent` 는 한 번 끊긴 동안 한 번만 알립니다. 다시 수신됐다가 또 끊기면 다시 알립니다.
+- `agent_silent` 는 한 번 끊긴 동안 한 번만 알립니다. 다시 수신됐다가 또 끊기면 다시 알립니다. 다시 들어오면 자동으로 해결합니다(`resolve: manual` 로 끔).
+- 기본 팩에서 자동 해결은 응용 프로그램 오류 다발·웹 서버 오류 급증과 서버 응답 없음뿐입니다. 서비스 비정상 종료는 한 번 나는 이벤트라 조용해져도 고쳐진 것이 아니어서 사람이 해결합니다.
+- 해소 통지는 받은 곳에만 보내고, 보낼 때 다시 봅니다: 그 사이 다시 열렸거나·같은 대상에 새 알림이 났거나·그 곳에 알림이 전해지지 않았으면 건너뜁니다. 무음 중이거나 알림이 7일보다 오래면 해결만 합니다.
 - `hosts` 를 비우면 퇴근 시 꺼지는 PC까지 알림이 가므로, 서버 목록을 지정합니다.
 
 ### 6.2 알림 대상 — 환경설정 화면에서 관리 (§8)
@@ -426,7 +429,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 
 | 형식 | 받는 곳 | 본문 | 주소 | 같은 주소 간격 |
 |---|---|---|---|---|
-| `json` | 사내 시스템 | `{"source", "title", "text", "alert": {...}}` | http·https | – |
+| `json` | 사내 시스템 | `{"source", "title", "text", "dedup_key", "event_action", "alert": {...}}` | http·https | – |
 | `text` | Mattermost·Rocket.Chat 등 | `{"text": "..."}` | http·https | – |
 | `slack` | Slack 'Incoming Webhooks' 앱 | 머리글 블록 + 심각도 색 막대 첨부 안의 Block Kit(요약·설명·항목·최근 이벤트·글자 링크) | https (`hooks.slack.com/services/…`) | 1초 |
 | `teams` | Teams 워크플로 웹훅 | Adaptive Card 1.4 (머리 영역 색 = 심각도 스타일, 항목표, 최근 이벤트, '자세히 보기' 버튼) | https (`*.environment.api.powerplatform.com`) | 0.3초 |
@@ -442,6 +445,9 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 - 메신저 호스트(`hooks.slack.com`·`hook.dooray.com` 등)는 형식을 json·text 로 골라도 https 만 받습니다. 주소에 공백·줄바꿈이 섞이면 저장하지 않습니다.
 - 대상(group_key)은 로그에서 온 값이라 길이 제한이 없어서, 제목 200자·요약·설명 1,000자·항목 값 300자로 자르고 2,000자가 넘는 검색 링크는 알림 화면 링크로 바꿉니다(Teams 28KB 초과 시 '접수됨'인데 게시 실패).
 - 로그에서 온 값(대상 이름, 설명, 이벤트 메시지)은 서비스별 서식 문자를 무력화합니다 — Slack `& < >` 엔티티, Teams·잔디·두레이 마크다운 링크.
+- **해소 통지 (B-35 2단계):** 자동 해결된 알림을 받았던 곳에 `[해소] [오류] 규칙 · 대상` 제목, 초록 막대(Teams 는 good 스타일), 발생→해결 시각으로 보냅니다(최근 이벤트 없음).
+  `dedup_key` 는 같은 규칙·대상이면 같은 값(SHA-256 앞 32자), `event_action` 은 `trigger`·`resolve` — 사내 사고관리·SMS 가 알림으로 연 것을 해소로 닫게.
+  Oracle 은 바인드 `:dedup_key`·`:event_action` 을 쓸 수 있고, **SQL 에 `:event_action` 이 있을 때만** 해소를 보냅니다(기본 INSERT 는 받지 않음, `docs/oracle_alerts.sql`).
 - 심각도 색은 메일과 같은 표(`message.SEVERITY_COLORS`)를 씁니다. Teams 는 임의 색을 받지 않아 스타일(심각·오류 = attention, 경고 = warning, 정보 = accent)로 나타냅니다.
 
 ### 6.3 메시지
@@ -616,7 +622,8 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
   4. **접속 문자열:** Easy Connect(`host:1521/service`) 또는 `(DESCRIPTION=...)`
 - **연결 시험:** 저장 전에 입력값으로 접속해 DB 이름·서비스·스키마·버전을 보여 줍니다.
 - **알림 SQL:** 알림이 생기면 실행할 한 문장입니다(기본: `LOGMON_ALERTS` INSERT, DDL 은 `docs/oracle_alerts.sql`).
-  - 바인드: `:alert_id :rule_name :severity :host :event_count :window_sec :first_event_at :last_event_at :fired_at :title :message :link :detail_json`
+  - 바인드: `:alert_id :rule_name :severity :host :event_count :window_sec :first_event_at :last_event_at :fired_at :title :message :link :detail_json :dedup_key :event_action`
+  - `:event_action` 을 쓴 SQL 에만 해소 통지(`resolve`)를 보냅니다(B-35 2단계) — 기본 INSERT 에 그대로 보내면 같은 ALERT_ID 가 아래 중복 처리로 '성공'이 되어 해소가 남지 않습니다.
   - 프로시저 호출은 `BEGIN 프로시저(:rule_name, :host); END;` 형태로 씁니다.
   - SQL 에 쓴 바인드만 넘기고, 알 수 없는 바인드는 저장 전에 거부합니다. 문자열 안의 `:` 는 무시합니다.
   - 시각은 UTC 기준 TIMESTAMP 입니다.

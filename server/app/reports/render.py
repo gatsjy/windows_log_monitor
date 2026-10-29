@@ -188,7 +188,7 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
                    ("그중 해결됨", _n(al["by_status"].get("resolved", 0)), f"확인함 {al['by_status'].get('acked', 0):,}"),
                    ("지금 해결 안 됨", _n(unresolved_total), "보고서를 만든 시각 기준"),
                    ("해결까지 (중앙값)", f"{al['median_resolve_min']}분" if al["median_resolve_min"] is not None else "-",
-                    f"기간 안에 해결 {al['resolved_in_period']:,}건")])
+                    _resolved_note(al))])
     body += "<div style='margin-top:12px'><b style='font-size:13px'>해결 안 된 알림 (심각한 것·오래된 것부터)</b>" + _table(
         ["번호", "발생", "심각도", "규칙", "대상", "상태"],
         [[_e(f"#{a['id']}"), _e(_t(a["fired_at"])), _e(SEVERITY_LABELS.get(a["severity"], a["severity"])), _e(a["rule"]),
@@ -286,3 +286,12 @@ def notice(payload: dict[str, Any], report_id: int) -> Notice:
               "백업 " + ("정상" if not p["backup"]["problems"] else f"문제 {len(p['backup']['problems'])}건")]
     return Notice(title=f"{p['title']} — {s['headline']}", lines=lines, link=report_link(report_id),
                   severity=s["severity"], html=html(p, report_id), text=text(p, report_id))
+
+
+def _resolved_note(al: dict) -> str:
+    """기간 안에 해결한 수. 자동 해결(B-35 2단계)이 있으면 따로 — 중앙값은 사람이 해결한 것만이다.
+    예전 보고서 payload 에는 자동 해결 수가 없다 (고칠 수 없으므로 없는 대로 그린다)."""
+    auto = al.get("auto_resolved_in_period") or 0
+    text = f"기간 안에 해결 {al['resolved_in_period']:,}건"
+    return f"{text} (자동 {auto:,}건, 중앙값은 사람이 해결한 것만)" if auto else text
+

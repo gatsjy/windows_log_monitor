@@ -51,7 +51,7 @@ def _seconds(delta: timedelta) -> int:
 
 
 STATUS_LABELS = {"open": "처리 안 됨", "acked": "확인함", "resolved": "해결됨"}
-NOTE_LABELS = {"note": "메모", "ack": "확인", "resolve": "해결", "reopen": "다시 열기"}
+NOTE_LABELS = {"note": "메모", "ack": "확인", "resolve": "해결", "reopen": "다시 열기", "auto_resolve": "자동 해결"}
 STATUS_PATTERN = "^(open|acked|resolved|unresolved)$"
 
 
@@ -99,10 +99,11 @@ async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
                 for n in notes.get(a["id"], []))
             yield [
                 a["id"], local(a["fired_at"]), SEVERITY_LABELS.get(a["severity"], a["severity"]), a["rule"], a["group_key"],
-                a["event_count"], STATUS_LABELS[a["status"]], a["acked_by"] or "",
+                a["event_count"], STATUS_LABELS[a["status"]] + (" (자동)" if a["auto_resolved"] else ""), a["acked_by"] or "",
                 local(a["acked_at"]) if a["acked_at"] else "", a["resolved_by"] or "",
                 local(a["resolved_at"]) if a["resolved_at"] else "", f"#{a['silence_id']}" if a["silence_id"] else "",
-                "; ".join(f"{d['notifier']}:{d['status']}" for d in a["deliveries"]), history,
+                "; ".join(f"{d['notifier']}{' 해소' if d.get('action') == 'resolve' else ''}:{d['status']}"
+                          for d in a["deliveries"]), history,
             ]
         if truncated:
             yield [f"(최근 {CSV_LIMIT:,}건까지만 내보냈습니다. 기간을 나눠 다시 내려받으세요)"]
@@ -136,6 +137,7 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
             "unknown_notify": [n for n in r.notify if n not in known],
             "tags": list(r.tags), "sid": r.sid, "group": r.group,
             "distinct": {"field": r.distinct_field, "min": r.distinct_min} if r.distinct_field else None,
+            "resolve": r.resolve,
             # 마지막 평가 (ADR-045): 상태 칩·오류 줄
             "run": {**(run.as_dict() if run else {}), "state": rule_state, "label": RULE_LABELS[rule_state]},
         })
@@ -282,6 +284,10 @@ def _clean_rule(raw: dict[str, Any]) -> dict[str, Any]:
         rule["kind"] = kind
     if raw.get("enabled") is False:
         rule["enabled"] = False
+    # 해결 방식은 종류의 기본값과 다를 때만 적는다 (화면에서 저장해도 파일이 불필요하게 바뀌지 않게)
+    resolve = text("resolve")
+    if resolve and resolve != ("auto" if kind == "agent_silent" else "manual"):
+        rule["resolve"] = resolve
     if kind == "agent_silent":
         rule["silent_for"] = _duration_text(raw.get("silent_for_sec", 600), "끊김 판정 시간")
         if str_list("hosts"):

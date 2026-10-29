@@ -19,6 +19,10 @@ from .builtin import BUILTIN_RULES
 
 SEVERITIES = ("critical", "error", "warning", "info")
 RULE_KINDS = ("count", "agent_silent")
+# 해결 방식 (B-35 2단계): manual = 사람이 해결, auto = 조건이 풀리면 엔진이 해결하고 해소 통지.
+# PC 수신 끊김은 하트비트가 돌아오면 끝난 것이 분명해 auto 가 기본. 건수 규칙은 manual 이 기본 —
+# 사람이 검토하지 않은 보안 알림이 '해결됨'으로 보고서에 남지 않게 운영 규칙에만 auto 를 단다
+RESOLVE_MODES = ("manual", "auto")
 # query = 검색 문장 (B-01). 다른 키와 AND
 MATCH_KEYS = {"host", "channel", "provider", "source", "category", "user", "ip", "level", "event_id", "q", "query"}
 
@@ -51,6 +55,7 @@ class Rule:
     #   예) 패스워드 스프레이 = 출발지 IP 마다 서로 다른 계정 10개 이상. 값이 없는(NULL) 이벤트는 세지 않는다
     distinct_field: str | None = None
     distinct_min: int = 0
+    resolve: str = "manual"
 
     def event_filter(self) -> EventFilter:
         return EventFilter.from_params(self.match, default_since=None)
@@ -120,6 +125,11 @@ def _check_rule(index: int, raw: Any) -> Rule:
         "sid": sid, "group": str(raw.get("group") or "기타").strip() or "기타",
     }
 
+    resolve = raw.get("resolve", "auto" if kind == "agent_silent" else "manual")
+    if resolve not in RESOLVE_MODES:
+        raise ConfigError(f"{where}.resolve 는 {', '.join(RESOLVE_MODES)} 중 하나여야 합니다")
+    common["resolve"] = resolve
+
     if kind == "agent_silent":
         return Rule(**common, silent_for=_duration(raw.get("silent_for", "10m"), f"{where}.silent_for"),
                     hosts=_str_list(raw.get("hosts"), f"{where}.hosts"), group_by="host")
@@ -150,6 +160,9 @@ def _check_rule(index: int, raw: Any) -> Rule:
     # 재알림 간격이 집계 구간보다 짧으면 같은 이벤트로 알림이 반복된다
     cooldown = max(cooldown, window)
     distinct_field, distinct_min = _distinct(raw.get("distinct"), group_by, window, where)
+    if resolve == "auto" and distinct_field:
+        # 풀렸는지를 건수로만 본다 — 서로 다른 값 수 규칙(패스워드 스프레이 등)은 보안 규칙이라 사람이 해결한다
+        raise ConfigError(f"{where}.resolve: 서로 다른 값 수(distinct) 규칙은 자동 해결할 수 없습니다")
     return Rule(**common, match=match, window=window, threshold=threshold, group_by=group_by, cooldown=cooldown,
                 categories=tuple(checked.categories), distinct_field=distinct_field, distinct_min=distinct_min)
 

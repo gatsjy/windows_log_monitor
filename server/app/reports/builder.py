@@ -140,6 +140,7 @@ async def _alerts(start: datetime, end: datetime) -> dict[str, Any]:
         "unresolved_by_severity": {r["severity"]: r["n"] for r in data["open_by_severity"]},
         "unresolved_oldest": [{**r, "fired_at": _iso(r["fired_at"])} for r in data["oldest_unresolved"]],
         "resolved_in_period": data["resolved_in_period"],
+        "auto_resolved_in_period": data["auto_resolved_in_period"],   # B-35 2단계 — 중앙값은 사람이 해결한 것만
         "median_resolve_min": round(float(median) / 60, 1) if median is not None else None,
         "config_changes": [
             {"version": v["id"], "at": _iso(v["applied_at"]), "source": v["source"], "actor": v["actor"],

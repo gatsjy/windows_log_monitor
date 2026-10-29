@@ -213,8 +213,15 @@ class Dispatcher:
                 reason = f"받을 최소 수준({SEVERITY_LABELS[notifier.min_severity]} 이상)보다 낮은 알림"
                 await repository.finish_delivery(job, "skipped", reason, tried=0)
                 return False
+            skip = _stale(job, notifier)
+            if skip:
+                await repository.finish_delivery(job, "skipped", skip, tried=0)
+                return False
             message = AlertMessage.from_dict(job["payload"])
             message.alert_id = job["alert_id"]
+            if job.get("action") == "resolve":
+                message.event_action, message.resolved_at = "resolve", job["resolved_at"]
+                message.started_at = job.get("started_at")
             try:
                 await asyncio.wait_for(notifier.send(message), timeout=SEND_TIMEOUT_SEC)
             except asyncio.CancelledError:
@@ -257,6 +264,30 @@ class Dispatcher:
                 "running": running,
                 "sending": sorted(n for n, t in self._lanes.items() if not t.done()),
                 "targets": {n: h.as_dict() for n, h in self.targets.items()}}
+
+
+def _stale(job: dict[str, Any], notifier: Notifier) -> str | None:
+    """보낼 차례가 왔지만 이제 보내면 안 되는 행의 이유 (B-35 2단계). 넣을 때가 아니라 보낼 때 본다 — 그 사이 바뀐다.
+    해소 통지:
+    - 그 사이 사람이 다시 열었거나(또는 다시 열었다가 사람이 해결) — 끝나지 않은 문제·자동이 아닌 해결을 '자동 해소'로 알리지 않는다.
+    - 같은 대상에 더 새 알림이 있다 — 실패해 재시도를 기다리던 지난 해소가 새 알림 뒤에 나가면 받는 쪽(같은 dedup_key)이
+      지금 열린 사고를 닫는다(검토에서 재현).
+    - 이번 문제의 알림이 이 곳에 전해지지 않았다 — 넣을 때 '보내는 중'이던 알림이 결국 실패한 경우. 받지 않은 알림의 해소는 혼란이다.
+    알림: 자동으로 해결됐다 — 보내다 실패해 다시 보낼 차례가 된 행. 끝난 문제를 뒤늦게 알리지 않는다
+    (자동 해결 때 대기 중이던 행은 그때 건너뜀으로 바꾼다. 이것은 그때 보내는 중이던 행)."""
+    if job.get("action") == "resolve":
+        if job.get("alert_status") != "resolved":
+            return "해소 통지를 보내기 전에 알림이 다시 열렸습니다"
+        if not job.get("auto_resolved"):
+            return "담당자가 해결 처리한 알림이라 자동 해소 통지를 보내지 않습니다"
+        if job.get("newer"):
+            return "같은 대상에 새 알림이 있어 지난 알림의 해소 통지를 보내지 않습니다 (새 알림을 닫지 않게)"
+        if not job.get("delivered"):
+            return "이 곳으로 알림이 전해지지 않아 해소 통지도 보내지 않습니다"
+        return notifier.accepts_resolve()
+    if job.get("auto_resolved"):
+        return "보내기 전에 조건이 풀려 자동으로 해결됨"
+    return None
 
 
 dispatcher = Dispatcher()

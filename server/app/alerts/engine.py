@@ -29,7 +29,7 @@ from ..filters import EventFilter
 from . import configdiff
 from .builtin import CONFIG_RULE
 from .dispatcher import dispatcher
-from .message import AlertMessage, local, search_link
+from .message import AlertMessage, _window_text, local, search_link
 from .rules import AlertConfig, ConfigError, Rule, parse_text
 
 log = logging.getLogger(__name__)
@@ -37,6 +37,12 @@ log = logging.getLogger(__name__)
 _LOCK_ID = 727_003
 SAMPLE_COUNT = 5
 CANDIDATE_LIMIT = 100   # 한 번에 알리는 묶음 상한 — 넘으면 규칙에 '일부만' 표시 (ADR-045)
+# 자동 해결 (B-35 2단계): 마지막 알림 뒤 적어도 이만큼(그리고 집계 기간) 지나야 본다 — 조건이 잠깐 풀렸다 다시 맞는
+# 경계에서 알림·해소가 번갈아 쏟아지지 않게. 한 주기에 보는 대상 수 상한(오래된 것부터, 넘은 것은 다음 주기에)
+AUTO_RESOLVE_HOLD = timedelta(minutes=5)
+AUTO_RESOLVE_LIMIT = 200
+# 이보다 오래된 알림은 해소 통지 없이 해결만 — 이 기능을 켠 뒤 처음 돌 때 몇 달 묵은 끊김 알림이 '해소'로 쏟아지지 않게
+RECOVERY_NOTICE_MAX_AGE = timedelta(days=7)
 _UNREAD = object()   # 아직 한 번도 읽지 않음 (파일이 없을 때의 서명 None 과 구별 — 시작 때 없는 파일도 읽은 것으로 쳐야 한다)
 HISTORY_VERSIONS = 200   # 다시 켠 규칙을 비교하려고 거슬러 보는 판본 수
 SOURCE_LABELS = {"ui": "화면에서 저장", "file": "서버에서 파일 직접 수정", "startup": "서버 시작 때 발견(꺼져 있는 동안 수정)"}
@@ -455,10 +461,49 @@ class AlertEngine:
                 since_previous=since_previous, recurred=recurred,
             )
             fired.append(await self.fire(message, rule.notify))
+        if rule.resolve == "auto":
+            await self._resolve_quiet(rule, base, now)
         return fired
+
+    async def _resolve_quiet(self, rule: Rule, base: EventFilter, now: datetime) -> None:
+        """조건이 풀린 대상의 알림을 자동으로 해결한다 (resolve: auto). 풀림 = 지금 집계 기간의 건수가 기준 아래.
+        방금 알린 대상(마지막 알림이 집계 기간·AUTO_RESOLVE_HOLD 안)은 보지 않는다."""
+        hold = max(rule.window, AUTO_RESOLVE_HOLD)
+        rows = await repository.unresolved_alert_keys(rule.name, now - hold, AUTO_RESOLVE_LIMIT + 1)
+        if len(rows) > AUTO_RESOLVE_LIMIT:
+            log.info("규칙 '%s' 자동 해결: 대상 %d개 넘음 — 나머지는 다음 주기에", rule.name, AUTO_RESOLVE_LIMIT)
+        rows = rows[:AUTO_RESOLVE_LIMIT]
+        # PC 마다 세는 규칙: PC 자체가 조용하면 건수 0 은 '나아짐'이 아니라 '모름'이다 — 꺼진 PC 의 오류가 멎었다고
+        # 해소를 보내지 않는다(검토). agents 에 없는 이름(syslog 장비 등)은 판단할 수 없어 그대로 본다
+        seen = (await repository.agents_last_seen([r["group_key"] for r in rows])) if rule.group_by == "host" else {}
+        for row in rows:
+            self.progress_at = datetime.now(UTC)
+            key = row["group_key"]
+            if key in seen and seen[key] < now - hold:
+                continue
+            n = (await repository.count(_with_group(base, rule.group_by, key)))["current"]
+            if n >= rule.threshold:
+                continue   # 아직 계속된다 (재알림 간격이 지나면 다시 알린다)
+            await self._resolve(rule, key, now, f"최근 {_window_text(int(rule.window.total_seconds()))} 동안 조건에 맞는 "
+                                                f"이벤트 {n:,}건 — 기준 {rule.threshold:,}건 아래로 내려가 자동으로 해결")
+
+    async def _resolve(self, rule: Rule, key: str, now: datetime, reason: str) -> None:
+        # 지금 무음이면 해소 통지도 보내지 않는다 — 점검 중에는 알림처럼 해소도 잡음이다
+        silenced = await repository.active_silence(rule.name, key, now) is not None
+        changed, queued = await repository.auto_resolve(rule.name, key, reason, notify=() if silenced else rule.notify,
+                                                        at=now, notify_since=now - RECOVERY_NOTICE_MAX_AGE)
+        if changed:
+            log.info("알림 자동 해결 %s · %s: %s (해소 통지 %d곳)", rule.name, key, changed, queued)
+        if queued:
+            dispatcher.wake()
 
     async def _evaluate_silent(self, rule: Rule, now: datetime) -> list[int]:
         fired = []
+        if rule.resolve == "auto":
+            # 먼저 해결한다 — 돌아온 PC 와 아직 끊긴 PC 는 겹치지 않는다(지금 끊김 판정 안에 수신이 있어야 돌아온 것)
+            for row in await repository.returned_agents(rule.name, now - rule.silent_for):
+                await self._resolve(rule, row["host"], now,
+                                    f"로그/하트비트가 다시 들어와 자동으로 해결 (마지막 수신 {local(row['last_seen'])})")
         for row in await repository.silent_agents(now - rule.silent_for, rule.hosts):
             last = await repository.last_alert(rule.name, row["host"])
             # 한 번 끊긴 동안에는 한 번만. 다시 살아났다가(last_seen 갱신) 또 끊기면 다시 알린다.

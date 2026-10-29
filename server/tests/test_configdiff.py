@@ -56,6 +56,10 @@ def _changes(before: str, after: str) -> list[tuple[str, bool]]:
     ("    group_by: ip\n", "    group_by: user\n", [("group_by", True)]),
     ("    group_by: ip\n", "    group_by: ip\n    distinct: { field: user, min: 5 }\n", [("distinct", True)]),
     ("    silent_for: 10m\n", "    silent_for: 1h\n", [("silent_for", True)]),
+    # 해결 방식 (B-35 2단계): 사람이 보지 않고 해결되게 바꾸는 것은 약화, 되돌리는 것은 아님
+    ("    severity: warning\n", "    resolve: auto\n    severity: warning\n", [("resolve", True)]),
+    ("    silent_for: 10m\n", "    silent_for: 10m\n    resolve: manual\n", [("resolve", False)]),
+    ("    silent_for: 10m\n", "    silent_for: 10m\n    resolve: auto\n", []),   # 끊김 규칙의 기본값을 적은 것뿐
     ("  interval_sec: 30\n", "  interval_sec: 300\n", [("interval", True)]),
     ("  interval_sec: 30\n", "  interval_sec: 10\n", [("interval", False)]),
 ])

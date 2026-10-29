@@ -56,6 +56,10 @@ class Notifier:
     def accepts(self, severity: str) -> bool:
         return SEVERITY_RANK.get(severity, 1) >= SEVERITY_RANK.get(self.min_severity, 1)
 
+    def accepts_resolve(self) -> str | None:
+        """해소 통지를 받을 수 없으면 그 이유 (B-35 2단계). 사람이 읽는 메일·메신저는 언제나 받는다."""
+        return None
+
     def target(self) -> str:
         """화면 표시용 대상 설명 (비밀값 제외)."""
         return ""
@@ -271,7 +275,7 @@ ORACLE_DEFAULT_SQL = (
     "  :first_event_at, :last_event_at, :fired_at, :title, :message, :link, :detail_json)"
 )
 ORACLE_BINDS = ("alert_id", "rule_name", "severity", "host", "event_count", "window_sec", "first_event_at",
-                "last_event_at", "fired_at", "title", "message", "link", "detail_json")
+                "last_event_at", "fired_at", "title", "message", "link", "detail_json", "dedup_key", "event_action")
 _BIND_RE = re.compile(r"(?<![:\w]):([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -295,6 +299,8 @@ def oracle_binds(sql: str, message: AlertMessage) -> dict[str, Any]:
         "message": message.text()[:4000],
         "link": message.link[:1000] or None,
         "detail_json": json.dumps(message.to_dict(), ensure_ascii=False, default=str),
+        "dedup_key": message.dedup_key,
+        "event_action": message.event_action,
     }
     used = set(_BIND_RE.findall(_strip_strings(sql)))
     unknown = used - set(values)
@@ -324,6 +330,12 @@ class OracleNotifier(Notifier):
 
     def binds(self, message: AlertMessage) -> dict[str, Any]:
         return oracle_binds(self.sql, message)
+
+    def accepts_resolve(self) -> str | None:
+        # 예전 SQL(기본 INSERT)은 알림과 해소를 가리지 못한다 — 같은 알림 번호의 줄이 하나 더 생겨 사고관리가 새 사고로 본다
+        if "event_action" in _BIND_RE.findall(_strip_strings(self.sql)):
+            return None
+        return "SQL 에 :event_action 이 없어 해소 통지를 보내지 않습니다"
 
     def _execute(self, binds: dict[str, Any], commit: bool) -> int:
         try:

@@ -22,6 +22,15 @@ CREATE TABLE LOGMON_ALERTS (
 
 CREATE INDEX LOGMON_ALERTS_FIRED_IX ON LOGMON_ALERTS (FIRED_AT);
 
+-- 해소 통지 (B-35 2단계): SQL 에 :event_action 을 쓰면 자동 해결된 알림의 해소(event_action = 'resolve')도 보낸다.
+--   위 기본 INSERT 는 :event_action 이 없어 해소를 받지 않는다 (ALERT_ID 가 기본 키라 같은 번호를 다시 넣으면 ORA-00001 —
+--   재전송 중복으로 보고 성공 처리하므로 해소가 아무 흔적 없이 '보냄'이 된다).
+--   받으려면 예) 열을 더하고 기본 키를 (ALERT_ID, EVENT_ACTION) 으로 바꾼 뒤 SQL 에 :dedup_key, :event_action 을 넣는다:
+--   ALTER TABLE LOGMON_ALERTS ADD (DEDUP_KEY VARCHAR2(32), EVENT_ACTION VARCHAR2(10) DEFAULT 'trigger' NOT NULL);
+--   ALTER TABLE LOGMON_ALERTS DROP CONSTRAINT LOGMON_ALERTS_PK;
+--   ALTER TABLE LOGMON_ALERTS ADD CONSTRAINT LOGMON_ALERTS_PK PRIMARY KEY (ALERT_ID, EVENT_ACTION);
+--   DEDUP_KEY 는 같은 규칙·대상이면 같다 — 사고관리 쪽에서 trigger 로 연 건을 resolve 로 닫는 키.
+
 -- 전용 계정 권한 예시 (INSERT 만):
 -- CREATE USER LOGMON IDENTIFIED BY "..." ;
 -- GRANT CREATE SESSION TO LOGMON;

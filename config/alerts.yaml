@@ -24,6 +24,9 @@ settings:
 # group_by: host(기본) | ip | user | none | category | event_id | ... — 이 값마다 따로 세고 따로 알림
 # cooldown: 같은 규칙·같은 대상은 이 시간 안에 다시 알리지 않음 (window 보다 짧으면 window 로 맞춤)
 # severity: critical | error | warning | info   (수신 그룹·연동의 '받을 최소 수준'과 비교됨)
+# resolve: manual(기본) | auto — auto 면 조건이 풀릴 때(집계 기간의 건수가 기준 아래) '해결됨(자동)'으로 바꾸고 그 알림을 받은 곳에
+#          해소 통지를 보냄. 오류 다발처럼 건수가 오르내리는 운영 규칙에만 — 한 번 나는 이벤트(서비스 종료 등)는 조용해져도
+#          고쳐진 것이 아니고, 보안 규칙은 사람이 검토해야 합니다. agent_silent 는 하트비트가 돌아오면 자동 해결이 기본
 rules:
   # ---------------------------------------------------------- 시스템·서비스
   - name: 시스템 심각 오류
@@ -58,6 +61,7 @@ rules:
     window: 10m
     threshold: 5
     cooldown: 1h
+    resolve: auto
     severity: warning
     tags: [ISMS 2.9.2]
     notify: [운영팀]
@@ -274,6 +278,7 @@ rules:
     window: 5m
     threshold: 20
     cooldown: 30m
+    resolve: auto
     severity: warning
     tags: [ISMS 2.9.2]
     notify: [운영팀]

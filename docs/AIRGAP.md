@@ -391,6 +391,8 @@ sudo docker compose -f docker-compose.yml --profile syslog up -d --no-build --pu
 ```
 
 - 마이그레이션은 '추가만' 하므로(컬럼·테이블 추가) 대부분은 1)만으로 이전 버전이 동작합니다. 2)는 새 버전에서 데이터 문제가 생겼을 때만 합니다.
+- **019(해소 통지, B-35 2단계) 이전으로 1)만 되돌릴 때:** 옛 전송기는 해소 행을 알림으로 보낸다 — 되돌리기 **전에** 대기 중인 해소 행을 건너뜀으로 둡니다.
+  `sudo docker compose -f docker-compose.yml exec db psql -U wlm -d wlm -c "UPDATE alert_deliveries SET status='skipped', last_error='되돌리기' WHERE action='resolve' AND status IN ('pending','failed')"`
 
 ## 11. 백업 (운영)
 

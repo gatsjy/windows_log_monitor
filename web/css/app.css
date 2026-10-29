@@ -566,7 +566,7 @@ a.ast.silenced:hover { text-decoration: none; color: var(--ink); }
 .timeline li::before { content: ""; position: absolute; left: -20px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--surface); border: 2px solid var(--baseline); }
 .tl-act { font-size: 12px; font-weight: 650; color: var(--ink-2); }
 .tl-act.ack { color: var(--accent-ink); }
-.tl-act.resolve { color: var(--good-ink); }
+.tl-act.resolve, .tl-act.auto_resolve { color: var(--good-ink); }
 .tl-act.reopen, .tl-act.fired { color: var(--bad-ink); }
 .tl-text { flex-basis: 100%; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); border-radius: 7px; padding: 7px 10px; }
 /* 점검 보고서: 서버가 만든 문서(밝은 바탕)를 그대로 보여 준다 — 메일·인쇄본과 같은 내용 */

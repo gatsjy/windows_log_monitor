@@ -25,6 +25,9 @@ function splitUnit(sec) {
 const unitSize = (key) => UNITS.find(([k]) => k === key)[2];
 const quote = (s) => `"${String(s).replace(/"/g, '\\"')}"`;
 const list = (v) => String(v || '').split(',').map((x) => x.trim()).filter(Boolean);
+// 해결 방식 (B-35 2단계): 비어 있으면 종류의 기본값 — PC 수신 끊김은 auto, 건수 규칙은 manual (서버 rules.py 와 같음)
+const resolveOf = (r) => r.resolve || (r.kind === 'agent_silent' ? 'auto' : 'manual');
+const defaultResolve = (r) => (r.kind === 'agent_silent' ? 'auto' : 'manual');
 
 /** 편집 중인 값 → Snort 식 한 줄 규칙 (보기 전용) */
 export function signature(r) {
@@ -43,6 +46,7 @@ export function signature(r) {
     if (r.distinct?.field) parts.push(`distinct:${TRACK[r.distinct.field] || `by_${r.distinct.field.replace(/^f\./, '')}`} ${r.distinct.min}`);
     parts.push(`cooldown:${r.cooldown_sec}`);
   }
+  if (resolveOf(r) !== defaultResolve(r)) parts.push(`resolve:${resolveOf(r)}`);
   if (r.notify.length) parts.push(`notify:${quote(r.notify.join(','))}`);
   r.tags.forEach((t) => parts.push(`reference:${t}`));
   if (r.group) parts.push(`classtype:${quote(r.group)}`);
@@ -55,12 +59,14 @@ export function sentence(r) {
   const sev = SEVERITIES[r.severity]?.label ?? r.severity;
   const to = r.notify.length ? `'${r.notify.join("', '")}'에` : '(받는 곳 없음)';
   if (r.kind === 'agent_silent') {
-    return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'}에서 ${fmtSec(r.silent_for_sec)} 이상 로그가 오지 않으면 ${to} [${sev}] 알림.`;
+    return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'}에서 ${fmtSec(r.silent_for_sec)} 이상 로그가 오지 않으면 ${to} [${sev}] 알림.`
+      + (resolveOf(r) === 'auto' ? ' 다시 들어오면 자동으로 해결하고 해소 통지.' : '');
   }
   const by = r.group_by === 'none' ? '전체를 합산해서' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}마다 따로 세어`;
   const distinct = r.distinct?.field ? `이고 ${distinctText(r.distinct)}` : '';
   return `${matchText(r.match)} 로그가 ${fmtSec(r.window_sec)} 동안 ${fmtNum(r.threshold)}건 이상${distinct}이면, ${by} ${to} [${sev}] 알림. `
-    + `같은 대상은 ${fmtSec(r.cooldown_sec)} 동안 다시 알리지 않음.`;
+    + `같은 대상은 ${fmtSec(r.cooldown_sec)} 동안 다시 알리지 않음.`
+    + (resolveOf(r) === 'auto' ? ` ${fmtSec(r.window_sec)} 동안 기준 아래로 내려가면 자동으로 해결하고 해소 통지.` : '');
 }
 function fmtSec(sec) {
   const { n, unit } = splitUnit(sec);
@@ -87,6 +93,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
     silent_for_sec: rule?.silent_for_sec ?? 600, hosts: [...(rule?.hosts ?? [])],
     notify: [...(rule?.notify ?? (config.notifiers[0] ? [config.notifiers[0].name] : []))], tags: [...(rule?.tags ?? [])],
     distinct: rule?.distinct ? { ...rule.distinct } : null,
+    resolve: rule?.resolve ?? '',
   };
   const body = openDrawer({ title: isNew ? '새 알림 규칙' : '알림 규칙 수정', subtitle: isNew ? '규칙 번호(SID)는 저장할 때 자동으로 붙습니다' : `SID ${r.sid ?? '–'} · ${r.group || '기타'}` });
   body.innerHTML = '<div class="skeleton"></div>';
@@ -186,6 +193,17 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
       </section>`}
 
       <section class="form-section">
+        <h3>끝나면</h3>
+        <div class="sentence-row"><select class="select" data-resolve aria-label="해결 방식">
+          <option value="manual" ${resolveOf(r) === 'manual' ? 'selected' : ''}>담당자가 확인하고 해결</option>
+          <option value="auto" ${resolveOf(r) === 'auto' ? 'selected' : ''} ${r.kind === 'count' && r.distinct?.field ? 'disabled' : ''}>${r.kind === 'agent_silent' ? '다시 들어오면' : '조건이 풀리면'} 자동으로 해결하고 해소 통지</option>
+        </select></div>
+        <p class="muted" style="font-size:12.5px;margin:6px 0 0">${r.kind === 'agent_silent' ? '하트비트가 돌아오면 끝난 것이 분명합니다. 알림을 받은 곳에만 해소 통지를 보냅니다.'
+          : r.distinct?.field ? '서로 다른 값 수 규칙은 보안 규칙이라 담당자가 해결합니다.'
+          : '오류 다발처럼 건수가 오르내리는 운영 규칙에만 권합니다. 한 번 나는 이벤트(서비스 종료 등)는 조용해져도 고쳐진 것이 아니고, 보안 규칙은 담당자가 검토해야 합니다.'}</p>
+      </section>
+
+      <section class="form-section">
         <h3>누구에게</h3>
         ${config.notifiers.length ? html`<div class="check-list">${config.notifiers.map((n) => html`
           <label><input type="checkbox" data-notify="${n.name}" ${r.notify.includes(n.name) ? 'checked' : ''}>${n.name}
@@ -255,8 +273,10 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
     }));
     body.querySelector('[data-dfield]')?.addEventListener('change', (e) => {
       r.distinct = e.target.value ? { field: e.target.value, min: r.distinct?.min ?? 10 } : null;
+      if (r.distinct && r.resolve === 'auto') r.resolve = '';   // 서로 다른 값 수 규칙은 자동 해결할 수 없다
       render();
     });
+    body.querySelector('[data-resolve]').addEventListener('change', (e) => { r.resolve = e.target.value; refresh(); });
     body.querySelector('[data-dmin]')?.addEventListener('input', (e) => {
       r.distinct.min = Math.max(2, Number(e.target.value) || 2);
       refresh();

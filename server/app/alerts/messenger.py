@@ -59,11 +59,13 @@ def _link(m: AlertMessage) -> str:
 def _facts(m: AlertMessage) -> list[tuple[str, str]]:
     """(항목, 값) — 모든 형식이 같은 순서로 쓴다. 값은 비어 있지 않다(빈 글자를 거부하는 서비스가 있다)."""
     facts = [("발생 시각", local(m.fired_at))]
+    if m.resolved_at:
+        facts.append(("해소 시각", local(m.resolved_at)))
     if m.first_event_at:
         facts.append(("이벤트 시각", f"{local(m.first_event_at)} ~ {local(m.last_event_at)}"))
     if m.kind in ("config", "system"):   # 내장 알림(ADR-043·045)에는 건수 기준이 없다 — 내용 줄 수
         facts.append(("변경", f"{m.event_count:,}건"))
-    elif m.kind != "agent_silent" and not m.test:
+    elif m.kind != "agent_silent" and not m.test and not m.resolved:
         facts.append(("건수", f"{m.event_count:,}건 (기준 {m.threshold:,}건 이상)"))
     if m.group_key:
         facts.append(("대상", _cut(m.group_key, FACT_MAX)))
@@ -76,7 +78,9 @@ def _facts(m: AlertMessage) -> list[tuple[str, str]]:
 
 def _sample_lines(m: AlertMessage) -> list[str]:
     """'시각 · 수준 · PC · 채널 이벤트 — 메시지' 한 줄씩. 공백 여러 칸 정렬은 메신저가 접어 버려서 · 로 나눈다."""
-    lines = []
+    lines: list[str] = []
+    if m.resolved:   # 해소 통지에 알림 때의 이벤트를 다시 붙이지 않는다
+        return lines
     for s in m.samples:
         when = local(_dt(s.get("ts")))[11:]  # 시각만 (날짜는 발생 시각에 있음)
         ident = " ".join(str(x) for x in (s.get("channel"), s.get("event_id")) if x)
@@ -94,7 +98,9 @@ def _no_md_link(text: str) -> str:
 # -------------------------------------------------------------------- json·text
 
 def build_json(m: AlertMessage) -> dict[str, Any]:
-    return {"source": "log-monitor", "title": m.title(), "text": m.summary(), "alert": m.to_dict()}
+    # dedup_key·event_action (B-35 2단계): 받는 쪽이 같은 문제의 알림(trigger)으로 연 티켓을 해소(resolve)로 닫게
+    return {"source": "log-monitor", "title": m.title(), "text": m.summary(), "dedup_key": m.dedup_key,
+            "event_action": m.event_action, "alert": m.to_dict()}
 
 
 def build_text(m: AlertMessage) -> dict[str, Any]:
@@ -148,7 +154,7 @@ def build_slack(m: AlertMessage) -> dict[str, Any]:
         "text": fallback,  # 휴대폰 푸시·검색에 쓰이는 대체 문구 (블록이 있으면 화면에는 안 보인다)
         "blocks": [{"type": "header", "text": {"type": "plain_text", "text": _cut(m.title(), 150)}}],
         # 심각도 색 막대는 attachments 에서만 된다 (Block Kit 에는 색이 없다)
-        "attachments": [{"color": SEVERITY_COLORS[m.severity], "fallback": fallback, "blocks": details}],
+        "attachments": [{"color": m.color, "fallback": fallback, "blocks": details}],
     }
 
 
@@ -162,10 +168,12 @@ def build_teams(m: AlertMessage) -> dict[str, Any]:
     head: list[dict[str, Any]] = [
         {"type": "TextBlock", "text": _no_md_link(_title(m)), "weight": "Bolder",
          "size": "Large" if m.severity == "critical" else "Medium", "wrap": True},
-        {"type": "TextBlock", "text": local(m.fired_at), "isSubtle": True, "spacing": "None", "wrap": True},
+        {"type": "TextBlock", "text": local(m.resolved_at if m.resolved else m.fired_at), "isSubtle": True,
+         "spacing": "None", "wrap": True},
     ]
     body: list[dict[str, Any]] = [
-        {"type": "Container", "style": TEAMS_STYLE.get(m.severity, "emphasis"), "bleed": True, "items": head},
+        {"type": "Container", "style": "good" if m.resolved else TEAMS_STYLE.get(m.severity, "emphasis"), "bleed": True,
+         "items": head},
         {"type": "TextBlock", "text": _no_md_link(_summary(m)), "wrap": True},
     ]
     if m.detail:
@@ -192,7 +200,7 @@ def build_teams(m: AlertMessage) -> dict[str, Any]:
 def build_dooray(m: AlertMessage) -> dict[str, Any]:
     """두레이 메신저 훅은 서식(마크다운)을 공식 지원하지 않는다 → 평문, 링크는 첨부 제목(titleLink)으로만."""
     facts = "\n".join(f"{k}: {v}" for k, v in _facts(m))
-    color = SEVERITY_COLORS[m.severity]
+    color = m.color
     # 마크다운은 공식 지원이 아니지만 일부 렌더링된다는 보고가 있어, 로그에서 온 [이름](주소) 는 다른 형식처럼 깨 둔다
     text = f"{_description(m)}\n{facts}" if m.detail else facts
     first: dict[str, Any] = {"title": _no_md_link(_summary(m)), "text": _no_md_link(text), "color": color}
@@ -227,7 +235,7 @@ def build_jandi(m: AlertMessage) -> dict[str, Any]:
         item["description"] = _cut(item["description"], max(20, budget - len(item["title"])))
         budget -= len(item["title"]) + len(item["description"])
     # 공식 예시가 대문자 #RRGGBB 라 맞춘다
-    return {"body": body, "connectColor": SEVERITY_COLORS[m.severity].upper(), "connectInfo": info}
+    return {"body": body, "connectColor": m.color.upper(), "connectInfo": info}
 
 
 # ------------------------------------------------------------------- 공지 (점검 보고서)

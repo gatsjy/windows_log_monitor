@@ -796,6 +796,77 @@ async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict 
     return alert_id
 
 
+# ---------------------------------------------------------------- 자동 해결·해소 통지 (B-35 2단계, alerts/engine.py)
+# 사람이 다시 연 알림(처리 기록에 reopen)은 자동으로 해결하지 않는다 — 다시 열었는데 다음 주기에 엔진이 도로 닫았다(검토에서 재현).
+# 같은 대상에 새 알림이 나면 그 알림부터 다시 자동 해결 대상이다.
+_NOT_REOPENED = "NOT EXISTS (SELECT 1 FROM alert_notes n WHERE n.alert_id = {0}.id AND n.action = 'reopen')"
+
+
+async def unresolved_alert_keys(rule: str, fired_before: datetime, limit: int) -> list[dict]:
+    """자동 해결을 볼 대상: 해결 안 된(다시 열지 않은) 알림이 있고 마지막 알림이 fired_before 보다 앞선 것.
+    상한을 넘으면 무작위로 — 오래된 것부터 고르면 계속되는 대상 200개가 늘 자리를 차지해 나머지는 영영 보지 못한다."""
+    return await db.fetch_all(
+        "SELECT group_key, max(fired_at) AS last_fired FROM alerts a WHERE rule = %s AND status <> 'resolved'"
+        f" AND {_NOT_REOPENED.format('a')} GROUP BY group_key HAVING max(fired_at) < %s ORDER BY random() LIMIT %s",
+        (rule, fired_before, limit))
+
+
+async def returned_agents(rule: str, alive_since: datetime) -> list[dict]:
+    """PC 수신 끊김 알림이 해결 안 된 PC 중 그 뒤로 다시 들어오고 있는 것 (끊겼을 때의 마지막 수신보다 새 수신이 있고,
+    지금 끊김 판정 안). 다시 끊긴 PC 는 빼고 새 끊김 알림에 맡긴다."""
+    return await db.fetch_all(
+        "SELECT a.group_key AS host, max(g.last_seen) AS last_seen FROM alerts a JOIN agents g ON g.host = a.group_key"
+        " WHERE a.rule = %s AND a.status <> 'resolved' AND g.last_seen > COALESCE(a.last_event_at, a.fired_at)"
+        f" AND g.last_seen >= %s AND {_NOT_REOPENED.format('a')} GROUP BY a.group_key", (rule, alive_since))
+
+
+async def agents_last_seen(hosts: list[str]) -> dict[str, datetime]:
+    """PC 별 마지막 수신 (agents 에 없는 이름은 빠진다 — syslog 장비 등)."""
+    rows = await db.fetch_all("SELECT host, last_seen FROM agents WHERE host = ANY(%s::text[])", (hosts,))
+    return {r["host"]: r["last_seen"] for r in rows}
+
+
+async def auto_resolve(rule: str, group_key: str, reason: str, notify: tuple[str, ...], at: datetime,
+                       notify_since: datetime) -> tuple[list[int], int]:
+    """이 규칙·대상의 해결 안 된(다시 열지 않은) 알림을 모두 '해결됨(자동)'으로 바꾸고 처리 기록(auto_resolve)을 남긴다.
+    - 해결 시각은 at(엔진이 건수를 센 주기의 시각)과 지금 중 이른 쪽 — 센 뒤 해결하기 전에 들어온 이벤트가 '해결 뒤 재발'로
+      잡히게(늦은 시각을 쓰면 그 이벤트는 재발로 세지 않아 재알림 간격에 묻혔다).
+    - 아직 보내지 못한 알림은 건너뜀으로 바꾼다 — 끝난 문제를 뒤늦게 알리고 해소는 못 알리는 것보다 낫다. 해소 통지를 넣기
+      '전에' 바꾼다: 그 사이 전송기가 잡은 행은 '보내는 중'으로 보여 해소 대상에 든다(순서가 반대면 해결 뒤 알림만 나갔다).
+    - 해소 통지는 그 알림을 받은 곳(보냄·보내는 중) 중 notify(지금 규칙의 받는 곳)에, 가장 최근 알림에 한 줄씩.
+      몇 달 전 알림을 받았다가 이제는 규칙에서 뺀(지운) 곳까지 보내지 않는다. 보낼 차례에 전송기가 다시 본다(dispatcher._stale).
+    - 가장 최근 알림이 notify_since 보다 오래면 해소 통지 없이 해결만 한다 — 이 기능을 켜고 처음 돌 때 몇 달 묵은
+      끊김 알림이 한꺼번에 '해소'로 쏟아지지 않게.
+    돌려주는 값 = (해결한 알림 id, 넣은 해소 통지 수). 한 트랜잭션 — 사람이 같은 때 해결해도 한쪽만 바꾼다."""
+    async with db.pool().connection() as conn, conn.transaction():
+        cur = await conn.execute(
+            "UPDATE alerts a SET status = 'resolved', resolved_by = 'system', resolved_at = LEAST(now(), %s),"
+            f" auto_resolved = true WHERE rule = %s AND group_key = %s AND status <> 'resolved' AND {_NOT_REOPENED.format('a')}"
+            " RETURNING id, fired_at", (at, rule, group_key))
+        rows = await cur.fetchall()
+        if not rows:
+            return [], 0
+        changed = sorted(r["id"] for r in rows)
+        stale = max(r["fired_at"] for r in rows) < notify_since
+        await conn.execute(
+            "INSERT INTO alert_notes (alert_id, author, action, text) SELECT unnest(%s::bigint[]), 'system', 'auto_resolve', %s",
+            (changed, reason + (" (오래된 알림이라 해소 통지는 보내지 않음)" if stale and notify else "")))
+        await conn.execute(
+            "UPDATE alert_deliveries SET status = 'skipped', last_error = '보내기 전에 조건이 풀려 자동으로 해결됨',"
+            " updated_at = now() WHERE alert_id = ANY(%s) AND action = 'trigger' AND status IN ('pending', 'failed')"
+            " AND claimed_at IS NULL", (changed,))
+        queued = 0
+        if notify and not stale:
+            cur = await conn.execute(
+                "INSERT INTO alert_deliveries (alert_id, notifier, action, status)"
+                " SELECT %s, d.notifier, 'resolve', 'pending' FROM alert_deliveries d"
+                " WHERE d.alert_id = ANY(%s) AND d.action = 'trigger' AND (d.status = 'sent' OR d.claimed_at IS NOT NULL)"
+                " AND d.notifier = ANY(%s::text[]) GROUP BY d.notifier ON CONFLICT DO NOTHING",
+                (changed[-1], changed, list(notify)))
+            queued = cur.rowcount
+    return changed, queued
+
+
 # ---------------------------------------------------------------- 알림 전송 대기열 (ADR-045, alerts/dispatcher.py)
 # 대기 = status pending·failed 이고 claimed_at 이 비었고 next_attempt_at 이 지남. 보내는 중 = claimed_at 이 있음.
 # 시각은 앱이 넘긴다(now) — 시험이 시간을 정할 수 있게.
@@ -813,14 +884,26 @@ async def due_notifiers(now: datetime) -> list[str]:
 async def claim_delivery(notifier: str, now: datetime) -> dict[str, Any] | None:
     """한 행을 잡는다 — 덜 실패한 것·심각한 것·오래 기다린 것부터. 다른 쪽이 잡고 있는 행은 건너뛴다(SKIP LOCKED)."""
     return await db.fetch_one(
-        f"WITH pick AS (SELECT d.alert_id, d.notifier FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id"
+        f"WITH pick AS (SELECT d.alert_id, d.notifier, d.action FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id"
         f" WHERE d.notifier = %s AND {_DUE}"
         # 덜 실패한 것부터 — 받는 곳이 계속 거절하는 알림 하나가 매번 먼저 잡혀 다른 알림의 차례를 막지 않게
         " ORDER BY d.attempts, CASE a.severity WHEN 'critical' THEN 4 WHEN 'error' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END DESC,"
-        " d.next_attempt_at, d.alert_id LIMIT 1 FOR UPDATE OF d SKIP LOCKED)"
+        # 같은 알림이면 알림(trigger)을 해소(resolve)보다 먼저
+        " d.next_attempt_at, d.alert_id, d.action DESC LIMIT 1 FOR UPDATE OF d SKIP LOCKED)"
         " UPDATE alert_deliveries d SET claimed_at = clock_timestamp() FROM pick, alerts a"
-        " WHERE d.alert_id = pick.alert_id AND d.notifier = pick.notifier AND a.id = d.alert_id"
-        " RETURNING d.alert_id, d.notifier, d.attempts, d.claimed_at, a.severity, a.payload", (notifier, now))
+        " WHERE d.alert_id = pick.alert_id AND d.notifier = pick.notifier AND d.action = pick.action AND a.id = d.alert_id"
+        " RETURNING d.alert_id, d.notifier, d.action, d.attempts, d.claimed_at, a.severity, a.payload,"
+        " a.status AS alert_status, a.resolved_at, a.auto_resolved,"
+        # 해소 통지만 (B-35 2단계, dispatcher._stale): 같은 대상에 더 새 알림이 있나(있으면 지난 해소가 새 사고를 닫는다 — 같은
+        # dedup_key), 이 곳으로 이번 문제의 알림이 실제로 전해졌나(같이 자동 해결된 알림들 = 같은 resolved_at), 문제의 시작
+        " CASE WHEN d.action = 'resolve' THEN EXISTS (SELECT 1 FROM alerts n WHERE n.rule = a.rule"
+        "   AND n.group_key = a.group_key AND n.id > a.id) END AS newer,"
+        " CASE WHEN d.action = 'resolve' THEN EXISTS (SELECT 1 FROM alert_deliveries t JOIN alerts b ON b.id = t.alert_id"
+        "   WHERE t.notifier = d.notifier AND t.action = 'trigger' AND t.status = 'sent' AND b.rule = a.rule"
+        "   AND b.group_key = a.group_key AND b.auto_resolved AND b.resolved_at = a.resolved_at) END AS delivered,"
+        " CASE WHEN d.action = 'resolve' THEN (SELECT min(b.fired_at) FROM alerts b WHERE b.rule = a.rule"
+        "   AND b.group_key = a.group_key AND b.auto_resolved AND b.resolved_at = a.resolved_at) END AS started_at",
+        (notifier, now))
 
 
 async def finish_delivery(job: dict[str, Any], status: str, error: str | None,
@@ -829,10 +912,11 @@ async def finish_delivery(job: dict[str, Any], status: str, error: str | None,
     row = await db.fetch_one(
         "UPDATE alert_deliveries SET status = %s, last_error = %s, attempts = attempts + %s,"
         " next_attempt_at = COALESCE(%s, next_attempt_at), sent_at = CASE WHEN %s = 'sent' THEN now() ELSE sent_at END,"
-        " claimed_at = NULL, updated_at = now() WHERE alert_id = %s AND notifier = %s AND claimed_at = %s RETURNING alert_id",
+        " claimed_at = NULL, updated_at = now() WHERE alert_id = %s AND notifier = %s AND action = %s AND claimed_at = %s"
+        " RETURNING alert_id",
         # 오류 문구는 받는 쪽 응답에서 온다 — NUL 하나로 결과를 못 써 같은 행을 끝없이 다시 잡지 않게
         (status, _printable(error, 1000) if error else None, tried, next_attempt_at, status, job["alert_id"], job["notifier"],
-         job["claimed_at"]))
+         job.get("action", "trigger"), job["claimed_at"]))
     if row is None:
         log.warning("알림 #%s → %s: 이미 풀린 행의 결과라 버립니다", job["alert_id"], job["notifier"])
     return row is not None
@@ -866,8 +950,9 @@ async def release_delivery_claims(now: datetime, error: str, max_attempts: int,
 
 async def unclaim_delivery(job: dict[str, Any]) -> None:
     """잡은 행을 시도 없이 되돌린다 (보내기 전·결과를 쓰다 실패했을 때)."""
-    await db.fetch_one("UPDATE alert_deliveries SET claimed_at = NULL WHERE alert_id = %s AND notifier = %s"
-                       " AND claimed_at = %s RETURNING alert_id", (job["alert_id"], job["notifier"], job["claimed_at"]))
+    await db.fetch_one("UPDATE alert_deliveries SET claimed_at = NULL WHERE alert_id = %s AND notifier = %s AND action = %s"
+                       " AND claimed_at = %s RETURNING alert_id",
+                       (job["alert_id"], job["notifier"], job.get("action", "trigger"), job["claimed_at"]))
 
 
 async def defer_due_deliveries(notifier: str, error: str, now: datetime, until: datetime) -> int:
@@ -883,7 +968,9 @@ async def expire_stale_deliveries(fired_before: datetime, error: str) -> int:
     async with db.pool().connection() as conn:
         cur = await conn.execute(
             "UPDATE alert_deliveries d SET status = 'gave_up', last_error = %s, updated_at = now() FROM alerts a"
-            " WHERE a.id = d.alert_id AND d.status IN ('pending', 'failed') AND d.claimed_at IS NULL AND a.fired_at < %s",
+            # 해소 통지는 넣은 시각으로 — 이틀 끊겼던 PC 의 해소 통지가 넣자마자 버려지지 않게
+            " WHERE a.id = d.alert_id AND d.status IN ('pending', 'failed') AND d.claimed_at IS NULL"
+            " AND (CASE WHEN d.action = 'resolve' THEN d.queued_at ELSE a.fired_at END) < %s",
             (error, fired_before))
         return cur.rowcount
 
@@ -917,11 +1004,11 @@ async def count_gave_up(since: datetime) -> int:
 
 _ALERT_COLUMNS = (
     "a.id, a.fired_at, a.rule, a.severity, a.group_key, a.event_count, a.first_event_at, a.last_event_at,"
-    " a.status, a.acked_by, a.acked_at, a.resolved_by, a.resolved_at, a.silence_id,"
+    " a.status, a.acked_by, a.acked_at, a.resolved_by, a.resolved_at, a.auto_resolved, a.silence_id,"
     " (SELECT count(*) FROM alert_notes n WHERE n.alert_id = a.id AND n.action = 'note') AS note_count,"
-    " (SELECT COALESCE(json_agg(json_build_object('notifier', d.notifier, 'status', d.status,"
+    " (SELECT COALESCE(json_agg(json_build_object('notifier', d.notifier, 'action', d.action, 'status', d.status,"
     "        'attempts', d.attempts, 'last_error', d.last_error, 'sent_at', d.sent_at,"
-    "        'claimed_at', d.claimed_at, 'next_attempt_at', d.next_attempt_at) ORDER BY d.notifier), '[]')"
+    "        'claimed_at', d.claimed_at, 'next_attempt_at', d.next_attempt_at) ORDER BY d.notifier, d.action DESC), '[]')"
     "    FROM alert_deliveries d WHERE d.alert_id = a.id) AS deliveries"
 )
 
@@ -994,10 +1081,11 @@ async def alert_notes_for(ids: list[int]) -> dict[int, list[dict]]:
 # 다시 열기는 확인함에서도 된다 — 누구나 할 수 있는 '확인'으로 알림을 대기열에서 치운 경우 담당자가 되돌릴 수 있게
 _HANDLE_SQL = {
     "ack": ("status = 'acked', acked_by = %(actor)s, acked_at = now()", "status = 'open'"),
-    "resolve": (("status = 'resolved', resolved_by = %(actor)s, resolved_at = now(),"
+    "resolve": (("status = 'resolved', resolved_by = %(actor)s, resolved_at = now(), auto_resolved = false,"
                  " acked_by = COALESCE(acked_by, %(actor)s), acked_at = COALESCE(acked_at, now())"),
                 "status <> 'resolved'"),
-    "reopen": ("status = 'open', acked_by = NULL, acked_at = NULL, resolved_by = NULL, resolved_at = NULL",
+    "reopen": (("status = 'open', acked_by = NULL, acked_at = NULL, resolved_by = NULL, resolved_at = NULL,"
+                " auto_resolved = false"),
                "status <> 'open'"),
 }
 
@@ -1301,14 +1389,16 @@ async def report_alert_summary(start: datetime, end: datetime) -> dict[str, Any]
         " LIMIT 10",
         (end,),
     )
+    # 해결까지 걸린 시간은 사람이 해결한 것만 — 자동 해결(B-35 2단계)은 조건이 풀린 시각이라 대응 시간이 아니다
     resolved = await db.fetch_one(
-        "SELECT count(*) AS n, percentile_cont(0.5) WITHIN GROUP"
-        " (ORDER BY extract(epoch FROM resolved_at - fired_at)) AS median_sec"
+        "SELECT count(*) AS n, count(*) FILTER (WHERE auto_resolved) AS auto, percentile_cont(0.5) WITHIN GROUP"
+        " (ORDER BY extract(epoch FROM resolved_at - fired_at)) FILTER (WHERE NOT auto_resolved) AS median_sec"
         " FROM alerts WHERE resolved_at >= %s AND resolved_at < %s",
         (start, end),
     )
     return {"fired": fired, "open_by_severity": open_by_severity, "oldest_unresolved": oldest,
-            "resolved_in_period": resolved["n"], "median_resolve_sec": resolved["median_sec"]}
+            "resolved_in_period": resolved["n"], "auto_resolved_in_period": resolved["auto"],
+            "median_resolve_sec": resolved["median_sec"]}
 
 
 _REPORT_LIST_COLUMNS = (

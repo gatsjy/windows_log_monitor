@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from ..config import display_zone, settings
 SEVERITY_LABELS = {"critical": "심각", "error": "오류", "warning": "경고", "info": "정보"}
 # 심각도 색: 메일 왼쪽 막대와 메신저(Slack 색 막대·두레이·잔디)가 같은 색을 쓴다
 SEVERITY_COLORS = {"critical": "#d03b3b", "error": "#ec835a", "warning": "#fab219", "info": "#2a78d6"}
+RESOLVED_COLOR = "#2f9e5b"   # 해소 통지 (B-35 2단계)
 LEVEL_LABELS = {1: "심각", 2: "오류", 3: "경고", 4: "정보", 5: "상세"}
 
 
@@ -62,17 +64,24 @@ class AlertMessage:
     previous_fired_at: datetime | None = None
     since_previous: int = 0
     recurred: bool = False
+    # 해소 통지 (B-35 2단계): trigger = 알림, resolve = 조건이 풀려 자동으로 해결했다는 통지 (resolved_at = 해결 시각)
+    event_action: str = "trigger"
+    resolved_at: datetime | None = None
+    started_at: datetime | None = None   # 해소 통지: 함께 자동 해결된 알림 중 가장 이른 발생 (문제가 얼마나 갔나)
 
     # ------------------------------------------------------------ 직렬화
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        if self.event_action == "trigger":   # 저장되는 payload 는 늘 알림 — 예전과 같게
+            for key in ("event_action", "resolved_at", "started_at"):
+                data.pop(key)
         if not self.distinct_field:   # 건수 규칙의 본문(웹훅 json·저장된 payload)은 예전과 같게
             for key in ("distinct_field", "distinct_min", "distinct_count", "distinct_values"):
                 data.pop(key)
         if self.previous_id is None:   # 처음 알림의 본문도 예전과 같게
             for key in ("previous_id", "previous_fired_at", "since_previous", "recurred"):
                 data.pop(key)
-        for key in ("fired_at", "first_event_at", "last_event_at", "previous_fired_at"):
+        for key in ("fired_at", "first_event_at", "last_event_at", "previous_fired_at", "resolved_at", "started_at"):
             if key in data:
                 data[key] = data[key].isoformat() if data[key] else None
         return data
@@ -80,7 +89,7 @@ class AlertMessage:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AlertMessage:
         values = dict(data)
-        for key in ("fired_at", "first_event_at", "last_event_at", "previous_fired_at"):
+        for key in ("fired_at", "first_event_at", "last_event_at", "previous_fired_at", "resolved_at", "started_at"):
             if values.get(key):
                 values[key] = datetime.fromisoformat(values[key])
         known = cls.__dataclass_fields__
@@ -91,14 +100,34 @@ class AlertMessage:
     def severity_label(self) -> str:
         return SEVERITY_LABELS.get(self.severity, self.severity)
 
+    @property
+    def resolved(self) -> bool:
+        return self.event_action == "resolve"
+
+    @property
+    def dedup_key(self) -> str:
+        """같은 규칙·대상이면 같은 값 — 사내 사고관리·SMS 가 알림(trigger)으로 연 것을 해소(resolve)로 닫게 (B-35 2단계).
+        규칙 이름이 재알림 간격의 키인 것과 같다: 이름을 바꾸면 다른 문제로 본다."""
+        return hashlib.sha256(f"{self.rule}\x1f{self.group_key}".encode()).hexdigest()[:32]
+
+    @property
+    def color(self) -> str:
+        return RESOLVED_COLOR if self.resolved else SEVERITY_COLORS.get(self.severity, "#898781")
+
     def title(self) -> str:
         target = f" · {self.group_key}" if self.group_key else ""
-        prefix = "[테스트] " if self.test else ""
+        prefix = "[테스트] " if self.test else "[해소] " if self.resolved else ""
         return f"{prefix}[{self.severity_label}] {self.rule}{target}"
 
     def summary(self) -> str:
         if self.test:
             return "알림 대상 연결 확인용 테스트 메시지입니다."
+        if self.resolved:
+            if self.kind == "agent_silent":
+                return f"{self.group_key} 에서 로그/하트비트가 다시 들어옵니다 — 자동으로 해결했습니다 ({local(self.resolved_at)})"
+            target = f"{self.group_key} 에서 " if self.group_key else ""
+            return (f"{target}최근 {_window_text(self.window_sec)} 동안 조건에 맞는 이벤트가 기준({self.threshold:,}건) 아래로 "
+                    f"내려가 자동으로 해결했습니다 ({local(self.resolved_at)})")
         if self.kind in ("config", "system"):   # 내장 알림 (ADR-043·045): 설명 첫 줄이 요약, 나머지가 내용
             return self.description.split("\n", 1)[0]
         if self.kind == "agent_silent":
@@ -139,10 +168,22 @@ class AlertMessage:
         return (f"지연 수신분 포함 — 발생 시각 {local(self.first_event_at)} ~ {local(self.last_event_at)}"
                 " (밀린 로그를 한꺼번에 받았거나 PC 시계가 틀렸을 수 있습니다)")
 
+    def resolved_line(self) -> str:
+        """해소 통지: 어느 알림이 언제부터 언제까지였나."""
+        if not self.resolved:
+            return ""
+        number = f"알림 #{self.alert_id} " if self.alert_id else "알림 "
+        start = min(self.started_at, self.fired_at) if self.started_at else self.fired_at
+        first = "처음 알림 " if start < self.fired_at else ""   # 재알림 간격마다 다시 알렸으면 그 처음부터
+        lasted = _lasted(start, self.resolved_at)
+        return f"{number}— {first}{local(start)} 발생 → {local(self.resolved_at)} 해결{f' ({lasted})' if lasted else ''}"
+
     @property
     def detail(self) -> str:
         """요약 아래에 붙는 설명. 설정 변경 알림은 첫 줄(요약)을 뺀 변경 목록.
         앞 알림과의 관계·지연 수신 줄을 앞에 붙인다 — 메일·메신저 형식이 모두 이것을 쓴다."""
+        if self.resolved:
+            return self.resolved_line()
         if self.kind in ("config", "system"):
             return self.description.split("\n", 1)[1] if "\n" in self.description else ""
         return "\n".join(line for line in (self.lifecycle_line(), self.delayed_line(), self.description) if line)
@@ -156,9 +197,11 @@ class AlertMessage:
         if self.tags:
             lines += ["", "태그: " + ", ".join(self.tags)]
         lines += ["", f"발생 시각: {local(self.fired_at)}"]
+        if self.resolved_at:
+            lines.append(f"해소 시각: {local(self.resolved_at)}")
         if self.first_event_at:
             lines.append(f"이벤트 시각: {local(self.first_event_at)} ~ {local(self.last_event_at)}")
-        if self.samples:
+        if self.samples and not self.resolved:
             lines += ["", "최근 이벤트:"]
             for s in self.samples:
                 head = f"- {local(_dt(s.get('ts')))} [{LEVEL_LABELS.get(s.get('level'), s.get('level'))}] {s.get('host')}"
@@ -172,6 +215,7 @@ class AlertMessage:
 
     def html(self) -> str:
         e = html.escape
+        samples = [] if self.resolved else self.samples   # 해소 통지에 알림 때의 이벤트를 다시 붙이지 않는다
         rows = "".join(
             "<tr>"
             f"<td style='padding:4px 8px;color:#52514e;white-space:nowrap'>{e(local(_dt(s.get('ts'))))}</td>"
@@ -180,7 +224,7 @@ class AlertMessage:
             f"<td style='padding:4px 8px;white-space:nowrap'>{e(' '.join(str(x) for x in (s.get('channel'), s.get('event_id')) if x))}</td>"
             f"<td style='padding:4px 8px'>{e((s.get('message') or '').split(chr(10), 1)[0][:200])}</td>"
             "</tr>"
-            for s in self.samples
+            for s in samples
         )
         table = (f"<table style='border-collapse:collapse;font-size:13px;margin-top:8px'>{rows}</table>"
                  if rows else "")
@@ -193,8 +237,9 @@ class AlertMessage:
             desc += f"<p style='font-size:12px;color:#52514e'>태그: {e(', '.join(self.tags))}</p>"
         return (
             "<div style='font-family:system-ui,-apple-system,\"Malgun Gothic\",sans-serif;color:#0b0b0b;max-width:760px'>"
-            f"<div style='border-left:4px solid {SEVERITY_COLORS.get(self.severity, '#898781')};padding:4px 0 4px 12px'>"
-            f"<div style='font-size:12px;color:#52514e'>{e(self.severity_label)} · {e(local(self.fired_at))}</div>"
+            f"<div style='border-left:4px solid {self.color};padding:4px 0 4px 12px'>"
+            f"<div style='font-size:12px;color:#52514e'>{e(self.severity_label)} · "
+            f"{e(local(self.resolved_at if self.resolved else self.fired_at))}</div>"
             f"<div style='font-size:17px;font-weight:600'>{e(self.title())}</div></div>"
             f"<p>{e(self.summary())}</p>{desc}{table}{link}"
             "<p style='font-size:12px;color:#898781'>— Log Monitor</p></div>"
@@ -216,6 +261,16 @@ class Notice:
     def plain(self) -> str:
         body = self.text or "\n".join([self.title, "", *self.lines])
         return f"{body}\n\n자세히 보기: {self.link}" if self.link and self.link not in body else body
+
+
+def _lasted(start: datetime | None, end: datetime | None) -> str:
+    if not start or not end or end < start:
+        return ""
+    minutes = int((end - start).total_seconds() // 60)
+    if minutes < 60:
+        return f"{minutes}분"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}시간 {minutes}분" if hours < 48 else f"{hours // 24}일 {hours % 24}시간"
 
 
 def _dt(value: Any) -> datetime | None:

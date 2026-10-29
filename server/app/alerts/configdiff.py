@@ -14,6 +14,7 @@ from .rules import SEVERITIES, AlertConfig, Rule
 
 # 무음이 지금부터 이보다 오래 덮으면(또는 모든 규칙·모든 대상이면) 넓은 무음으로 알린다
 WIDE_SILENCE = timedelta(hours=24)
+RESOLVE_LABELS = {"manual": "사람이 해결", "auto": "조건이 풀리면 자동 해결"}
 
 
 def rule_key(rule: Rule) -> str:
@@ -48,6 +49,10 @@ def _rule_changes(old: Rule, new: Rule) -> list[tuple[str, str, bool]]:
         lower = _rank(new.severity) > _rank(old.severity)
         text = f"심각도 {SEVERITY_LABELS.get(old.severity, old.severity)} → {SEVERITY_LABELS.get(new.severity, new.severity)}"
         out.append(("severity", text, lower))
+    if old.resolve != new.resolve:
+        # 사람이 보지 않고 '해결됨'이 된다 — 보안 규칙에 auto 를 달면 보고서에서 사라지므로 약화로 알린다
+        out.append(("resolve", f"해결 방식 {RESOLVE_LABELS[old.resolve]} → {RESOLVE_LABELS[new.resolve]}",
+                    new.resolve == "auto"))
     removed = [n for n in old.notify if n not in new.notify]
     added = [n for n in new.notify if n not in old.notify]
     if removed:

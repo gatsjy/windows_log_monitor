@@ -171,6 +171,9 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - 테스트에서는 `WLM_REPORT_SCHEDULER=off`(conftest)라 정기 실행이 돌지 않는다. 정기 실행 시험은 `scheduler.tick(now)` 을 직접 부른다.
 - 표시 시간대는 `config.display_zone()` 으로 얻는다(`ZoneInfo(settings.display_tz)` 를 직접 부르지 않는다 — 이름이 틀리면 UTC 로).
 - 점검 보고서 `payload` 는 고칠 수 없으므로 렌더러(`reports/render.py`)는 예전 형식도 그려야 한다. 전송 기록(`deliveries`)은 덮어쓰지 말고 `repository.add_report_deliveries` 로 덧붙인다.
+- **자동 해결 (B-35 2단계):** `alert_deliveries` 의 키는 `(alert_id, notifier, action)` 이다(action = trigger·resolve, 마이그레이션 019). 행을 고치는 새 SQL 은 action 까지 조건에 넣는다.
+  자동 해결은 `resolve: auto` 규칙·끊김 규칙만, `repository.auto_resolve` 한 트랜잭션(상태·처리 기록·못 보낸 알림 건너뜀 → 해소 통지 순서). 사람이 다시 연(reopen 기록) 알림은 건드리지 않는다.
+  - 해소 통지는 넣을 때가 아니라 **보낼 때** 다시 본다(`dispatcher._stale`: 다시 열림·사람이 해결·같은 대상의 새 알림·그 곳에 알림이 전해지지 않음). 같은 dedup_key 라 늦은 해소가 새 사고를 닫았다(검토에서 재현).
 - 무음은 행을 지우지 않는다. 해제 = `ends_at` 을 앞당김(시작 전이면 길이 0). 상태(적용 중·예정·끝남)는 `routers/alerts._silence_state` 가 정한다.
 - 수집 포트(8001·8002·8003)로는 `/api/ingest`·`/healthz` 만 열린다(`main.INGEST_PORT_PATHS`·`INGEST_LISTEN_PORTS`). 에이전트용 새 경로가 필요하면 거기에 추가.
 - **TLS (ADR-036):**

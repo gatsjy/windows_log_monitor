@@ -18,12 +18,13 @@ const DELIVERY = {
 
 // 처리 상태 (server: alerts.status) — 확인은 알림을 볼 수 있으면 누구나, 해결·다시 열기·무음은 alerts.handle
 export const ALERT_STATUS = { open: '처리 안 됨', acked: '확인함', resolved: '해결됨' };
-const NOTE_ACTIONS = { note: '메모', ack: '확인', resolve: '해결', reopen: '다시 열기' };
+const NOTE_ACTIONS = { note: '메모', ack: '확인', resolve: '해결', reopen: '다시 열기', auto_resolve: '자동 해결' };
 export const SILENCE_DURATIONS = [[3600, '1시간'], [4 * 3600, '4시간'], [86400, '하루'], [3 * 86400, '사흘']];
 
 export function statusChip(a) {
-  const who = a.status === 'resolved' ? a.resolved_by : a.status === 'acked' ? a.acked_by : '';
-  return html`<span class="ast ${a.status}" title="${who ? `${who} · ${fmtTime(a.status === 'resolved' ? a.resolved_at : a.acked_at)}` : ''}">${ALERT_STATUS[a.status] ?? a.status}</span>${
+  const auto = a.status === 'resolved' && a.auto_resolved;   // 조건이 풀려 엔진이 해결 (B-35 2단계)
+  const who = auto ? '조건이 풀려 자동으로' : a.status === 'resolved' ? a.resolved_by : a.status === 'acked' ? a.acked_by : '';
+  return html`<span class="ast ${a.status}" title="${who ? `${who} · ${fmtTime(a.status === 'resolved' ? a.resolved_at : a.acked_at)}` : ''}">${ALERT_STATUS[a.status] ?? a.status}${auto ? ' (자동)' : ''}</span>${
     a.silence_id ? html` <span class="ast silenced" title="무음 #${a.silence_id} — 보내지 않음">무음</span>` : ''}`;
 }
 
@@ -53,7 +54,8 @@ export function deliveryChips(deliveries = []) {
   return html`${deliveries.map((d) => {
     const [mark, label] = d.claimed_at ? ['↗', '보내는 중'] : DELIVERY[d.status] ?? ['?', d.status];
     const next = d.status === 'failed' && d.next_attempt_at ? ` · 다음 시도 ${fmtTime(d.next_attempt_at, { date: false })}` : '';
-    return html`<span class="dlv ${d.status}" title="${label}${next}${d.last_error ? `: ${d.last_error}` : ''}">${mark} ${d.notifier}</span>`;
+    const what = d.action === 'resolve' ? '해소 통지 ' : '';   // 자동 해결 뒤 같은 곳에 보낸 해소 통지 (B-35 2단계)
+    return html`<span class="dlv ${d.status}" title="${what}${label}${next}${d.last_error ? `: ${d.last_error}` : ''}">${mark} ${d.notifier}${d.action === 'resolve' ? ' · 해소' : ''}</span>`;
   })}`;
 }
 
@@ -137,7 +139,8 @@ export async function openAlert(id, { onChange } = {}) {
 
       <div class="handle-box">
         <div class="handle-state">${statusChip(alert)}
-          <span class="muted">${alert.status === 'resolved' ? `${alert.resolved_by} 님이 ${fmtRelative(alert.resolved_at)} 해결`
+          <span class="muted">${alert.status === 'resolved' && alert.auto_resolved ? `${fmtRelative(alert.resolved_at)} 조건이 풀려 자동으로 해결`
+            : alert.status === 'resolved' ? `${alert.resolved_by} 님이 ${fmtRelative(alert.resolved_at)} 해결`
             : alert.status === 'acked' ? `${alert.acked_by} 님이 ${fmtRelative(alert.acked_at)} 확인` : '아직 아무도 확인하지 않았습니다'}</span></div>
         <div class="toolbar">
           ${alert.status === 'open' ? html`<button class="btn" data-act="ack" title="보고 있다는 기록을 남깁니다">확인</button>` : ''}
@@ -181,7 +184,7 @@ export async function openAlert(id, { onChange } = {}) {
       <div class="table-wrap"><table class="table">
         <thead><tr><th>알림 대상</th><th>상태</th><th class="r">시도</th><th>전송 시각</th><th>마지막 오류</th></tr></thead>
         <tbody>${alert.deliveries.map((d) => html`<tr>
-          <td class="nowrap"><b>${d.notifier}</b></td>
+          <td class="nowrap"><b>${d.notifier}</b>${d.action === 'resolve' ? html` <span class="muted">해소 통지</span>` : ''}</td>
           <td class="nowrap">${deliveryChips([d])}</td>
           <td class="r num">${d.attempts}</td>
           <td class="nowrap muted">${d.sent_at ? fmtTime(d.sent_at) : '–'}</td>
