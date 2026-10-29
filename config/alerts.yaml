@@ -109,6 +109,49 @@ rules:
     tags: [MITRE T1110.001, MITRE T1021.001, ISMS 2.11.3]
     notify: [운영팀]
 
+  # 서로 다른 값 수 규칙 (ADR-041): 건수만으로는 공용 PC·교대 근무의 오타와 공격을 가를 수 없다
+  - name: 패스워드 스프레이
+    sid: 1000021
+    group: 계정·인증 공격
+    description: 한 IP 가 짧은 시간에 서로 다른 계정 여러 개로 로그온을 시도 — 계정마다 한두 번씩이라 잠금(4740)을 피한다
+    match: { event_id: "4625,4771" }
+    group_by: ip
+    window: 10m
+    threshold: 10
+    distinct: { field: user, min: 10 }
+    cooldown: 1h
+    severity: error
+    tags: [MITRE T1110.003, ISMS 2.11.3]
+    notify: [운영팀]
+
+  - name: 없는 계정으로 로그온 시도
+    sid: 1000022
+    group: 계정·인증 공격
+    description: 한 IP 가 존재하지 않는 계정 이름 여러 개로 로그온 (SubStatus 0xc0000064 — 계정 이름 추측)
+    match: { event_id: "4625", f.EventData.SubStatus: "0xc0000064" }
+    group_by: ip
+    window: 5m
+    threshold: 4
+    distinct: { field: user, min: 4 }
+    cooldown: 1h
+    severity: warning
+    tags: [MITRE T1110, MITRE T1087, ISMS 2.11.3]
+    notify: [운영팀]
+
+  - name: 한 계정이 여러 서버에 원격 데스크톱
+    sid: 1000023
+    group: 계정·인증 공격
+    description: "한 계정이 30분 안에 서로 다른 PC 3대 이상에 원격 데스크톱(로그온 유형 10)으로 로그온 — 횡적 이동(랜섬웨어 전 단계) 의심. 관리자 작업이면 검색 문장의 -user:이름 으로 뺀다"
+    match: { event_id: "4624", f.EventData.LogonType: "10" }
+    group_by: user
+    window: 30m
+    threshold: 3
+    distinct: { field: host, min: 3 }
+    cooldown: 2h
+    severity: warning
+    tags: [MITRE T1021.001, ISMS 2.11.3]
+    notify: [운영팀]
+
   - name: 계정 잠금
     sid: 1000008
     group: 계정·인증 공격

@@ -11,6 +11,9 @@ const UNITS = [['s', '초', 1], ['m', '분', 60], ['h', '시간', 3600], ['d', '
 const GROUP_BY = [['host', 'PC'], ['ip', '출발지 IP'], ['user', '사용자'], ['category', '분류'], ['event_id', '이벤트 ID'],
   ['channel', '채널'], ['none', '전체 합산']];
 const TRACK = { host: 'by_host', ip: 'by_src', user: 'by_user', category: 'by_category', event_id: 'by_event', channel: 'by_channel', none: 'none' };
+// 서로 다른 값 수 (ADR-041): 묶음마다 이 필드의 서로 다른 값이 N개 이상일 때만 — 패스워드 스프레이, 한 계정의 여러 PC 접속
+const DISTINCT = [['user', '사용자'], ['host', 'PC'], ['ip', '출발지 IP'], ['event_id', '이벤트 ID']];
+export const distinctText = (d) => (d?.field ? `서로 다른 ${GROUP_LABELS[d.field] ?? d.field.replace(/^f\./, '')} ${fmtNum(d.min)}개 이상` : '');
 const SEV_ORDER = ['critical', 'error', 'warning', 'info'];
 const MATCH_FIELDS = ['category', 'level', 'event_id', 'host', 'user', 'ip', 'source', 'channel', 'provider', 'q', 'query'];
 
@@ -37,6 +40,7 @@ export function signature(r) {
         : k === 'query' ? `query:${quote(v)}` : `${k}:${v}`);
     });
     parts.push(`threshold:type both, track ${TRACK[r.group_by] || `by_${r.group_by.replace(/^f\./, '')}`}, count ${r.threshold}, seconds ${r.window_sec}`);
+    if (r.distinct?.field) parts.push(`distinct:${TRACK[r.distinct.field] || `by_${r.distinct.field.replace(/^f\./, '')}`} ${r.distinct.min}`);
     parts.push(`cooldown:${r.cooldown_sec}`);
   }
   if (r.notify.length) parts.push(`notify:${quote(r.notify.join(','))}`);
@@ -54,7 +58,8 @@ export function sentence(r) {
     return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'}에서 ${fmtSec(r.silent_for_sec)} 이상 로그가 오지 않으면 ${to} [${sev}] 알림.`;
   }
   const by = r.group_by === 'none' ? '전체를 합산해서' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}마다 따로 세어`;
-  return `${matchText(r.match)} 로그가 ${fmtSec(r.window_sec)} 동안 ${fmtNum(r.threshold)}건 이상이면, ${by} ${to} [${sev}] 알림. `
+  const distinct = r.distinct?.field ? `이고 ${distinctText(r.distinct)}` : '';
+  return `${matchText(r.match)} 로그가 ${fmtSec(r.window_sec)} 동안 ${fmtNum(r.threshold)}건 이상${distinct}이면, ${by} ${to} [${sev}] 알림. `
     + `같은 대상은 ${fmtSec(r.cooldown_sec)} 동안 다시 알리지 않음.`;
 }
 function fmtSec(sec) {
@@ -81,6 +86,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
     window_sec: rule?.window_sec ?? 300, threshold: rule?.threshold ?? 5, cooldown_sec: rule?.cooldown_sec ?? 1800,
     silent_for_sec: rule?.silent_for_sec ?? 600, hosts: [...(rule?.hosts ?? [])],
     notify: [...(rule?.notify ?? (config.notifiers[0] ? [config.notifiers[0].name] : []))], tags: [...(rule?.tags ?? [])],
+    distinct: rule?.distinct ? { ...rule.distinct } : null,
   };
   const body = openDrawer({ title: isNew ? '새 알림 규칙' : '알림 규칙 수정', subtitle: isNew ? '규칙 번호(SID)는 저장할 때 자동으로 붙습니다' : `SID ${r.sid ?? '–'} · ${r.group || '기타'}` });
   body.innerHTML = '<div class="skeleton"></div>';
@@ -172,6 +178,10 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
         <div class="sentence-row"><select class="select" data-k="group_by">${GROUP_BY.map(([k, l]) => html`<option value="${k}" ${r.group_by === k ? 'selected' : ''}>${l}</option>`)}
           ${GROUP_BY.some(([k]) => k === r.group_by) ? '' : html`<option value="${r.group_by}" selected>${r.group_by}</option>`}</select>
           <span>${r.group_by === 'none' ? '(모든 로그를 합쳐서 셈)' : '마다 따로 세고 따로 알림'}</span></div>
+        <div class="sentence-row"><span>그중 서로 다른</span>
+          <select class="select" data-dfield><option value="">(따지지 않음)</option>${DISTINCT.filter(([k]) => k !== r.group_by).map(([k, l]) => html`<option value="${k}" ${r.distinct?.field === k ? 'selected' : ''}>${l}</option>`)}</select>
+          ${r.distinct?.field ? html`<input class="input num" type="number" min="2" data-dmin value="${r.distinct.min}" style="width:80px"><span>개 이상일 때만</span>`
+            : html`<span class="muted" style="font-size:12.5px">예) 한 IP 에서 서로 다른 계정 10개 = 패스워드 스프레이</span>`}</div>
         <div class="sentence-row"><span>같은 대상은</span>${unitInput('cooldown_sec', r.cooldown_sec)}<span>동안 다시 알리지 않음</span></div>
       </section>`}
 
@@ -243,6 +253,14 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
       r[k] = k === 'threshold' ? Math.max(1, Number(el.value) || 1) : k === 'sid' ? (el.value.trim() ? Number(el.value) : null) : el.value;
       if (k === 'group_by') render(); else refresh();
     }));
+    body.querySelector('[data-dfield]')?.addEventListener('change', (e) => {
+      r.distinct = e.target.value ? { field: e.target.value, min: r.distinct?.min ?? 10 } : null;
+      render();
+    });
+    body.querySelector('[data-dmin]')?.addEventListener('input', (e) => {
+      r.distinct.min = Math.max(2, Number(e.target.value) || 2);
+      refresh();
+    });
     body.querySelectorAll('[data-num], [data-unit]').forEach((el) => el.addEventListener('input', () => {
       const name = el.dataset.num || el.dataset.unit;
       const n = Math.max(1, Number(body.querySelector(`[data-num="${name}"]`).value) || 1);
@@ -316,7 +334,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
           <div><b class="num">${fmtNum(p.targets)}</b><span>알림 대상(묶음 값)</span></div>
         </div>
         ${p.groups.length ? html`<div class="table-wrap"><table class="table no-stack">
-          <thead><tr><th>${GROUP_BY.find(([k]) => k === r.group_by)?.[1] ?? r.group_by}</th><th class="r">알림</th><th class="r">구간 최대 건수</th></tr></thead>
+          <thead><tr><th>${GROUP_BY.find(([k]) => k === r.group_by)?.[1] ?? r.group_by}</th><th class="r">알림</th><th class="r">${p.distinct ? '구간 최대 서로 다른 수' : '구간 최대 건수'}</th></tr></thead>
           <tbody>${p.groups.map((g) => html`<tr><td>${g.key || '(전체)'}</td><td class="r num">${fmtNum(g.fires)}</td><td class="r num">${fmtNum(g.max)}</td></tr>`)}</tbody>
         </table></div>` : ''}
         ${p.fires > 50 ? html`<p class="hint-box" style="margin-top:8px">하루 ${fmtNum(p.fires)}번은 많습니다. 건수를 올리거나 기간·조건을 좁혀 보세요.</p>` : ''}

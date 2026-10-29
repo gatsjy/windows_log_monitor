@@ -71,7 +71,8 @@ export function ruleSummary(r) {
     return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'} · ${fmtDuration(r.silent_for_sec)} 이상 수신 없음`;
   }
   const group = r.group_by === 'none' ? '전체 합산' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}별`;
-  return `${matchText(r.match)} · ${fmtDuration(r.window_sec)} 동안 ${fmtNum(r.threshold)}건 이상 · ${group} · 재알림 ${fmtDuration(r.cooldown_sec)}`;
+  const distinct = r.distinct?.field ? ` · 서로 다른 ${GROUP_LABELS[r.distinct.field] ?? r.distinct.field.replace(/^f\./, '')} ${fmtNum(r.distinct.min)}개 이상` : '';
+  return `${matchText(r.match)} · ${fmtDuration(r.window_sec)} 동안 ${fmtNum(r.threshold)}건 이상${distinct} · ${group} · 재알림 ${fmtDuration(r.cooldown_sec)}`;
 }
 
 /** 서버가 만든 링크(http://주소/#/events?...)를 현재 화면 기준 해시로 */
@@ -106,7 +107,10 @@ export async function openAlert(id, { onChange } = {}) {
         ${alert.group_key ? html`<span class="muted">· ${alert.group_key}</span>` : ''}</div>
       <p class="ink-2" style="margin:0 0 14px">${p.kind === 'agent_silent'
         ? `${alert.group_key} 에서 ${fmtDuration(p.window_sec)} 이상 로그/하트비트가 들어오지 않았습니다.`
-        : `최근 ${fmtDuration(p.window_sec)} 동안 조건에 맞는 이벤트 ${fmtNum(alert.event_count)}건 (기준 ${fmtNum(p.threshold)}건 이상)`}</p>
+        : p.distinct_field
+          ? `최근 ${fmtDuration(p.window_sec)} 동안 서로 다른 ${GROUP_LABELS[p.distinct_field] ?? p.distinct_field.replace(/^f\./, '')} ${fmtNum(p.distinct_count)}개 (기준 ${fmtNum(p.distinct_min)}개 이상) · 이벤트 ${fmtNum(alert.event_count)}건`
+          : `최근 ${fmtDuration(p.window_sec)} 동안 조건에 맞는 이벤트 ${fmtNum(alert.event_count)}건 (기준 ${fmtNum(p.threshold)}건 이상)`}</p>
+      ${p.distinct_values?.length ? html`<p class="muted" style="margin:-8px 0 14px;font-size:12.5px">${p.distinct_values.join(', ')}${p.distinct_count > p.distinct_values.length ? ` … 외 ${fmtNum(p.distinct_count - p.distinct_values.length)}` : ''}</p>` : ''}
 
       <div class="handle-box">
         <div class="handle-state">${statusChip(alert)}

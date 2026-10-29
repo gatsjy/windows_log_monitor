@@ -62,6 +62,21 @@ def client():
         records = [_record(4625, "RDP-T", LogonType=10, IpAddress="198.51.100.23") for _ in range(10)]
         records += [_record(4625, "LAN-T", LogonType=3, IpAddress="198.51.100.24") for _ in range(10)]
         records += [_record(4732, "ADM-T")]
+        # 서로 다른 값 수 규칙 (ADR-041)
+        records += [_record(4625, "DC-S", TargetUserName=f"user{i}", IpAddress="198.51.100.30") for i in range(10)]  # 스프레이
+        records += [_record(4625, "DC-S", TargetUserName="kim", IpAddress="198.51.100.31") for _ in range(12)]       # 한 계정 반복
+        records += [_record(4625, "DC-S", TargetUserName=f"u{i % 9}", IpAddress="198.51.100.32") for i in range(12)]  # 9개 (경계)
+        records += [_record(4625, "DC-S", TargetUserName="-", SubjectUserName="-", IpAddress="198.51.100.33")
+                    for _ in range(10)]                                                                            # 사용자 없음
+        records += [_record(4625, "DC-S", TargetUserName=f"u{i}", IpAddress="198.51.100.33") for i in range(9)]       # (NULL 은 안 셈)
+        records += [_record(4625, "DC-S", TargetUserName=f"ghost{i}", SubStatus="0xc0000064", IpAddress="198.51.100.40")
+                    for i in range(4)]
+        records += [_record(4625, "DC-S", TargetUserName=f"ghost{i}", SubStatus="0xc0000064", IpAddress="198.51.100.41")
+                    for i in range(3)]
+        records += [_record(4624, host, TargetUserName="kimrdp", LogonType=10, IpAddress="10.0.0.9")
+                    for host in ("SRV-1", "SRV-2", "SRV-3")]
+        records += [_record(4624, host, TargetUserName="parkrdp", LogonType=10, IpAddress="10.0.0.9")
+                    for host in ("SRV-1", "SRV-2", "SRV-2")]
         assert c.post("/api/ingest", json=records, headers=KEY).json()["accepted"] == len(records)
         yield c
 
@@ -76,7 +91,8 @@ def _candidates(client, rule) -> list[dict]:
     from app import repository
 
     f = replace(rule.event_filter(), received_since=datetime.now(UTC) - timedelta(minutes=10))
-    return client.portal.call(repository.alert_candidates, f, rule.group_by, rule.threshold)
+    return client.portal.call(repository.alert_candidates, f, rule.group_by, rule.threshold,
+                              rule.distinct_field, rule.distinct_min)
 
 
 def test_rdp_brute_force_rule_fires_on_real_agent_records(client):
@@ -97,7 +113,7 @@ def test_security_dashboard_rdp_widget(client):
 
 
 def test_search_by_name_and_detail_shows_the_derived_names(client):
-    r = client.get("/api/events", params={"since": "1h", "query": "f.EventData.LogonType:10"}, headers=CSRF)
+    r = client.get("/api/events", params={"since": "1h", "query": "event_id:4625 f.EventData.LogonType:10"}, headers=CSRF)
     items = r.json()["items"]
     assert len(items) == 10 and {i["src_ip"] for i in items} == {"198.51.100.23"}
     detail = client.get(f"/api/events/{items[0]['id']}", headers=CSRF).json()
@@ -105,3 +121,38 @@ def test_search_by_name_and_detail_shows_the_derived_names(client):
     fields = client.get("/api/fields", headers=CSRF).json()
     paths = {f["path"] for f in (fields["items"] if isinstance(fields, dict) else fields)}
     assert "winevtlog.EventData.LogonType" in paths   # 필드 탐색에 이름으로 보인다
+
+
+def test_password_spray_rule_counts_distinct_users(client):
+    rows = _candidates(client, _rule(1000021))
+    # 서로 다른 계정 10개(.30)만 — 한 계정 12번(.31)·9개(.32)·사용자 없는 10건 + 9개(.33, NULL 은 세지 않음)는 아니다
+    assert [(r["key"], r["dn"]) for r in rows] == [("198.51.100.30", 10)]
+    assert rows[0]["dvals"] == sorted(f"user{i}" for i in range(10))
+
+
+def test_unknown_account_rule(client):
+    assert [(r["key"], r["dn"]) for r in _candidates(client, _rule(1000022))] == [("198.51.100.40", 4)]
+
+
+def test_rdp_to_many_servers_rule(client):
+    assert [(r["key"], r["dn"]) for r in _candidates(client, _rule(1000023))] == [("kimrdp", 3)]
+
+
+def test_distinct_rule_fires_with_the_values_in_the_message(client):
+    from app.alerts.engine import engine
+
+    fired = client.portal.call(engine.evaluate, _rule(1000021), datetime.now(UTC))
+    assert len(fired) == 1
+    detail = client.get(f"/api/alerts/{fired[0]}", headers=CSRF).json()
+    payload = detail.get("payload") or detail.get("alert", {}).get("payload")
+    assert payload["distinct_field"] == "user" and payload["distinct_count"] == 10 and len(payload["distinct_values"]) == 10
+
+
+def test_preview_counts_distinct(client):
+    rule = {"name": "스프레이 미리보기", "match": {"event_id": "4625"}, "group_by": "ip", "window_sec": 600, "threshold": 10,
+            "distinct": {"field": "user", "min": 10}, "severity": "error", "notify": []}
+    r = client.post("/api/alerts/rules/preview", json={"rule": rule}, headers=CSRF)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["distinct"] == "user" and [(g["key"], g["max"]) for g in body["groups"]] == [("198.51.100.30", 10)]
+

@@ -67,3 +67,14 @@ def test_emit_quotes_values_that_would_change_type():
 def test_missing_rule_raises():
     with pytest.raises(ruleedit.EditError):
         ruleedit.delete(TEXT, "없는 규칙")
+
+
+def test_distinct_is_written_with_a_number_and_reads_back():
+    from app.alerts.rules import parse_text
+
+    rule = {"name": "스프레이", "match": {"event_id": "4625"}, "group_by": "ip", "window": "10m", "threshold": 10,
+            "distinct": {"field": "user", "min": 10}, "severity": "error", "notify": ["운영팀"]}
+    text = ruleedit.emit_rule(rule)
+    assert "    distinct: { field: user, min: 10 }\n" in text
+    parsed = parse_text("rules:\n" + text).rules[0]
+    assert (parsed.distinct_field, parsed.distinct_min, parsed.group_by) == ("user", 10, "ip")

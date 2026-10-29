@@ -473,21 +473,41 @@ async def fields() -> list[dict]:
 
 # ------------------------------------------------------------------ alerts
 
-async def alert_candidates(f: EventFilter, group_by: str, threshold: int) -> list[dict]:
-    """규칙 조건에 맞는 이벤트를 group_by 로 묶어 threshold 이상인 묶음만."""
+DISTINCT_SAMPLE = 10   # 알림 본문에 보여 줄 서로 다른 값 수
+
+
+def _distinct_parts(distinct_field: str | None, distinct_min: int):
+    """(SELECT 에 더할 조각, 그 인자, HAVING 에 더할 조각, 그 인자). 서로 다른 값 수 규칙이 아니면 빈 조각.
+    count(DISTINCT) 는 NULL 을 세지 않는다 — 값이 없는 이벤트(사용자 없는 로그온 실패 등)는 서로 다른 값으로 치지 않는다(ADR-041)."""
+    if not distinct_field:
+        return sql.SQL(""), [], sql.SQL(""), []
+    expr, expr_params = _field_expr(distinct_field)
+    select = sql.SQL(", count(DISTINCT {e}) AS dn, (array_agg(DISTINCT {e} ORDER BY {e}))[1:%s] AS dvals").format(e=expr)
+    # {e} 가 세 번 — 인자도 세 번
+    select_params = [*expr_params, *expr_params, *expr_params, DISTINCT_SAMPLE]
+    having = sql.SQL(" AND count(DISTINCT {}) >= %s").format(expr)
+    return select, select_params, having, [*expr_params, distinct_min]
+
+
+async def alert_candidates(f: EventFilter, group_by: str, threshold: int,
+                           distinct_field: str | None = None, distinct_min: int = 0) -> list[dict]:
+    """규칙 조건에 맞는 이벤트를 group_by 로 묶어 threshold 이상인 묶음만. distinct_field 면 그 필드의 서로 다른 값도
+    distinct_min 개 이상인 묶음만 (dn = 서로 다른 값 수, dvals = 앞의 값 10개)."""
     if group_by == "none":
         key_expr, key_params = sql.SQL("''"), []
     else:
         key_expr, key_params = _field_expr(group_by)
     where, params = where_clause(f)
+    select, select_params, having, having_params = _distinct_parts(distinct_field, distinct_min)
     query = sql.SQL(
-        "SELECT {} AS key, count(*) AS n, min(ts) AS first_ts, max(ts) AS last_ts"
-        " FROM events WHERE {} GROUP BY 1 HAVING count(*) >= %s ORDER BY n DESC LIMIT 100"
-    ).format(key_expr, where)
-    return await db.fetch_all(query, [*key_params, *params, threshold])
+        "SELECT {} AS key, count(*) AS n, min(ts) AS first_ts, max(ts) AS last_ts{}"
+        " FROM events WHERE {} GROUP BY 1 HAVING count(*) >= %s{} ORDER BY {} DESC LIMIT 100"
+    ).format(key_expr, select, where, having, sql.SQL("dn" if distinct_field else "n"))
+    return await db.fetch_all(query, [*key_params, *select_params, *params, threshold, *having_params])
 
 
-async def rule_preview(f: EventFilter, group_by: str, window_sec: int, threshold: int) -> list[dict]:
+async def rule_preview(f: EventFilter, group_by: str, window_sec: int, threshold: int,
+                       distinct_field: str | None = None, distinct_min: int = 0) -> list[dict]:
     """규칙 미리보기: 조건에 맞는 이벤트를 (묶음 값, window 길이 구간)으로 세어 threshold 이상인 구간만.
     엔진은 30초마다 '최근 window' 를 보지만, 미리보기는 겹치지 않는 구간으로 근사한다."""
     if group_by == "none":
@@ -495,11 +515,17 @@ async def rule_preview(f: EventFilter, group_by: str, window_sec: int, threshold
     else:
         key_expr, key_params = _field_expr(group_by)
     where, params = where_clause(f)
+    if distinct_field:
+        expr, expr_params = _field_expr(distinct_field)
+        extra, extra_params = sql.SQL(", count(DISTINCT {}) AS dn").format(expr), expr_params
+        having, having_params = sql.SQL(" AND count(DISTINCT {}) >= %s").format(expr), [*expr_params, distinct_min]
+    else:
+        extra, extra_params, having, having_params = sql.SQL(""), [], sql.SQL(""), []
     query = sql.SQL(
-        "SELECT {} AS key, floor(extract(epoch FROM received_at) / %s)::bigint AS bucket, count(*) AS n"
-        " FROM events WHERE {} GROUP BY 1, 2 HAVING count(*) >= %s ORDER BY 2 LIMIT 5000"
-    ).format(key_expr, where)
-    return await db.fetch_all(query, [*key_params, window_sec, *params, threshold])
+        "SELECT {} AS key, floor(extract(epoch FROM received_at) / %s)::bigint AS bucket, count(*) AS n{}"
+        " FROM events WHERE {} GROUP BY 1, 2 HAVING count(*) >= %s{} ORDER BY 2 LIMIT 5000"
+    ).format(key_expr, extra, where, having)
+    return await db.fetch_all(query, [*key_params, window_sec, *extra_params, *params, threshold, *having_params])
 
 
 async def last_alert(rule: str, group_key: str) -> dict | None:

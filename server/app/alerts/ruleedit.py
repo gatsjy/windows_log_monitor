@@ -22,7 +22,7 @@ import yaml
 # 파일에 쓰는 키 순서 (사람이 읽기 좋은 순서)
 FIELD_ORDER = (
     "name", "sid", "group", "description", "kind", "enabled", "match", "group_by", "window", "threshold",
-    "cooldown", "silent_for", "hosts", "severity", "tags", "notify",
+    "distinct", "cooldown", "silent_for", "hosts", "severity", "tags", "notify",
 )
 SID_START = 1000001  # Snort 의 로컬 규칙 번호대처럼 100만 번대부터
 
@@ -72,6 +72,8 @@ def emit_rule(rule: dict[str, Any]) -> str:
         prefix = "  - " if not lines else "    "
         if key == "match":
             text = _flow_map(value)
+        elif key == "distinct":   # { field: user, min: 10 } — min 은 숫자로
+            text = "{ " + ", ".join(f"{k}: {_scalar(value[k])}" for k in ("field", "min") if k in value) + " }"
         elif isinstance(value, (list, tuple)):
             text = _flow_list(list(value))
         else:

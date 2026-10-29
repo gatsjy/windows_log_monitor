@@ -123,6 +123,7 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
             "fired": recent.get("n", 0), "last_fired_at": stats["last_fired"].get(r.name),
             "unknown_notify": [n for n in r.notify if n not in known],
             "tags": list(r.tags), "sid": r.sid, "group": r.group,
+            "distinct": {"field": r.distinct_field, "min": r.distinct_min} if r.distinct_field else None,
         })
     # 알림 대상 = 환경설정의 수신 그룹 + 외부 연동
     await engine.load_targets()
@@ -247,6 +248,12 @@ def _clean_rule(raw: dict[str, Any]) -> dict[str, Any]:
             rule["threshold"] = int(raw.get("threshold", 1))
         except (TypeError, ValueError) as exc:
             raise HTTPException(422, "건수는 숫자여야 합니다") from exc
+        distinct = raw.get("distinct") or {}
+        if isinstance(distinct, dict) and str(distinct.get("field") or "").strip():
+            try:
+                rule["distinct"] = {"field": str(distinct["field"]).strip(), "min": int(distinct.get("min") or 0)}
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(422, "서로 다른 값 수는 숫자여야 합니다") from exc
         rule["cooldown"] = _duration_text(raw.get("cooldown_sec", 1800), "재알림 간격")
     rule["severity"] = text("severity") or "warning"
     if str_list("tags"):
@@ -336,7 +343,8 @@ async def preview_rule(body: PreviewBody, admin: User = Depends(require_permissi
     base = replace(rule.event_filter(), received_since=now - timedelta(hours=body.hours), scopes=admin.scopes)
     window_sec = max(1, _seconds(rule.window))
     matched = (await repository.count(base))["current"]
-    rows = await repository.rule_preview(base, rule.group_by, window_sec, rule.threshold)
+    rows = await repository.rule_preview(base, rule.group_by, window_sec, rule.threshold,
+                                         rule.distinct_field, rule.distinct_min)
     step = max(1, math.ceil(_seconds(rule.cooldown) / window_sec))
     groups: dict[str, dict[str, Any]] = {}
     for row in rows:  # 구간 순서대로 — 재알림 간격 안의 구간은 알림 1번으로 친다
@@ -345,10 +353,10 @@ async def preview_rule(body: PreviewBody, admin: User = Depends(require_permissi
         if g["last"] is None or row["bucket"] - g["last"] >= step:
             g["fires"] += 1
             g["last"] = row["bucket"]
-        g["max"] = max(g["max"], row["n"])
+        g["max"] = max(g["max"], row["dn"] if rule.distinct_field else row["n"])
     ranked = sorted(groups.values(), key=lambda g: (-g["fires"], -g["max"]))
     return {
-        "kind": rule.kind, "hours": body.hours, "matched": matched,
+        "kind": rule.kind, "hours": body.hours, "matched": matched, "distinct": rule.distinct_field,
         "fires": sum(g["fires"] for g in ranked), "targets": len(ranked),
         "groups": [{"key": g["key"], "fires": g["fires"], "max": g["max"]} for g in ranked[:10]],
     }

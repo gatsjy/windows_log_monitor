@@ -46,6 +46,10 @@ class Rule:
     group: str = "기타"          # 규칙 묶음 (화면 왼쪽 목록, 묶음 단위로 켜고 끄기)
     # 이 규칙이 감시하는 분류 (match.category 와 match.query 의 category: 를 합친 포함 조건). 조회 범위 판단용 (visibility)
     categories: tuple[str, ...] = ()
+    # 서로 다른 값 수 (ADR-041): group_by 마다 이 필드의 서로 다른 값이 distinct_min 개 이상일 때만 (건수 기준과 함께)
+    #   예) 패스워드 스프레이 = 출발지 IP 마다 서로 다른 계정 10개 이상. 값이 없는(NULL) 이벤트는 세지 않는다
+    distinct_field: str | None = None
+    distinct_min: int = 0
 
     def event_filter(self) -> EventFilter:
         return EventFilter.from_params(self.match, default_since=None)
@@ -138,8 +142,33 @@ def _check_rule(index: int, raw: Any) -> Rule:
     cooldown = _duration(raw.get("cooldown", "30m"), f"{where}.cooldown")
     # 재알림 간격이 집계 구간보다 짧으면 같은 이벤트로 알림이 반복된다
     cooldown = max(cooldown, window)
+    distinct_field, distinct_min = _distinct(raw.get("distinct"), group_by, window, where)
     return Rule(**common, match=match, window=window, threshold=threshold, group_by=group_by, cooldown=cooldown,
-                categories=tuple(checked.categories))
+                categories=tuple(checked.categories), distinct_field=distinct_field, distinct_min=distinct_min)
+
+
+DISTINCT_MAX_WINDOW = timedelta(days=1)   # count(DISTINCT) 는 구간이 길수록 비싸다 — 엔진이 30초마다 다시 센다
+
+
+def _distinct(value: Any, group_by: str, window: timedelta, where: str) -> tuple[str | None, int]:
+    if value is None:
+        return None, 0
+    if not isinstance(value, dict) or set(value) - {"field", "min"}:
+        raise ConfigError(f"{where}.distinct 는 {{field: user, min: 10}} 모양이어야 합니다")
+    field_name = str(value.get("field") or "").strip()
+    if field_name not in COLUMN_EXPR and not (field_name.startswith("f.") and len(field_name) > 2):
+        raise ConfigError(f"{where}.distinct.field 는 {', '.join(COLUMN_EXPR)}, f.<경로> 중 하나")
+    if field_name == group_by:
+        raise ConfigError(f"{where}.distinct.field 가 group_by 와 같으면 늘 1개입니다")
+    try:   # 화면에서 저장하면 조건 값처럼 문자열로 올 수 있다
+        minimum = int(str(value.get("min", "")).strip())
+    except ValueError:
+        minimum = 0
+    if minimum < 2:
+        raise ConfigError(f"{where}.distinct.min 은 2 이상의 정수")
+    if window > DISTINCT_MAX_WINDOW:
+        raise ConfigError(f"{where}: 서로 다른 값 수를 세는 규칙의 window 는 1d 이하")
+    return field_name, minimum
 
 
 def parse(doc: Any) -> AlertConfig:

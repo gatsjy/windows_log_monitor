@@ -283,7 +283,8 @@ export async function mount(root, params, sub) {
   function criteria(r) {
     if (r.kind === 'agent_silent') return `${fmtDuration(r.silent_for_sec)} 이상 수신 없음`;
     const by = r.group_by === 'none' ? '전체 합산' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}별`;
-    return `${fmtDuration(r.window_sec)} 동안 ${fmtNum(r.threshold)}건↑ · ${by}`;
+    const distinct = r.distinct?.field ? ` · 서로 다른 ${GROUP_LABELS[r.distinct.field] ?? r.distinct.field} ${fmtNum(r.distinct.min)}↑` : '';
+    return `${fmtDuration(r.window_sec)} 동안 ${fmtNum(r.threshold)}건↑${distinct} · ${by}`;
   }
 
   function renderRules() {

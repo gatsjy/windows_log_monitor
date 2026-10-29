@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 import psycopg
 import pytest
@@ -77,3 +78,19 @@ def test_validation_errors(client):
 def test_audit_records_rule_changes(client):
     actions = {a["action"] for a in client.get("/api/audit", params={"since": "1h"}, headers=CSRF).json()["items"]}
     assert {"alerts.rule.save", "alerts.rule.toggle", "alerts.rule.delete"} <= actions
+
+
+def test_distinct_rule_round_trip(client):
+    """서로 다른 값 수(ADR-041): 화면 → 저장 → 파일(숫자로) → 다시 읽기."""
+    rule = {**RULE, "name": "스프레이 화면 저장", "group_by": "ip", "threshold": 10,
+            "distinct": {"field": "user", "min": "12"}}
+    r = client.put("/api/alerts/rules", json={"rule": rule}, headers=CSRF)
+    assert r.status_code == 200, r.text
+    assert rules(client)["스프레이 화면 저장"]["distinct"] == {"field": "user", "min": 12}
+    assert "distinct: { field: user, min: 12 }" in Path(os.environ["WLM_ALERTS_FILE"]).read_text(encoding="utf-8")
+    bad = client.put("/api/alerts/rules", json={"rule": {**rule, "name": "잘못", "distinct": {"field": "ip", "min": 3}}},
+                     headers=CSRF)
+    assert bad.status_code == 422 and "group_by 와 같으면" in bad.json()["detail"]
+    off = client.put("/api/alerts/rules", json={"original": "스프레이 화면 저장", "rule": {**rule, "distinct": None}},
+                     headers=CSRF)
+    assert off.status_code == 200 and rules(client)["스프레이 화면 저장"]["distinct"] is None

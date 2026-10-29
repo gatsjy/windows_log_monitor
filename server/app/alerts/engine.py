@@ -146,7 +146,8 @@ class AlertEngine:
         since = now - rule.window
         base = replace(rule.event_filter(), received_since=since)
         fired = []
-        for row in await repository.alert_candidates(base, rule.group_by, rule.threshold):
+        for row in await repository.alert_candidates(base, rule.group_by, rule.threshold,
+                                                     rule.distinct_field, rule.distinct_min):
             key = "" if row["key"] is None else str(row["key"])
             last = await repository.last_alert(rule.name, key)
             if last is not None and _silence_over(last, now) and not await _resumed(base, rule, key, last, since):
@@ -162,6 +163,8 @@ class AlertEngine:
                 first_event_at=row["first_ts"], last_event_at=row["last_ts"],
                 link=search_link(_link_params(rule, key, row["first_ts"] - timedelta(minutes=1))),
                 samples=[_sample(s) for s in samples], tags=list(rule.tags),
+                distinct_field=rule.distinct_field or "", distinct_min=rule.distinct_min,
+                distinct_count=row.get("dn") or 0, distinct_values=[str(v) for v in (row.get("dvals") or [])],
             )
             fired.append(await self.fire(message, rule.notify))
         return fired

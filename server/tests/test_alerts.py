@@ -239,3 +239,43 @@ def test_rule_tags_reach_the_message():
     assert rule.tags == ("MITRE T1110", "ISMS 2.11.3")
     m = message(tags=list(rule.tags))
     assert "태그: MITRE T1110, ISMS 2.11.3" in m.text() and "MITRE T1110" in m.html()
+
+
+# ---------------------------------------------- 서로 다른 값 수 (ADR-041)
+
+def _rule(**extra):
+    return parse({"rules": [{**BASE["rules"][0], **extra}]}).rules[0]
+
+
+def test_distinct_rule_parses():
+    r = _rule(group_by="ip", distinct={"field": "user", "min": 10})
+    assert (r.distinct_field, r.distinct_min) == ("user", 10)
+    assert _rule(distinct={"field": "f.EventData.TargetUserName", "min": "3"}).distinct_min == 3   # 화면에서 저장하면 문자열
+    assert _rule().distinct_field is None
+
+
+@pytest.mark.parametrize(("distinct", "extra", "message_part"), [
+    ({"field": "nope", "min": 5}, {}, "distinct.field"),
+    ({"field": "user", "min": 1}, {}, "2 이상"),
+    ({"field": "user", "min": "x"}, {}, "2 이상"),
+    ({"field": "user"}, {}, "2 이상"),
+    ({"field": "host", "min": 3}, {"group_by": "host"}, "group_by 와 같으면"),
+    ({"field": "user", "min": 3, "max": 9}, {}, "모양"),
+    ("user", {}, "모양"),
+    ({"field": "user", "min": 3}, {"window": "2d"}, "1d 이하"),
+])
+def test_distinct_rule_validation(distinct, extra, message_part):
+    with pytest.raises(ConfigError, match=message_part):
+        _rule(distinct=distinct, **extra)
+
+
+def test_distinct_message_text():
+    m = message(group_by="ip", group_key="203.0.113.5", distinct_field="user", distinct_min=10, distinct_count=14,
+                distinct_values=["admin", "kim", "lee"], event_count=31)
+    assert m.summary() == "203.0.113.5 에서 최근 10분 동안 서로 다른 사용자 14개 (기준 10개 이상) · 이벤트 31건"
+    assert m.distinct_line() == "서로 다른 사용자: admin, kim, lee … 외 11"
+    assert "서로 다른 사용자: admin" in m.text() and "서로 다른 사용자: admin" in m.html()
+    assert m.to_dict()["distinct_count"] == 14
+    plain = message().to_dict()
+    assert not any(k.startswith("distinct") for k in plain)   # 건수 규칙의 본문은 예전과 같다 (웹훅 json·저장된 payload)
+    assert AlertMessage.from_dict(m.to_dict()).distinct_values == ["admin", "kim", "lee"]

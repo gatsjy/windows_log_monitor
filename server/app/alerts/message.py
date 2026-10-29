@@ -28,6 +28,11 @@ def _window_text(seconds: int) -> str:
     return f"{seconds}초"
 
 
+# 서로 다른 값 수 규칙의 필드 이름 (화면 web/js/ruleform.js GROUP_LABELS 와 같은 말)
+DISTINCT_LABELS = {"user": "사용자", "ip": "IP", "host": "PC", "event_id": "이벤트 ID", "category": "분류",
+                   "channel": "채널", "provider": "공급자", "source": "소스", "level": "수준"}
+
+
 @dataclass
 class AlertMessage:
     rule: str
@@ -47,10 +52,18 @@ class AlertMessage:
     alert_id: int | None = None
     test: bool = False
     tags: list[str] = field(default_factory=list)
+    # 서로 다른 값 수 규칙 (ADR-041): 필드·기준·센 수·앞의 값 몇 개
+    distinct_field: str = ""
+    distinct_min: int = 0
+    distinct_count: int = 0
+    distinct_values: list[str] = field(default_factory=list)
 
     # ------------------------------------------------------------ 직렬화
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        if not self.distinct_field:   # 건수 규칙의 본문(웹훅 json·저장된 payload)은 예전과 같게
+            for key in ("distinct_field", "distinct_min", "distinct_count", "distinct_values"):
+                data.pop(key)
         for key in ("fired_at", "first_event_at", "last_event_at"):
             data[key] = data[key].isoformat() if data[key] else None
         return data
@@ -81,11 +94,25 @@ class AlertMessage:
             return (f"{self.group_key} 에서 {_window_text(self.window_sec)} 이상 로그/하트비트가 들어오지 않았습니다 "
                     f"(마지막 수신 {local(self.last_event_at)})")
         target = f"{self.group_key} 에서 " if self.group_key else ""
+        if self.distinct_field:
+            label = DISTINCT_LABELS.get(self.distinct_field, self.distinct_field.removeprefix("f."))
+            return (f"{target}최근 {_window_text(self.window_sec)} 동안 서로 다른 {label} {self.distinct_count:,}개 "
+                    f"(기준 {self.distinct_min:,}개 이상) · 이벤트 {self.event_count:,}건")
         return (f"{target}최근 {_window_text(self.window_sec)} 동안 조건에 맞는 이벤트 {self.event_count:,}건 "
                 f"(기준 {self.threshold:,}건 이상)")
 
+    def distinct_line(self) -> str:
+        """'서로 다른 사용자: a, b, c … 외 4' (서로 다른 값 수 규칙만)"""
+        if not self.distinct_field or not self.distinct_values:
+            return ""
+        label = DISTINCT_LABELS.get(self.distinct_field, self.distinct_field.removeprefix("f."))
+        more = self.distinct_count - len(self.distinct_values)
+        return f"서로 다른 {label}: " + ", ".join(self.distinct_values) + (f" … 외 {more:,}" if more > 0 else "")
+
     def text(self) -> str:
         lines = [self.title(), "", self.summary()]
+        if self.distinct_line():
+            lines.append(self.distinct_line())
         if self.description:
             lines += ["", self.description]
         if self.tags:
@@ -122,6 +149,8 @@ class AlertMessage:
         link = (f"<p><a href='{e(self.link)}' style='color:#1c5cab'>Log Monitor 에서 자세히 보기 →</a></p>"
                 if self.link else "")
         desc = f"<p style='color:#52514e'>{e(self.description)}</p>" if self.description else ""
+        if self.distinct_line():
+            desc = f"<p style='font-size:13px'>{e(self.distinct_line())}</p>" + desc
         if self.tags:
             desc += f"<p style='font-size:12px;color:#52514e'>태그: {e(', '.join(self.tags))}</p>"
         return (

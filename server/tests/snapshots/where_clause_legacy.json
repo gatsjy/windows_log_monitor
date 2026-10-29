@@ -287,6 +287,47 @@
   ]
  },
  {
+  "name": "rule: 패스워드 스프레이",
+  "params": {
+   "event_id": "4625,4771"
+  },
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
+  "args": [
+   "2026-10-02 05:00:00+00:00",
+   "[4625, 4771]"
+  ]
+ },
+ {
+  "name": "rule: 없는 계정으로 로그온 시도",
+  "params": {
+   "event_id": "4625",
+   "f.EventData.SubStatus": "0xc0000064"
+  },
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])'), SQL(' AND '), SQL('COALESCE(raw #>> %s::text[], raw #>> %s::text[]) = %s')])",
+  "args": [
+   "2026-10-02 05:00:00+00:00",
+   "[4625]",
+   "['EventData', 'SubStatus']",
+   "['winevtlog', 'EventData', 'SubStatus']",
+   "0xc0000064"
+  ]
+ },
+ {
+  "name": "rule: 한 계정이 여러 서버에 원격 데스크톱",
+  "params": {
+   "event_id": "4624",
+   "f.EventData.LogonType": "10"
+  },
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])'), SQL(' AND '), SQL('COALESCE(raw #>> %s::text[], raw #>> %s::text[]) = %s')])",
+  "args": [
+   "2026-10-02 05:00:00+00:00",
+   "[4624]",
+   "['EventData', 'LogonType']",
+   "['winevtlog', 'EventData', 'LogonType']",
+   "10"
+  ]
+ },
+ {
   "name": "rule: 계정 잠금",
   "params": {
    "event_id": "4740"
