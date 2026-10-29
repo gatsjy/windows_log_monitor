@@ -118,8 +118,12 @@ class EmailNotifier(Notifier):
                 if self.smtp.user:
                     smtp.login(self.smtp.user, self.smtp.password)
                 smtp.send_message(mail)
-        except (OSError, smtplib.SMTPException) as exc:   # 같은 메일 서버로 가는 알림은 모두 같은 결과
-            raise NotifierError(f"메일 전송 실패 ({self.smtp.host}:{self.smtp.port}): {exc}", target_down=True) from exc
+        except (OSError, smtplib.SMTPException) as exc:
+            # 접속·인증 실패는 같은 메일 서버로 가는 알림 모두 같은 결과(받는 곳 장애). 본문·받는 사람 거절(554 등)은
+            # 그 메일 하나의 문제 — 받는 곳 장애로 보면 다른 알림까지 미뤄진다(검토에서 재현)
+            per_message = isinstance(exc, (smtplib.SMTPDataError, smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused))
+            raise NotifierError(f"메일 전송 실패 ({self.smtp.host}:{self.smtp.port}): {exc}",
+                                target_down=not per_message) from exc
 
     async def send(self, message: AlertMessage) -> None:
         await asyncio.to_thread(self._send, self.build(message))

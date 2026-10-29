@@ -61,7 +61,11 @@ def assess(engine: dict[str, Any], dispatcher: dict[str, Any], queue: list[dict[
         problems.append({"level": level, "code": code, "text": text, "n": n})
 
     interval, timeout = engine["interval_sec"], engine["rule_timeout_sec"]
-    if not engine.get("standby"):
+    # 주기를 줄인 직후에는 옛 주기만큼 쉬는 중일 수 있다 — 더 긴 쪽으로 판단 (거짓 '멈춤' 방지)
+    interval = max(interval, engine.get("sleep_interval_sec") or 0)
+    if engine.get("last_error"):   # 주기 전체가 실패한다 (설정 파일을 못 읽음·DB 연결 거부 등) — 규칙이 하나도 평가되지 않는다
+        add("bad", "evaluator_error", f"알림 평가가 실패하고 있습니다: {str(engine['last_error'])[:200]}")
+    elif not engine.get("standby"):
         progress = engine.get("progress_at")
         if not engine.get("running") or progress is None or now - progress > engine_stall(interval, timeout):
             current = engine.get("current_rule")

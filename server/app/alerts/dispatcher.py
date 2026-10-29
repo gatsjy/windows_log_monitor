@@ -33,6 +33,7 @@ MAX_ATTEMPTS = 5
 RETRY_BACKOFF = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=15), timedelta(hours=1))
 SEND_TIMEOUT_SEC = 30
 MAX_AGE = timedelta(hours=24)
+STALE_CLAIM = timedelta(minutes=10)   # 한 건은 SEND_TIMEOUT_SEC 안에 끝난다 — 이보다 오래 잡혀 있으면 버려진 것
 CONCURRENCY = 4
 POLL_SEC = 5
 HOUSEKEEPING_SEC = 60
@@ -170,6 +171,10 @@ class Dispatcher:
             expired = await repository.expire_stale_deliveries(now - MAX_AGE, EXPIRE_ERROR)
             if expired:
                 log.warning("하루가 지나 보내지 않은 알림 %d건", expired)
+            # 잠금을 쥔 채로 잡힌 지 오래된 행 = 줄이 죽었는데 풀지 못한 것 (보내기는 30초면 끝난다)
+            stale = await repository.release_delivery_claims(now, RELEASE_ERROR, MAX_ATTEMPTS, claimed_before=now - STALE_CLAIM)
+            if stale:
+                log.warning("오래 '보내는 중'이던 알림 %d건을 다시 보냅니다", stale)
         due = await repository.due_notifiers(now)
         if due:
             notifiers, errors = await targets.load_notifiers()   # 환경설정에서 바꾼 것이 바로 반영되게 훑을 때마다
@@ -183,46 +188,68 @@ class Dispatcher:
         return bool(due)
 
     async def _lane(self, name: str, notifier: Notifier | None, error: str | None) -> None:
-        """한 받는 곳의 대기 행을 차례로 (심각한 것부터). 같은 곳으로는 한 번에 하나만 보낸다."""
-        async with self._slots:
-            if notifier is None:   # 지워졌거나 설정이 틀렸다 — 네트워크 없이 바로 실패로 (예전과 같은 문구·간격)
-                await repository.fail_due_deliveries(name, error or f"알림 대상 '{name}' 이 설정에 없습니다",
-                                                     datetime.now(UTC), _backoff_seconds(), MAX_ATTEMPTS)
+        """한 받는 곳의 대기 행을 차례로 (덜 실패한 것·심각한 것부터). 같은 곳으로는 한 번에 하나만 보낸다.
+        동시 자리(CONCURRENCY)는 한 건 보낼 때마다 잡고 놓는다 — 줄 하나가 대기열을 다 비울 때까지 쥐고 있으면
+        다섯째 받는 곳(당직 메신저의 심각 알림 등)이 몇 분씩 기다렸다(검토에서 재현)."""
+        if notifier is None:   # 지워졌거나 설정이 틀렸다 — 네트워크 없이 바로 실패로 (예전과 같은 문구·간격, 시도로 셈)
+            now = datetime.now(UTC)
+            error = error or f"알림 대상 '{name}' 이 설정에 없습니다"
+            await repository.fail_due_deliveries(name, error, now, _backoff_seconds(), MAX_ATTEMPTS)
+            self.health(name).fail(now, error)   # 설정 문제도 '보내지 못하는 중'이다 — 모든 받는 곳이 이러면 알림 멈춤
+            return
+        while True:
+            async with self._slots:
+                done = await self._send_one(name, notifier)
+            if done:
                 return
-            while True:
+
+    async def _send_one(self, name: str, notifier: Notifier) -> bool:
+        """한 건. 돌려주는 값 = 이 줄을 끝낼까 (보낼 것이 없거나 받는 곳 자체가 안 됨)."""
+        job = await repository.claim_delivery(name, datetime.now(UTC))
+        if job is None:
+            return True
+        try:
+            if not notifier.accepts(job["severity"]):
+                reason = f"받을 최소 수준({SEVERITY_LABELS[notifier.min_severity]} 이상)보다 낮은 알림"
+                await repository.finish_delivery(job, "skipped", reason, tried=0)
+                return False
+            message = AlertMessage.from_dict(job["payload"])
+            message.alert_id = job["alert_id"]
+            try:
+                await asyncio.wait_for(notifier.send(message), timeout=SEND_TIMEOUT_SEC)
+            except asyncio.CancelledError:
+                raise   # 멈출 때: 행은 '보내는 중'으로 남고 다음 시작 때 풀어 다시 보낸다
+            except Exception as exc:  # noqa: BLE001 - 어떤 실패든 기록하고 재시도 대상으로
+                timed_out = isinstance(exc, TimeoutError)
+                error = "전송 시간 초과" if timed_out else str(exc)[:1000]
+                attempts = job["attempts"] + 1
                 now = datetime.now(UTC)
-                job = await repository.claim_delivery(name, now)
-                if job is None:
-                    return
-                if not notifier.accepts(job["severity"]):
-                    reason = f"받을 최소 수준({SEVERITY_LABELS[notifier.min_severity]} 이상)보다 낮은 알림"
-                    await repository.finish_delivery(job, "skipped", reason, tried=0)
-                    continue
-                message = AlertMessage.from_dict(job["payload"])
-                message.alert_id = job["alert_id"]
-                try:
-                    await asyncio.wait_for(notifier.send(message), timeout=SEND_TIMEOUT_SEC)
-                except asyncio.CancelledError:
-                    raise   # 멈출 때: 행은 '보내는 중'으로 남고 다음 시작 때 풀어 다시 보낸다
-                except Exception as exc:  # noqa: BLE001 - 어떤 실패든 기록하고 재시도 대상으로
-                    timed_out = isinstance(exc, TimeoutError)
-                    error = "전송 시간 초과" if timed_out else str(exc)[:1000]
-                    attempts = job["attempts"] + 1
-                    now = datetime.now(UTC)
-                    if attempts >= MAX_ATTEMPTS:
-                        await repository.finish_delivery(job, "gave_up", error)
-                    else:
-                        await repository.finish_delivery(job, "failed", error,
-                                                         next_attempt_at=now + RETRY_BACKOFF[min(attempts - 1, 3)])
-                    self.health(name).fail(now, error)
-                    log.warning("알림 #%s → %s 전송 실패: %s", job["alert_id"], name, error)
-                    if timed_out or getattr(exc, "target_down", False):
-                        await repository.fail_due_deliveries(name, error[:900] + DOWN_NOTE, now, _backoff_seconds(),
-                                                             MAX_ATTEMPTS)
-                        return
-                    continue
-                await repository.finish_delivery(job, "sent", None)
-                self.health(name).ok(datetime.now(UTC))
+                retry_at = now + RETRY_BACKOFF[min(attempts - 1, 3)]
+                if attempts >= MAX_ATTEMPTS:
+                    await repository.finish_delivery(job, "gave_up", error)
+                else:
+                    await repository.finish_delivery(job, "failed", error, next_attempt_at=retry_at)
+                self.health(name).fail(now, error)
+                log.warning("알림 #%s → %s 전송 실패: %s", job["alert_id"], name, error)
+                if timed_out or getattr(exc, "target_down", False):
+                    # 나머지는 시도로 세지 않고 미루기만 — 알림 하나를 받는 곳이 계속 거절해(500) 보지도 않은 다른 알림까지
+                    # 다섯 번 실패로 버려지던 것을 막는다(검토에서 재현). 미룬 행도 하루가 지나면 만료된다
+                    await repository.defer_due_deliveries(name, error[:900] + DOWN_NOTE, now, retry_at)
+                    return True
+                return False
+            await repository.finish_delivery(job, "sent", None)
+            self.health(name).ok(datetime.now(UTC))
+            return False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # 결과를 쓰다가 DB 가 끊기는 등: '보내는 중'으로 남기지 않고 풀어 둔다 (못 풀면 오래된 잡힘 정리가 푼다)
+            log.exception("알림 #%s → %s 처리 중 오류 — 다시 보낼 차례로 되돌립니다", job["alert_id"], name)
+            try:
+                await repository.unclaim_delivery(job)
+            except Exception:
+                log.exception("되돌리기 실패 (잠시 뒤 오래된 잡힘 정리가 푼다)")
+            return True
 
     def status(self) -> dict[str, Any]:
         running = self.task is not None and not self.task.done()

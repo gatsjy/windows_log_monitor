@@ -104,3 +104,14 @@ def test_public_view_has_no_names_or_messages():
     text = str(view)
     assert view["status"] == "down" and "비밀" not in text and "smtp" not in text
     assert view["problems"] == ["rule_error", "target_failing", "targets_all_down"]
+
+
+def test_failing_cycles_are_bad_even_with_fresh_progress():
+    """주기 전체가 실패(설정 파일을 못 읽음·DB 연결 거부)하면 규칙이 하나도 평가되지 않는다 — '정상'이면 안 된다 (검토에서 재현)."""
+    assert _codes(_assess(engine=_engine(last_error="connection refused"))) == [("bad", "evaluator_error")]
+
+
+def test_lowered_interval_uses_the_interval_being_slept():
+    """주기를 600초 → 30초로 줄인 직후 엔진은 옛 주기만큼 쉬는 중 — 거짓 '멈춤'이 아니다."""
+    engine = _engine(interval_sec=30, sleep_interval_sec=600, progress_at=NOW - timedelta(minutes=8))
+    assert _codes(_assess(engine=engine)) == []

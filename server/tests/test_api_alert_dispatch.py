@@ -30,10 +30,12 @@ class _Receiver(BaseHTTPRequestHandler):
     def do_POST(self):  # http.server 가 부르는 이름
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         _Receiver.received.append((self.path, body))
-        code = {"/ok": 200, "/down": 503, "/bad": 400}.get(self.path, 200)
+        code = {"/ok": 200, "/down": 503, "/bad": 400, "/nul": 400}.get(self.path, 200)
+        if self.path == "/picky":   # 규칙 '독' 의 본문만 500 으로 거절하는 사내 웹훅
+            code = 500 if body.get("alert", {}).get("rule") == "독" else 200
         self.send_response(code)
         self.end_headers()
-        self.wfile.write(b"x")
+        self.wfile.write(b"bad\x00body" if self.path == "/nul" else b"x")
 
     def log_message(self, *args):
         pass
@@ -65,7 +67,8 @@ def client():
             c.post("/api/auth/login", json={"username": "admin", "password": initial}, headers=CSRF)
             c.post("/api/auth/password", json={"current_password": initial, "new_password": "Root#Changed2026"}, headers=CSRF)
             for name, path, extra in (("정상", "ok", {}), ("멈춤", "down", {}), ("거절", "bad", {}),
-                                      ("심각만", "ok", {"min_severity": "critical"})):
+                                      ("심각만", "ok", {"min_severity": "critical"}), ("까다로움", "picky", {}),
+                                      ("널", "nul", {})):
                 r = c.post("/api/settings/channels", json={"name": name, "type": "webhook", **extra,
                                                            "url": f"http://127.0.0.1:{server.server_port}/{path}",
                                                            "config": {"format": "json"}}, headers=CSRF)
@@ -111,13 +114,55 @@ def test_failures_back_off_and_a_down_target_is_tried_once(client):
     first, second = _fire(client, ["멈춤"], key="A"), _fire(client, ["멈춤"], key="B")
     before = datetime.now(UTC)
     _drain(client)
-    # 503 = 받는 곳 자체가 안 됨 → 한 번만 보내고 나머지는 같은 실패로 미룬다 (같은 곳에 30초씩 줄줄이 기다리지 않게)
+    # 503 = 받는 곳 자체가 안 됨 → 한 번만 보내고 나머지는 같은 때로 미룬다 (같은 곳에 30초씩 줄줄이 기다리지 않게)
     assert len([p for p, _ in _Receiver.received if p == "/down"]) == 1
-    for alert_id in (first, second):
-        status, attempts, error, next_at, _ = _delivery(alert_id, "멈춤")
-        assert (status, attempts) == ("failed", 1) and "503" in error
-        assert timedelta(seconds=55) < next_at - before < timedelta(seconds=70)   # 1분 뒤
-    assert any("이번에는 시도하지 않음" in _delivery(a, "멈춤")[2] for a in (first, second))
+    status, attempts, error, next_at, _ = _delivery(first, "멈춤")
+    assert (status, attempts) == ("failed", 1) and "503" in error
+    assert timedelta(seconds=55) < next_at - before < timedelta(seconds=70)   # 1분 뒤
+    # 미룬 행은 시도로 세지 않는다 — 보지도 않은 알림이 남의 실패로 다섯 번 만에 버려지지 않게
+    status, attempts, error, deferred_to, _ = _delivery(second, "멈춤")
+    assert (status, attempts, deferred_to) == ("pending", 0, next_at) and "이번에는 시도하지 않음" in error
+
+
+def test_one_rejected_message_does_not_bury_the_others(client):
+    """받는 곳이 알림 하나의 본문만 500 으로 거절해도 다른 알림은 다음 차례에 간다 (검토에서 재현 — 예전에는 함께 gave_up)."""
+    _Receiver.received.clear()
+    poison = _fire(client, ["까다로움"], severity="critical", rule="독", key="P")
+    others = [_fire(client, ["까다로움"], severity="warning", key=f"O{i}") for i in range(2)]
+    _drain(client)
+    assert _delivery(poison, "까다로움")[:2] == ("failed", 1)
+    assert {_delivery(o, "까다로움")[:2] for o in others} == {("pending", 0)}
+    sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE notifier = '까다로움'")   # 1분이 지난 것처럼
+    _drain(client)
+    # 덜 실패한 것부터 잡는다 — 심각 알림이 계속 실패해도 나머지는 보낸다
+    assert {_delivery(o, "까다로움")[:2] for o in others} == {("sent", 1)}
+    assert _delivery(poison, "까다로움")[:2] == ("failed", 2)
+
+
+def test_claimed_rows_are_not_left_sending(client, monkeypatch):
+    """보낸 뒤 결과를 쓰다 실패하면 풀어 두고, 그래도 남은 오래된 잡힘은 정리가 푼다 (검토에서 재현)."""
+    from app import repository
+    from app.alerts.dispatcher import dispatcher
+
+    alert_id = _fire(client, ["정상"], key="UNCLAIM")
+    real = repository.finish_delivery
+
+    async def broken(*args, **kwargs):
+        raise psycopg.OperationalError("연결 끊김 (시험)")
+
+    monkeypatch.setattr(repository, "finish_delivery", broken)
+    _drain(client)
+    assert _delivery(alert_id, "정상")[4] is None   # 잡힌 채 남지 않는다
+    monkeypatch.setattr(repository, "finish_delivery", real)
+    _drain(client)
+    assert _delivery(alert_id, "정상")[0] == "sent"
+
+    stuck = _fire(client, ["정상"], key="STUCK")
+    client.portal.call(repository.claim_delivery, "정상", datetime.now(UTC))
+    sql("UPDATE alert_deliveries SET claimed_at = now() - interval '11 minutes' WHERE alert_id = %s", (stuck,))
+    dispatcher._housekept = None
+    _drain(client)
+    assert _delivery(stuck, "정상")[:2] == ("sent", 2)   # 풀 때 한 번 시도로 센다
 
 
 def test_a_per_message_rejection_does_not_hold_back_the_others(client):
@@ -126,6 +171,14 @@ def test_a_per_message_rejection_does_not_hold_back_the_others(client):
     _drain(client)
     assert len([p for p, _ in _Receiver.received if p == "/bad"]) == 3   # 400 은 그 알림 하나의 문제
     assert {_delivery(a, "거절")[0] for a in ids} == {"failed"}
+
+
+def test_error_text_with_nul_is_recorded(client):
+    """받는 쪽 응답의 NUL 하나로 결과를 못 써 같은 행을 끝없이 다시 잡던 것 (검토에서 재현)."""
+    alert_id = _fire(client, ["널"], key="NUL")
+    _drain(client)
+    status, attempts, error, _, claimed = _delivery(alert_id, "널")
+    assert (status, attempts, claimed) == ("failed", 1, None) and "badbody" in error
 
 
 def test_fifth_failure_gives_up(client):
@@ -144,6 +197,9 @@ def test_missing_target_and_minimum_severity(client):
     low = _fire(client, ["심각만"], severity="warning", key="L")
     _drain(client)
     assert _delivery(missing, "없는곳")[:3] == ("failed", 1, "알림 대상 '없는곳' 이 설정에 없습니다")
+    from app.alerts.dispatcher import dispatcher
+
+    assert dispatcher.targets["없는곳"].failing_since is not None   # 설정 문제도 보내지 못하는 중이다
     status, attempts, error, _, _ = _delivery(low, "심각만")
     assert (status, attempts) == ("skipped", 0) and error.startswith("받을 최소 수준(심각 이상)")
 
@@ -258,10 +314,35 @@ def test_slow_or_broken_rule_is_marked_and_the_next_rule_still_runs(client, monk
 
     assert health.rule_state(True, slow.as_dict(), 1, 30, now) == "timeout"
     assert health.rule_state(True, nxt.as_dict(), 1, 30, now) == "truncated"
+    # 알린 100개는 재알림 간격에 들어 SQL 에서 빠진다 → 다음 평가에서 남은 하나를 알린다 (예전에는 영영 못 알림)
+    client.portal.call(engine._run_rule, config.rules[1], now + timedelta(seconds=30))
+    after = engine.runs["다음 규칙"]
+    assert (after.candidates, after.truncated, after.fired) == (1, False, 1)
     # 다음 평가가 늦어 그 사이 로그를 보지 못했다 → 평가 공백
     client.portal.call(engine._run_rule, config.rules[1], now + timedelta(minutes=30))
     gap = engine.runs["다음 규칙"].last_gap
-    assert gap and gap["sec"] == 25 * 60
+    assert gap and 25 * 60 - 60 < gap["sec"] <= 25 * 60   # 앞 평가가 쿼리를 낸 시각부터
+
+
+def test_rule_turned_off_and_on_is_not_a_gap(client, monkeypatch):
+    """꺼져 있던 시간을 평가 공백으로 잘못 알렸다 (검토에서 재현) — 꺼진 동안은 '본 구간'을 잇지 않는다."""
+    from app.alerts.engine import RuleRun, engine
+    from app.alerts.rules import parse_text
+
+    rules = """rules:
+  - name: 켜고 끄기
+    enabled: {on}
+    match: {{ event_id: "4625" }}
+    notify: [정상]
+"""
+    monkeypatch.setattr(engine, "reload", lambda *a, **k: None)   # 이 시험은 파일 대신 설정을 직접 넣는다
+    engine.runs["켜고 끄기"] = RuleRun(last_query_at=datetime.now(UTC) - timedelta(hours=2))
+    monkeypatch.setattr(engine, "config", parse_text(rules.format(on="false")))
+    client.portal.call(engine.tick)
+    assert engine.runs["켜고 끄기"].last_query_at is None
+    monkeypatch.setattr(engine, "config", parse_text(rules.format(on="true")))
+    client.portal.call(engine.tick)
+    assert engine.runs["켜고 끄기"].last_gap is None and engine.runs["켜고 끄기"].last_query_at is not None
 
 
 def test_health_shows_in_the_screen_and_the_public_endpoint(client):

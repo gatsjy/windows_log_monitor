@@ -683,10 +683,13 @@ def _distinct_parts(distinct_field: str | None, distinct_min: int):
 
 
 async def alert_candidates(f: EventFilter, group_by: str, threshold: int,
-                           distinct_field: str | None = None, distinct_min: int = 0, *, limit: int = 100) -> list[dict]:
+                           distinct_field: str | None = None, distinct_min: int = 0, *, limit: int = 100,
+                           cooldown: tuple[str, datetime, datetime] | None = None) -> list[dict]:
     """규칙 조건에 맞는 이벤트를 group_by 로 묶어 threshold 이상인 묶음만. distinct_field 면 그 필드의 서로 다른 값도
     distinct_min 개 이상인 묶음만 (dn = 서로 다른 값 수, dvals = 앞의 값 10개).
-    엔진은 limit 을 하나 더 달라고 해 넘쳤는지(일부만 알림) 안다 (ADR-045)."""
+    엔진은 limit 을 하나 더 달라고 해 넘쳤는지(일부만 알림) 안다 (ADR-045).
+    cooldown = (규칙 이름, 재알림 간격 시작, 지금): 마지막 알림이 간격 안이고 처리 안 됨·확인함이며 무음으로 못 보낸 것도
+    아닌 묶음은 뺀다 — 엔진의 _in_cooldown 과 같은 판단(엔진이 다시 확인한다). 해결된 알림(재발 판단)과 끝난 무음은 남긴다."""
     if group_by == "none":
         key_expr, key_params = sql.SQL("''"), []
     else:
@@ -694,11 +697,23 @@ async def alert_candidates(f: EventFilter, group_by: str, threshold: int,
     where, params = where_clause(f)
     where, params = _skip_missing_key(where, params, key_expr, key_params, group_by)
     select, select_params, having, having_params = _distinct_parts(distinct_field, distinct_min)
+    order = sql.SQL("dn" if distinct_field else "n")
     query = sql.SQL(
         "SELECT {} AS key, count(*) AS n, min(ts) AS first_ts, max(ts) AS last_ts{}"
-        " FROM events WHERE {} GROUP BY 1 HAVING count(*) >= %s{} ORDER BY {} DESC LIMIT {}"
-    ).format(key_expr, select, where, having, sql.SQL("dn" if distinct_field else "n"), sql.Literal(limit))
-    return await db.fetch_all(query, [*key_params, *select_params, *params, threshold, *having_params])
+        " FROM events WHERE {} GROUP BY 1 HAVING count(*) >= %s{}"
+    ).format(key_expr, select, where, having)
+    args = [*key_params, *select_params, *params, threshold, *having_params]
+    if cooldown is None:
+        query = sql.SQL("{} ORDER BY {} DESC LIMIT {}").format(query, order, sql.Literal(limit))
+    else:
+        query = sql.SQL(
+            "SELECT c.* FROM ({}) c WHERE NOT EXISTS (SELECT 1 FROM (SELECT a.fired_at, a.status, s.ends_at"
+            " FROM alerts a LEFT JOIN alert_silences s ON s.id = a.silence_id WHERE a.rule = %s AND a.group_key = c.key::text"
+            " ORDER BY a.fired_at DESC LIMIT 1) last WHERE last.fired_at > %s AND last.status <> 'resolved'"
+            " AND (last.ends_at IS NULL OR last.ends_at > %s)) ORDER BY {} DESC LIMIT {}"
+        ).format(query, order, sql.Literal(limit))
+        args += list(cooldown)
+    return await db.fetch_all(query, args)
 
 
 def _skip_missing_key(where: sql.Composable, params: list, key_expr: sql.Composable, key_params: list,
@@ -735,9 +750,10 @@ async def rule_preview(f: EventFilter, group_by: str, window_sec: int, threshold
 
 
 async def last_alert(rule: str, group_key: str) -> dict | None:
-    """같은 규칙·대상의 마지막 알림: fired_at, silenced_until(무음으로 못 보냈으면 그 무음이 끝나는 시각)."""
+    """같은 규칙·대상의 마지막 알림: fired_at, silenced_until(무음으로 못 보냈으면 그 무음이 끝나는 시각),
+    처리 상태·해결 시각(해결 뒤 재발 판단, B-35)."""
     return await db.fetch_one(
-        "SELECT a.fired_at, s.ends_at AS silenced_until FROM alerts a"
+        "SELECT a.id, a.fired_at, a.status, a.resolved_at, s.ends_at AS silenced_until FROM alerts a"
         " LEFT JOIN alert_silences s ON s.id = a.silence_id"
         " WHERE a.rule = %s AND a.group_key = %s ORDER BY a.fired_at DESC LIMIT 1",
         (rule, group_key),
@@ -788,11 +804,12 @@ async def due_notifiers(now: datetime) -> list[str]:
 
 
 async def claim_delivery(notifier: str, now: datetime) -> dict[str, Any] | None:
-    """한 행을 잡는다 — 심각한 것부터, 그다음 오래 기다린 것부터. 다른 쪽이 잡고 있는 행은 건너뛴다(SKIP LOCKED)."""
+    """한 행을 잡는다 — 덜 실패한 것·심각한 것·오래 기다린 것부터. 다른 쪽이 잡고 있는 행은 건너뛴다(SKIP LOCKED)."""
     return await db.fetch_one(
         f"WITH pick AS (SELECT d.alert_id, d.notifier FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id"
         f" WHERE d.notifier = %s AND {_DUE}"
-        " ORDER BY CASE a.severity WHEN 'critical' THEN 4 WHEN 'error' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END DESC,"
+        # 덜 실패한 것부터 — 받는 곳이 계속 거절하는 알림 하나가 매번 먼저 잡혀 다른 알림의 차례를 막지 않게
+        " ORDER BY d.attempts, CASE a.severity WHEN 'critical' THEN 4 WHEN 'error' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END DESC,"
         " d.next_attempt_at, d.alert_id LIMIT 1 FOR UPDATE OF d SKIP LOCKED)"
         " UPDATE alert_deliveries d SET claimed_at = clock_timestamp() FROM pick, alerts a"
         " WHERE d.alert_id = pick.alert_id AND d.notifier = pick.notifier AND a.id = d.alert_id"
@@ -806,32 +823,52 @@ async def finish_delivery(job: dict[str, Any], status: str, error: str | None,
         "UPDATE alert_deliveries SET status = %s, last_error = %s, attempts = attempts + %s,"
         " next_attempt_at = COALESCE(%s, next_attempt_at), sent_at = CASE WHEN %s = 'sent' THEN now() ELSE sent_at END,"
         " claimed_at = NULL, updated_at = now() WHERE alert_id = %s AND notifier = %s AND claimed_at = %s RETURNING alert_id",
-        (status, error, tried, next_attempt_at, status, job["alert_id"], job["notifier"], job["claimed_at"]))
+        # 오류 문구는 받는 쪽 응답에서 온다 — NUL 하나로 결과를 못 써 같은 행을 끝없이 다시 잡지 않게
+        (status, _printable(error, 1000) if error else None, tried, next_attempt_at, status, job["alert_id"], job["notifier"],
+         job["claimed_at"]))
     if row is None:
         log.warning("알림 #%s → %s: 이미 풀린 행의 결과라 버립니다", job["alert_id"], job["notifier"])
     return row is not None
 
 
 async def fail_due_deliveries(notifier: str, error: str, now: datetime, backoff_sec: list[int], max_attempts: int) -> int:
-    """받는 곳 자체가 안 될 때 그 곳의 대기 행을 한 번에 실패로 — 행마다 자기 재시도 간격으로."""
+    """받는 곳을 만들 수 없을 때(지워짐·설정 오류) 그 곳의 대기 행을 한 번에 실패로 — 행마다 자기 재시도 간격으로, 시도로 센다."""
     async with db.pool().connection() as conn:
         cur = await conn.execute(
             "UPDATE alert_deliveries d SET attempts = d.attempts + 1,"
             " status = CASE WHEN d.attempts + 1 >= %s THEN 'gave_up' ELSE 'failed' END,"
             " next_attempt_at = %s + make_interval(secs => (%s::int[])[LEAST(d.attempts + 1, cardinality(%s::int[]))]),"
             f" last_error = %s, updated_at = now() WHERE d.notifier = %s AND {_DUE}",
-            (max_attempts, now, backoff_sec, backoff_sec, error, notifier, now))
+            (max_attempts, now, backoff_sec, backoff_sec, _printable(error, 1000), notifier, now))
         return cur.rowcount
 
 
-async def release_delivery_claims(now: datetime, error: str, max_attempts: int) -> int:
-    """멈춘 서버가 보내던 행을 풀어 다시 보낼 차례로 (한 번 시도한 것으로 센다 — 서버를 죽이는 알림이 끝없이 돌지 않게)."""
+async def release_delivery_claims(now: datetime, error: str, max_attempts: int,
+                                  claimed_before: datetime | None = None) -> int:
+    """멈춘 서버(또는 죽은 줄)가 보내던 행을 풀어 다시 보낼 차례로 (한 번 시도한 것으로 센다 — 서버를 죽이는 알림이
+    끝없이 돌지 않게). claimed_before 면 그보다 오래 잡힌 것만."""
     async with db.pool().connection() as conn:
         cur = await conn.execute(
             "UPDATE alert_deliveries SET attempts = attempts + 1,"
             " status = CASE WHEN attempts + 1 >= %s THEN 'gave_up' ELSE 'failed' END,"
             " next_attempt_at = %s, last_error = %s, claimed_at = NULL, updated_at = now()"
-            " WHERE claimed_at IS NOT NULL AND status IN ('pending', 'failed')", (max_attempts, now, error))
+            " WHERE claimed_at IS NOT NULL AND status IN ('pending', 'failed')"
+            " AND (%s::timestamptz IS NULL OR claimed_at < %s)", (max_attempts, now, error, claimed_before, claimed_before))
+        return cur.rowcount
+
+
+async def unclaim_delivery(job: dict[str, Any]) -> None:
+    """잡은 행을 시도 없이 되돌린다 (보내기 전·결과를 쓰다 실패했을 때)."""
+    await db.fetch_one("UPDATE alert_deliveries SET claimed_at = NULL WHERE alert_id = %s AND notifier = %s"
+                       " AND claimed_at = %s RETURNING alert_id", (job["alert_id"], job["notifier"], job["claimed_at"]))
+
+
+async def defer_due_deliveries(notifier: str, error: str, now: datetime, until: datetime) -> int:
+    """받는 곳 자체가 안 될 때 그 곳의 다른 대기 행은 시도로 세지 않고 미루기만 한다 (방금 실패한 행과 같은 때로)."""
+    async with db.pool().connection() as conn:
+        cur = await conn.execute(
+            f"UPDATE alert_deliveries d SET next_attempt_at = %s, last_error = %s, updated_at = now()"
+            f" WHERE d.notifier = %s AND {_DUE}", (until, _printable(error, 1000), notifier, now))
         return cur.rowcount
 
 

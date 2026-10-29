@@ -50,6 +50,27 @@ def test_email(monkeypatch):
     with pytest.raises(NotifierError) as caught:
         mail._send(None)   # 접속에서 실패하므로 본문은 쓰이지 않는다
     assert caught.value.target_down is True
+    # 메일 하나의 본문·받는 사람 거절(554 등)은 그 메일만의 문제 — 다른 알림을 미루지 않는다
+    class Rejecting:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self, **kwargs):
+            pass
+
+        def send_message(self, mail):
+            raise smtplib.SMTPDataError(554, "content rejected")
+
+    monkeypatch.setattr(smtplib, "SMTP", Rejecting)
+    with pytest.raises(NotifierError) as caught:
+        mail._send(None)
+    assert caught.value.target_down is False
     # 받는 사람·메일 서버가 없는 것도 그 곳의 모든 알림이 같다
     for notifier in (EmailNotifier("빈 그룹", [], SmtpConfig(host="smtp.local")), EmailNotifier("당직", ["a@x"], SmtpConfig(host=""))):
         with pytest.raises(NotifierError) as caught:

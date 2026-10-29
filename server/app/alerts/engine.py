@@ -98,6 +98,7 @@ class AlertEngine:
         self.current_rule: str | None = None
         self.standby = False
         self.runs: dict[str, RuleRun] = {}
+        self.sleep_interval: int | None = None   # 지금 쉬는 주기 (설정을 바꾼 직후에는 새 주기와 다를 수 있다)
         self.task: asyncio.Task | None = None   # main 이 넣는다 (상태 판단: 작업이 살아 있나)
         self._sig: object = _UNREAD
         # 판본 기록 (ADR-043). _applied = 마지막으로 기록한 판본 {id, sha, config, text} — None 이면 아직 DB 에서 읽지 않음
@@ -322,12 +323,14 @@ class AlertEngine:
             except Exception as exc:
                 self.last_error = str(exc)
                 log.exception("알림 평가 실패")
-            # 시작 시각 기준으로 다음 주기 — 오래 걸린 주기 뒤에 주기 하나를 통째로 더 쉬어 공백이 커지지 않게 (ADR-045)
-            await asyncio.sleep(max(1.0, started + self.config.interval_sec - loop.time()))
+            # 시작 시각 기준으로 다음 주기 — 오래 걸린 주기 뒤에 주기 하나를 통째로 더 쉬어 공백이 커지지 않게 (ADR-045).
+            # 쉬는 동안 주기를 줄여도 상태 판단이 '멈춤'으로 보지 않게 실제로 쉬는 주기를 남긴다
+            self.sleep_interval = self.config.interval_sec
+            await asyncio.sleep(max(1.0, started + self.sleep_interval - loop.time()))
 
     async def tick(self) -> None:
+        # 나아간 시각은 잠금을 잡은 뒤부터 — 매 주기 설정 읽기·연결에서 실패하는데도 '움직이는 중'으로 보이던 것(검토에서 재현)
         started = time.monotonic()
-        self.progress_at = datetime.now(UTC)
         self.reload()
         try:
             await self.record()
@@ -341,9 +344,13 @@ class AlertEngine:
             self.standby = False
             try:
                 now = datetime.now(UTC)
+                self.progress_at = now
                 for rule in self.config.rules:
                     if rule.enabled:
                         await self._run_rule(rule, now)
+                    elif rule.name in self.runs:
+                        # 꺼진 동안은 '본 구간'을 이어 가지 않는다 — 다시 켰을 때 꺼져 있던 시간을 평가 공백으로 잘못 알렸다
+                        self.runs[rule.name].last_query_at = self.runs[rule.name].last_gap = None
                 self.current_rule = None
                 names = {r.name for r in self.config.rules}
                 self.runs = {name: run for name, run in self.runs.items() if name in names}
@@ -376,12 +383,12 @@ class AlertEngine:
             run.error = run.error_kind = run.error_since = None
             run.errors_in_row, run.last_ok_at = 0, now
             if rule.kind == "count":
-                # 앞 평가가 본 구간 끝과 이번 구간 시작 사이에 틈이 있으면 그 사이 들어온 로그는 이 규칙으로 보지 못했다
+                # 앞 평가가 본 구간 끝(쿼리를 낸 시각)과 이번 구간 시작 사이에 틈이 있으면 그 사이 들어온 로그는 보지 못했다
                 if run.last_query_at and now - rule.window > run.last_query_at:
                     run.last_gap = {"from": run.last_query_at, "to": now - rule.window,
                                     "sec": int((now - rule.window - run.last_query_at).total_seconds()), "at": now}
                     log.warning("규칙 '%s' 평가 공백 %s ~ %s", rule.name, run.last_query_at, now - rule.window)
-                run.last_query_at = now
+                run.last_query_at = run.query_at or now
         self.progress_at = datetime.now(UTC)
 
     # ------------------------------------------------------------ 평가
@@ -391,10 +398,14 @@ class AlertEngine:
         since = now - rule.window
         base = replace(rule.event_filter(), received_since=since)
         fired = []
-        rows = await repository.alert_candidates(base, rule.group_by, rule.threshold,
-                                                 rule.distinct_field, rule.distinct_min, limit=CANDIDATE_LIMIT + 1)
         if run is not None:
-            # 기준을 넘은 묶음이 상한보다 많으면 일부만 알린다 — 나머지는 다음 평가에서 (재알림 간격에 든 것이 빠지며 자리가 난다)
+            run.query_at = datetime.now(UTC)   # 이 쿼리가 본 구간의 끝 (주기 시작 시각이 아니라)
+        # 재알림 간격에 든 묶음은 SQL 에서 미리 뺀다 — 빼지 않으면 늘 앞서는 100개가 매번 자리를 차지해 101번째부터는
+        # 영영 알리지 못했다(검토에서 재현). 해결된 알림·끝난 무음은 빼지 않는다(아래 파이썬 판단이 정본)
+        rows = await repository.alert_candidates(base, rule.group_by, rule.threshold, rule.distinct_field, rule.distinct_min,
+                                                 limit=CANDIDATE_LIMIT + 1, cooldown=(rule.name, now - rule.cooldown, now))
+        if run is not None:
+            # 재알림 간격 밖의 묶음이 상한보다 많으면 일부만 알린다 — 알린 것은 다음 평가부터 간격에 들어 빠지므로 나머지가 이어서
             run.candidates, run.truncated = min(len(rows), CANDIDATE_LIMIT), len(rows) > CANDIDATE_LIMIT
         for row in rows[:CANDIDATE_LIMIT]:
             self.progress_at = datetime.now(UTC)
@@ -471,6 +482,7 @@ class AlertEngine:
             "current_rule": self.current_rule,
             "standby": self.standby,
             "rule_timeout_sec": settings.alert_rule_timeout_sec,
+            "sleep_interval_sec": self.sleep_interval,
         }
 
     def health_snapshot(self) -> dict[str, Any]:
@@ -492,6 +504,7 @@ class RuleRun:
     last_ok_at: datetime | None = None
     error_since: datetime | None = None
     last_query_at: datetime | None = None   # 마지막으로 본 수신 구간의 끝
+    query_at: datetime | None = None        # 이번 평가의 쿼리를 낸 시각
     last_gap: dict[str, Any] | None = None  # 평가가 늦어 보지 못한 구간 {from, to, sec, at}
 
     def as_dict(self) -> dict[str, Any]:
