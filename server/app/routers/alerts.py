@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from .. import db, repository
 from ..alerts import configdiff, health, ruleedit, targets
 from ..alerts.dispatcher import dispatcher
-from ..alerts.engine import engine
+from ..alerts.engine import _with_group, engine  # _with_group: 엔진과 같은 묶음 조건 (알림 뒤 이벤트 수)
 from ..alerts.health import RULE_LABELS
 from ..alerts.message import local
 from ..alerts.notifiers import SEVERITY_LABELS, NotifierError
@@ -604,8 +604,22 @@ async def end_silence(silence_id: int, request: Request, user: User = Depends(re
     return {"ok": True}
 
 
+async def _followup(alert: dict[str, Any]) -> dict[str, Any] | None:
+    """이 알림 뒤 같은 규칙·대상에서 들어온 이벤트 (B-35) — 같은 대상의 가장 최근 알림일 때만(뒤 알림이 이어서 센다).
+    지금 규칙의 조건으로 센다(규칙을 고쳤으면 고친 조건). 재알림 간격 동안 몇 건이 더 왔고 언제까지 계속됐는지가 사고 대응 증적이다."""
+    rule = next((r for r in engine.config.rules if r.name == alert["rule"]), None)
+    if rule is None or rule.kind != "count" or not alert["is_latest"]:
+        return None
+    f = _with_group(replace(rule.event_filter(), received_since=alert["fired_at"]), rule.group_by, alert["group_key"])
+    try:
+        result = await repository.count_and_last(f)
+    except db.QueryTimeout:
+        return None
+    return {"n": result["n"], "last_at": result["last_at"]}
+
+
 # 경로 변수 하나짜리 GET 이라 맨 마지막에 둔다 (/api/alerts/config, /api/alerts/silences 를 가리지 않게)
-@router.get("/api/alerts/{alert_id}")
+@router.get("/api/alerts/{alert_id}", dependencies=[Depends(read_time_limit)])
 async def get_alert(alert_id: int, request: Request):
     user = request.state.user
     row = await repository.get_alert(alert_id)
@@ -613,4 +627,5 @@ async def get_alert(alert_id: int, request: Request):
         raise HTTPException(404, "알림을 찾을 수 없습니다")
     if row["silence"]:
         row["silence"] = scrub_silence(user, row["silence"])
+    row["followup"] = await _followup(row)
     return row  # related_unresolved: 같은 규칙·대상의 해결 안 된 다른 알림 수 — 함께 해결할 수 있게 (재발은 따로 기록, ADR-029)

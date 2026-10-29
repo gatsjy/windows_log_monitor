@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
@@ -57,6 +57,11 @@ class AlertMessage:
     distinct_min: int = 0
     distinct_count: int = 0
     distinct_values: list[str] = field(default_factory=list)
+    # 같은 규칙·대상의 앞 알림 (B-35): 그 뒤 몇 건이 더 왔는지, 해결된 뒤 새로 발생한 재발인지
+    previous_id: int | None = None
+    previous_fired_at: datetime | None = None
+    since_previous: int = 0
+    recurred: bool = False
 
     # ------------------------------------------------------------ 직렬화
     def to_dict(self) -> dict[str, Any]:
@@ -64,14 +69,18 @@ class AlertMessage:
         if not self.distinct_field:   # 건수 규칙의 본문(웹훅 json·저장된 payload)은 예전과 같게
             for key in ("distinct_field", "distinct_min", "distinct_count", "distinct_values"):
                 data.pop(key)
-        for key in ("fired_at", "first_event_at", "last_event_at"):
-            data[key] = data[key].isoformat() if data[key] else None
+        if self.previous_id is None:   # 처음 알림의 본문도 예전과 같게
+            for key in ("previous_id", "previous_fired_at", "since_previous", "recurred"):
+                data.pop(key)
+        for key in ("fired_at", "first_event_at", "last_event_at", "previous_fired_at"):
+            if key in data:
+                data[key] = data[key].isoformat() if data[key] else None
         return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AlertMessage:
         values = dict(data)
-        for key in ("fired_at", "first_event_at", "last_event_at"):
+        for key in ("fired_at", "first_event_at", "last_event_at", "previous_fired_at"):
             if values.get(key):
                 values[key] = datetime.fromisoformat(values[key])
         known = cls.__dataclass_fields__
@@ -111,12 +120,32 @@ class AlertMessage:
         more = self.distinct_count - len(self.distinct_values)
         return f"서로 다른 {label}: " + ", ".join(self.distinct_values) + (f" … 외 {more:,}" if more > 0 else "")
 
+    def lifecycle_line(self) -> str:
+        """같은 규칙·대상의 앞 알림과의 관계 (B-35)."""
+        if self.previous_id is None:
+            return ""
+        if self.recurred:
+            return f"해결된 알림(#{self.previous_id}) 뒤 새로 발생했습니다 — 재알림 간격과 상관없이 알립니다"
+        return f"지난 알림(#{self.previous_id}, {local(self.previous_fired_at)}) 이후 이 대상에서 {self.since_previous:,}건"
+
+    def delayed_line(self) -> str:
+        """발생 시각이 집계 구간보다 한참 앞선 이벤트가 섞였다 — 장애 뒤 에이전트가 밀린 로그를 한꺼번에 보내면 몇 시간에
+        흩어진 이벤트가 '10분에 20건'처럼 보인다(B-35, ADR-039). 판정은 그대로(수신 기준), 받는 사람이 알게만 한다."""
+        if self.kind != "count" or not self.first_event_at or not self.window_sec:
+            return ""
+        window = timedelta(seconds=self.window_sec)
+        if self.fired_at - self.first_event_at <= max(2 * window, window + timedelta(hours=1)):
+            return ""
+        return (f"지연 수신분 포함 — 발생 시각 {local(self.first_event_at)} ~ {local(self.last_event_at)}"
+                " (밀린 로그를 한꺼번에 받았거나 PC 시계가 틀렸을 수 있습니다)")
+
     @property
     def detail(self) -> str:
-        """요약 아래에 붙는 설명. 설정 변경 알림은 첫 줄(요약)을 뺀 변경 목록."""
+        """요약 아래에 붙는 설명. 설정 변경 알림은 첫 줄(요약)을 뺀 변경 목록.
+        앞 알림과의 관계·지연 수신 줄을 앞에 붙인다 — 메일·메신저 형식이 모두 이것을 쓴다."""
         if self.kind == "config":
             return self.description.split("\n", 1)[1] if "\n" in self.description else ""
-        return self.description
+        return "\n".join(line for line in (self.lifecycle_line(), self.delayed_line(), self.description) if line)
 
     def text(self) -> str:
         lines = [self.title(), "", self.summary()]

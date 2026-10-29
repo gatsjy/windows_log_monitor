@@ -550,6 +550,13 @@ async def get_event(event_id: int) -> dict | None:
     return await db.fetch_one("SELECT * FROM events WHERE id = %s LIMIT 1", (event_id,))
 
 
+async def count_and_last(f: EventFilter) -> dict[str, Any]:
+    """조건에 맞는 건수와 마지막 수신 시각 (알림 뒤 이어진 이벤트, B-35)."""
+    where, params = where_clause(f)
+    return await db.fetch_one(sql.SQL("SELECT count(*) AS n, max(received_at) AS last_at FROM events WHERE {}").format(where),
+                              params)
+
+
 async def count(f: EventFilter, compare: bool = False) -> dict[str, int | None]:
     """조건에 맞는 건수. compare=True 면 같은 길이의 직전 기간 건수도 함께."""
     if not (compare and f.since):
@@ -962,6 +969,9 @@ async def get_alert(alert_id: int) -> dict | None:
         (row["rule"], row["group_key"], alert_id),
     )
     row["related_unresolved"] = related["n"]
+    later = await db.fetch_one("SELECT 1 AS x FROM alerts WHERE rule = %s AND group_key = %s AND fired_at > %s LIMIT 1",
+                               (row["rule"], row["group_key"], row["fired_at"]))
+    row["is_latest"] = later is None   # 같은 규칙·대상의 가장 최근 알림 (뒤 이벤트 수를 이 알림에 보일지, B-35)
     return row
 
 

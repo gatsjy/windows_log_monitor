@@ -74,8 +74,19 @@ def _in_cooldown(last: dict | None, now: datetime, cooldown: timedelta) -> bool:
 
 async def _resumed(base: EventFilter, rule: Rule, key: str, last: dict, since: datetime) -> bool:
     """무음이 끝난 뒤에 이 묶음의 이벤트가 새로 들어왔는가 (문제가 계속되는가)."""
-    after = replace(base, received_since=max(since, last["silenced_until"]))
-    return (await repository.count(_with_group(after, rule.group_by, key)))["current"] > 0
+    return await _received_after(base, rule, key, max(since, last["silenced_until"]))
+
+
+async def _received_after(base: EventFilter, rule: Rule, key: str, after: datetime) -> bool:
+    return (await repository.count(_with_group(replace(base, received_since=after), rule.group_by, key)))["current"] > 0
+
+
+def _recurred(last: dict | None) -> bool:
+    """해결된 알림이 마지막이다 — 해결한 뒤 새 이벤트가 있으면 재알림 간격과 상관없이 다시 알린다 (B-35)."""
+    return last is not None and last.get("status") == "resolved" and last.get("resolved_at") is not None
+
+
+SINCE_PREVIOUS_MAX = timedelta(days=7)   # '지난 알림 이후 n건'을 셀 때 거슬러 보는 한도 (오래전 알림이면 세지 않는다)
 
 
 def _link_params(rule: Rule, key: str, since: datetime) -> dict[str, str]:
@@ -413,8 +424,18 @@ class AlertEngine:
             last = await repository.last_alert(rule.name, key)
             if last is not None and _silence_over(last, now) and not await _resumed(base, rule, key, last, since):
                 last = {**last, "silenced_until": None}  # 무음 뒤 새 이벤트가 없으면 점검 중 잡음 → 보통 재알림 간격
-            if _in_cooldown(last, now, rule.cooldown):
+            # 담당자가 해결한 뒤 같은 문제가 다시 생겼다 — 해결 직후 창에 남은 같은 이벤트로는 울리지 않게 해결 뒤 수신분만 본다.
+            # 예전에는 해결해도 재알림 간격(5분~2시간) 동안 다시 죽은 서비스를 알리지 않았다. 확인함(acked)은 간격을 지킨다
+            recurred = _recurred(last) and await _received_after(base, rule, key, max(since, last["resolved_at"]))
+            if not recurred and _in_cooldown(last, now, rule.cooldown):
                 continue
+            since_previous = 0
+            if last is not None and now - last["fired_at"] <= SINCE_PREVIOUS_MAX:
+                try:   # 지난 알림 이후 이 대상에서 몇 건이 더 왔나 (건너뛴 동안의 규모 — ISMS 2.11.5 '언제까지 계속됐나')
+                    after = replace(base, received_since=last["fired_at"])
+                    since_previous = (await repository.count(_with_group(after, rule.group_by, key)))["current"]
+                except db.QueryTimeout:
+                    since_previous = 0
             scoped = _with_group(base, rule.group_by, key)
             try:
                 samples = await repository.list_events(scoped, SAMPLE_COUNT)
@@ -429,6 +450,9 @@ class AlertEngine:
                 samples=[_sample(s) for s in samples], tags=list(rule.tags),
                 distinct_field=rule.distinct_field or "", distinct_min=rule.distinct_min,
                 distinct_count=row.get("dn") or 0, distinct_values=[str(v) for v in (row.get("dvals") or [])],
+                previous_id=last["id"] if last is not None else None,
+                previous_fired_at=last["fired_at"] if last is not None else None,
+                since_previous=since_previous, recurred=recurred,
             )
             fired.append(await self.fire(message, rule.notify))
         return fired

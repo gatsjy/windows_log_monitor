@@ -32,6 +32,22 @@ export function silenceScope(s) {
   return `${s.rule ?? '모든 규칙'} · ${s.group_key == null ? '모든 대상' : s.group_key || '(대상 없음)'}`;
 }
 
+/** 같은 규칙·대상의 앞 알림과의 관계, 이 알림 뒤 이어진 이벤트, 지연 수신 (B-35). 서버 message.py 의 문구와 같은 뜻 */
+function lifecycle(alert, p) {
+  const lines = [];
+  if (p.recurred) lines.push(`해결된 알림(#${p.previous_id}) 뒤 새로 발생했습니다 — 재알림 간격과 상관없이 알렸습니다`);
+  else if (p.previous_id) lines.push(`지난 알림(#${p.previous_id}, ${fmtTime(p.previous_fired_at)}) 이후 이 대상에서 ${fmtNum(p.since_previous || 0)}건`);
+  const f = alert.followup;
+  if (f?.n) lines.push(`이 알림 뒤 같은 조건으로 ${fmtNum(f.n)}건 더 들어왔습니다 · 마지막 ${fmtRelative(f.last_at)}`);
+  if (p.kind === 'count' && p.first_event_at && p.window_sec) {
+    const lag = (new Date(p.fired_at) - new Date(p.first_event_at)) / 1000;
+    if (lag > Math.max(2 * p.window_sec, p.window_sec + 3600)) {
+      lines.push(`지연 수신분 포함 — 발생 시각 ${fmtTime(p.first_event_at)} ~ ${fmtTime(p.last_event_at)} (밀린 로그를 한꺼번에 받았거나 PC 시계가 틀렸을 수 있습니다)`);
+    }
+  }
+  return lines.length ? html`<div class="hint-box" style="margin:-6px 0 14px;font-size:12.5px">${lines.map((l) => html`<div>${l}</div>`)}</div>` : '';
+}
+
 export function deliveryChips(deliveries = []) {
   if (!deliveries.length) return html`<span class="muted">대상 없음</span>`;
   return html`${deliveries.map((d) => {
@@ -114,6 +130,7 @@ export async function openAlert(id, { onChange } = {}) {
         : p.distinct_field
           ? `최근 ${fmtDuration(p.window_sec)} 동안 서로 다른 ${GROUP_LABELS[p.distinct_field] ?? p.distinct_field.replace(/^f\./, '')} ${fmtNum(p.distinct_count)}개 (기준 ${fmtNum(p.distinct_min)}개 이상) · 이벤트 ${fmtNum(alert.event_count)}건`
           : `최근 ${fmtDuration(p.window_sec)} 동안 조건에 맞는 이벤트 ${fmtNum(alert.event_count)}건 (기준 ${fmtNum(p.threshold)}건 이상)`}</p>
+      ${lifecycle(alert, p)}
       ${p.distinct_values?.length ? html`<p class="muted" style="margin:-8px 0 14px;font-size:12.5px">${p.distinct_values.join(', ')}${p.distinct_count > p.distinct_values.length ? ` … 외 ${fmtNum(p.distinct_count - p.distinct_values.length)}` : ''}</p>` : ''}
 
       <div class="handle-box">

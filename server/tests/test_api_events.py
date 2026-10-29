@@ -213,7 +213,7 @@ def test_search_routes_have_time_limit(client, monkeypatch):
 
     for path in ("/api/events?since=1h", "/api/events/999999", "/api/stats/count?since=1h",
                  "/api/stats/timeseries?since=1h", "/api/stats/top?since=1h&field=host", "/api/stats/summary",
-                 "/api/agents", "/api/fields", "/api/search/parse?query=host:A"):
+                 "/api/agents", "/api/fields", "/api/search/parse?query=host:A", "/api/alerts/999999"):
         assert limited("GET", path), path
     rule = {"name": "미리보기", "severity": "error", "match": {"event_id": "4625"}, "group_by": "ip",
             "window_sec": 600, "threshold": 2, "cooldown_sec": 3600}
