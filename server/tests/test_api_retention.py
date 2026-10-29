@@ -80,7 +80,9 @@ def test_rotation_archives_then_drops(client):
 def test_status_and_verify(client):
     status = client.get("/api/settings/retention").json()
     assert status["policy"] == {"db_retention_days": 90, "retention_days": 365, "archiving": True,
-                                "archive_dir": str(ARCHIVE)}
+                                "archive_dir": str(ARCHIVE), "alert_retention_days": 365, "audit_retention_days": 1095,
+                                "report_retention_days": 1095, "warnings": [],
+                                "legal": {"log_days": 365, "sensitive_log_days": 730, "audit_days": 1095}}
     assert [a["partition"] for a in status["archives"]] == [OLD_NAME]
     result = client.post("/api/settings/retention/verify", headers=CSRF).json()["items"]
     assert result[0]["ok"]
@@ -130,3 +132,31 @@ def test_partition_ddl_does_not_queue_behind_a_backup(client, monkeypatch):
             " VALUES (now(), now(), 'PC', 'winevtlog', 4, '백업 중 수집', '{}'::jsonb)")
     client.portal.call(parts.run_maintenance)  # 백업이 끝나면 다음 주기에 만든다
     assert future in partitions()
+
+
+def test_audit_log_outlives_the_log_retention(client):
+    """감사로그(권한 부여·변경·말소 기록)는 로그와 따로 3년 — 예전에는 로그와 같은 365일에 지워졌다 (ADR-040)."""
+    from app import partitions
+
+    sql("INSERT INTO audit_log (at, actor, action, target) VALUES (now() - interval '400 days', 'ret-test', 'user.role', 'kim'),"
+        " (now() - interval '1200 days', 'ret-test', 'user.create', 'old')")
+    client.portal.call(partitions.purge_audit)
+    left = {r[0] for r in sql("SELECT target FROM audit_log WHERE actor = 'ret-test'")}
+    assert left == {"kim"}   # 400일(로그 보관기간 365일보다 오래) 은 남고, 1200일(3년 넘음)만 지운다
+    purged = sql("SELECT detail FROM audit_log WHERE action = 'retention.purge_audit' ORDER BY id DESC LIMIT 1")[0][0]
+    assert purged["retention_days"] == 1095 and purged["deleted"] >= 1
+
+
+def test_alert_retention_follows_its_own_setting(client, monkeypatch):
+    from dataclasses import replace
+
+    from app import partitions
+
+    sql("INSERT INTO alerts (rule, severity, group_key, event_count, payload, fired_at)"
+        " VALUES ('보관 시험', 'warning', '', 1, '{}'::jsonb, now() - interval '200 days')")
+    client.portal.call(partitions.purge_alerts)
+    assert sql("SELECT count(*) FROM alerts WHERE rule = '보관 시험'")[0][0] == 1   # 기본: 로그와 같은 365일
+    monkeypatch.setattr(partitions, "settings", replace(partitions.settings, alert_retention_days=180))
+    client.portal.call(partitions.purge_alerts)
+    assert sql("SELECT count(*) FROM alerts WHERE rule = '보관 시험'")[0][0] == 0
+

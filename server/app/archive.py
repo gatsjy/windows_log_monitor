@@ -3,6 +3,9 @@
 파일 형식 (WLM_ARCHIVE_DIR, 기본 ./archive):
   events_2026_06.jsonl.gz        한 줄에 이벤트 하나 (JSON). 컬럼 전부 + 원본(raw)
   events_2026_06.meta.json       {partition, from, to, rows, sha256, bytes, created_at, format}
+형식 v2 부터 공통 필드(category·username·src_ip, 마이그레이션 007)도 넣는다. v1 파일에는 없었다 — 복원한 달에서
+user:/ip:/분류 검색이 0건이 되고 분류로 범위를 정한 사용자에게 보이지 않았다. v1 을 복원할 때는 원본에서 다시 구한다
+(normalizers.derive_common, 정규화와 같은 값).
 SHA-256 은 .gz 파일 전체의 해시. 만들 때 audit_log 에도 남기므로 나중에 위·변조 여부를 대조할 수 있다 (ISMS 2.9.4).
 
 대용량 파티션도 메모리를 쓰지 않도록 서버 쪽 커서로 5천 건씩 읽고, 압축·파일 쓰기는 스레드에서 한다.
@@ -24,11 +27,14 @@ from psycopg import sql
 
 from . import db
 from .config import settings
+from .normalizers import derive_common
 
 log = logging.getLogger(__name__)
 
-FORMAT = "wlm-events-jsonl-v1"
-COLUMNS = ("id", "received_at", "ts", "host", "source", "channel", "provider", "event_id", "level", "message", "raw")
+FORMAT = "wlm-events-jsonl-v2"
+COLUMNS = ("id", "received_at", "ts", "host", "source", "category", "channel", "provider", "event_id", "level",
+           "username", "src_ip", "message", "raw")
+COMMON = ("category", "username", "src_ip")   # v1 보관 파일에는 없다
 FETCH = 5000
 
 
@@ -133,7 +139,7 @@ async def restore(partition: str, hold_days: int, actor: str) -> int:
     if not checked["ok"]:
         raise ArchiveError(f"{partition}: {checked['problem']} — 복원하지 않습니다")
     start, end = datetime.fromisoformat(checked["from"]), datetime.fromisoformat(checked["to"])
-    restored = 0
+    restored = derived = 0
     async with await db.connect_autocommit() as conn:
         await conn.execute(sql.SQL("CREATE TABLE IF NOT EXISTS {} PARTITION OF events FOR VALUES FROM ({}) TO ({})").format(
             sql.Identifier(partition), sql.Literal(start), sql.Literal(end)))
@@ -147,6 +153,11 @@ async def restore(partition: str, hold_days: int, actor: str) -> int:
                 with gzip.open(data_path(partition), "rt", encoding="utf-8") as fh:
                     for line in fh:
                         row = json.loads(line)
+                        if any(c not in row for c in COMMON):   # v1: 원본에서 다시 구한다
+                            row["category"], row["username"], row["src_ip"] = derive_common(
+                                row.get("source"), row.get("channel"), row.get("provider"), row.get("event_id"),
+                                row.get("message"), row.get("raw"))
+                            derived += 1
                         row["raw"] = json.dumps(row["raw"], ensure_ascii=False)
                         await copy.write_row([row[c] for c in COLUMNS])
                         restored += 1
@@ -155,7 +166,8 @@ async def restore(partition: str, hold_days: int, actor: str) -> int:
                 " ON CONFLICT (name) DO UPDATE SET hold_until = EXCLUDED.hold_until, created_by = EXCLUDED.created_by",
                 (partition, hold_days, "보관 파일 복원", actor))
     await db.audit(actor, "retention.restore_archive", partition,
-                   {"rows": restored, "hold_days": hold_days, "sha256": checked["sha256"]})
+                   {"rows": restored, "hold_days": hold_days, "sha256": checked["sha256"],
+                    "format": checked.get("format"), "common_fields_derived": derived})
     return restored
 
 

@@ -124,41 +124,60 @@ async def drop_expired(conn, now: datetime | None = None) -> list[str]:
     return dropped
 
 
+# 법정 최소 보관기간 (개인정보의 안전성 확보조치 기준) — 짧게 설정하면 기동 로그·로그 보관 화면·점검 보고서가 알린다
+LEGAL_MIN_LOG_DAYS = 365          # 제8조: 접속기록 1년 이상 (민감정보·고유식별정보·5만 명 이상이면 2년)
+LEGAL_SENSITIVE_LOG_DAYS = 730
+LEGAL_MIN_AUDIT_DAYS = 1095       # 제5조: 권한 부여·변경·말소 내역 최소 3년
+
+
+def retention_warnings() -> list[str]:
+    """보관기간이 법정 최소보다 짧은 설정. 어떤 로그가 '접속기록'인지는 사이트가 판단하므로 2년 기준은 안내만 한다."""
+    out = []
+    if settings.retention_days < LEGAL_MIN_LOG_DAYS:
+        out.append(f"로그 보관 {settings.retention_days}일 — 접속기록 법정 최소 1년(365일)보다 짧습니다 (WLM_RETENTION_DAYS)")
+    if settings.audit_retention_days < LEGAL_MIN_AUDIT_DAYS:
+        out.append(f"감사로그 보관 {settings.audit_retention_days}일 — 권한 부여·변경·말소 기록 법정 최소 3년(1095일)보다 "
+                   "짧습니다 (WLM_AUDIT_RETENTION_DAYS)")
+    if settings.report_retention_days < LEGAL_MIN_LOG_DAYS:
+        out.append(f"점검 보고서 보관 {settings.report_retention_days}일 — 점검 증적을 1년 이상 남기세요 (WLM_REPORT_RETENTION_DAYS)")
+    return out
+
+
 async def purge_alerts(now: datetime | None = None) -> None:
-    """알림 이력도 로그와 같은 보관기간을 적용한다."""
+    """알림 이력(처리 기록·끝난 무음 포함)은 알림 보관기간(기본 = 로그 보관기간)."""
     from . import repository  # 순환 import 방지
 
-    cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.retention_days)
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.alert_retention_days)
     deleted, silences = await repository.purge_alerts(cutoff)
     if deleted or silences:
         log.warning("보관기간 만료 알림 이력 삭제: 알림 %s건, 끝난 무음 %s건", deleted, silences)
         await db.audit("system", "retention.purge_alerts", "alerts",
-                       {"deleted": deleted, "silences_deleted": silences, "retention_days": settings.retention_days,
+                       {"deleted": deleted, "silences_deleted": silences, "retention_days": settings.alert_retention_days,
                         "cutoff": cutoff.isoformat()})
 
 
 async def purge_audit(now: datetime | None = None) -> None:
-    """감사로그 보관기간도 로그와 같다 (최소 1년 권장). 삭제 사실 자체를 다시 감사로그에 남긴다."""
+    """감사로그는 감사로그 보관기간(기본 3년 — 권한 부여·변경·말소 기록, 제5조). 삭제 사실 자체를 다시 감사로그에 남긴다."""
     from . import repository
 
-    cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.retention_days)
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.audit_retention_days)
     deleted = await repository.purge_audit(cutoff)
     if deleted:
         log.warning("보관기간 만료 감사로그 삭제: %s건", deleted)
         await db.audit("system", "retention.purge_audit", "audit_log",
-                       {"deleted": deleted, "retention_days": settings.retention_days, "cutoff": cutoff.isoformat()})
+                       {"deleted": deleted, "retention_days": settings.audit_retention_days, "cutoff": cutoff.isoformat()})
 
 
 async def purge_reports(now: datetime | None = None) -> None:
-    """점검 보고서도 로그와 같은 보관기간 (ISMS 점검 증적). 지운 사실은 감사로그에 남긴다."""
+    """점검 보고서는 보고서 보관기간(기본 3년 — ISMS 점검 증적). 지운 사실은 감사로그에 남긴다."""
     from . import repository
 
-    cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.retention_days)
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.report_retention_days)
     deleted = await repository.purge_reports(cutoff)
     if deleted:
         log.warning("보관기간 만료 점검 보고서 삭제: %s건", deleted)
         await db.audit("system", "retention.purge_reports", "reports",
-                       {"deleted": deleted, "retention_days": settings.retention_days, "cutoff": cutoff.isoformat()})
+                       {"deleted": deleted, "retention_days": settings.report_retention_days, "cutoff": cutoff.isoformat()})
 
 
 IIS_LAYOUT_KEEP_DAYS = 35  # 하루 단위 파일이면 한 달 남짓 — 그보다 오래된 파일에 줄이 다시 올 일은 드물다

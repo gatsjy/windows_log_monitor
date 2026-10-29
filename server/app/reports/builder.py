@@ -156,6 +156,7 @@ async def _retention() -> dict[str, Any]:
     check = (await repository.latest_audit(["retention.verify_archives"])).get("retention.verify_archives")
     return {
         "db_retention_days": settings.db_retention_days, "retention_days": settings.retention_days,
+        "audit_retention_days": settings.audit_retention_days, "warnings": partitions.retention_warnings(),
         "partitions": len(parts), "rows_estimate": sum(p["rows_estimate"] for p in parts),
         "oldest_partition": _iso(min((p["from"] for p in parts), default=None)),
         "archives": len(files), "archives_missing": sum(1 for f in files if not f["exists"]),
@@ -204,6 +205,8 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
         out.append({"level": "warn", "text": f"연락이 끊긴 PC {p['agents']['offline']:,}대"})
     if p["retention"]["archives_missing"]:
         out.append({"level": "bad", "text": f"보관 파일 {p['retention']['archives_missing']}개가 없습니다 (목록에는 있음)"})
+    for warning in p["retention"].get("warnings") or []:
+        out.append({"level": "warn", "text": f"보관기간: {warning}"})
     bad = integrity_bad_count(p["retention"]["last_integrity_check"])
     if bad:
         out.append({"level": "bad", "text": f"마지막 보관 파일 무결성 확인에서 문제 {bad}건"})

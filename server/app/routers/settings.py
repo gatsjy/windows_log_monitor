@@ -460,6 +460,11 @@ async def retention_status():
         "policy": {
             "db_retention_days": settings.db_retention_days, "retention_days": settings.retention_days,
             "archiving": partitions.archiving_enabled(), "archive_dir": settings.archive_dir,
+            "alert_retention_days": settings.alert_retention_days, "audit_retention_days": settings.audit_retention_days,
+            "report_retention_days": settings.report_retention_days,
+            "warnings": partitions.retention_warnings(),
+            "legal": {"log_days": partitions.LEGAL_MIN_LOG_DAYS, "sensitive_log_days": partitions.LEGAL_SENSITIVE_LOG_DAYS,
+                      "audit_days": partitions.LEGAL_MIN_AUDIT_DAYS},
         },
         "partitions": parts,
         "archives": archive.list_archives(),

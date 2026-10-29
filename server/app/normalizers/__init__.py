@@ -14,7 +14,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from . import generic, iis, mssql, syslog, windows
-from .base import Event, Heartbeat, pick_host
+from .base import Event, Heartbeat, clean_ip, clean_user, pick_host
 from .categories import classify
 
 Normalizer = Callable[[dict, datetime], Event | None]
@@ -54,7 +54,31 @@ def normalize(record: dict, now: datetime, iis_ctx: iis.IisContext | None = None
     return event
 
 
+def derive_common(source: str | None, channel: str | None, provider: str | None, event_id: int | None,
+                  message: str | None, raw: dict | None) -> tuple[str | None, str | None, str | None]:
+    """저장된 행(원본 + 서버가 덧붙인 raw.<소스>)만으로 (category, username, src_ip) 를 다시 구한다.
+    옛 보관 파일(형식 v1)은 이 세 컬럼이 빠져 있어 복원할 때 쓴다 — 정규화기를 다시 돌리지 않는 것은
+    IIS 열 순서(요청 문맥)·MSSQL 짝(메모리 상태) 없이도 저장 당시와 같은 값을 얻기 위해서다(test_normalizers 왕복 시험)."""
+    raw = raw if isinstance(raw, dict) else {}
+    message = message or ""
+    category = classify(source, channel, provider)
+    if source == windows.SOURCE:
+        derived = (raw.get(windows.SOURCE) or {}).get("EventData") if isinstance(raw.get(windows.SOURCE), dict) else None
+        user, ip = windows.common_fields(raw, event_id, message, derived if isinstance(derived, dict) else None)
+    elif source == iis.SOURCE:
+        parsed = raw.get("iis") if isinstance(raw.get("iis"), dict) else {}
+        user, ip = clean_user(parsed.get("username")), clean_ip(parsed.get("client_ip"))
+    elif source == mssql.SOURCE:
+        parsed = raw.get("mssql") if isinstance(raw.get("mssql"), dict) else {}
+        user, ip = (clean_user(parsed.get("user")), clean_ip(parsed.get("client"))) if parsed.get("login") else (None, None)
+    elif source in (syslog.SYSLOG_SOURCE, syslog.JOURNALD_SOURCE):
+        user, ip = syslog.ssh_fields(message)
+    else:
+        user = ip = None
+    return category, user, ip
+
+
 IisContext = iis.IisContext
 layout_keys = iis.layout_keys
 
-__all__ = ["Event", "Heartbeat", "IisContext", "layout_keys", "normalize"]
+__all__ = ["Event", "Heartbeat", "IisContext", "derive_common", "layout_keys", "normalize"]

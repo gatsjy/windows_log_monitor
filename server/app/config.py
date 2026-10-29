@@ -18,6 +18,12 @@ def _int(name: str, default: int) -> int:
     return int(_env(name, str(default)))
 
 
+def _int_opt(name: str) -> int | None:
+    """값이 없거나 빈 값이면 None — compose 가 설정하지 않은 변수를 빈 값으로 넘길 때 다른 설정을 따르게"""
+    value = _env(name, "").strip()
+    return int(value) if value else None
+
+
 def _list(name: str) -> tuple[str, ...]:
     return tuple(s.strip() for s in _env(name, "").split(",") if s.strip())
 
@@ -41,6 +47,13 @@ class Settings:
     #   db_retention_days >= retention_days 이면 파일 보관 없이 DB 에서 바로 삭제
     retention_days: int = _int("RETENTION_DAYS", 365)
     db_retention_days: int = _int("DB_RETENTION_DAYS", 90)
+    # 기록 종류별 보관기간 (ADR-040, 개인정보의 안전성 확보조치 기준 제5조·제8조)
+    #   알림 이력(처리 기록·무음 포함): 기본은 로그와 같다 — 사고 대응 증적
+    #   감사로그(이 시스템의 접속·권한 부여·변경·말소 기록): 최소 3년 — 로그와 같은 날 지우면 권한 변경 기록이 1년 만에 사라졌다
+    #   점검 보고서(점검 증적): 기본 3년
+    alert_retention_days: int = _int_opt("ALERT_RETENTION_DAYS") or retention_days
+    audit_retention_days: int = _int("AUDIT_RETENTION_DAYS", 1095)
+    report_retention_days: int = _int("REPORT_RETENTION_DAYS", 1095)
     archive_dir: str = _env("ARCHIVE_DIR", "/app/archive")
     # DB 백업 일정 (backup 서비스가 실제로 돌린다, deploy/backup/backup.sh). 여기서는 화면 표시와 '오래됨' 판단에만 쓴다
     backup_time: str = _env("BACKUP_TIME", "02:30")

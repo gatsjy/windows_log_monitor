@@ -661,6 +661,31 @@ function backupCard(b) {
   </div></section>`;
 }
 
+/** 기록 종류별 보관기간과 법정 최소 (ADR-040) — 짧게 설정했으면 빨간 줄 */
+function retentionKinds(p) {
+  if (!p.audit_retention_days) return '';   // 옛 서버
+  const L = p.legal;
+  const rows = [
+    ['로그 (접속기록)', p.retention_days, L.log_days, 'WLM_RETENTION_DAYS', `1년 이상 · 진료정보(민감정보) 처리 시스템은 ${L.sensitive_log_days / 365}년`],
+    ['알림 이력·처리 기록', p.alert_retention_days, null, 'WLM_ALERT_RETENTION_DAYS', '정하지 않으면 로그와 같음'],
+    ['감사로그 (이 시스템의 접속·권한 변경)', p.audit_retention_days, L.audit_days, 'WLM_AUDIT_RETENTION_DAYS', '권한 부여·변경·말소 기록 3년 이상'],
+    ['점검 보고서', p.report_retention_days, L.log_days, 'WLM_REPORT_RETENTION_DAYS', '점검 증적'],
+  ];
+  return html`
+    <div class="section-title">기록 종류별 보관기간</div>
+    ${p.warnings.map((t) => html`<div class="error-box" style="margin-bottom:8px">${t}</div>`)}
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>기록</th><th class="r">보관</th><th class="r">법정 최소</th><th>설정</th><th>기준</th></tr></thead>
+      <tbody>${rows.map(([label, days, min, env, note]) => html`<tr>
+        <td>${label}</td>
+        <td class="r num">${fmtNum(days)}일${min && days < min ? html` <span class="tag-bad">미달</span>` : ''}</td>
+        <td class="r num">${min ? `${fmtNum(min)}일` : '–'}</td>
+        <td><code>${env}</code></td>
+        <td class="muted">${note}</td></tr>`)}</tbody></table></div>
+    ${p.retention_days < L.sensitive_log_days ? html`<p class="muted" style="font-size:12.5px;margin:8px 0 0">진료정보 등 민감정보를 처리하는
+      시스템의 접속기록이면 <code>WLM_RETENTION_DAYS</code> 를 ${fmtNum(L.sensitive_log_days)} 이상으로 두세요 (개인정보의 안전성 확보조치 기준 제8조).</p>` : ''}`;
+}
+
 async function retention(body) {
   const s = await api.get('/api/settings/retention');
   const p = s.policy;
@@ -677,6 +702,7 @@ async function retention(body) {
       </div>
       <p class="muted" style="font-size:12.5px;margin:10px 0 0">월 단위로 1시간마다 자동 실행됩니다. 기간은 서버 <code>.env</code> 의
         <code>WLM_DB_RETENTION_DAYS</code>, <code>WLM_RETENTION_DAYS</code> 로 정합니다. 보관 파일 위치: <code>${p.archive_dir}</code> (백업 대상)</p>
+      ${retentionKinds(p)}
       <div class="toolbar" style="margin-top:10px"><button class="btn" data-rotate>지금 실행</button>
         <button class="btn" data-verify>보관 파일 무결성 확인</button><span data-msg></span></div>
     </div></section>

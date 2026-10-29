@@ -66,7 +66,11 @@ async def lifespan(_: FastAPI):
     task = asyncio.create_task(_maintenance_loop())
     alert_task = asyncio.create_task(alert_engine.run_forever())
     report_task = asyncio.create_task(report_scheduler.run_forever()) if settings.report_scheduler else None
-    log.info("Log Monitor %s 시작 (보관기간 %s일)", __version__, settings.retention_days)
+    log.info("Log Monitor %s 시작 (보관기간: 로그 %s일 · 알림 %s일 · 감사로그 %s일 · 점검 보고서 %s일)", __version__,
+             settings.retention_days, settings.alert_retention_days, settings.audit_retention_days,
+             settings.report_retention_days)
+    for warning in partitions.retention_warnings():
+        log.warning("보관기간 확인 필요: %s", warning)
     try:
         yield
     finally:

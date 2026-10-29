@@ -466,3 +466,35 @@ def test_mssql_error_header_pairs_only_within_the_same_file():
     b1 = normalize(mssql(stamp + "The transaction log is full.", file="I1\\ERRORLOG"), NOW)
     b2 = normalize(mssql(stamp + "I/O error detected.", file="I2\\ERRORLOG"), NOW)
     assert (b1.event_id, b2.event_id) == (9002, 824)
+
+
+# ------------------------------------------------ 저장된 값만으로 공통 필드 다시 구하기 (옛 보관 파일 복원)
+
+def _roundtrip_records():
+    import json
+    from pathlib import Path
+
+    real = [json.loads(line) for line in (Path(__file__).resolve().parent / "fixtures" / "winevtlog" / "agent-fb4.0.14.jsonl")
+            .read_text(encoding="utf-8").splitlines() if line.strip()]
+    yield from ({**r, "agent_host": "WIN-CI", "log_source": "winevtlog"} for r in real)
+    yield winevt()                                                       # EventData 맵을 보낸 레코드
+    yield winevt(EventID=18456, ProviderName="MSSQLSERVER", Channel="Application", EventData=None,
+                 Message="Login failed for user 'sa'. Reason: x [CLIENT: 10.9.8.7]")
+    yield iis(IIS_LINE)
+    yield mssql("2026-10-04 10:15:22.53 Logon       Login failed for user 'kim'. Reason: x [CLIENT: 10.0.0.5]")
+    yield mssql("2026-10-04 10:15:22.53 spid51      Starting up database 'ERP'.")
+    yield {"pri": 38, "host": "lnx", "ident": "sshd", "log_source": "syslog",
+           "message": "Failed password for invalid user admin from 203.0.113.45 port 40022 ssh2"}
+    yield {"MESSAGE": "Invalid user bob from 198.51.100.4", "_HOSTNAME": "lnx2", "SYSLOG_IDENTIFIER": "sshd",
+           "log_source": "journald"}
+    yield {"log": "2026-10-03 ERROR something broke", "log_source": "file", "log_channel": "app"}
+
+
+def test_derive_common_matches_normalize_for_every_source():
+    from app.normalizers import derive_common
+
+    events = [e for e in (normalize(r, NOW) for r in _roundtrip_records()) if isinstance(e, Event)]
+    assert len(events) > 20 and any(e.username for e in events) and any(e.src_ip for e in events)
+    for e in events:
+        assert derive_common(e.source, e.channel, e.provider, e.event_id, e.message, e.raw) == \
+            (e.category, e.username, e.src_ip), (e.source, e.event_id, e.message[:60])

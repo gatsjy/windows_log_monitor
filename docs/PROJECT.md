@@ -471,7 +471,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 - **화면 '점검 보고서'(`#/reports`, `reports.view`):** 이력(점검 필요 수·전송 결과·점검 확인), 열람(서버가 만든 메일과 같은 문서를 sandbox iframe 으로), **점검 확인**(무엇을 보았고 어떻게 조치했는지, 한 번만·고칠 수 없음), 인쇄용으로 열기(PDF 저장), 지금 만들기(어제·지난주, 보내지 않음), 설정된 받는 곳으로 보내기(`settings.manage`).
 - **환경설정 '점검 보고서':** 일간 사용·시각, 주간 사용·요일·시각, 받는 곳(수신 그룹·웹훅).
 - 보고서는 모든 PC·분류를 담으므로 조회 범위가 정해진 사용자는 `reports.view` 가 있어도 볼 수 없습니다.
-- 보관기간(`WLM_RETENTION_DAYS`)이 지나면 지우고 감사로그 `retention.purge_reports` 를 남깁니다.
+- 보관기간(`WLM_REPORT_RETENTION_DAYS`, 기본 1095일)이 지나면 지우고 감사로그 `retention.purge_reports` 를 남깁니다.
 - `WLM_REPORT_SCHEDULER=off` 면 정기 실행을 하지 않습니다(지금 만들기만). 여러 대 중 한 대만 돌리거나 테스트에서 씁니다.
 - `WLM_DISPLAY_TZ` 이름이 틀리면(오타) 멈추지 않고 UTC 로 계산하며 기동 때 경고합니다(`config.display_zone()`, 알림·수집과 같은 규칙).
 - 메일 링크(`#/reports/<번호>`)를 `reports.view` 가 없는 사용자가 열면 대시보드로 가고 '권한이 없습니다'를 알립니다.
@@ -597,7 +597,9 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
 ```
 
 - **실행:** 매시간 자동(`app/partitions.py: drop_expired`). 화면 '로그 보관'의 **지금 실행**이나 CLI `rotate-now` 로 즉시 실행할 수 있습니다.
-- **보관 파일 형식:** 한 줄에 이벤트 하나인 JSON(모든 컬럼 + 원본 raw)을 gzip 으로 압축합니다.
+- **보관 파일 형식:** 한 줄에 이벤트 하나인 JSON(모든 컬럼 + 원본 raw)을 gzip 으로 압축합니다(형식 `wlm-events-jsonl-v2`).
+  - v2 부터 공통 필드(`category`·`username`·`src_ip`)도 넣습니다. 옛 v1 파일을 복원하면 원본에서 다시 구해 채웁니다(`normalizers.derive_common`, 감사로그 detail 의 `common_fields_derived`).
+  - `events` 의 열과 보관 파일의 열이 같은지 시험이 봅니다 — 열을 더하면 `archive.COLUMNS` 에도.
   - 서버 쪽 커서로 5천 건씩 읽고, 압축은 스레드에서 해서 수집을 막지 않습니다.
   - 기록한 행 수가 파티션 행 수와 다르면 파일을 버리고 파티션을 지우지 않습니다.
 - **안전장치:**
@@ -611,7 +613,8 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
   - `hold_days` 동안은 자동 정리에서 빠지고, 기간이 지나면 다시 지워집니다(파일은 그대로).
   - 해시가 맞지 않으면 복원을 거부합니다.
 - **파일 보관 끄기:** `WLM_DB_RETENTION_DAYS >= WLM_RETENTION_DAYS` 로 두면 파일 보관 없이 DB 에서 바로 삭제합니다.
-- **알림 이력·감사로그**는 `WLM_RETENTION_DAYS` 동안 DB 에 둡니다.
+- **기록 종류별 보관기간 (ADR-040):** 알림 이력·처리 기록은 `WLM_ALERT_RETENTION_DAYS`(비우면 로그와 같음), 감사로그는 `WLM_AUDIT_RETENTION_DAYS`(기본 1095일 — 권한 부여·변경·말소 기록 3년), 점검 보고서는 `WLM_REPORT_RETENTION_DAYS`(기본 1095일) 동안 DB 에 둡니다.
+  - 법정 최소(접속기록 1년, 권한 기록 3년)보다 짧게 정하면 기동 로그 경고, 로그 보관 화면의 빨간 줄, 점검 보고서 '점검 필요'로 알립니다. 진료정보(민감정보) 처리 시스템의 접속기록이면 `WLM_RETENTION_DAYS` 를 730 이상으로 둡니다(안내만).
 - **그 밖의 로테이션:**
   - **Docker 컨테이너 로그:** 서비스마다 `json-file` 50MB × 5개로 제한합니다(`docker-compose.yml` 의 `x-logging`).
   - **에이전트 버퍼:** 서버 장애 때 디스크에 쌓는 버퍼의 상한은 1GB 입니다(`storage.total_limit_size`). 넘치면 오래된 것부터 버립니다.
@@ -645,6 +648,16 @@ HTTPS·에이전트 TLS (ADR-036, AIRGAP.md §7.5):
 | `WLM_HSTS_MAX_AGE` | (빈 값) | https 응답의 HSTS 초. 비우면 보내지 않음, `0` 이면 `max-age=0`(되돌릴 때 브라우저의 기억을 지움). includeSubDomains 없음 |
 | `WLM_COOKIE_SECURE` | `false` | https 요청은 자동으로 Secure. true 면 http 에서도 강제하고 http 로그인은 400 |
 | `WLM_SEARCH_TIMEOUT_SEC` | `30` | 화면 조회 쿼리 시간 상한 (ADR-035) |
+
+보관기간 (§9, ADR-040):
+
+| 변수 | 기본값 | 뜻 |
+|---|---|---|
+| `WLM_DB_RETENTION_DAYS` | `90` | DB 에서 바로 검색되는 기간. 지나면 압축 보관 파일로 |
+| `WLM_RETENTION_DAYS` | `365` | 로그 전체 보관기간(보관 파일 포함). 접속기록 법정 최소 1년, 진료정보 처리 시스템이면 730 |
+| `WLM_ALERT_RETENTION_DAYS` | (로그와 같음) | 알림 이력·처리 기록·끝난 무음 |
+| `WLM_AUDIT_RETENTION_DAYS` | `1095` | 감사로그(이 시스템의 접속·권한 부여·변경·말소 기록). 법정 최소 3년 |
+| `WLM_REPORT_RETENTION_DAYS` | `1095` | 점검 보고서(점검 증적) |
 
 ## 12. 확장 가이드
 
