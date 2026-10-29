@@ -113,7 +113,7 @@
 
 - 표의 '우리 상태': ✅ 있음 · △ 일부 · ❌ 없음 (2026-10-29 코드 기준).
 - 'BACKLOG' 칸은 [BACKLOG.md](BACKLOG.md) 항목 번호입니다. 우선순위는 BACKLOG 요약 표를 따릅니다.
-- **다음 순서(P1):** B-36 탐지 약화 변경 감시(1단계 완료, ADR-043) → B-34 엔진 감시·전송 분리 → B-40 수집 견고성 → B-35 알림 수명주기 1단계 → B-37 수집 완전성 1단계 → B-39 EMR 접속기록 조사·결정 → B-17 외부 복제.
+- **다음 순서(P1):** B-36 탐지 약화 변경 감시(1단계 완료, ADR-043) → B-34 엔진 감시·전송 분리 → B-40 수집 견고성 → B-35 알림 수명주기 1단계 → B-37 수집 완전성 1단계 → B-39 EMR 접속기록 조사·결정(0단계 완료, ADR-048 — 병원 답변 대기) → B-17 외부 복제(완료, ADR-047).
   - B-40 은 운영(병원) 첫 설치 전에 끝냅니다.
   - 자체 접속기록은 핵심을 ADR-042 로 끝냈고 남은 것은 B-38(P2)입니다.
 
@@ -206,12 +206,12 @@
 
 | 항목 | 다른 제품의 방식 | 우리 상태 | BACKLOG |
 |---|---|---|---|
-| 응용(EMR) 접속기록 | 국내 접속기록 솔루션(이지서티 UBI SAFER-PSM 등)의 5항목 스키마, Logpresso Sonar 소명 | ❌ 수집 대상 아님 | B-39 (0단계 조사), B-76 |
+| 응용(EMR) 접속기록 | 국내 접속기록 솔루션(이지서티 UBI SAFER-PSM 등)의 5항목 스키마, Logpresso Sonar 소명 | ❌ 수집 대상 아님 — 법정 보관 장비는 EMR 이력관리 장비(ADR-048) | B-39 (0단계 완료, 병원 답변 대기), B-76 |
 | PACS 열람 기록 | IHE ATNA(ITI-20): DICOM 감사 메시지를 syslog 로 | ❌ | B-60 |
 | 이 시스템의 접속기록 | Logpresso 보고서 내려받기 권한, DBSAFER 다운로드 사유 | △ 검색 조건·상세(정보주체 포함)·사용자·IP 상위 값·CSV(사유 필수) 기록, 실패 시 거부(ADR-042). 실시간 스트림·보고서 열람·감사로그 목록·사용자별 시계열은 미기록 | B-38 |
 | 기록 종류별 보관 | Seq retention policies, Loki `retention_stream`, Graylog index sets | △ 로그·알림·감사로그·보고서별(ADR-040), 민감정보 표식이면 2년 미달 경고. 이벤트 안의 등급(접속기록 2년·웹 요청 짧게)은 없음 | B-70 |
 | 위·변조 증명 | Splunk data integrity control(slice SHA-256 → l1/l2 해시), 국내 권고(별도 장치의 MAC·WORM) | △ 트리거로 수정 금지, 보관 파일 SHA-256. DB 슈퍼유저 우회·DB 밖 앵커 없음 | B-71 |
-| 외부 복제 | 국내 권고(분리 저장·WORM), rclone(MIT) | ❌ 같은 서버 디스크 | B-17 |
+| 외부 복제 | 국내 권고(분리 저장·WORM), rclone(MIT) | ✅ NAS 폴더 복제, 새 파일만·덮어쓰지 않음·만료만 삭제(ADR-047) | B-17(완료) |
 | 접속기록 점검 결과서 | 피앤피시큐어 INFOSAFER 월간 점검 리포트, ISMS-P 2.9.5 확인사항 | △ 일간·주간 운영 보고서 + 1회 점검 확인 | B-72 |
 | 권한 검토·장기 미사용 | DBSAFER IM 권한 검토·인사 연계, Sentinel IsDormantAccount | △ 사용자 화면(마지막 로그인·잠금) | B-72 |
 | 심사 증적 묶음 | Wazuh 컴플라이언스 모듈, ManageEngine EventLog Analyzer 규정별 보고서 | △ ISMS.md 목록, 사람이 화면·CSV 를 모음 | B-73 |
@@ -247,10 +247,10 @@
 
 | 주장 (조사 내용) | 영향 받는 항목 | 조사 때 본 곳 | 확인할 곳 | 상태 |
 |---|---|---|---|---|
-| 2025-10-31 개정 안전성 확보조치 기준: 접속기록 보관 대상이 '개인정보처리시스템에 접속한 자(정보주체 제외)'로 넓어짐(외부 유지보수 계정 포함), 제8조② 의 '월 1회 이상 점검'이 '내부 관리계획으로 정한 주기·방법·사후조치'로 바뀜, 제4조 내부 관리계획에 출력·복사 안전조치 추가, 일부 조항 1년 유예 뒤 2026-10-31 적용 | B-38, B-72, B-74 | https://byline.network/2025/10/31-281/ , https://itwiki.kr/w/개인정보의_안전성_확보조치_기준_제8조 , https://wikidocs.net/264634 , https://intothesec.com/149 , https://www.kimchang.com/ko/insights/detail.kc?sch_section=4&idx=33291 | 국가법령정보센터(law.go.kr) 고시 원문·부칙 | **확인 필요** — 확인 전 점검 주기 기본값은 월 1회 |
-| 접속기록 1년 이상, 5만 명 이상·고유식별·민감정보 처리 시스템은 2년 이상(제8조①). 권한 부여·변경·말소 내역 3년(제5조) | ADR-040(반영됨), B-70 | http://www.boannews.com/news/articleView.html?idxno=126907 , https://intothesec.com/149 | 고시 원문 | **확인 필요** — ADR-040 이 반영한 값도 원문으로 다시 확인 |
-| 의료법 시행규칙 개정안: EMR '단순 열람'도 접속기록을 이력관리 장비에 별도 보관, 2026-12-10 시행 예정(입법예고 단계, 보관기간·항목 미확정) | B-39, B-60, B-76 | https://dailymedi.com/news/news_view.php?ca_id=&wr_id=940408 , https://medicaltimes.com/Main/News/NewsView.html?ID=1170738 , https://akomnews.com/68358 , https://dentalnews.or.kr/news/article.html?no=33516 | law.go.kr 의료법·시행규칙, 보건복지부 입법예고 | **확인 필요** — 사실이면 B-76 을 P3 에서 올릴지 재검토 |
-| 공공시스템(시행령 제30조의2): 접근권한의 인사정보 연계(고시 제16조), 접속기록 자동 분석·소명(제17조), 권한 밖 접근 시 정보주체 통지 | B-53, B-76 | https://hs.ac.kr/bbs/kor/2157/54638/download.do , https://www.nepla.ai/wiki/it-정보-방송통신/개인정보-위치정보-신용정보/개인정보의-안전성-확보조치-w5dnz70m9e6k | 시행령·고시 원문, 병원의 공공시스템 지정 여부 | **확인 필요** |
+| 2025-10-31 개정 안전성 확보조치 기준: 접속기록 보관 대상이 '개인정보처리시스템에 접속한 자(정보주체 제외)'로 넓어짐(외부 유지보수 계정 포함), 제8조② 의 '월 1회 이상 점검'이 '내부 관리계획으로 정한 주기·방법·사후조치'로 바뀜, 제4조 내부 관리계획에 출력·복사 안전조치 추가, 일부 조항 1년 유예 뒤 2026-10-31 적용 | B-38, B-72, B-74 | https://byline.network/2025/10/31-281/ , https://intothesec.com/149 , https://www.kimchang.com/ko/insights/detail.kc?sch_section=4&idx=33291 | https://www.law.go.kr/LSW/admRulInfoP.do?admRulSeq=2100000281400&chrClsCd=010201 (현행 제2026-9호), 부칙 <제2025-9호> | **확인함 (2026-10-30, ADR-048)** — 고시 제2025-9호(현행은 제2026-9호, 제8조는 같음). 유예 조항 제4조①12·13, 제5조①⑥, 제6조②, 제8조①② 는 '발령한 날의 1년 후' = 2026-10-31. 제8조② 에서 '다운로드 사유 반드시 확인'도 빠짐. **고침:** '외부 유지보수 계정 포함'은 원문에 없는 해설(개정이유의 예시는 '오픈마켓 판매자 등'), 김앤장의 '2025. 7. 21.'은 행정예고일 |
+| 접속기록 1년 이상, 5만 명 이상·고유식별·민감정보 처리 시스템은 2년 이상(제8조①). 권한 부여·변경·말소 내역 3년(제5조) | ADR-040(반영됨), B-70 | http://www.boannews.com/news/articleView.html?idxno=126907 , https://intothesec.com/149 | https://www.law.go.kr/LSW/admRulInfoP.do?admRulSeq=2100000281400&chrClsCd=010201 | **확인함 (2026-10-30)** — 제8조① 1·2호, 제5조③ 원문 일치. 1년/2년 구분은 2021 판본부터(2023 은 기간통신사업자 3호만 추가). 항목은 '**식별자**, 접속일시, 접속지 정보, 처리한 정보주체 정보, 수행업무'(제2조제3호, '계정'은 2021 문구). 병원 EMR 이 2호(민감정보)라는 것은 추론 |
+| 의료법 시행규칙 개정안: EMR '단순 열람'도 접속기록을 이력관리 장비에 별도 보관, 2026-12-10 시행 예정(입법예고 단계, 보관기간·항목 미확정) | B-39, B-60, B-76 | https://dailymedi.com/news/news_view.php?ca_id=&wr_id=940408 , https://medicaltimes.com/Main/News/NewsView.html?ID=1170738 , https://akomnews.com/68358 , https://dentalnews.or.kr/news/article.html?no=33516 | https://www.law.go.kr/LSW/lsInfoP.do?lsiSeq=286719&efYd=20261210 , https://opinion.lawmaking.go.kr/gcom/ogLmPp/88448 , https://www.law.go.kr/LSW/lsInfoP.do?lsiSeq=286963 | **확인함 (2026-10-30, ADR-048)** — **법률은 확정**(제23조④, 법률 제21776호, 2026-06-09 공포, 2026-12-10 시행, 제90조 벌금 500만원 이하). 시행규칙은 입법예고(공고 제2026-696호)만, 공포 전. 항목은 어디에도 없음. 고시 개정안의 보관기간(진료기록 보존기간과 같게, 최대 10년)은 다시 확인하지 못해 **2차 수준**. B-76 은 P3 유지(병원 답변 대기) |
+| 공공시스템(시행령 제30조의2): 접근권한의 인사정보 연계(고시 제16조), 접속기록 자동 분석·소명(제17조), 권한 밖 접근 시 정보주체 통지 | B-53, B-76 | https://hs.ac.kr/bbs/kor/2157/54638/download.do , https://www.nepla.ai/wiki/it-정보-방송통신/개인정보-위치정보-신용정보/개인정보의-안전성-확보조치-w5dnz70m9e6k | https://www.law.go.kr/LSW/admRulInfoP.do?admRulSeq=2100000281400&chrClsCd=010201 , https://www.law.go.kr/LSW/lsInfoP.do?lsiSeq=289537 | **확인함 (2026-10-30)** — 원문 일치. 단 보호위원회가 **지정한** 공공시스템(공공기관 운영)에만 적용. 병원의 지정 여부는 **병원 확인 필요**(B-39). 2026-9 개정으로 공공시스템 연 1회 취약점 점검·침투테스트(제18조, 2027-01-01) |
 | ISMS-P 실효성 강화(2026-04): 서류 심사에서 현장 실증·모의침투로, 2027 의무화 예고 | B-30, B-74, B-75 | https://v.daum.net/v/20260410082534799 , https://news.mtn.co.kr/news-detail/2026030915535171389 | 과기정통부·개인정보위·KISA 공고 | **확인 필요** |
 | ATT&CK v19(2026-04-28): Defense Evasion 이 Stealth·Defense Impairment 로 나뉨, 'Clear Windows Event Logs'(T1070.001)·'Disable Windows Event Logging'(T1562.002)이 T1685 아래로 revoke. 최신 STIX 는 enterprise-attack 20.0(2026-10-13) | B-48(1000013·1000014 태그), B-73 | https://attack.mitre.org/resources/updates/updates-april-2026/ , https://attack.mitre.org/techniques/T1685/ , https://github.com/mitre-attack/attack-stix-data | 공식 STIX 묶음 diff | **확인 필요** — 확인 전 태그를 바꾸지 않음 |
 | Sigma 규칙 DRL 1.1: 저자·출처 표시 조건 | B-14 | https://github.com/SigmaHQ/Detection-Rule-License/blob/main/LICENSE.Detection.Rules.md | 라이선스 원문 | 도입 전 확인 |
