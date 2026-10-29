@@ -539,7 +539,8 @@ export async function mount(root, params, sub) {
       else if (tab === 'silences') renderSilences(silences);
       else renderHistory(history.items, c);
     } catch (err) {
-      root.querySelector('[data-tab]').innerHTML = errorBox(err);
+      const box = root.querySelector('[data-tab]');
+      if (box) box.innerHTML = errorBox(err); // 세션 만료로 로그인 화면이 화면을 갈아 끼운 뒤 끝난 요청이면 무시
     }
   }
 

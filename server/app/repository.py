@@ -1180,7 +1180,7 @@ async def latest_audit(actions: list[str]) -> dict[str, dict]:
 async def backup_audit() -> dict[str, Any]:
     """백업 상태(화면 '로그 보관'·점검 보고서): 행위별 최근 기록 + 마지막 성공한 복구 시험 + 첫 백업 시각.
     backup 서비스가 남긴 audit_log 를 읽는다 — 백업 파일은 api 컨테이너에서 보이지 않아도 된다."""
-    latest = await latest_audit(["backup.create", "backup.failed", "backup.verify", "backup.restore"])
+    latest = await latest_audit(["backup.create", "backup.failed", "backup.verify", "backup.restore", "backup.replicate"])
     verify_ok = await db.fetch_one(
         "SELECT at, target, detail FROM audit_log WHERE action = 'backup.verify' AND detail->>'ok' = 'true'"
         " ORDER BY at DESC LIMIT 1"

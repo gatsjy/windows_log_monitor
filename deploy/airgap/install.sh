@@ -135,8 +135,8 @@ if [ "$BUNDLE" != "$(cd "$TARGET" && pwd)" ]; then
   (cd "$BUNDLE" && tar -cf - --exclude=./images --exclude=./config --exclude=./.env --exclude=./archive \
      --exclude=./backups --exclude=./tls --exclude=./tls-ca --exclude=./SHA256SUMS .) | (cd "$TARGET" && tar -xf -)
 fi
-mkdir -p "$TARGET/config" "$TARGET/archive" "$TARGET/backups"
-chmod 700 "$TARGET/backups"   # DB 백업에는 로그·계정 정보가 들어 있다
+mkdir -p "$TARGET/config" "$TARGET/archive" "$TARGET/backups" "$TARGET/replica"
+chmod 700 "$TARGET/backups" "$TARGET/replica"   # DB 백업에는 로그·계정 정보가 들어 있다 (replica/ = 외부 저장소 복제의 기본 위치, B-17)
 # 새 기본 설정: 없는 파일은 복사, 이미 있는데 내용이 다르면 *.new 로 옆에 둔다 (운영에서 고친 내용 보호)
 NEWS=()
 while IFS= read -r -d '' src; do
@@ -242,7 +242,7 @@ if [ "$(id -u)" = 0 ]; then
   chown -R 10001:10001 "$TARGET/config" "$TARGET/archive"   # 컨테이너 사용자(uid 10001)가 화면 저장·보관 파일 기록
   if command -v getenforce >/dev/null && [ "$(getenforce)" = Enforcing ]; then
     # backups/ 는 backup 서비스가 쓰고, deploy/backup/backup.sh 는 그 서비스가 읽는다
-    chcon -R -t container_file_t "$TARGET/config" "$TARGET/archive" "$TARGET/collector" "$TARGET/backups" "$TARGET/deploy/backup"
+    chcon -R -t container_file_t "$TARGET/config" "$TARGET/archive" "$TARGET/collector" "$TARGET/backups" "$TARGET/replica" "$TARGET/deploy/backup"
     [ ! -d "$TARGET/tls" ] || chcon -R -t container_file_t "$TARGET/tls"
     echo "  SELinux: 컨테이너가 읽고 쓸 수 있게 레이블 지정"
   fi

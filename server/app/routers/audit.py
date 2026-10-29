@@ -34,6 +34,7 @@ ACTION_LABELS = {
     "retention.purge_ingest": "격리 레코드·수집 거절 장부 만료 삭제",
     "dashboard.save": "대시보드 저장",
     "alerts.config.save": "알림 규칙 파일 저장",
+    "backup.replicate": "외부 저장소 복제",
     "alerts.config.apply": "알림 설정 적용(판본)",
     "alerts.config.invalid": "알림 설정 파일 오류",
     "alerts.health.engine_stall": "알림 평가 멈춤",

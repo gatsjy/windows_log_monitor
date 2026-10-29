@@ -75,6 +75,8 @@ class Settings:
     alert_rule_timeout_sec: int = _int("ALERT_RULE_TIMEOUT_SEC", 20)
     # 알림 전송기(ADR-045). 시험에서만 끈다(conftest) — 시험은 dispatcher.drain() 을 직접 부른다
     alert_dispatcher: bool = _env("ALERT_DISPATCHER", "on").lower() in ("1", "on", "true", "yes")
+    # 백업·보관 파일 외부 저장소 복제 (B-17, backup 서비스가 한다). 켜져 있으면 화면·보고서가 복제가 밀리거나 실패한 것을 알린다
+    replica: bool = _env("REPLICA", "off").lower() in ("1", "on", "true", "yes")
     dashboard_dir: str = _env("DASHBOARD_DIR", "/app/config/dashboards")
     web_dir: str = _env("WEB_DIR", "/app/web")
     # 에이전트 설치 묶음(수집 PC 화면 > 내려받기): 에이전트 스크립트 위치, Fluent Bit 설치 파일 위치(반입 묶음의 agent-installers)

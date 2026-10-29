@@ -636,6 +636,18 @@ function verifyNote(b) {
   return v ? `✓ 백업은 정상입니다. 마지막 복구 시험(8일 넘게 지남)은 실패였습니다 — ${how}` : `✓ 백업은 정상입니다. 복구 시험 기록은 아직 없습니다 — ${how}`;
 }
 
+/** 외부 저장소 복제 한 줄 (B-17) — 켜지 않았으면 켜는 방법 */
+function replicaLine(r) {
+  if (!r?.enabled) {
+    return html`<span class="tag-bad">꺼짐</span> <span class="muted">백업·보관 파일이 이 서버 디스크에만 있습니다 — 서버 장애·랜섬웨어 때 함께 잃습니다.
+      NAS 등을 마운트하고 <code>WLM_REPLICA=on</code>, <code>WLM_REPLICA_DIR</code> 를 정하세요 (docs/AIRGAP.md)</span>`;
+  }
+  const last = r.last;
+  if (!last) return html`<span class="muted">아직 기록 없음 (매일 백업 뒤에 복제합니다)</span>`;
+  return html`${fmtTime(last.at)} — ${last.ok ? html`<span class="tag-good">정상</span>` : html`<span class="tag-bad">실패</span>`}
+    <span class="muted">(새로 ${fmtNum(last.copied ?? 0)}개 · 만료 삭제 ${fmtNum(last.deleted ?? 0)}개 · 복제본 ${fmtNum(last.files ?? 0)}개${last.error ? ` · ${last.error}` : ''})</span>`;
+}
+
 function backupCard(b) {
   const sch = b.schedule;
   const last = b.last_backup;
@@ -654,10 +666,11 @@ function backupCard(b) {
         : html`<span class="tag-bad">실패</span> <span class="muted">${v.file} · ${v.reason ?? ''}</span>`}` : '아직 없음'}</dd>
       ${b.last_restore ? html`<dt>복원</dt><dd style="flex-wrap:wrap">${fmtTime(b.last_restore.at)} — ${b.last_restore.file} 로 되돌림
         ${b.last_restore.safety_dump ? html`<span class="muted">(복원 전 DB: backups/${b.last_restore.safety_dump})</span>` : ''}</dd>` : ''}
+      <dt>외부 저장소 복제</dt><dd style="flex-wrap:wrap">${replicaLine(b.replica)}</dd>
     </dl>
     <p class="muted" style="font-size:12.5px;margin:0">지금 백업 <code>docker compose exec backup backup.sh backup</code> ·
-      복구 시험 <code>docker compose exec backup backup.sh verify</code> · 기록은 감사 로그(DB 백업·백업 복구 시험)에 남습니다.
-      백업 폴더 <code>backups/</code> 는 다른 디스크로 옮겨 보관하고, <code>.env</code>(암호화 키)는 백업과 따로 보관하세요.</p>
+      복구 시험 <code>docker compose exec backup backup.sh verify</code> · 복제 <code>docker compose exec backup backup.sh replicate</code> ·
+      기록은 감사 로그(DB 백업·백업 복구 시험·외부 저장소 복제)에 남습니다. <code>.env</code>(암호화 키)는 백업과 따로 보관하세요.</p>
   </div></section>`;
 }
 

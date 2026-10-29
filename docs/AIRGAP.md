@@ -409,6 +409,7 @@ cd /opt/log-monitor
 sudo docker compose -f docker-compose.yml exec backup backup.sh backup        # 지금 백업
 sudo docker compose -f docker-compose.yml exec backup backup.sh verify        # 가장 최근 백업 복구 시험 (임시 DB)
 sudo docker compose -f docker-compose.yml exec backup backup.sh list          # 목록
+sudo docker compose -f docker-compose.yml exec backup backup.sh replicate     # 외부 저장소 복제 (WLM_REPLICA=on)
 sudo docker compose -f docker-compose.yml run --rm backup selftest            # 백업 스크립트 자체 시험 (시험용 DB 만 씀)
 # 장애 복구: 운영 DB 를 백업으로 되돌린다 (그 뒤 수집된 로그는 운영 DB 에서 빠짐)
 sudo docker compose -f docker-compose.yml stop api
@@ -421,7 +422,16 @@ sudo docker compose -f docker-compose.yml start api
   - DB 가 망가져 지금 DB 를 덤프할 수 없을 때만 끝에 `--no-safety-dump` 를 붙입니다.
 - 백업·복구 시험 중에 `docker compose stop`·재부팅하면 만들던 파일(`*.part`)과 임시 DB 를 지우고 멈춥니다. 남은 것은 다음 기동 때 정리합니다.
 
-- `backups/` 와 `archive/` 를 **다른 매체**(NAS·외장 디스크)로 복사합니다(ISMS 2.9.3, 복제 자동화는 BACKLOG B-17).
+- **외부 저장소 복제 (B-17, ADR-047):** `backups/` 와 `archive/` 를 **다른 매체**(NAS·외장 디스크)에 한 벌 더 둡니다(ISMS 2.9.3·2.9.4).
+  같은 서버 디스크에만 있으면 서버 장애·랜섬웨어 때 사고 증거와 함께 사라집니다.
+  1. 호스트에 NAS 를 마운트합니다(예: `/mnt/wlm-replica`, SMB·NFS). backup 컨테이너는 root 로 씁니다 — NFS `root_squash` 면 그 폴더를 nobody 가 쓸 수 있게 하거나
+     SMB 는 `uid=0` 으로 마운트합니다. SELinux 면 마운트 옵션에 `context=system_u:object_r:container_file_t:s0`(NFS 는 또는 `setsebool -P virt_use_nfs 1`).
+  2. `.env` 에 `WLM_REPLICA=on`, `WLM_REPLICA_DIR=/mnt/wlm-replica` 를 넣고 `sudo docker compose -f docker-compose.yml up -d`(api·backup).
+  3. 매일 백업 뒤 새 파일만 복사하고 SHA-256 으로 확인합니다. **이미 있는 파일은 덮어쓰지 않습니다**(원본이 암호화돼도 복제본은 그대로).
+     보관기간이 지난 보관 파일과 `WLM_REPLICA_BACKUP_DAYS`(기본 35일)가 지난 DB 백업만 지웁니다. 원본이 만료 전에 사라지면 복제본은 지우지 않고 화면에 알립니다.
+  4. 확인: `sudo docker compose -f docker-compose.yml exec backup backup.sh replicate` → 환경설정 > 로그 보관 '외부 저장소 복제'가 정상, 감사로그 '외부 저장소 복제'.
+  - NAS 가 지원하면 그 폴더에 **스냅숏·객체 잠금(WORM)** 을 켭니다(잠금 기간 = `WLM_RETENTION_DAYS`). 서버를 빼앗겨도 지난 복제본은 지우지 못합니다.
+    잠금 때문에 만료 파일을 지우지 못하면 남긴 채 셉니다(`kept`).
 - `.env`(암호화 키)는 백업에 넣지 않습니다. **따로** 안전한 곳에 보관합니다 — 백업만 유출되어도 화면에서 넣은 비밀값을 풀 수 없게(ISMS 2.7.2).
 - 백업 파일 권한은 600(소유자만), `backups/` 는 700 입니다. 로그·계정 정보가 들어 있습니다. SELinux(Enforcing)에서는 설치 스크립트가 `backups/` 에 컨테이너 레이블을 붙입니다.
 

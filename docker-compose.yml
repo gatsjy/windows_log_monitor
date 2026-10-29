@@ -119,6 +119,7 @@ services:
       WLM_BACKUP_TIME: ${WLM_BACKUP_TIME:-02:30}
       WLM_BACKUP_KEEP: ${WLM_BACKUP_KEEP:-14}
       WLM_BACKUP_VERIFY_WEEKDAY: ${WLM_BACKUP_VERIFY_WEEKDAY:-7}
+      WLM_REPLICA: ${WLM_REPLICA:-off}   # 외부 저장소 복제를 켰으면 화면·보고서가 밀림·실패를 알린다 (backup 서비스와 같은 값)
     # alerts.yaml 의 ${변수} (Oracle 비밀번호, 웹훅 토큰 등)를 .env 에서 넘겨받기 위함
     env_file:
       - path: .env
@@ -165,9 +166,15 @@ services:
       WLM_BACKUP_TIME: ${WLM_BACKUP_TIME:-02:30}
       WLM_BACKUP_KEEP: ${WLM_BACKUP_KEEP:-14}
       WLM_BACKUP_VERIFY_WEEKDAY: ${WLM_BACKUP_VERIFY_WEEKDAY:-7}
+      # 외부 저장소 복제 (B-17, ADR-047): on 이면 매일 백업 뒤 백업·보관 파일을 WLM_REPLICA_DIR(NAS 등)에 한 벌 더
+      WLM_REPLICA: ${WLM_REPLICA:-off}
+      WLM_REPLICA_BACKUP_DAYS: ${WLM_REPLICA_BACKUP_DAYS:-35}
+      WLM_RETENTION_DAYS: ${WLM_RETENTION_DAYS:-365}
     volumes:
       - ./deploy/backup/backup.sh:/usr/local/bin/backup.sh:ro
-      - ./backups:/backups                 # 백업 파일 — 이 폴더를 다른 디스크·NAS 로 옮겨 보관 (B-17)
+      - ./backups:/backups                 # 백업 파일
+      - ./archive:/archive:ro              # 로그 보관 파일 — 복제할 때만 읽는다
+      - ${WLM_REPLICA_DIR:-./replica}:/replica   # 복제 대상: 호스트에 마운트한 NAS·다른 디스크 (WLM_REPLICA=on 일 때만 씀)
       - ./config:/config:ro                # 대시보드·알림 규칙도 함께 묶는다
       - pgdata:/pgdata:ro                  # 남은 공간 확인용 (복구 시험·복원은 DB 크기만큼 같은 디스크를 더 쓴다). 읽지 않는다
 

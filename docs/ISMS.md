@@ -44,6 +44,7 @@
 
 ## 심사 때 보여줄 수 있는 증적
 
+- **외부 저장소 복제 (2.9.3·2.9.4, ADR-047):** 환경설정 > 로그 보관의 '외부 저장소 복제'(마지막 복제·복제본 수), 감사로그 '외부 저장소 복제'. 새 파일만 복사·해시 확인하고 덮어쓰지 않으며 만료된 것만 지웁니다(랜섬웨어로 원본이 바뀌어도 복제본 보존).
 - **백업·복구 시험 (2.9.3):** 환경설정 > 로그 보관의 'DB 백업 · 복구 시험'(마지막 백업·복구 시험 결과), 감사로그 `backup.create`·`backup.verify`(복원한 행 수 포함)·`backup.failed`·`backup.restore`, `backups/*.json`(백업마다 해시·행 수)
 - **보관:** 환경설정 > 로그 보관 화면(정책·파티션·보관 파일), `audit_log` 의 `retention.archive_partition`(해시 포함)·`retention.drop_partition`·`retention.delete_archive`
 - **무결성:** '보관 파일 무결성 확인' 결과(`retention.verify_archives`), 감사로그 append-only 트리거(`server/migrations/003_auth.sql`)

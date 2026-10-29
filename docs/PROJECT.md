@@ -720,6 +720,9 @@ HTTPS·에이전트 TLS (ADR-036, AIRGAP.md §7.5):
 | `WLM_ALERT_RETENTION_DAYS` | (로그와 같음) | 알림 이력·처리 기록·끝난 무음 |
 | `WLM_AUDIT_RETENTION_DAYS` | `1095` | 감사로그(이 시스템의 접속·권한 부여·변경·말소 기록). 법정 최소 3년 |
 | `WLM_REPORT_RETENTION_DAYS` | `1095` | 점검 보고서(점검 증적) |
+| `WLM_REPLICA` | `off` | `on`: 매일 백업 뒤 백업·보관 파일을 `WLM_REPLICA_DIR`(NAS 마운트)에 복제 (B-17) |
+| `WLM_REPLICA_DIR` | `./replica` | 복제 대상 호스트 경로 (backup 서비스의 `/replica`) |
+| `WLM_REPLICA_BACKUP_DAYS` | `35` | 복제한 DB 백업을 남길 날 수 |
 | `WLM_SENSITIVE_ACCESS_LOG` | `off` | `on`: 진료정보(민감정보) 처리 시스템의 접속기록을 받는 설치 — 로그 보관 경고 기준이 2년(730일) |
 
 ## 12. 확장 가이드
@@ -750,6 +753,8 @@ HTTPS·에이전트 TLS (ADR-036, AIRGAP.md §7.5):
   - 이미지 태그는 `WLM_API_IMAGE`(.env, 기본 `log-monitor-api:latest`)로 고정합니다. 개발은 `log-monitor-api:dev`.
 
 - **백업 (ADR-031):** `backup` 서비스가 매일 `WLM_BACKUP_TIME`(02:30)이 지나면 그날 한 번 `backups/wlm-<시각>.dump`(+ `.sha256`, `config/` 묶음)를 만들고 최근 `WLM_BACKUP_KEEP`(14, 1 이상)개를 남깁니다. 놓친 날은 켜진 뒤 바로 합니다(`backups/.last-run`).
+  - **외부 저장소 복제 (B-17, ADR-047):** `WLM_REPLICA=on` 이면 매일 백업 뒤 `backups/`·`archive/` 를 `WLM_REPLICA_DIR`(NAS 마운트)에 새 파일만 복사·해시 확인합니다.
+    덮어쓰지 않고(원본이 암호화돼도 복제본 보존), 만료된 것만 지웁니다. 결과는 감사로그 `backup.replicate`, 로그 보관 화면, 점검 보고서(밀림·실패·만료 전에 사라진 원본).
   - 매주 `WLM_BACKUP_VERIFY_WEEKDAY`(일요일) 백업 뒤 **임시 DB 에 실제로 복원**해 해시·마이그레이션 버전·주요 테이블 행 수를 확인합니다. 행 수는 pg_dump 와 같은 스냅숏에서 세어 두었으므로 정확히 같아야 합니다. DB 디스크 여유(DB 크기 + 1GB)가 없으면 시험하지 않고 실패로 남깁니다.
   - 결과는 감사로그 `backup.create`·`backup.failed`·`backup.verify`·`backup.restore` 와 환경설정 > 로그 보관 화면. 백업이 36시간 넘게 없거나(복원했으면 복원 시각부터), 마지막 백업이 실패했거나, 복구 시험 실패가 같은·더 새 백업의 성공으로 풀리지 않았거나, 8일 넘게 성공한 복구 시험이 없으면 경고합니다.
   - 명령: `docker compose exec backup backup.sh backup | verify [파일] | list`, 장애 복구 `docker compose stop api && docker compose run --rm backup restore <파일> --yes`(연결된 세션이 있으면 거부, 지금 DB 를 `before-restore-*.dump` 로 남기고 임시 DB 에 복원한 뒤 바꿔 끼움), 자체 시험 `docker compose run --rm backup selftest` (docs/AIRGAP.md §11).

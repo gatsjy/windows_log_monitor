@@ -140,3 +140,28 @@ def test_verify_stale_warning_can_be_turned_off(client, monkeypatch):
 def test_backup_actions_have_audit_labels(client):
     labels = client.get("/api/audit", params={"since": "30d"}, headers=CSRF).json()["labels"]
     assert {labels[a] for a in ("backup.create", "backup.failed", "backup.verify")} == {"DB 백업", "DB 백업 실패", "백업 복구 시험"}
+
+
+def test_replica_status_and_problems(client, monkeypatch):
+    """외부 저장소 복제 (B-17): 켜 두었으면 기록 없음·밀림·실패·만료 전에 사라진 원본을 알린다. 끄면 아무 말 없음."""
+    from dataclasses import replace
+
+    from app import backups
+
+    c = NOW + timedelta(days=60)
+    audit("backup.create", c - timedelta(hours=1), {"bytes": 1, "seconds": 1, "sha256": "r"}, "wlm-21000101-000000.dump")
+    audit("backup.verify", c - timedelta(hours=1), {"ok": True}, "wlm-21000101-000000.dump")
+    assert status(client, c)["replica"] == {"enabled": False, "last": None}
+    assert not [p for p in status(client, c)["problems"] if "복제" in p]
+    monkeypatch.setattr(backups, "settings", replace(backups.settings, replica=True))
+    assert "외부 저장소 복제 기록이 없습니다" in " ".join(status(client, c)["problems"])
+    audit("backup.replicate", c - timedelta(hours=2), {"ok": True, "copied": 3, "failed": 0, "deleted": 1,
+                                                       "missing_locally": 0, "files": 40}, "/replica")
+    s = status(client, c)
+    assert not [p for p in s["problems"] if "복제" in p] and s["replica"]["last"]["files"] == 40
+    assert "마지막 외부 저장소 복제가 50시간 전입니다" in " ".join(status(client, c + timedelta(hours=48))["problems"])
+    audit("backup.replicate", c - timedelta(hours=1), {"ok": False, "error": "복제 폴더에 쓸 수 없습니다"}, "/replica")
+    assert "외부 저장소 복제가 실패했습니다: 복제 폴더에 쓸 수 없습니다" in status(client, c)["problems"]
+    audit("backup.replicate", c - timedelta(minutes=30), {"ok": True, "copied": 0, "failed": 0, "missing_locally": 2,
+                                                          "files": 40}, "/replica")
+    assert any("만료 전에 사라진 보관 파일 2개" in p for p in status(client, c)["problems"])

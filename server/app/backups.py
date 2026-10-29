@@ -12,6 +12,7 @@ from .config import settings
 
 BACKUP_STALE = timedelta(hours=36)   # 매일 백업 + 여유 (하루를 건너뛰면 경고)
 VERIFY_STALE = timedelta(days=8)     # 주 1회 복구 시험 + 여유
+REPLICA_STALE = timedelta(hours=36)  # 매일 백업 뒤 복제 + 여유
 WEEKDAYS = {1: "월", 2: "화", 3: "수", 4: "목", 5: "금", 6: "토", 7: "일"}
 
 
@@ -45,6 +46,19 @@ async def backup_status(now: datetime | None = None) -> dict[str, Any]:
             and (data["verify_ok"] is None or now - data["verify_ok"]["at"] > VERIFY_STALE)):
         problems.append("최근 8일 안에 성공한 복구 시험이 없습니다")
 
+    # 외부 저장소 복제 (B-17): 켜 두었으면 밀리거나 실패한 것, 원본이 만료 전에 사라진 것(사고일 수 있다)을 알린다
+    replicate = latest.get("backup.replicate")
+    if settings.replica:
+        if replicate is None:
+            problems.append("외부 저장소 복제 기록이 없습니다 — WLM_REPLICA_DIR 마운트와 backup 서비스 로그를 확인하세요")
+        elif now - replicate["at"] > REPLICA_STALE:
+            problems.append(f"마지막 외부 저장소 복제가 {int((now - replicate['at']).total_seconds() // 3600)}시간 전입니다")
+        elif not replicate["detail"].get("ok"):
+            problems.append(f"외부 저장소 복제가 실패했습니다: {replicate['detail'].get('error') or str(replicate['detail'].get('failed')) + '개 파일'}")
+        if replicate is not None and replicate["detail"].get("missing_locally"):
+            problems.append(f"복제본에는 있는데 이 서버에서 만료 전에 사라진 보관 파일 {replicate['detail']['missing_locally']}개 — "
+                            "삭제·사고 여부를 확인하세요 (복제본은 지우지 않았습니다)")
+
     def row(r: dict | None, keys: tuple[str, ...]) -> dict | None:
         return None if r is None else {"at": r["at"], "file": r["target"], **{k: r["detail"].get(k) for k in keys}}
 
@@ -56,5 +70,7 @@ async def backup_status(now: datetime | None = None) -> dict[str, Any]:
         "last_verify": row(verify, ("ok", "reason", "seconds", "counts")),
         "last_verify_ok_at": data["verify_ok"]["at"] if data["verify_ok"] else None,
         "last_restore": row(restored, ("safety_dump",)) if after_restore else None,
+        "replica": {"enabled": settings.replica,
+                    "last": row(replicate, ("ok", "copied", "failed", "deleted", "missing_locally", "files", "error"))},
         "problems": problems,
     }

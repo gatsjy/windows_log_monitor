@@ -35,6 +35,13 @@ PGDATA_DIR=${WLM_BACKUP_PGDATA_DIR:-/pgdata}
 SPACE_RESERVE_KB=${WLM_BACKUP_SPACE_RESERVE_KB:-1048576}   # 복원 뒤에도 남겨 둘 공간 (WAL·운영 DB 증가분). 기본 1GB
 MAINT_DB=${WLM_BACKUP_MAINT_DB:-postgres}                  # 운영 DB 이름을 바꿔 끼울 때 접속할 DB
 TABLES="events alerts alert_notes audit_log users agents"
+# 외부 저장소 복제 (B-17, ADR-047): 백업·로그 보관 파일을 다른 디스크·NAS(호스트에서 마운트한 폴더)에 한 벌 더.
+# 같은 서버 디스크에만 있으면 서버 장애·랜섬웨어 때 사고 증거와 함께 사라진다(ISMS 2.9.4, 고시 제8조③)
+REPLICA=${WLM_REPLICA:-off}
+REPLICA_DIR=${WLM_REPLICA_MOUNT:-/replica}
+ARCHIVE_DIR=${WLM_ARCHIVE_MOUNT:-/archive}
+RETENTION_DAYS=${WLM_RETENTION_DAYS:-365}                  # 보관 파일 만료 (api 와 같은 값)
+REPLICA_BACKUP_DAYS=${WLM_REPLICA_BACKUP_DAYS:-35}         # 복제한 DB 백업을 남겨 둘 날 수
 
 # 신호로 멈출 때 지울 것 (만들던 덤프, 복원하던 임시 DB). compose 가 init(tini)으로 자식 프로세스까지 멈춘 뒤 여기로 온다
 CURRENT_PART=""
@@ -382,7 +389,7 @@ daemon() {
   # 지난번에 중간에 멈췄다면 남은 것 정리 (임시 DB 는 DB 크기만큼 디스크를 차지한다)
   rm -f "$BACKUP_DIR"/*.dump.part
   dropdb --if-exists "${PGDATABASE}_restore_check" >/dev/null 2>&1
-  log "백업 대기: 매일 $AT 이후 한 번 (마지막 ${last:-없음}), 최근 ${KEEP}개 보관, 복구 시험 요일 $VERIFY_DAY (1=월 … 7=일, 0=안 함), 폴더 $BACKUP_DIR"
+  log "백업 대기: 매일 $AT 이후 한 번 (마지막 ${last:-없음}), 최근 ${KEEP}개 보관, 복구 시험 요일 $VERIFY_DAY (1=월 … 7=일, 0=안 함), 폴더 $BACKUP_DIR, 외부 복제 $REPLICA"
   while true; do
     today=$(date +%Y-%m-%d)
     if is_due "$(date +%H%M)" "$today" "$last"; then
@@ -392,9 +399,81 @@ daemon() {
       if do_backup && [ "$dow" = "$VERIFY_DAY" ]; then
         do_verify || true
       fi
+      # 백업이 실패해도 보관 파일 복제는 한다 (B-17)
+      if [ "$REPLICA" = on ]; then do_replicate || true; fi
     fi
     sleep 20
   done
+}
+
+# ------------------------------------------------------------------ 외부 저장소 복제
+# 새 파일만 복사하고 해시로 확인한다. 이미 있는 것은 덮어쓰지 않는다 — 원본이 랜섬웨어로 암호화돼도 복제본은 그대로 남게.
+# 지우는 것은 보관기간이 지난 보관 파일과 REPLICA_BACKUP_DAYS 가 지난 백업뿐이다. 원본에서 사라졌는데 만료가 아닌 것은 지우지 않고 센다.
+replicate_dir() {  # 원본 폴더, 복제 폴더, 파일 무늬...
+  _src=$1; _dst=$2; shift 2
+  mkdir -p "$_dst" || { R_FAILED=$((R_FAILED + 1)); return 1; }
+  for _pat in "$@"; do
+    for _f in "$_src"/$_pat; do
+      [ -f "$_f" ] || continue
+      _name=$(basename "$_f")
+      # 만료된 보관 파일은 복제하지 않는다 (곧 원본도 지워진다 — 복사했다가 바로 지우는 일을 매일 되풀이하지 않게)
+      if [ "$_dst" = "$REPLICA_DIR/archive" ] && archive_expired "$_name"; then continue; fi
+      if [ -e "$_dst/$_name" ]; then
+        [ "$(stat -c %s "$_f")" = "$(stat -c %s "$_dst/$_name")" ] || R_DIFFERENT=$((R_DIFFERENT + 1))
+        continue
+      fi
+      if cp -p "$_f" "$_dst/.$_name.part" \
+         && [ "$(sha256sum < "$_f" | cut -d' ' -f1)" = "$(sha256sum < "$_dst/.$_name.part" | cut -d' ' -f1)" ] \
+         && mv "$_dst/.$_name.part" "$_dst/$_name"; then
+        R_COPIED=$((R_COPIED + 1))
+      else
+        rm -f "$_dst/.$_name.part"
+        R_FAILED=$((R_FAILED + 1))
+        log "복제 실패: $_name"
+      fi
+    done
+  done
+}
+
+archive_expired() {  # events_YYYY_MM.* 의 달이 끝난 지 보관기간이 지났나 (api 의 만료 판단과 같게)
+  # busybox date 는 '+1 month'·'-N days' 를 모른다 → 다음 달 1일을 직접 만들고 초로 뺀다
+  _y=$(basename "$1" | sed -n 's/^events_\([0-9]\{4\}\)_[0-9]\{2\}\..*/\1/p')
+  _m=$(basename "$1" | sed -n 's/^events_[0-9]\{4\}_\([0-9]\{2\}\)\..*/\1/p')
+  [ -n "$_y" ] && [ -n "$_m" ] || return 1
+  _m=$((1${_m} - 100 + 1))   # 앞의 0 때문에 8진수로 읽히지 않게
+  if [ "$_m" -gt 12 ]; then _y=$((_y + 1)); _m=1; fi
+  _end=$(date -d "$(printf '%04d-%02d-01' "$_y" "$_m")" +%s 2>/dev/null) || return 1
+  [ "$_end" -lt $(( $(date +%s) - RETENTION_DAYS * 86400 )) ]
+}
+
+do_replicate() {
+  started=$(now_utc)
+  R_COPIED=0; R_FAILED=0; R_DIFFERENT=0; R_DELETED=0; R_MISSING=0; R_KEPT=0
+  probe="$REPLICA_DIR/.wlm-write-test"
+  if ! { [ -d "$REPLICA_DIR" ] && : > "$probe" && rm -f "$probe"; }; then
+    log "복제 실패: $REPLICA_DIR 에 쓸 수 없습니다 (NAS 마운트·권한 확인)"
+    audit backup.replicate "$REPLICA_DIR" "{\"ok\": false, \"error\": \"복제 폴더에 쓸 수 없습니다\", \"started_at\": \"$started\"}"
+    return 1
+  fi
+  replicate_dir "$BACKUP_DIR" "$REPLICA_DIR/backups" '*.dump' '*.dump.sha256' 'wlm-*.json' '*.config.tar.gz'
+  replicate_dir "$ARCHIVE_DIR" "$REPLICA_DIR/archive" 'events_*.jsonl.gz' 'events_*.meta.json'
+  for _f in "$REPLICA_DIR"/archive/events_*; do
+    [ -f "$_f" ] || continue
+    if archive_expired "$_f"; then
+      # 만료 — 원본도 지워졌다. 객체 잠금(WORM)이면 지우지 못한다: 남긴 채 센다 (잠금 기간 = 보관기간으로 두면 맞는다)
+      if rm -f "$_f" 2>/dev/null && [ ! -e "$_f" ]; then R_DELETED=$((R_DELETED + 1)); else R_KEPT=$((R_KEPT + 1)); fi
+    elif [ ! -e "$ARCHIVE_DIR/$(basename "$_f")" ]; then
+      R_MISSING=$((R_MISSING + 1))   # 원본이 만료 전에 사라졌다 — 사고일 수 있다. 복제본은 지우지 않는다
+    fi
+  done
+  for _f in $(find "$REPLICA_DIR/backups" -maxdepth 1 -type f -name 'wlm-*' -mtime +"$REPLICA_BACKUP_DAYS" 2>/dev/null); do
+    if rm -f "$_f" 2>/dev/null && [ ! -e "$_f" ]; then R_DELETED=$((R_DELETED + 1)); else R_KEPT=$((R_KEPT + 1)); fi
+  done
+  files=$(find "$REPLICA_DIR/backups" "$REPLICA_DIR/archive" -maxdepth 1 -type f ! -name '.*' 2>/dev/null | wc -l | tr -d ' ')
+  ok=$([ "$R_FAILED" = 0 ] && echo true || echo false)
+  log "복제: 새로 $R_COPIED, 실패 $R_FAILED, 크기 다름 $R_DIFFERENT, 만료 삭제 $R_DELETED, 원본 없음 $R_MISSING, 복제본 $files 개"
+  audit backup.replicate "$REPLICA_DIR" "{\"ok\": $ok, \"copied\": $R_COPIED, \"failed\": $R_FAILED, \"different\": $R_DIFFERENT, \"deleted\": $R_DELETED, \"kept\": $R_KEPT, \"missing_locally\": $R_MISSING, \"files\": $files, \"started_at\": \"$started\"}"
+  [ "$R_FAILED" = 0 ]
 }
 
 # ------------------------------------------------------------------ 자체 시험
@@ -527,6 +606,41 @@ SQL
   check "$(sql "SELECT count(*) FROM pg_database WHERE datname LIKE '${PGDATABASE}\_%'")" 0 "임시·교체 DB 가 남지 않음"
   check "$(sql "SELECT datallowconn FROM pg_database WHERE datname = '$PGDATABASE'")" t "복원한 DB 에 접속 가능"
 
+  log "시험 6: 외부 저장소 복제 (B-17)"
+  REPLICA_DIR=$(mktemp -d); ARCHIVE_DIR=$(mktemp -d); RETENTION_DAYS=365
+  old=events_$(( $(date +%Y) - 3 ))_08; new=$(date +events_%Y_%m)
+  for a in "$old" "$new"; do echo "$a" > "$ARCHIVE_DIR/$a.jsonl.gz"; echo '{}' > "$ARCHIVE_DIR/$a.meta.json"; done
+  do_replicate >/dev/null; check "$?" 0 "복제"
+  check "$(ls "$REPLICA_DIR"/archive | wc -l | tr -d ' ')|$(ls "$REPLICA_DIR"/backups/*.dump | wc -l | tr -d ' ')" \
+    "2|$(ls "$BACKUP_DIR"/*.dump | wc -l | tr -d ' ')" "만료 안 된 보관 파일·백업이 복제됨 (만료된 것은 복제 뒤 지움)"
+  check "$([ -e "$REPLICA_DIR/archive/$old.jsonl.gz" ] && echo y || echo n)" n "만료된 보관 파일은 복제하지 않음"
+  # 예전에 복제해 둔 것이 만료되면 복제본에서도 지운다
+  cp "$ARCHIVE_DIR/$old.jsonl.gz" "$ARCHIVE_DIR/$old.meta.json" "$REPLICA_DIR/archive/"
+  do_replicate >/dev/null
+  check "$([ -e "$REPLICA_DIR/archive/$old.jsonl.gz" ] && echo y || echo n)" n "만료된 복제본은 지움"
+  check "$(sql "SELECT detail->>'deleted' FROM audit_log WHERE action = 'backup.replicate' ORDER BY id DESC LIMIT 1")" 2 "만료 삭제 2개 (본문·메타)"
+  check "$(archive_expired "events_$(date +%Y_%m).jsonl.gz" && echo y || echo n)|$(archive_expired "events_$(( $(date +%Y) - 1 ))_12.jsonl.gz" && echo y || echo n)" \
+    "n|n" "이번 달·작년 12월은 만료 아님 (보관 365일)"
+  (RETENTION_DAYS=30; check "$(archive_expired "events_$(( $(date +%Y) - 1 ))_12.jsonl.gz" && echo y || echo n)" y "보관 30일이면 작년 12월은 만료")
+  check "$(cd "$REPLICA_DIR/archive" && sha256sum < "$new.jsonl.gz" | cut -d' ' -f1)" "$(sha256sum < "$ARCHIVE_DIR/$new.jsonl.gz" | cut -d' ' -f1)" "해시가 같은 복제본"
+  do_replicate >/dev/null
+  check "$(sql "SELECT detail->>'copied' FROM audit_log WHERE action = 'backup.replicate' ORDER BY id DESC LIMIT 1")" 0 "두 번째는 새 파일만 (없음)"
+  echo 'ENCRYPTED BY RANSOMWARE' > "$ARCHIVE_DIR/$new.jsonl.gz"
+  do_replicate >/dev/null
+  check "$(cat "$REPLICA_DIR/archive/$new.jsonl.gz")" "$new" "원본이 바뀌어도 복제본은 덮어쓰지 않음"
+  check "$(sql "SELECT detail->>'different' FROM audit_log WHERE action = 'backup.replicate' ORDER BY id DESC LIMIT 1")" 1 "크기가 달라진 원본을 셈"
+  rm -f "$ARCHIVE_DIR/$new.jsonl.gz"
+  do_replicate >/dev/null
+  check "$([ -e "$REPLICA_DIR/archive/$new.jsonl.gz" ] && echo y || echo n)" y "만료 전에 원본이 사라져도 복제본은 지우지 않음"
+  check "$(sql "SELECT detail->>'missing_locally' FROM audit_log WHERE action = 'backup.replicate' ORDER BY id DESC LIMIT 1")" 1 "사라진 원본을 셈"
+  touch -d '2000-01-01 00:00:00' "$REPLICA_DIR/backups/wlm-20000101-000000.dump" "$REPLICA_DIR/backups/before-restore-old.dump"
+  do_replicate >/dev/null
+  check "$(ls "$REPLICA_DIR"/backups/wlm-20000101-000000.dump 2>/dev/null | wc -l | tr -d ' ')|$(ls "$REPLICA_DIR"/backups/before-restore-old.dump | wc -l | tr -d ' ')" \
+    "0|1" "오래된 복제 백업은 지우고 복원 전 안전 사본은 남김"
+  (REPLICA_DIR=/proc/no-such-dir; do_replicate >/dev/null 2>&1); check "$?" 1 "복제 폴더에 쓸 수 없으면 실패로 기록"
+  check "$(sql "SELECT count(*) FROM audit_log WHERE action = 'backup.replicate' AND NOT (detail->>'ok')::bool")" 1 "실패 기록"
+  rm -rf "$REPLICA_DIR" "$ARCHIVE_DIR"
+
   dropdb --if-exists "$PGDATABASE" >/dev/null 2>&1
   rm -rf "$BACKUP_DIR" "$CONFIG_DIR"
   PGDATABASE=$real_db
@@ -542,6 +656,7 @@ case $cmd in
   verify) do_verify "${1:-}"; exit $? ;;
   list) do_list ;;
   restore) do_restore "${1:-}" "${2:-}" "${3:-}"; exit $? ;;
+  replicate) do_replicate; exit $? ;;
   selftest) selftest ;;
-  *) echo "사용법: backup.sh [daemon|backup|verify [파일]|list|restore 파일 --yes [--no-safety-dump]|selftest]" >&2; exit 2 ;;
+  *) echo "사용법: backup.sh [daemon|backup|verify [파일]|list|restore 파일 --yes [--no-safety-dump]|replicate|selftest]" >&2; exit 2 ;;
 esac
