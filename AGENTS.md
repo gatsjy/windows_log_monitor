@@ -164,6 +164,8 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - 웹훅 오류·연결 실패 문구는 `WebhookNotifier.redact()` 를 거친다(받는 쪽이 토큰이 든 경로를 돌려준다). 새 전송기도 오류 문구에 주소를 그대로 넣지 않는다.
 - 웹훅은 `notifiers._OPENER`(넘김 거부)로 보낸다. `urllib.request.urlopen` 을 직접 쓰면 30x 를 따라가 인증 헤더가 새고 실패가 '전송됨'이 된다.
 - **CSV 를 내보내는 새 API 는 `app/csvexport.csv_response` 를 쓴다.** 로그에서 온 값(syslog 호스트 이름 등)이 엑셀 수식으로 실행되지 않게 한다.
+- 셸 스크립트(`*.sh`)는 `.gitattributes` 로 LF 고정이다. 윈도 PC 에서 이 줄 이전에 받은 저장소는 `.sh` 를 지우고 `git checkout -- <파일>` 로 다시 받는다 — CRLF 면 `backup` 이 `set: illegal option -` 로 재시작을 반복한다.
+- 윈도 PC 의 개발 컨테이너에서 ruff 는 `EXE002` 를 많이 낸다(마운트한 파일이 모두 실행 권한으로 보임). CI(리눅스)에서는 나지 않으므로 개발 PC 에서는 `--ignore EXE002` 로 본다.
 - 백업은 api 가 아니라 `backup` 서비스(postgres 이미지, busybox sh)가 한다. 결과는 `audit_log` 의 `backup.*` 로만 api 에 전달된다. `backup.sh` 를 고치면 `selftest` 로 확인한다.
   - busybox `date` 는 `-d '+1 month'`·`'-N days'` 를 모른다(GNU 만). 날짜 계산은 `YYYY-MM-DD` 와 초(`date +%s`) 산술로 — 자체 시험에서 그 값으로 만든 파일 이름이 비지 않는지도 본다.
   - 외부 저장소 복제(B-17)는 새 파일만 복사하고 덮어쓰지 않는다. 지우는 규칙(만료)을 바꾸면 '원본이 사라져도 복제본은 남는다' 시험을 지킨다.
