@@ -494,3 +494,32 @@
 - **대안:** 조회할 때 이벤트 ID 별 위치로 바꾸는 SQL(CASE) — 저장은 늘지 않지만 같은 표를 SQL·Python·JS 세 곳에 두어야 하고
   상세·필드 탐색에 이름이 보이지 않아 기각. 에이전트를 지금 5.1 로 올리기 — 이미 설치된 4.0 PC 는 그대로 남아 서버 쪽이 어차피 필요.
 
+## ADR-039 에이전트 하트비트는 전용 출력으로 보내고 2번 재시도 후 버린다 (에이전트 메모리)
+- **상태:** 채택 (2026-10-29, ADR-027 의 에이전트 부분 보강). 에이전트 설정 Windows 0.4.1 · Linux 0.2.1.
+- **배경:** 에이전트를 설치한 PC 에서 메모리를 많이 쓴다는 보고. Fluent Bit 4.0.14 소스로 확인한 원인:
+  - 하트비트(dummy) 입력은 메모리 저장인데 `mem_buf_limit` 이 없어 상한이 없다. `storage.max_chunks_up` 은 filesystem 입력에만 걸린다.
+  - 하트비트마다 새 조각이 생기고, 메모리 조각은 내용(약 100B)과 상관없이 **256KB 를 미리 잡는다**(`FLB_INPUT_CHUNK_SIZE`).
+  - 하트비트가 로그와 같은 출력(`retry_limit: no_limits`)으로 가서, 서버에 못 보내는 동안(서버 중단·포트 막힘·키 틀림·TLS 오류)
+    조각이 버려지지 않고 쌓인다. 30초마다 1개 → **장애 하루에 약 720MB**, 작업 수 상한(16384)까지 약 4GB. Windows 는 힙이 바로 잡는다.
+  - 오래된 하트비트는 쓸모가 없다: 서버는 하트비트를 **받은 시각**으로 `last_heartbeat_at` 을 적는다(repository.py).
+- **결정:**
+  1. 하트비트 전용 http 출력(`match: heartbeat`, `retry_limit: 2`). 로그 출력은 `match_regex: '^(?!heartbeat$).*'` —
+     허용 목록이 아니라 제외 정규식이라, 새 입력 tag 를 추가해도 버리지 않는 로그 출력으로 간다.
+  2. 하트비트 입력에 `storage.type: memory` + `mem_buf_limit: 64K`(안전장치. 내용 바이트를 세므로 이것만으로는 못 막는다).
+  3. `storage.max_chunks_up` 16 → 8, `storage.backlog.mem_limit` 16M → 8M, 출력 `workers: 1`(기본 2). 디스크에 더 남을 뿐 버리지 않는다.
+  4. 두 출력 모두 TLS 블록을 둔다(설치 스크립트가 모든 `@@TLS` 블록을 켠다). `render_agent_configs.py` 가 http 출력 **전부**의 TLS,
+     그리고 '재시도 제한 출력은 heartbeat 만, 로그 출력은 heartbeat 를 빼고 모든 로그 tag' 를 정적으로 검사한다.
+  5. 윈도 CI(`tools/ci/agent_memory.py`)가 실제 Fluent Bit 로 서버 없이 2분(하트비트 1초) → 받는 쪽을 띄워 본다:
+     옛 설정(0.4.0, `tools/ci/fixtures/windows-agent-0.4.0.yaml`) 대비 Private Bytes 증가가 절반 이하, 장애 중에 쓴 로그는 도착,
+     장애 중 하트비트는 대부분 버려짐.
+  6. PC 에서 잴 도구 `agent/windows/check-memory.ps1`(설치 묶음에 포함): Private Bytes·핸들·버퍼 크기를 CSV 로 남기고 판단을 출력.
+- **기각:**
+  - `storage.pause_on_chunks_overlimit: on` — 장애 중 재시도 조각이 상한을 채워 winevtlog 가 장애 내내 멈추고 디스크 버퍼에 쓰지 않는다.
+    Security 로그(클라이언트 기본 20MB, 덮어쓰기)가 돌면 영구 유실. 원본 보존 원칙에 어긋난다.
+  - 로그 출력의 `retry_limit` 을 유한값으로 — 4.0 에는 DLQ 가 없어 버려진다.
+  - `read_limit_per_cycle` 축소·`flush` 늘리기 — 메모리를 줄이지 못한다(조각은 읽은 양과 상관없이 2MB 단위, flush 를 늘리면 조각이 더 오래 메모리에 남음).
+  - Fluent Bit 4.2.8/5.1 로 올리기(winevtlog 렌더 실패 경로 누수·이중 해제 수정) — 렌더 실패가 드물고(로그에 'EvtRender failed') 실제 원인으로
+    확인되지 않았다. 레코드 모양·서버 수신기 계열이 바뀌는 큰 변경이라 측정 결과를 보고 결정한다(BACKLOG B-33).
+- **대가:** 서버가 돌아온 직후 PC 가 '온라인'이 되기까지 다음 하트비트(최대 30초)를 기다린다. 출력이 둘이라 30초마다 HTTP 요청이 하나 는다(작음).
+  이미 설치된 PC 는 다시 설치해야 바뀐다(설치 묶음을 다시 받아 `install.cmd` — 기존 위치 기록 db 는 그대로라 유실·중복 없음).
+

@@ -1,6 +1,6 @@
 # Log Monitor - Linux agent (Fluent Bit)
 # install.sh 가 @SERVER_HOST@ / @SERVER_PORT@ / @API_KEY@ / @AGENT_HOST@ / @TLS_SERVER_NAME@ 를 바꿔서
-# /etc/wlm-agent/fluent-bit.yaml 로 복사한다. TLS 면 http 출력 끝의 TLS 블록 주석도 푼다.
+# /etc/wlm-agent/fluent-bit.yaml 로 복사한다. TLS 면 http 출력(로그·하트비트) 끝의 TLS 블록 주석도 푼다.
 # config_version(하트비트): 이 파일을 바꾸면 올린다 ('수집 PC' 화면에 보임).
 
 service:
@@ -8,9 +8,11 @@ service:
   log_level: info
   storage.path: /var/lib/wlm-agent/buffer
   storage.sync: normal
-  storage.backlog.mem_limit: 16M
-  # 메모리에 올려 두는 2MB 조각 수 상한 (기본 128 = 약 256MB). 나머지는 디스크에서 대기 → 에이전트 메모리를 작게 유지
-  storage.max_chunks_up: 16
+  # 기동 때 디스크에 남은 조각을 읽을 때만 쓴다 (기본 100M)
+  storage.backlog.mem_limit: 8M
+  # 메모리에 올려 두는 2MB 조각 수 상한, filesystem 입력 전체 공유 (기본 128 = 약 256MB).
+  # 나머지는 디스크에서 대기 → 에이전트 메모리를 작게 유지. 줄여도 디스크에 더 남을 뿐 버리지 않는다
+  storage.max_chunks_up: 8
 
 pipeline:
   inputs:
@@ -22,11 +24,15 @@ pipeline:
       strip_underscores: off
       storage.type: filesystem
 
-    # 하트비트 (조용한 서버도 '온라인'으로 보이게)
+    # 하트비트 (조용한 서버도 '온라인'으로 보이게).
+    # 메모리 저장: 하트비트마다 256KB 를 잡는 새 조각이 생긴다. 재시도를 짧게 끊는 전용 출력(아래)으로 보내서
+    # 서버에 못 보내는 동안 조각이 쌓이지 않게 한다. mem_buf_limit 은 안전장치(내용 바이트 기준, 하트비트당 약 100B)
     - name: dummy
       tag: heartbeat
-      dummy: '{"type":"heartbeat","config_version":"0.2.0"}'
+      dummy: '{"type":"heartbeat","config_version":"0.2.1"}'
       interval_sec: 30
+      storage.type: memory
+      mem_buf_limit: 64K
 
     # (선택) 텍스트 로그 파일. 앞의 '#' 을 지우면 활성화
     # - name: tail
@@ -53,8 +59,10 @@ pipeline:
     #     - log_channel nginx
 
   outputs:
+    # 로그: 하트비트를 뺀 전부. 버리지 않는다 (무한 재시도, 디스크 버퍼).
+    # 제외 정규식이라 새 입력 tag 를 추가해도 여기로 온다 (하트비트 출력으로 가서 버려지는 일이 없게)
     - name: http
-      match: '*'
+      match_regex: '^(?!heartbeat$).*'
       host: @SERVER_HOST@
       port: @SERVER_PORT@
       uri: /api/ingest
@@ -64,6 +72,8 @@ pipeline:
       compress: gzip
       header: X-API-Key @API_KEY@
       retry_limit: no_limits
+      # 보내는 작업자 1개 (기본 2): JSON·gzip 버퍼 메모리를 줄인다. 밀린 로그는 조금 늦게 비워질 뿐
+      workers: 1
       # 서버 장애가 길어져도 버퍼 파일이 디스크를 다 쓰지 않게 상한 (넘치면 오래된 것부터 버림)
       storage.total_limit_size: 1G
       log_response_payload: false
@@ -71,6 +81,29 @@ pipeline:
     # Fluent Bit 의 tls.verify_hostname 기본값은 off 라서, 켜지 않으면 같은 CA 가 발급한 어떤 인증서든 통과한다.
     # tls.vhost 는 서버 인증서의 DNS 이름이다 (서버 주소가 IP 여도 이 이름으로 검증한다).
     # CA 파일은 install.sh 가 tls.ca_file 위치로 복사한다. 검증을 끄지 말고 이름이나 CA 를 바로잡는다.
+    #   tls: on
+    #   tls.verify: on
+    #   tls.verify_hostname: on
+    #   tls.vhost: @TLS_SERVER_NAME@
+    #   tls.ca_file: /etc/wlm-agent/ca.crt
+    #   tls.min_version: TLSv1.2
+    # @@TLS_END
+
+    # 하트비트: 오래된 하트비트는 쓸모없다 (서버는 받은 시각을 쓴다). 2번 재시도 후 버린다
+    - name: http
+      match: heartbeat
+      host: @SERVER_HOST@
+      port: @SERVER_PORT@
+      uri: /api/ingest
+      format: json
+      json_date_key: date
+      json_date_format: iso8601
+      compress: gzip
+      header: X-API-Key @API_KEY@
+      retry_limit: 2
+      workers: 1
+      log_response_payload: false
+    # @@TLS_BEGIN  위 로그 출력과 같은 TLS 설정 (install.sh 가 두 블록을 함께 켠다)
     #   tls: on
     #   tls.verify: on
     #   tls.verify_hostname: on

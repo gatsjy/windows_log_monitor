@@ -12,9 +12,11 @@ service:
   # Buffer to disk while the server is unreachable (no log loss on network outage)
   storage.path: C:\ProgramData\wlm-agent\buffer
   storage.sync: normal
-  storage.backlog.mem_limit: 16M
-  # Max 2MB chunks kept in memory (default 128 = ~256MB). The rest waits on disk -> agent stays small
-  storage.max_chunks_up: 16
+  # Only used to load chunks left on disk at startup (default 100M)
+  storage.backlog.mem_limit: 8M
+  # Max 2MB chunks kept in memory, shared by all filesystem inputs (default 128 = ~256MB).
+  # The rest waits on disk -> agent stays small. A smaller value only keeps more on disk; nothing is dropped.
+  storage.max_chunks_up: 8
 
 # SQL Server ERRORLOG: a record starts at a line beginning with a timestamp; the other lines (startup banner,
 # startup parameters, multi-line messages) are appended to it. Must agree with the server (normalizers/mssql.py _LINE,
@@ -49,11 +51,16 @@ pipeline:
       storage.type: filesystem
       mem_buf_limit: 32M
 
-    # Heartbeat every 30s so the server knows this PC is alive even when it is quiet
+    # Heartbeat every 30s so the server knows this PC is alive even when it is quiet.
+    # Memory storage: each heartbeat is a new chunk that reserves 256KB. It has its own output below with a small
+    # retry_limit, so heartbeats cannot pile up while the server is unreachable (was ~720MB per day of outage).
+    # mem_buf_limit is only a safety net (it counts content bytes, ~100B per heartbeat).
     - name: dummy
       tag: heartbeat
-      dummy: '{"type":"heartbeat","config_version":"0.4.0"}'
+      dummy: '{"type":"heartbeat","config_version":"0.4.1"}'
       interval_sec: 30
+      storage.type: memory
+      mem_buf_limit: 64K
 
     # @@IIS_BEGIN  IIS access logs (W3C). Enabled by: install.ps1 -Iis
     # The server parses the lines (including the '#Fields:' header, so custom field sets work).
@@ -106,8 +113,10 @@ pipeline:
     # @@MSSQL_END
 
   outputs:
+    # Logs: everything except heartbeats. Never dropped (retry forever, disk buffer).
+    # Negative regex so a new input tag still lands here, never on the heartbeat output below.
     - name: http
-      match: '*'
+      match_regex: '^(?!heartbeat$).*'
       host: @SERVER_HOST@
       port: @SERVER_PORT@
       uri: /api/ingest
@@ -118,6 +127,8 @@ pipeline:
       header: X-API-Key @API_KEY@
       retry_limit: no_limits
       net.keepalive: off
+      # One sender (default 2): less memory for JSON/gzip buffers; a backlog only drains a bit slower
+      workers: 1
       # Cap the on-disk buffer during long outages (oldest chunks are dropped first)
       storage.total_limit_size: 1G
       log_response_payload: false
@@ -125,6 +136,31 @@ pipeline:
     # tls.verify_hostname is OFF by default in Fluent Bit: without it any certificate from the CA is accepted.
     # tls.vhost is the DNS name in the server certificate (checked even when the host is an IP address).
     # install.ps1 copies the CA file to tls.ca_file. Never turn verification off: fix the name or the CA instead.
+    #   tls: on
+    #   tls.verify: on
+    #   tls.verify_hostname: on
+    #   tls.vhost: @TLS_SERVER_NAME@
+    #   tls.ca_file: C:\ProgramData\wlm-agent\ca.crt
+    #   tls.min_version: TLSv1.2
+    # @@TLS_END
+
+    # Heartbeats: an old heartbeat is worthless (the server uses the time it receives one), so give up after 2 retries
+    # instead of keeping every 256KB chunk in memory for the whole outage.
+    - name: http
+      match: heartbeat
+      host: @SERVER_HOST@
+      port: @SERVER_PORT@
+      uri: /api/ingest
+      format: json
+      json_date_key: date
+      json_date_format: iso8601
+      compress: gzip
+      header: X-API-Key @API_KEY@
+      retry_limit: 2
+      net.keepalive: off
+      workers: 1
+      log_response_payload: false
+    # @@TLS_BEGIN  Same TLS settings as the log output (install.ps1 enables both blocks)
     #   tls: on
     #   tls.verify: on
     #   tls.verify_hostname: on

@@ -110,7 +110,7 @@ jobs:
   agents-windows:
     name: 윈도 에이전트 설정 (Fluent Bit --dry-run, 윈도 빌드)
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35   # agent memory test runs Fluent Bit twice for about 4 minutes each
     env:
       PYTHONUTF8: "1"   # 러너의 파이프 출력은 cp1252 라 한글 print 가 UnicodeEncodeError 로 멈춘다
     steps:
@@ -154,6 +154,15 @@ jobs:
             & $exe.FullName -c $cfg --dry-run
             if ($LASTEXITCODE -ne 0) { throw "dry-run failed: $cfg" }
           }
+      # Server down -> agent memory (ADR-039): heartbeats every 1s instead of 30s simulate a long outage in 2 minutes.
+      # Same run with the 0.4.0 template (heartbeats on the log output, retry forever) as the baseline: the new config
+      # must grow less than half as much, still deliver a log written during the outage, and drop old heartbeats.
+      - name: Agent memory while the server is down (real Fluent Bit)
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem fb -Recurse -Filter fluent-bit.exe | Select-Object -First 1).FullName
+          python tools/ci/agent_memory.py --fluent-bit $exe --template agent/windows/fluent-bit.yaml --baseline tools/ci/fixtures/windows-agent-0.4.0.yaml --down 120 --work (Join-Path $env:RUNNER_TEMP "wlm-mem")
+          if ($LASTEXITCODE -ne 0) { throw "agent memory test failed" }
       # Real events through the agent's winevtlog settings: prints the record shape (StringInserts order/types, EventData)
       # that the server rules and normalizer rely on. Throwaway account/service on the runner, removed at the end.
       - name: Windows event record shape (real events, agent settings)

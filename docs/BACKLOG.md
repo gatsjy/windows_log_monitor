@@ -45,6 +45,7 @@
 | B-30 | 앱 수준 접근 IP 제한 (관리 기능·화면·수집 허용 대역) | P2 | S | ISMS 2.6.x, ADR-036 | 대기 |
 | B-31 | TLS 운영 편의 (설정 화면·보고서 경고·CA 교체·프록시 예시) | P2 | M | ADR-036 | 대기 |
 | B-32 | 에이전트가 멈춘 사이 생긴 파일을 처음부터 읽기 (IIS·ERRORLOG 앞부분 유실) | P2 | S | ADR-037 | 대기 |
+| B-33 | 에이전트 Fluent Bit 4.2.8+ 로 올리기 (winevtlog 렌더 실패 누수·이중 해제) | P2 | M | ADR-039 | 대기 |
 
 ---
 
@@ -148,6 +149,12 @@
 - **왜:** Fluent Bit tail 은 위치 기록(db)이 없는 파일을 기동 때 끝부터 읽습니다(`read_from_head: false`). 에이전트가 멈춘 사이 새로 생긴 파일도 마찬가지라 앞부분이 유실됩니다(실측, ADR-037). IIS 는 날짜가 바뀐 파일의 `#Fields:` 와 첫 줄들, SQL Server 를 다시 시작해 순환된 ERRORLOG 는 시작 배너가 사라집니다.
 - **구현 방향:** `read_from_head: true` + `ignore_older`(4.0.14 에서 파일 수정 시각으로 동작, 실측). 첫 설치 때 하루~이틀 치를 몰아 읽는 적재량, **알림은 수신 시각 기준이라 과거 오류가 한꺼번에 알림이 되는 것**, ERRORLOG 전체를 다시 읽는 크기를 함께 정합니다.
 - **완료 기준:** 에이전트 정지 → 새 파일 생성 → 재기동 시험(Fluent Bit 컨테이너)에서 머리줄·첫 줄 수신, 첫 설치 적재량·알림 영향 기록. 되면 IIS 머리줄 공백(첫 설치·멈춘 사이 새 파일)도 사라집니다.
+
+### B-33 에이전트 Fluent Bit 4.2.8+ 로 올리기
+- **왜:** 4.0.14 의 winevtlog 는 렌더가 실패한 이벤트에서 메모리를 흘리고(`get_string_inserts` 의 values), 앞 이벤트의 해제된 포인터를 다시 써 이중 해제로 멈출 수 있습니다. 수정(`in_winevtlog: Prevent record drops on exceptions`)은 v4.2.8 · v5.0.10 · v5.1.0 부터입니다(4.2.3~4.2.7 은 반쪽 수정). 4.0 계열에는 없습니다(ADR-039 조사).
+- **착수 조건:** `check-memory.ps1` 로 잰 PC 에서 0.4.1 설정인데도 Private Bytes 가 계속 오르고, `fluent-bit.log` 에 `EvtRender failed`·`Failed to get string inserts` 가 보일 때.
+- **구현 방향:** `FLUENTBIT_VERSION`(ci.yml, make-bundle.sh) · `agent-installers/*.sha256` · AIRGAP.md 의 '4.0 계열' 문구를 함께 바꿉니다. 윈도 CI 로 레코드 모양을 다시 떠서(`agent-fb<버전>.jsonl`) 4.0.14 와 비교합니다. 5.1 이면 `event_data_as_map` 으로 ADR-038 의 중복도 없앨 수 있습니다.
+- **완료 기준:** 윈도 CI 의 레코드 모양·메모리 시험 통과, 기존 PC(4.0)와 새 PC 가 섞여도 규칙·대시보드가 같게 동작.
 
 ### B-23 기술 부채 모음
 - `starlette.testclient` 의 httpx 사용 경고(StarletteDeprecationWarning) — FastAPI/Starlette 권장 방식으로 테스트 클라이언트 교체.

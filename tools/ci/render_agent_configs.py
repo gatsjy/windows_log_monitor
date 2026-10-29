@@ -34,6 +34,10 @@ multiline 도 정적으로 본다 (B-08, ADR-037) — 채운 모든 설정에서
 - 켜진 입력의 multiline.parser 이름이 그 파일의 multiline_parsers[].name 이나 내장 이름에 있음.
   --dry-run 은 없는 이름을 통과시키고, 실제 기동에서는 'parser not registered' 로 엔진 전체(윈도 이벤트 수집까지)가 멈춘다(실측).
 - multiline 을 쓰는 입력은 storage.type: filesystem (메모리면 에이전트를 멈출 때 묶던 레코드를 잃는다 — 실측).
+
+하트비트 출력 분리도 정적으로 본다 (ADR-039, 에이전트 메모리) — 채운 모든 설정에서:
+- retry_limit 이 no_limits 가 아닌 http 출력은 match: heartbeat 만. 로그 tag 가 그 출력으로 가면 몇 번 실패 후 버려진다.
+- 로그 출력(retry_limit: no_limits)이 있고, 하트비트를 받지 않음 — 받으면 서버 장애 동안 256KB 조각이 메모리에 쌓인다.
 """
 
 from __future__ import annotations
@@ -100,18 +104,19 @@ def _scalar(value) -> str:
     return "" if value is None else str(value)
 
 
-def http_output(text: str) -> dict[str, str] | None:
-    """첫 http 출력의 켜진 키·값 (값은 문자열, YAML 참/거짓은 on/off). yaml 이 없으면 들여쓰기로 읽는다."""
+def http_outputs(text: str) -> list[dict[str, str]]:
+    """http 출력마다 켜진 키·값 (값은 문자열, YAML 참/거짓은 on/off). yaml 이 없으면 들여쓰기로 읽는다.
+    로그 출력과 하트비트 출력(0.4.1/0.2.1 부터)이 따로라서 전부 본다 — 하나만 평문이면 그 출력은 TLS 포트에서 끊긴다."""
     try:
         import yaml  # CI 의 dev 이미지·개발 PC 에 있으면 파서로
     except ImportError:
         yaml = None
     if yaml is not None:
         doc = yaml.safe_load(text) or {}
-        for out in ((doc.get("pipeline") or {}).get("outputs") or []):
-            if isinstance(out, dict) and out.get("name") == "http":
-                return {str(k): _scalar(v) for k, v in out.items()}
-        return None
+        return [{str(k): _scalar(v) for k, v in out.items()}
+                for out in ((doc.get("pipeline") or {}).get("outputs") or [])
+                if isinstance(out, dict) and out.get("name") == "http"]
+    found = []
     lines = text.splitlines()
     for i, line in enumerate(lines):
         head = re.match(r"^(\s*)- name:\s*http\s*$", line)
@@ -126,14 +131,22 @@ def http_output(text: str) -> dict[str, str] | None:
             kv = re.match(r"^\s*['\"]?([A-Za-z0-9_.]+)['\"]?\s*:\s*(.*?)\s*(?:\s#.*)?$", nxt)
             if kv:
                 keys[kv.group(1)] = kv.group(2).strip("'\"")
-        return keys
-    return None
+        found.append(keys)
+    return found
 
 
 def check_tls(text: str, ca_file: str | None = None, vhost: str | None = None, port: str | None = None) -> list[str]:
-    out = http_output(text)
-    if out is None:
+    outs = http_outputs(text)
+    if not outs:
         return ["http 출력이 없습니다"]
+    errors = []
+    for n, out in enumerate(outs, 1):
+        label = f"http 출력 {n}({out.get('match') or out.get('match_regex') or '?'})"
+        errors += [f"{label}: {e}" for e in _check_tls_output(out, ca_file, vhost, port)]
+    return errors
+
+
+def _check_tls_output(out: dict[str, str], ca_file: str | None, vhost: str | None, port: str | None) -> list[str]:
     errors = [f"{key}: on 이어야 합니다 (지금 {out.get(key) or '없음'})"
               for key in ("tls", "tls.verify", "tls.verify_hostname") if out.get(key, "").lower() not in _ON]
     if out.get("tls.min_version") not in _MIN_VERSIONS:
@@ -266,11 +279,34 @@ def derive_winlog(text: str, state: str, out_file: str, channels: str | None = N
     return "\n".join(body)
 
 
+def check_heartbeat_route(text: str) -> list[str]:
+    """하트비트만 재시도를 짧게 끊고, 로그는 하트비트를 빼고 전부 무한 재시도하는지 (tag 는 winlog·file.*·journald·heartbeat)."""
+    outs = http_outputs(text)
+    errors = []
+    for out in outs:
+        limited = out.get("retry_limit", "1") != "no_limits"
+        if limited and (out.get("match") != "heartbeat" or out.get("match_regex")):
+            errors.append(f"retry_limit {out.get('retry_limit') or '기본값'} 인 http 출력은 match: heartbeat 만 받아야 합니다"
+                          f" (지금 match={out.get('match')!r} match_regex={out.get('match_regex')!r}) — 로그가 버려진다")
+    logs = [o for o in outs if o.get("retry_limit") == "no_limits"]
+    if not logs:
+        errors.append("retry_limit: no_limits 인 로그 출력이 없습니다")
+    for out in logs:
+        pattern = out.get("match_regex")
+        if out.get("match") or not pattern:
+            errors.append(f"로그 출력은 match_regex 로 하트비트를 빼야 합니다 (지금 match={out.get('match')!r})")
+            continue
+        got = {tag: bool(re.search(pattern, tag)) for tag in ("winlog", "file.iis", "file.mssql", "journald", "heartbeat")}
+        if got["heartbeat"] or not all(v for k, v in got.items() if k != "heartbeat"):
+            errors.append(f"로그 출력 match_regex {pattern!r} 가 하트비트를 받거나 로그 tag 를 놓칩니다: {got}")
+    return errors
+
+
 def check_plain(text: str) -> list[str]:
-    out = http_output(text)
-    if out is None:
+    outs = http_outputs(text)
+    if not outs:
         return ["http 출력이 없습니다"]
-    keys = sorted(k for k in out if k == "tls" or k.startswith("tls."))
+    keys = sorted({k for out in outs for k in out if k == "tls" or k.startswith("tls.")})
     return [f"평문 설정에 켜진 TLS 키가 있습니다: {keys}"] if keys else []
 
 
@@ -353,6 +389,7 @@ def main(out_dir: str) -> int:
 
     for name, text in rendered.items():
         fail(name, check_multiline(text))
+        fail(name, check_heartbeat_route(text))
     for name, (template, _blocks, tls) in VARIANTS.items():
         if tls:
             fail(name, check_tls(rendered[name], CA_TARGET[template], VALUES["@TLS_SERVER_NAME@"]))
@@ -362,7 +399,7 @@ def main(out_dir: str) -> int:
     fail("agent/·collector/", scan_verify_off())
 
     print("에이전트 설정 채움:", ", ".join(str(out / n) for n in rendered))
-    print("검사 (남은 자리·TLS·검증 끄기·multiline):", "실패" if failed else "통과")
+    print("검사 (남은 자리·TLS·검증 끄기·multiline·하트비트 출력):", "실패" if failed else "통과")
     return 1 if failed else 0
 
 

@@ -105,6 +105,7 @@ python3 tools/ci/render_agent_configs.py out  # 에이전트 설정 틀을 채�
 docker run --rm --network none -v "$PWD:/repo:ro" -v "$PWD/out:/render:ro" rockylinux/rockylinux:9 bash /repo/tools/ci/test_install_sh.sh   # install.sh 실행 시험
 docker run --rm --network none -v "$PWD:/repo:ro" -v "$PWD/out:/render:ro" mcr.microsoft.com/powershell:lts-alpine-3.20 pwsh -File /repo/tools/ci/test_install_ps1.ps1 -RenderDir /render -CaSha256 $(python3 tools/ci/render_agent_configs.py --ca-sha256 tools/ci/fixtures/ci-ca.crt) -Work /tmp/w   # install.ps1 (CI 는 5.1)
 tools/ci/test_fluentbit_mssql.sh out/windows.yaml   # ERRORLOG 묶음(multiline)을 Fluent Bit 컨테이너로 실제 실행 (기대값 다시 만들기: --update)
+python tools/ci/agent_memory.py --fluent-bit <fluent-bit.exe> --baseline tools/ci/fixtures/windows-agent-0.4.0.yaml   # 윈도 전용: 서버 장애 중 에이전트 메모리 (관리자)
 curl -s localhost:8080/healthz
 # TLS 로 띄워 보기 (개발, .env 는 그대로): 인증서 → WLM_TLS=on 으로 up → https 확인 → 그냥 up 으로 평문 복귀 (AIRGAP.md §13)
 docker compose run --rm --no-deps --user 0 -v "$PWD/tls:/out" -v "$PWD/tls-ca:/ca" api python -m app.cli tls-init --out /out --ca-dir /ca --name logmon.dev.internal --name localhost --ip 127.0.0.1
@@ -194,6 +195,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 수집 요청 하나에 들어온 값 때문에 SQL 이 실패하면 그 요청의 다른 이벤트까지 거절되고 에이전트가 끝없이 다시 보냅니다. 표에 넣는 값은 NUL·길이를 먼저 거릅니다(`iis._storable`).
 - MSSQL `Error:` 머리줄 짝(`_pending`)만 프로세스 메모리입니다(워커 1개 전제, 키는 PC·파일·프로세스). 테스트에서 순서에 의존하는 경우 같은 `host`·파일을 씁니다. 여러 줄 레코드는 첫 줄로 해석합니다.
 - **에이전트 multiline (ADR-037):** `multiline.parser` 이름 오타는 `--dry-run` 을 통과하고 기동 때 엔진 전체(윈도 이벤트 포함)가 멈춘다 → `render_agent_configs.check_multiline` 이 막는다. multiline tail 은 `storage.type: filesystem` 필수(서버가 꺼진 채 멈추면 묶던 것·못 보낸 것을 잃는다 — `tools/ci/test_fluentbit_mssql.sh` 가 재현).
+- **에이전트 출력은 둘 (ADR-039):** 로그(`match_regex: '^(?!heartbeat$).*'`, 무한 재시도·디스크 버퍼)와 하트비트(`retry_limit: 2`, 메모리). 하트비트를 로그 출력에 다시 합치면 서버 장애 동안 256KB 조각이 쌓여 PC 메모리가 하루 약 720MB 씩 는다. 서버 주소·TLS 등 출력 키는 **두 출력 모두** 고친다 — `render_agent_configs.check_heartbeat_route`·`check_tls` 가 막고, 윈도 CI `tools/ci/agent_memory.py` 가 실제 Fluent Bit 로 메모리·라우팅을 잰다.
   - 틀의 `mssql_errorlog` 시작 정규식과 서버 `mssql._LINE` 은 같은 줄을 시각 줄로 봐야 한다(`tests/test_agent_sync.py`). 고정 자료 `tests/fixtures/mssql/fb-*.jsonl` 은 Fluent Bit 실제 출력 — Fluent Bit 을 올리면 `test_fluentbit_mssql.sh … --update` 후 서버 시험.
   - 에이전트 설정 버전 0.4.0 은 서버보다 먼저 배포하지 않는다(옛 서버는 묶인 레코드를 잘못 읽음).
 - **Windows EventData 이름 (ADR-038):** 에이전트(Fluent Bit 4.0)는 EventData 를 보내지 않고 StringInserts 만 보낸다(LogonType 은 숫자). 서버가 `win_templates` 로 `raw.winevtlog.EventData` 를 붙이고, `f.EventData.X` 는 별칭(보낸 값 → 붙인 값)이다.

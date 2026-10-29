@@ -1,0 +1,134 @@
+# Log Monitor - Windows agent (Fluent Bit)
+# install.ps1 fills @SERVER_HOST@ / @SERVER_PORT@ / @API_KEY@ / @CHANNELS@ / @IIS_PATH@ / @MSSQL_PATH@ / @TLS_SERVER_NAME@,
+# uncomments the optional IIS / MSSQL / TLS blocks when requested, and writes the result to
+# C:\ProgramData\wlm-agent\fluent-bit.yaml
+# config_version (in the heartbeat below): bump when this file changes (shown on the "수집 PC" page).
+
+service:
+  flush: 2
+  log_level: info
+  log_file: C:\ProgramData\wlm-agent\fluent-bit.log
+  scheduler.cap: 60
+  # Buffer to disk while the server is unreachable (no log loss on network outage)
+  storage.path: C:\ProgramData\wlm-agent\buffer
+  storage.sync: normal
+  storage.backlog.mem_limit: 16M
+  # Max 2MB chunks kept in memory (default 128 = ~256MB). The rest waits on disk -> agent stays small
+  storage.max_chunks_up: 16
+
+# SQL Server ERRORLOG: a record starts at a line beginning with a timestamp; the other lines (startup banner,
+# startup parameters, multi-line messages) are appended to it. Must agree with the server (normalizers/mssql.py _LINE,
+# checked by server/tests/test_agent_sync.py). Always defined: unused unless the MSSQL block below is enabled.
+# Server first: a 0.4.0 agent sending grouped records to an older server loses the time and error numbers (ADR-037).
+multiline_parsers:
+  - name: mssql_errorlog
+    type: regex
+    flush_timeout: 2000
+    rules:
+      - state: start_state
+        regex: '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?\s/'
+        next_state: cont
+      - state: cont
+        regex: '/^(?!\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?\s)/'
+        next_state: cont
+
+pipeline:
+  inputs:
+    # Windows Event Log. Missing channels are ignored. Other useful channels:
+    #   Microsoft-Windows-Sysmon/Operational, Microsoft-Windows-TaskScheduler/Operational
+    # SQL Server and IIS (WAS/W3SVC) also write their important errors here (Application/System).
+    - name: winevtlog
+      tag: winlog
+      channels: @CHANNELS@
+      interval_sec: 1
+      read_existing_events: false
+      ignore_missing_channels: true
+      # Event details via StringInserts
+      string_inserts: true
+      db: C:\ProgramData\wlm-agent\winevtlog.sqlite
+      storage.type: filesystem
+      mem_buf_limit: 32M
+
+    # Heartbeat every 30s so the server knows this PC is alive even when it is quiet
+    - name: dummy
+      tag: heartbeat
+      dummy: '{"type":"heartbeat","config_version":"0.4.0"}'
+      interval_sec: 30
+
+    # @@IIS_BEGIN  IIS access logs (W3C). Enabled by: install.ps1 -Iis
+    # The server parses the lines (including the '#Fields:' header, so custom field sets work).
+    # - name: tail
+    #   tag: file.iis
+    #   path: @IIS_PATH@
+    #   path_key: file
+    #   exclude_path: '*.zip,*.gz'
+    #   refresh_interval: 30
+    #   db: C:\ProgramData\wlm-agent\tail-iis.sqlite
+    #   storage.type: filesystem
+    #   mem_buf_limit: 32M
+    # @@IIS_END
+
+    # @@MSSQL_BEGIN  SQL Server ERRORLOG (UTF-16). Enabled by: install.ps1 -MssqlErrorlog
+    # Optional: SQL Server already writes login failures and serious errors to the Application event log.
+    # Multi-line entries are grouped by mssql_errorlog (above). storage.type: filesystem is required with multiline:
+    # the record being built survives an agent stop (with memory storage it is lost).
+    # - name: tail
+    #   tag: file.mssql
+    #   path: @MSSQL_PATH@
+    #   path_key: file
+    #   unicode.encoding: UTF-16LE
+    #   multiline.parser: mssql_errorlog
+    #   refresh_interval: 30
+    #   db: C:\ProgramData\wlm-agent\tail-mssql.sqlite
+    #   storage.type: filesystem
+    #   mem_buf_limit: 32M
+    # @@MSSQL_END
+
+  filters:
+    - name: modify
+      match: '*'
+      add: agent_host ${COMPUTERNAME}
+
+    - name: modify
+      match: winlog
+      add: log_source winevtlog
+
+    # @@IIS_BEGIN
+    # - name: modify
+    #   match: file.iis
+    #   add: log_source iis
+    # @@IIS_END
+
+    # @@MSSQL_BEGIN
+    # - name: modify
+    #   match: file.mssql
+    #   add: log_source mssql
+    # @@MSSQL_END
+
+  outputs:
+    - name: http
+      match: '*'
+      host: @SERVER_HOST@
+      port: @SERVER_PORT@
+      uri: /api/ingest
+      format: json
+      json_date_key: date
+      json_date_format: iso8601
+      compress: gzip
+      header: X-API-Key @API_KEY@
+      retry_limit: no_limits
+      net.keepalive: off
+      # Cap the on-disk buffer during long outages (oldest chunks are dropped first)
+      storage.total_limit_size: 1G
+      log_response_payload: false
+    # @@TLS_BEGIN  HTTPS to the server. Enabled by install.ps1 when settings.json has "CaFile" (or -CaFile).
+    # tls.verify_hostname is OFF by default in Fluent Bit: without it any certificate from the CA is accepted.
+    # tls.vhost is the DNS name in the server certificate (checked even when the host is an IP address).
+    # install.ps1 copies the CA file to tls.ca_file. Never turn verification off: fix the name or the CA instead.
+    #   tls: on
+    #   tls.verify: on
+    #   tls.verify_hostname: on
+    #   tls.vhost: @TLS_SERVER_NAME@
+    #   tls.ca_file: C:\ProgramData\wlm-agent\ca.crt
+    #   tls.min_version: TLSv1.2
+    # @@TLS_END

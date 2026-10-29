@@ -138,7 +138,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -Ap
 | 설정/데이터 | `C:\ProgramData\wlm-agent\` (SYSTEM, Administrators 만 접근 가능. API 키가 들어 있음) |
 | 읽은 위치 기록 | `winevtlog.sqlite`, `tail-iis.sqlite`, `tail-mssql.sqlite` (재시작해도 중복/누락 없음) |
 | 이벤트 필드 | `string_inserts: true` — 이벤트 상세 정보를 StringInserts 로 전달 (서버가 사용자·IP 자동 추출) |
-| 장애 대비 | 서버에 연결할 수 없으면 `buffer\` 에 디스크로 쌓아 두었다가 복구되면 전송 |
+| 장애 대비 | 서버에 연결할 수 없으면 `buffer\` 에 디스크로 쌓아 두었다가 복구되면 전송 (최대 1GB). 하트비트는 쌓지 않고 2번 재시도 후 버림 |
+| 메모리 | 로그 조각 최대 8개(약 16MB)만 메모리에, 나머지는 디스크 — 설정 0.4.1 부터 서버 장애 중에도 늘지 않음 (ADR-039) |
 | 전송 | 평문 HTTP(6976), 또는 묶음에 `ca.crt` 가 있으면 HTTPS(6977, CA·이름 검증, TLS 1.2 이상) |
 | 시작 시점 | 설치 이후 발생한 이벤트부터 수집 (`read_existing_events: false`) |
 
@@ -197,6 +198,21 @@ TLS 오류는 `C:\ProgramData\wlm-agent\fluent-bit.log` 에 `[tls]`·`X509 code`
 | `X509 code: 9` | 인증서 시작 시각보다 PC 시계가 이름 | PC 시간 동기화 |
 | `[tls] error`, `unexpected EOF` | TLS 를 평문 포트(6976)로 보냄 | 포트 6977 확인 |
 | 서비스가 시작 직후 계속 다시 시작 | `ca.crt` 를 읽지 못함 (Fluent Bit 이 기동하지 못함) | `install.ps1` 을 다시 실행 |
+
+### 메모리를 많이 쓸 때
+
+설정 0.4.0 까지는 서버에 보내지 못하는 동안(서버 중단·포트 막힘·키 틀림·TLS 오류) 하트비트가 메모리에 쌓여 **하루에 약 700MB 씩** 늘었습니다.
+'수집 PC' 화면의 설정 버전이 0.4.1 보다 낮으면 새 설치 묶음으로 다시 설치합니다(읽은 위치 기록은 그대로라 유실·중복 없음).
+
+그래도 많으면 설치 묶음의 `check-memory.ps1` 로 잽니다 (관리자 PowerShell, 기본 30분·30초 간격):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\check-memory.ps1 -Minutes 60
+```
+
+- 바탕 화면에 `wlm-agent-memory-<PC이름>.csv`(Private Bytes·Working Set·핸들·버퍼 크기)를 남기고 끝에 판단을 출력합니다.
+- 작업 관리자의 '메모리' 칸은 비공유 Working Set 이라 값이 다릅니다. 늘어나는지는 **Private Bytes**(커밋 크기)로 봅니다.
+- 계속 오르고 `fluent-bit.log` 에 `EvtRender failed` 가 보이면 Fluent Bit 4.0 의 winevtlog 누수일 수 있습니다 — CSV 와 로그를 관리자에게 보냅니다(BACKLOG B-33).
 
 ## 제거
 
