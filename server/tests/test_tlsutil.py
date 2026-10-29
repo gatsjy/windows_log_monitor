@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 import ssl
 import threading
@@ -300,7 +301,11 @@ def test_status_remembers_served_certificate(tmp_path, monkeypatch):
     assert not [t for _, t in tlsutil.status(s).problems if "다시 시작하지 않아" in t]
     key, cert = tlsutil.issue_server(ca_key, ca, ["logmon.corp.local"], ["10.0.0.10"])
     _write(tmp_path, "server.key", tlsutil.key_pem(key), 0o640)
-    _write(tmp_path, "server.crt", tlsutil.cert_pem(cert) + tlsutil.cert_pem(ca))
+    crt = _write(tmp_path, "server.crt", tlsutil.cert_pem(cert) + tlsutil.cert_pem(ca))
+    # 리눅스 파일 시각은 수 ms 단위라, 바로 다시 쓴 같은 크기 인증서는 상태 캐시 키(mtime·크기)가 같아
+    # 옛 결과가 나왔다(전체 시험에서만 실패). 실제 교체처럼 시각을 띄운다
+    later = os.stat(crt).st_mtime + 2
+    os.utime(crt, (later, later))
     st = tlsutil.status(s)
     warn = [(lv, t) for lv, t in st.problems if "다시 시작하지 않아" in t]
     assert warn and warn[0][0] == "warn" and "restart api" in warn[0][1]
