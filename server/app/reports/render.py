@@ -197,6 +197,14 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
         body += _config_changes(al)
     out.append(_section("알림 처리", body))
 
+    # 관리 작업 요약 (B-36 이전 보고서에는 없다)
+    if "admin" in p:
+        ad = p["admin"]
+        body = _table(["관리 작업", "건수"], [[_e(g["label"]), _e(g["n"])] for g in ad["groups"]], right=(1,))
+        body += (f"<p style='color:{MUTED};margin:6px 0'>다른 사람에게 바로 알린 관리 작업(받는 곳 약화·관리 권한 부여·보관 파일 복원) "
+                 f"{_n(ad['alerts'])}건 — 내용은 알림 이력의 '관리 작업 알림'과 감사로그에 있습니다</p>")
+        out.append(_section("관리 작업 요약", body))
+
     # 수집 PC
     body = _stats([("전체", _n(ag["total"]), "보고서를 만든 시각 기준"), ("온라인", _n(ag["online"]), ""),
                    ("지연", _n(ag["stale"]), ""), ("연락 끊김", _n(ag["offline"]), "")])

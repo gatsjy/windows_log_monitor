@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import archive, backups, db, oracle, partitions, secrets
-from ..alerts import targets
+from ..alerts import adminwatch, targets
 from ..alerts.engine import engine
 from ..alerts.message import AlertMessage, search_link
 from ..alerts.messenger import FORMATS, URL_WARNINGS
@@ -120,7 +120,8 @@ async def get_smtp():
 async def put_smtp(body: SmtpBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     password: str | None = None if body.clear_password else (body.password or "")
     try:
-        await targets.save_smtp(body.model_dump(), password, admin.username, client_ip(request))
+        async with adminwatch.watch_targets(admin.username, "메일 서버 저장"):   # 받는 곳이 약해지면 알림 (B-36)
+            await targets.save_smtp(body.model_dump(), password, admin.username, client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
     return await targets.smtp_settings()
@@ -175,7 +176,8 @@ async def create_contact(body: ContactBody, request: Request, admin: User = Depe
 @router.put("/api/settings/contacts/{contact_id}")
 async def update_contact(contact_id: int, body: ContactBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        await targets.save_contact(contact_id, body.model_dump(exclude_none=True), admin.username, client_ip(request))
+        async with adminwatch.watch_targets(admin.username, "수신자 저장"):   # 받는 곳이 약해지면 알림 (B-36)
+            await targets.save_contact(contact_id, body.model_dump(exclude_none=True), admin.username, client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
     return {"ok": True}
@@ -184,7 +186,8 @@ async def update_contact(contact_id: int, body: ContactBody, request: Request, a
 @router.delete("/api/settings/contacts/{contact_id}")
 async def delete_contact(contact_id: int, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        await targets.delete_contact(contact_id, admin.username, client_ip(request))
+        async with adminwatch.watch_targets(admin.username, "수신자 삭제"):   # 받는 곳이 약해지면 알림 (B-36)
+            await targets.delete_contact(contact_id, admin.username, client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
     return {"ok": True}
@@ -222,8 +225,9 @@ async def create_group(body: GroupBody, request: Request, admin: User = Depends(
 @router.put("/api/settings/groups/{group_id}")
 async def update_group(group_id: int, body: GroupBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        await targets.save_group(group_id, body.model_dump(exclude_none=True), await _used_all(), admin.username,
-                                 client_ip(request))
+        async with adminwatch.watch_targets(admin.username, "수신 그룹 저장"):   # 받는 곳이 약해지면 알림 (B-36)
+            await targets.save_group(group_id, body.model_dump(exclude_none=True), await _used_all(), admin.username,
+                                     client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
     return {"ok": True}
@@ -232,7 +236,8 @@ async def update_group(group_id: int, body: GroupBody, request: Request, admin: 
 @router.delete("/api/settings/groups/{group_id}")
 async def delete_group(group_id: int, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        await targets.delete_group(group_id, await _used_all(), admin.username, client_ip(request))
+        async with adminwatch.watch_targets(admin.username, "수신 그룹 삭제"):   # 받는 곳이 약해지면 알림 (B-36)
+            await targets.delete_group(group_id, await _used_all(), admin.username, client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
     return {"ok": True}
@@ -287,8 +292,9 @@ async def create_channel(body: ChannelBody, request: Request, admin: User = Depe
 @router.put("/api/settings/channels/{channel_id}")
 async def update_channel(channel_id: int, body: ChannelBody, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        await targets.save_channel(channel_id, body.model_dump(), _secret_updates(body), await _used_all(), admin.username,
-                                   client_ip(request))
+        async with adminwatch.watch_targets(admin.username, "외부 연동 저장"):   # 받는 곳이 약해지면 알림 (B-36)
+            await targets.save_channel(channel_id, body.model_dump(), _secret_updates(body), await _used_all(), admin.username,
+                                       client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
     return {"ok": True}
@@ -297,7 +303,8 @@ async def update_channel(channel_id: int, body: ChannelBody, request: Request, a
 @router.delete("/api/settings/channels/{channel_id}")
 async def delete_channel(channel_id: int, request: Request, admin: User = Depends(require_permission("settings.manage"))):
     try:
-        await targets.delete_channel(channel_id, await _used_all(), admin.username, client_ip(request))
+        async with adminwatch.watch_targets(admin.username, "외부 연동 삭제"):   # 받는 곳이 약해지면 알림 (B-36)
+            await targets.delete_channel(channel_id, await _used_all(), admin.username, client_ip(request))
     except targets.TargetError as exc:
         raise _fail(exc) from exc
     return {"ok": True}
@@ -492,6 +499,9 @@ async def retention_restore(body: RestoreBody, admin: User = Depends(require_per
         rows = await archive.restore(body.partition, body.hold_days, admin.username)
     except archive.ArchiveError as exc:
         raise HTTPException(400, str(exc)) from exc
+    # 지난 로그(개인정보)를 다시 검색할 수 있게 됐다 — 조사 목적이어도 다른 사람이 알게 (B-36)
+    await adminwatch.notify(admin.username, "보관 파일 복원",
+                            [f"보관 파일 {body.partition} 을(를) 다시 검색할 수 있게 했습니다 ({rows:,}건, {body.hold_days}일 동안)"])
     return {"rows": rows}
 
 

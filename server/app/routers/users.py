@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import db
+from ..alerts import adminwatch
 from ..auth import groups, service
 from ..auth.deps import client_ip, require_admin
 from ..auth.service import ROLE_LABELS, AuthError, User
@@ -54,16 +55,24 @@ async def create_user(body: CreateBody, request: Request, admin: User = Depends(
                                               client_ip(request))
     except AuthError as exc:
         raise _error(exc) from exc
+    if body.role == "admin":   # 관리 권한 부여는 다른 사람에게도 알린다 (B-36)
+        await adminwatch.notify(admin.username, "관리 권한 부여", [f"관리자 계정 '{row['username']}' 을(를) 만들었습니다"])
     # 임시 비밀번호는 이 응답에서 한 번만 보여준다 (저장하지 않음)
     return {"user": row, "temp_password": temp}
 
 
 @router.patch("/api/users/{user_id}")
 async def update_user(user_id: int, body: UpdateBody, request: Request, admin: User = Depends(require_admin)):
+    before = await service.user_brief(user_id)
     try:
         await service.update_user(user_id, body.model_dump(exclude_none=True), admin, client_ip(request))
     except AuthError as exc:
         raise _error(exc) from exc
+    after = await service.user_brief(user_id)
+    if before and after and after["role"] == "admin" and after["is_active"] and not (
+            before["role"] == "admin" and before["is_active"]):
+        await adminwatch.notify(admin.username, "관리 권한 부여",
+                                [f"'{after['username']}' 을(를) 관리자로 {'바꿨' if before['role'] != 'admin' else '다시 켰'}습니다"])
     return {"ok": True}
 
 
@@ -102,6 +111,7 @@ async def list_user_groups():
 
 
 async def _save_group(group_id: int | None, body: GroupBody, request: Request, admin: User) -> dict[str, Any]:
+    old = next((g for g in await groups.list_groups() if g["id"] == group_id), None) if group_id else None
     try:
         saved = await groups.save(group_id, body.model_dump())
     except groups.GroupError as exc:
@@ -109,6 +119,7 @@ async def _save_group(group_id: int | None, body: GroupBody, request: Request, a
     await db.audit(admin.username, "user_group.save", saved["name"],
                    {k: saved[k] for k in ("permissions", "scope_categories", "scope_hosts", "member_ids")},
                    actor_ip=client_ip(request))
+    await adminwatch.privileged_group(admin.username, saved["name"], old, saved)
     return saved
 
 

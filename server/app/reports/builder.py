@@ -14,6 +14,7 @@ from typing import Any
 
 from .. import archive, backups, db, partitions, repository
 from ..alerts import health
+from ..alerts.builtin import ADMIN_RULE
 from ..alerts.engine import engine
 from ..config import display_zone, settings
 from ..filters import EventFilter
@@ -210,6 +211,23 @@ def integrity_bad_count(check: dict[str, Any] | None) -> int:
         return 0
 
 
+# 관리 작업 요약의 묶음: (이름, 감사로그 동작 앞부분들). 수가 0 인 묶음도 보인다 — '없었음'도 점검 결과다
+ADMIN_GROUPS = (
+    ("권한·계정", ("user.", "user_group.")),
+    ("알림 규칙·무음", ("alerts.config.save", "alerts.config.apply", "alerts.rule.", "alerts.silence.")),
+    ("알림 받는 곳", ("settings.group.", "settings.channel.save", "settings.channel.delete", "settings.contact.", "settings.smtp.save")),
+    ("보관·복원", ("retention.restore_archive", "retention.rotate_now", "retention.delete_archive")),
+    ("내려받기", ("audit.export", "alerts.export", "agents.package.download")),
+)
+
+
+async def _admin(start: datetime, end: datetime) -> dict[str, Any]:
+    counts = await repository.audit_action_counts(start, end)
+    groups = [{"label": label, "n": sum(n for action, n in counts.items() if action.startswith(prefixes))}
+              for label, prefixes in ADMIN_GROUPS]
+    return {"groups": groups, "alerts": await repository.count_alerts_of_rule(ADMIN_RULE, start, end)}
+
+
 async def _alerting() -> dict[str, Any]:
     state = await health.current(fresh=True)
     # 전송기를 끈 것(WLM_ALERT_DISPATCHER=off)은 시험용 설정이라 보고서에 싣지 않는다 — 화면·/healthz/alerts 에는 나온다
@@ -293,6 +311,8 @@ async def build(kind: str, start: datetime, end: datetime, now: datetime | None 
         "ingest": await repository.ingest_problem_counts(start, end),
         # 알림 기능 자체 (ADR-045) — 보고서를 만든 시각 기준. 평가·전송이 멈췄으면 그 사이 알림은 오지 않았다
         "alerting": await _alerting(),
+        # 관리 작업 요약 (B-36) — 관리자 행위 점검(ISMS 2.9.5)
+        "admin": await _admin(start, end),
         "retention": await _retention(),
         "backup": {"problems": backup["problems"],
                    "last_backup": _jsonable(backup["last_backup"]), "last_verify": _jsonable(backup["last_verify"]),

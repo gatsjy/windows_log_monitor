@@ -302,6 +302,11 @@ async def _active_admins(exclude_id: int | None = None) -> int:
     return row["n"]
 
 
+async def user_brief(user_id: int) -> dict | None:
+    """역할·활성 여부 (관리 권한 부여를 알릴지 판단, B-36)."""
+    return await db.fetch_one("SELECT id, username, role, is_active FROM users WHERE id = %s", (user_id,))
+
+
 async def update_user(user_id: int, changes: dict[str, Any], actor: User, ip: str | None) -> None:
     row = await db.fetch_one("SELECT id, username, role, is_active, display_name FROM users WHERE id = %s", (user_id,))
     if row is None:

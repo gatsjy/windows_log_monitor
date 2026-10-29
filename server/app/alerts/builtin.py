@@ -14,4 +14,7 @@ TARGET_DOWN_RULE = "알림 전송 실패"
 RULE_BROKEN_RULE = "알림 규칙 동작 안 함"
 SYSTEM_RULES = frozenset({ENGINE_STALL_RULE, TARGET_DOWN_RULE, RULE_BROKEN_RULE})
 
-BUILTIN_RULES = SYSTEM_RULES | {CONFIG_RULE}
+# 탐지를 약하게 하거나 권한을 넓히는 관리 작업 (B-36 2단계): 받는 곳 약화·관리 권한 부여·보관 파일 복원. 무음으로 막을 수 없다
+ADMIN_RULE = "관리 작업 알림"
+
+BUILTIN_RULES = SYSTEM_RULES | {CONFIG_RULE, ADMIN_RULE}

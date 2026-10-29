@@ -1245,6 +1245,19 @@ async def silenced_rule_names(now: datetime, names: list[str]) -> set[str]:
     return {r["rule"] for r in rows}
 
 
+async def count_alerts_of_rule(rule: str, start: datetime, end: datetime) -> int:
+    row = await db.fetch_one("SELECT count(*) AS n FROM alerts WHERE rule = %s AND fired_at >= %s AND fired_at < %s",
+                             (rule, start, end))
+    return row["n"]
+
+
+async def audit_action_counts(start: datetime, end: datetime) -> dict[str, int]:
+    """기간 안의 감사로그 동작별 수 (점검 보고서 '관리 작업 요약', B-36)."""
+    rows = await db.fetch_all("SELECT action, count(*) AS n FROM audit_log WHERE at >= %s AND at < %s GROUP BY action",
+                              (start, end))
+    return {r["action"]: r["n"] for r in rows}
+
+
 async def report_config_changes(start: datetime, end: datetime) -> list[dict[str, Any]]:
     """기간 안에 적용한 알림 설정 변경 (처음 기준 판본 — 차이 없음 — 은 빼고)."""
     return await db.fetch_all(
