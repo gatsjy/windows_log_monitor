@@ -146,6 +146,13 @@ def retention_warnings() -> list[str]:
     return out
 
 
+async def purge_agent_streams(now: datetime | None = None) -> None:
+    """채널별 수신 집계는 '평소'를 보는 데만 쓴다 (B-37) — 한 달 남짓만 둔다(로그 자체가 아니라 감사 대상 아님)."""
+    from . import repository
+
+    await repository.purge_agent_streams((now or datetime.now(UTC)).date() - timedelta(days=repository.STREAM_KEEP_DAYS))
+
+
 async def purge_ingest_problems(now: datetime | None = None) -> None:
     """격리한 수집 레코드는 원본 로그라 로그 보관기간까지, 수집 거절 장부도 같은 기간 조용하면 지운다 (B-40)."""
     from . import repository
@@ -229,5 +236,6 @@ async def run_maintenance() -> None:
             await purge_iis_layouts()
             await purge_sessions()
             await purge_ingest_problems()
+            await purge_agent_streams()
         finally:
             await conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))

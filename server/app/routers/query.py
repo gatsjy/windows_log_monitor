@@ -278,8 +278,11 @@ async def list_agents(request: Request, since: str = "24h"):
     rows = await repository.agents(start, request.state.user.scopes)
     for row in rows:
         row["status"] = agent_status(row["silent_sec"])
+    # 늘 오던 채널이 끊긴 것 (B-37) — 이 사용자에게 보이는 PC 만
+    silent = await repository.silent_streams(now, [r["host"] for r in rows]) if rows else []
     return {
         "items": rows,
+        "silent_streams": [{**s, "quiet_limit_sec": int(s.pop("quiet_limit").total_seconds())} for s in silent],
         "thresholds": {"online_sec": settings.heartbeat_online_sec, "stale_sec": settings.heartbeat_stale_sec},
         # 화면이 '평문으로 보내는 PC' 를 경고할지 (TLS 를 켠 서버에서만 의미가 있다, ADR-036)
         "transport": {"tls": settings.tls, "ingest_plain": settings.ingest_plain or not settings.tls},

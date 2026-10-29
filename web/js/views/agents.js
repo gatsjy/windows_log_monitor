@@ -239,7 +239,7 @@ export async function mount(root, params) {
   async function load() {
     loadProblems();
     try {
-      const { items, thresholds, transport } = await api.get('/api/agents', { since });
+      const { items, thresholds, transport, silent_streams: silentStreams = [] } = await api.get('/api/agents', { since });
       const count = (s) => items.filter((a) => a.status === s).length;
       root.querySelector('[data-summary]').innerHTML = html`${[
         ['전체', items.length, ''], ['온라인', count('online'), statusBadge('online')],
@@ -264,6 +264,13 @@ export async function mount(root, params) {
       table.innerHTML = html`${plain ? html`<p class="hint-box" style="margin:12px 16px 0" data-plain>
           <b class="tag-bad">평문으로 보내는 PC ${fmtNum(plain)}대</b> — '에이전트 설치'에서 새 설치 묶음(TLS)을 받아 다시 설치하세요.
           모두 옮긴 뒤 평문 수집을 닫습니다(docs/AIRGAP.md §7.5).</p>` : ''}
+        ${silentStreams.length ? html`<div class="hint-box" style="margin:12px 16px 0" data-silent-streams>
+          <b class="tag-bad">늘 오던 로그가 끊긴 채널 ${fmtNum(silentStreams.length)}개</b> — PC 는 보내고 있는데 이 채널만 평소보다 오래 조용합니다.
+          감사 정책(GPO)·에이전트 설정이 바뀌었는지 확인하세요.
+          <ul style="margin:6px 0 0;padding-left:18px">${silentStreams.slice(0, 10).map((st) => html`<li>
+            <a href="#/events?since=7d&host=${encodeURIComponent(st.host)}${st.channel ? `&channel=${encodeURIComponent(st.channel)}` : ''}">${st.host} · ${st.channel || sourceLabel(st.source)}</a>
+            <span class="muted">— 마지막 수신 ${fmtRelative(st.last_at)}, 평소 하루 ${fmtNum(Math.round(st.n7 / Math.max(st.days, 1)))}건</span></li>`)}
+          ${silentStreams.length > 10 ? html`<li class="muted">… 외 ${fmtNum(silentStreams.length - 10)}개</li>` : ''}</ul></div>` : ''}
         ${web ? html`<p class="hint-box" style="margin:12px 16px 0" data-web>
           <b class="tag-bad">화면 포트(8080)로 보내는 PC ${fmtNum(web)}대</b> — 0.4 이전 설치 묶음입니다. TLS 를 켜면 끊기니 먼저 새 묶음으로 다시 설치하세요.</p>` : ''}
         ${admin ? html`<div class="toolbar" data-bulk style="padding:10px 16px;justify-content:space-between">

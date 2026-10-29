@@ -202,6 +202,11 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
                    ("지연", _n(ag["stale"]), ""), ("연락 끊김", _n(ag["offline"]), "")])
     body += "<div style='margin-top:12px'><b style='font-size:13px'>연락이 끊긴 PC (오래된 것부터)</b>" + _table(
         ["PC", "마지막 수신", "마지막 IP"], [[_e(a["host"]), _e(_t(a["last_seen"])), _e(a["last_ip"] or "-")] for a in ag["silent"]]) + "</div>"
+    if ag.get("silent_streams"):   # B-37 이전 보고서에는 없다
+        body += ("<div style='margin-top:12px'><b style='font-size:13px'>늘 오던 로그가 끊긴 채널 (PC 는 보내는 중)</b>" + _table(
+            ["PC", "소스·채널", "마지막 수신", "평소 하루"],
+            [[_e(s["host"]), _e(s["channel"] or s["source"]), _e(_t(s["last_at"])), _e(s["per_day"])] for s in ag["silent_streams"]],
+            right=(3,)) + "</div>")
     if "ingest" in p:   # B-40 이전 보고서에는 없다
         ig = p["ingest"]
         body += (f"<div style='margin-top:12px'><b style='font-size:13px'>수집 거절·격리</b>"

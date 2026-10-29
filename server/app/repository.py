@@ -218,6 +218,13 @@ def _field_stats(events: list[Event]) -> list[tuple]:
     return [(src, path, t, n, sample) for (src, path), (t, n, sample) in sorted(stats.items())]
 
 
+def _stream_counts(events: list[Event]) -> tuple[list[str], list[str], list[str], list[int]]:
+    """(PC, 소스, 채널)별 건수를 열마다 — 정렬해서 (동시 요청끼리 같은 순서로 잠근다)."""
+    counts: Counter[tuple[str, str, str]] = Counter((e.host, e.source, e.channel or "") for e in events)
+    rows = sorted(counts.items())
+    return [k[0] for k, _ in rows], [k[1] for k, _ in rows], [k[2] for k, _ in rows], [n for _, n in rows]
+
+
 async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_ip: str | None,
                  transport: str | None = None, layouts: dict | None = None) -> None:
     async with conn.cursor() as cur:
@@ -248,6 +255,17 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
                 " json_type = EXCLUDED.json_type, sample = EXCLUDED.sample",
                 _field_stats(events),
             )
+            # 채널별 수신 (B-37) — 같은 트랜잭션. 잠금 순서는 agents → field_stats → agent_streams → iis_layouts
+            # 문장 하나로 (unnest) — 줄마다 upsert 하면 PC 가 많은 묶음(수집기)에서 수집이 13% 느려졌다 (PERFORMANCE.md §2.5)
+            hosts, sources, channels, ns = _stream_counts(events)
+            now = datetime.now(UTC)
+            await cur.execute(
+                "INSERT INTO agent_streams AS s (host, source, channel, day, n, first_at, last_at)"
+                " SELECT h, src, ch, %s, n, %s, %s FROM unnest(%s::text[], %s::text[], %s::text[], %s::bigint[]) AS t(h, src, ch, n)"
+                " ON CONFLICT (host, source, channel, day) DO UPDATE SET"
+                " n = s.n + EXCLUDED.n, last_at = GREATEST(s.last_at, EXCLUDED.last_at)",
+                (now.date(), now, now, hosts, sources, channels, ns),
+            )
 
         if heartbeats:
             latest = {hb.host: hb for hb in heartbeats}
@@ -263,7 +281,7 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
 
         if layouts:
             # 이벤트와 같은 트랜잭션 — 이벤트가 거절되면 머리줄도 남지 않고, 에이전트가 청크째 다시 보낼 때 다시 배운다.
-            # 잠금 순서는 agents → field_stats → iis_layouts, 같은 표 안에서는 정렬 순서 (동시 요청끼리 교착 방지)
+            # 잠금 순서는 agents → field_stats → agent_streams → iis_layouts, 같은 표 안에서는 정렬 순서 (동시 요청끼리 교착 방지)
             await cur.executemany(
                 "INSERT INTO iis_layouts (host, file, dir, fields) VALUES (%s, %s, %s, %s)"
                 " ON CONFLICT (host, file) DO UPDATE SET fields = EXCLUDED.fields, dir = EXCLUDED.dir, seen_at = now()",
@@ -392,6 +410,42 @@ async def ingest_problem_counts(start: datetime, end: datetime) -> dict[str, Any
         "SELECT status, sum(count) AS n, count(DISTINCT client_ip) AS ips FROM ingest_rejections"
         " WHERE hour >= %s AND hour < %s GROUP BY status ORDER BY status", (start, end))
     return {"quarantined": q["n"], "rejected": [{"status": r["status"], "n": int(r["n"]), "ips": r["ips"]} for r in rows]}
+
+
+# ---------------------------------------------------------------- 채널별 수신·끊김 (B-37, ADR-046)
+STREAM_LOOKBACK_DAYS = 7     # '평소'를 보는 기간 (오늘 제외)
+STREAM_MIN_DAYS = 5          # 그중 이만큼 이상 온 채널만 판단 — 가끔 오는 채널은 끊김을 말할 수 없다
+STREAM_QUIET_MIN = timedelta(hours=6)
+STREAM_QUIET_MAX = timedelta(days=3)
+STREAM_GAP_FACTOR = 10       # 평소 간격(하루 수 / 건수)의 이 배수보다 오래 조용하면 끊김 — 하루 몇 건인 채널이 밤새 조용한 것은 정상
+STREAM_KEEP_DAYS = 35
+
+
+async def silent_streams(now: datetime, hosts: list[str] | None = None) -> list[dict[str, Any]]:
+    """PC 는 다른 로그·하트비트를 보내는데, 지난 7일 중 5일 이상 오던 (소스, 채널)이 평소보다 훨씬 오래 조용한 것.
+    PC 자체가 끊긴 것은 '연락 끊김'이 따로 알린다(여기서는 빼서 같은 일을 두 번 말하지 않는다)."""
+    today = now.date()
+    since = today - timedelta(days=STREAM_LOOKBACK_DAYS)
+    rows = await db.fetch_all(
+        "WITH s AS (SELECT host, source, channel,"
+        "   count(DISTINCT day) FILTER (WHERE day < %(today)s) AS days,"
+        "   COALESCE(sum(n) FILTER (WHERE day < %(today)s), 0) AS n7, max(last_at) AS last_at"
+        "   FROM agent_streams WHERE day >= %(since)s AND (%(hosts)s::text[] IS NULL OR host = ANY(%(hosts)s))"
+        "   GROUP BY host, source, channel),"
+        " q AS (SELECT s.*, a.last_seen, GREATEST(%(qmin)s::interval, LEAST(%(qmax)s::interval,"
+        "   (s.days * interval '1 day') / GREATEST(s.n7, 1) * %(factor)s)) AS quiet_limit"
+        "   FROM s JOIN agents a USING (host) WHERE s.days >= %(min_days)s)"
+        " SELECT host, source, channel, days, n7, last_at, last_seen, quiet_limit FROM q"
+        " WHERE last_seen >= %(now)s - %(qmin)s::interval AND last_at < %(now)s - quiet_limit"
+        " ORDER BY last_at, host, source, channel",
+        {"today": today, "since": since, "hosts": hosts, "qmin": STREAM_QUIET_MIN, "qmax": STREAM_QUIET_MAX,
+         "factor": STREAM_GAP_FACTOR, "min_days": STREAM_MIN_DAYS, "now": now})
+    return rows
+
+
+async def purge_agent_streams(cutoff_day: Any) -> int:
+    rows = await db.fetch_all("DELETE FROM agent_streams WHERE day < %s RETURNING day", (cutoff_day,))
+    return len(rows)
 
 
 async def purge_ingest_problems(cutoff: datetime) -> tuple[int, int]:

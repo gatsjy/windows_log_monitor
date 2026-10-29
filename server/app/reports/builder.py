@@ -169,7 +169,13 @@ async def _agents(now: datetime) -> dict[str, Any]:
         else:
             silent.append({"host": r["host"], "last_seen": _iso(r["last_seen"]), "last_ip": r["last_ip"]})
     silent.sort(key=lambda a: a["last_seen"] or "")
-    return {"total": len(rows), "online": online, "stale": stale, "offline": len(silent), "silent": silent[:20]}
+    # PC 는 보내는데 늘 오던 채널만 끊긴 것 (B-37) — GPO 변경으로 Security 수집만 멈춘 DC 같은 경우
+    streams = await repository.silent_streams(now)
+    return {"total": len(rows), "online": online, "stale": stale, "offline": len(silent), "silent": silent[:20],
+            "silent_streams": [{"host": r["host"], "source": r["source"], "channel": r["channel"],
+                                "last_at": _iso(r["last_at"]), "per_day": round(r["n7"] / max(r["days"], 1))}
+                               for r in streams[:30]],
+            "silent_streams_total": len(streams)}
 
 
 async def _retention() -> dict[str, Any]:
@@ -253,6 +259,12 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
         reason = "API 키가 틀리거나 없어" if r["status"] == 401 else f"{r['status']}"
         out.append({"level": "warn", "text": f"{reason} 거절된 수집 요청 {r['n']:,}건 (보낸 곳 {r['ips']:,}곳)"
                                              + (" — 키를 바꾼 뒤 옛 설치 묶음으로 보내는 PC" if r["status"] == 401 else "")})
+    if p["agents"].get("silent_streams_total"):
+        first = p["agents"]["silent_streams"][:3]
+        names = ", ".join(f"{s['host']} {s['channel'] or s['source']}" for s in first)
+        more = p["agents"]["silent_streams_total"] - len(first)
+        out.append({"level": "warn", "text": f"늘 오던 로그가 끊긴 채널 {p['agents']['silent_streams_total']:,}개: {names}"
+                                             + (f" 외 {more:,}개" if more > 0 else "") + " — 감사 정책·에이전트 설정을 확인하세요"})
     if p["agents"]["offline"]:
         out.append({"level": "warn", "text": f"연락이 끊긴 PC {p['agents']['offline']:,}대"})
     if p["retention"]["archives_missing"]:
