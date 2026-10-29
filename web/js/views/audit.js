@@ -1,6 +1,7 @@
 // 감사 로그 (관리자 전용): 누가 언제 어디서 무엇을 했는지. CSV 로 내려받아 심사 증적으로 제출.
 import * as api from '../api.js';
-import { errorBox, fmtNum, fmtTime, html, qs, replaceParams } from '../util.js';
+import { exportCsv } from '../exportcsv.js';
+import { errorBox, fmtNum, fmtTime, html, replaceParams } from '../util.js';
 
 const RANGES = [['24h', '24시간'], ['7d', '7일'], ['30d', '30일'], ['90d', '90일'], ['365d', '1년']];
 const GROUPS = [
@@ -22,7 +23,7 @@ export async function mount(root, params) {
     <div class="page-head">
       <div><h1 class="page-title">감사 로그</h1>
         <p class="page-sub">로그인·계정 변경·로그 조회·설정 변경 기록입니다. 수정·삭제할 수 없으며(DB 에서 차단), 보관기간이 지나면 자동 파기됩니다.</p></div>
-      <div class="toolbar"><a class="btn" data-csv download>CSV 내려받기</a></div>
+      <div class="toolbar"><button type="button" class="btn" data-csv>CSV 내려받기</button></div>
     </div>
     <div class="card filterbar" data-filter></div>
     <section class="card"><div class="card-head"><h2 class="card-title">기록</h2><span class="muted num" data-count style="font-size:12.5px"></span></div>
@@ -42,9 +43,10 @@ export async function mount(root, params) {
     });
   }
 
+  root.querySelector('[data-csv]').addEventListener('click', () => exportCsv('/api/audit', { ...state, limit: 10000 }, { what: '감사로그' }));
+
   async function load() {
     replaceParams('audit', state);
-    root.querySelector('[data-csv]').href = `/api/audit?${qs({ ...state, format: 'csv', limit: 10000 })}`;
     const table = root.querySelector('[data-table]');
     try {
       const { items, labels } = await api.get('/api/audit', { ...state, limit: 500 });

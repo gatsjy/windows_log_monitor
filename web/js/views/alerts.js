@@ -9,9 +9,10 @@ import {
   ALERT_STATUS, GROUP_LABELS, SILENCE_DURATIONS, deliveryChips, matchText, openAlert, silenceScope, statusChip,
 } from '../alertdetail.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
+import { exportCsv } from '../exportcsv.js';
 import { SEVERITIES, severityBadge } from '../levels.js';
 import { openRuleEditor } from '../ruleform.js';
-import { confirmModal, errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html, qs, replaceParams, store, toast } from '../util.js';
+import { confirmModal, errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html, replaceParams, store, toast } from '../util.js';
 
 const TYPE_LABELS = { email: '수신 그룹 (메일)', webhook: '웹훅', oracle: 'Oracle DB', '-': '설정 오류' };
 // '전체' = 보관기간 안 전부 (서버 보관기간보다 넉넉한 10년) — 사이드바 숫자(확인 안 된 알림 전체)와 맞추려고
@@ -89,13 +90,12 @@ export async function mount(root, params, sub) {
     const total = counts.open + counts.acked + counts.resolved;
     const shown = new Set(items.map((a) => a.id));
     [...selected].forEach((id) => { if (!shown.has(id)) selected.delete(id); });
-    const csv = `/api/alerts?${qs({ since, status, format: 'csv' })}`;
     el.innerHTML = html`<section class="card">
       <div class="rule-toolbar">
         <div class="seg" data-status aria-label="처리 상태">${STATUS_FILTERS.map(([v, l]) => html`
           <button type="button" data-v="${v}" class="${v === status ? 'on' : ''}">${l}<span class="seg-count num">${fmtNum(v ? counts[v] : total)}</span></button>`)}</div>
         <span style="flex:1"></span>
-        <a class="btn ghost" href="${csv}" download title="처리 상태·처리한 사람·처리 기록 포함 (감사 증적)">CSV 내려받기</a>
+        <button type="button" class="btn ghost" data-csv title="처리 상태·처리한 사람·처리 기록 포함 (감사 증적)">CSV 내려받기</button>
       </div>
       <div class="bulk-bar" data-bulk hidden>
         <b data-bulk-count></b>
@@ -121,6 +121,7 @@ export async function mount(root, params, sub) {
         : html`<div class="empty">${EMPTY_TEXT[status]}</div>`}
     </section>`;
 
+    el.querySelector('[data-csv]').addEventListener('click', () => exportCsv('/api/alerts', { since, status }, { what: '알림 이력' }));
     el.querySelectorAll('[data-status] button').forEach((b) => b.addEventListener('click', () => {
       status = b.dataset.v;
       selected.clear();

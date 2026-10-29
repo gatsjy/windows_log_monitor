@@ -258,3 +258,54 @@ def test_nul_bytes_do_not_reject_the_whole_request(client):
     assert set(stored) == {"NUL-OK", "NUL-SW", "NUL-PC", "NUL-WEB"}
     assert (stored["NUL-PC"]["username"], stored["NUL-PC"]["src_ip"], stored["NUL-PC"]["channel"]) == ("evil", "10.0.0.9", "Security")
 
+
+def _audit_rows(action):
+    with psycopg.connect(os.environ["WLM_DATABASE_URL"]) as conn:
+        return conn.execute("SELECT target, detail FROM audit_log WHERE action = %s ORDER BY id", (action,)).fetchall()
+
+
+def test_event_view_records_whose_record_was_viewed(client):
+    """접속기록에 누구의 기록(정보주체)을 봤는지 — 이벤트의 사용자·IP·분류 (ADR-042)."""
+    item = _items(client, user="kim")[0]
+    assert client.get(f"/api/events/{item['id']}", headers=CSRF).status_code == 200
+    target, detail = _audit_rows("events.view")[-1]
+    assert target == str(item["id"])
+    assert (detail["username"], detail["src_ip"], detail["category"]) == ("kim", "203.0.113.7", "security")
+
+
+def test_personal_top_values_are_logged_once_per_ten_minutes(client):
+    from app.routers import query
+
+    query._stats_audited.clear()
+    before = len(_audit_rows("events.stats"))
+    for _ in range(3):   # 대시보드 위젯이 같은 조건으로 되풀이해 불러도 10분에 한 번
+        assert client.get("/api/stats/top", params={"since": "1h", "field": "user"}, headers=CSRF).status_code == 200
+    assert client.get("/api/stats/top", params={"since": "1h", "field": "host"}, headers=CSRF).status_code == 200  # 개인정보 아님
+    assert client.get("/api/stats/top", params={"since": "1h", "field": "ip"}, headers=CSRF).status_code == 200
+    assert [r[0] for r in _audit_rows("events.stats")[before:]] == ["user", "ip"]
+
+
+def test_views_fail_closed_when_the_access_log_cannot_be_written(client, monkeypatch):
+    """접속기록을 남기지 못하면 개인정보가 보이는 조회·내려받기는 결과를 내주지 않는다 (503) — 기록 없이 열람되지 않게."""
+    from app import db
+    from app.routers import query
+
+    event_id = _items(client, user="kim")[0]["id"]
+    real_audit = db.audit
+
+    async def broken(*args, required=False, **kwargs):
+        if required:
+            raise db.AuditError("시험")
+        return await real_audit(*args, required=required, **kwargs)
+
+    monkeypatch.setattr(db, "audit", broken)
+    query._stats_audited.clear()
+    for path, params in (("/api/events", {"since": "1h"}), (f"/api/events/{event_id}", {}),
+                         ("/api/stats/top", {"since": "1h", "field": "user"}),
+                         ("/api/audit", {"format": "csv", "reason": "시험"}),
+                         ("/api/alerts", {"format": "csv", "reason": "시험"})):
+        r = client.get(path, params=params, headers=CSRF)
+        assert r.status_code == 503 and "접속기록" in r.json()["detail"], (path, r.status_code)
+    # 개인정보가 아닌 조회는 그대로
+    assert client.get("/api/stats/top", params={"since": "1h", "field": "host"}, headers=CSRF).status_code == 200
+

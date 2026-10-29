@@ -181,6 +181,14 @@ async def _query_timeout(request: Request, exc: db.QueryTimeout) -> JSONResponse
     return JSONResponse({"detail": _timeout_message(request.url.path, exc)}, status_code=503)
 
 
+@app.exception_handler(db.AuditError)
+async def _audit_failed(request: Request, exc: db.AuditError) -> JSONResponse:
+    # 개인정보가 보이는 조회·내려받기는 접속기록을 남기지 못하면 결과를 내주지 않는다 (ADR-042)
+    log.error("접속기록을 남기지 못해 응답을 거부함: %s %s (%s)", request.method, request.url.path, exc)
+    return JSONResponse({"detail": "접속기록을 남기지 못해 조회를 거부했습니다. 잠시 뒤 다시 시도하고, 계속되면 관리자에게 알리세요."},
+                        status_code=503)
+
+
 app.include_router(ingest.router)
 app.include_router(auth.router)
 app.include_router(query.router, dependencies=[Depends(require_user)])

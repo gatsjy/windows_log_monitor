@@ -132,17 +132,24 @@ async def fetch_one(query: Any, params: list | tuple | None = None) -> dict | No
         return await cur.fetchone()
 
 
+class AuditError(Exception):
+    """접속기록을 남기지 못했다 — required 기록이면 조회 결과를 돌려주지 않는다 (main 의 처리기가 503)."""
+
+
 async def audit(actor: str, action: str, target: str | None = None,
-                detail: dict | None = None, actor_ip: str | None = None) -> None:
-    """audit_log 에 한 줄 기록한다. 실패해도 본 작업을 막지 않도록 예외는 로그만 남긴다."""
+                detail: dict | None = None, actor_ip: str | None = None, *, required: bool = False) -> None:
+    """audit_log 에 한 줄 기록한다. 보통은 실패해도 본 작업을 막지 않도록 예외는 로그만 남긴다.
+    required=True(개인정보가 보이는 조회·내려받기의 접속기록)는 실패하면 AuditError — 기록 없이 개인정보를 내주지 않는다 (ADR-042)."""
     try:
         async with pool().connection() as conn:
             await conn.execute(
                 "INSERT INTO audit_log (actor, actor_ip, action, target, detail) VALUES (%s, %s, %s, %s, %s)",
                 (actor, actor_ip, action, target, json.dumps(detail or {}, ensure_ascii=False)),
             )
-    except Exception:
+    except Exception as exc:
         log.exception("audit_log 기록 실패: %s %s", action, target)
+        if required:
+            raise AuditError(action) from exc
 
 
 async def migrate() -> None:

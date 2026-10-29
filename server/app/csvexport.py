@@ -24,6 +24,16 @@ def safe_cell(value: Any) -> Any:
     return value
 
 
+def export_reason(reason: str | None) -> str:
+    """내려받는 사유 (ADR-042) — 개인정보가 든 파일은 왜 꺼내는지 접속기록에 함께 남긴다. 없으면 400."""
+    from fastapi import HTTPException
+
+    text = (reason or "").strip()
+    if len(text) < 2:
+        raise HTTPException(400, "내려받는 사유를 입력하세요 (예: 월간 점검, 사고 조사)")
+    return text[:200]
+
+
 def csv_response(header: list[str], rows: Iterable[list[Any]], filename: str,
                  headers: dict[str, str] | None = None) -> Response:
     buffer = io.StringIO()

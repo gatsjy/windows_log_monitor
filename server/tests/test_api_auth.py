@@ -198,10 +198,14 @@ def test_audit_log_is_append_only(client):
 
 def test_audit_csv_export(client):
     logged_in_admin(client)
-    r = client.get("/api/audit", params={"format": "csv", "since": "1d"})
+    # 내려받는 사유가 없으면 거절 (ADR-042) — 개인정보가 든 파일은 왜 꺼내는지 접속기록에 남긴다
+    missing = client.get("/api/audit", params={"format": "csv", "since": "1d"})
+    assert missing.status_code == 400 and "사유" in missing.json()["detail"]
+    r = client.get("/api/audit", params={"format": "csv", "since": "1d", "reason": "월간 점검"})
     assert r.status_code == 200
     assert r.text.startswith("﻿번호,")
-    assert sql("SELECT count(*) FROM audit_log WHERE action = 'audit.export'")[0][0] == 1
+    logged = sql("SELECT detail FROM audit_log WHERE action = 'audit.export'")
+    assert len(logged) == 1 and logged[0][0]["reason"] == "월간 점검"
 
 
 def test_logout_invalidates_session(client):

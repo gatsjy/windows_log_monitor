@@ -216,7 +216,7 @@ def test_notes_are_append_only(ctx):
 
 
 def test_csv_export_has_handling_columns(ctx, monkeypatch):
-    r = ctx["admin"].get("/api/alerts", params={"since": "1h", "format": "csv"}, headers=CSRF)
+    r = ctx["admin"].get("/api/alerts", params={"since": "1h", "format": "csv", "reason": "사고 조사"}, headers=CSRF)
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
     rows = list(csv.reader(io.StringIO(r.text.lstrip("﻿"))))
     assert rows[0][6:11] == ["처리 상태", "확인한 사람", "확인 시각", "해결한 사람", "해결 시각"]
@@ -227,18 +227,19 @@ def test_csv_export_has_handling_columns(ctx, monkeypatch):
     assert {"alerts.ack", "alerts.resolve", "alerts.reopen", "alerts.note", "alerts.export"} <= {a["action"] for a in audit}
 
     # 조회 범위가 있는 사용자의 CSV 에는 범위 안의 알림만
-    med = ctx["med-handler"].get("/api/alerts", params={"since": "1h", "format": "csv"}, headers=CSRF)
+    med = ctx["med-handler"].get("/api/alerts", params={"since": "1h", "format": "csv", "reason": "사고 조사"}, headers=CSRF)
     assert {row[4] for row in list(csv.reader(io.StringIO(med.text.lstrip("\ufeff"))))[1:]} == {"MED-01"}
 
     # 상한에서 잘리면 파일 끝·응답 머리글·감사로그에 남긴다 (증적이 몰래 빠지지 않게)
     from app.routers import alerts as alerts_router
 
     monkeypatch.setattr(alerts_router, "CSV_LIMIT", 1)
-    r = ctx["admin"].get("/api/alerts", params={"since": "1h", "format": "csv"}, headers=CSRF)
+    r = ctx["admin"].get("/api/alerts", params={"since": "1h", "format": "csv", "reason": "사고 조사"}, headers=CSRF)
     rows = list(csv.reader(io.StringIO(r.text.lstrip("\ufeff"))))
     assert r.headers.get("X-WLM-Truncated") == "1" and len(rows) == 3 and rows[-1][0].startswith("(최근 1건까지만")
     last = ctx["admin"].get("/api/audit", params={"since": "1h", "action": "alerts.export"}, headers=CSRF).json()["items"][0]
-    assert last["detail"]["truncated"] is True and last["detail"]["rows"] == 1
+    assert last["detail"]["truncated"] is True and last["detail"]["rows"] == 1 and last["detail"]["reason"] == "사고 조사"
+    assert ctx["admin"].get("/api/alerts", params={"since": "1h", "format": "csv"}, headers=CSRF).status_code == 400
 
 
 def test_silence_validation(ctx):

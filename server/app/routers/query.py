@@ -122,11 +122,11 @@ async def list_events(request: Request, limit: int = Query(100, ge=1, le=1000), 
     rows = rows[:limit]
     next_cursor = f"{rows[-1]['ts'].isoformat()}|{rows[-1]['id']}" if has_more else None
     if cursor is None:   # 다음 페이지 요청은 같은 검색이라 생략
-        await _audit_search(request, user, {"rows": len(rows)})
+        await _audit_search(request, user, {"rows": len(rows)}, required=True)
     return {"items": rows, "next_cursor": next_cursor}
 
 
-async def _audit_search(request: Request, user: User, outcome: dict) -> None:
+async def _audit_search(request: Request, user: User, outcome: dict, required: bool = False) -> None:
     """접속기록: 누가 어떤 조건으로 로그를 검색했는지.
     같은 이름이 여러 번 오면 모두 (실행한 조건과 기록이 어긋나지 않게 — ISMS 2.9.4)."""
     grouped: dict[str, list[str]] = {}
@@ -135,7 +135,7 @@ async def _audit_search(request: Request, user: User, outcome: dict) -> None:
             grouped.setdefault(k, []).append(v)
     conditions = {k: v[0] if len(v) == 1 else v for k, v in grouped.items()}
     await db.audit(user.username, "events.search", None, {"query": conditions, **outcome},
-                   actor_ip=client_ip(request))
+                   actor_ip=client_ip(request), required=required)
 
 
 @router.get("/api/events/{event_id}")
@@ -143,8 +143,11 @@ async def get_event(event_id: int, request: Request, user: User = Depends(requir
     row = await repository.get_event(event_id)
     if row is None or not scopes_allow(user.scopes, row.get("category"), row.get("host")):
         raise HTTPException(404, "이벤트를 찾을 수 없습니다")
-    await db.audit(user.username, "events.view", str(event_id), {"host": row["host"], "event_id": row["event_id"]},
-                   actor_ip=client_ip(request))
+    # 누구의 기록을 봤는지(정보주체)까지 — 이벤트의 사용자·IP·분류 (ADR-042). 기록하지 못하면 보여 주지 않는다
+    await db.audit(user.username, "events.view", str(event_id),
+                   {"host": row["host"], "event_id": row["event_id"], "username": row.get("username"),
+                    "src_ip": row.get("src_ip"), "category": row.get("category")},
+                   actor_ip=client_ip(request), required=True)
     return row
 
 
@@ -214,9 +217,33 @@ async def stats_timeseries(
     }
 
 
+# 상위 값 목록 중 사람·출발지가 보이는 것은 접속기록에 남긴다 (ADR-042). 원본 필드(f.)는 무엇이든 될 수 있어 함께 본다.
+# 대시보드 위젯이 같은 조건으로 몇 분마다 다시 부르므로 같은 사용자·같은 조건은 10분에 한 번만 기록한다
+PERSONAL_FIELDS = frozenset({"user", "ip", "username", "src_ip"})
+STATS_AUDIT_EVERY = 600.0
+_stats_audited: dict[tuple[str, str], float] = {}
+
+
+async def _audit_stats(request: Request, field: str, rows: int) -> None:
+    if field not in PERSONAL_FIELDS and not field.startswith("f."):
+        return
+    user = request.state.user
+    conditions = {k: v for k, v in request.query_params.items() if k not in ("limit",)}
+    key = (user.username, json.dumps(conditions, sort_keys=True, ensure_ascii=False))
+    now = time.monotonic()
+    if now - _stats_audited.get(key, -STATS_AUDIT_EVERY) < STATS_AUDIT_EVERY:
+        return
+    if len(_stats_audited) > 10000:
+        _stats_audited.clear()
+    await db.audit(user.username, "events.stats", field, {"query": conditions, "rows": rows},
+                   actor_ip=client_ip(request), required=True)
+    _stats_audited[key] = now   # 기록에 성공한 뒤에만 (실패하면 다음 조회에서 다시 시도)
+
+
 @router.get("/api/stats/top")
 async def stats_top(request: Request, field: str = "host", limit: int = Query(10, ge=1, le=100)):
     rows = await repository.top(_filter(request), _check_field(field), limit)
+    await _audit_stats(request, field, len(rows))
     return {"field": field, "items": rows}
 
 

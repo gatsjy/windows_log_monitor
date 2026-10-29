@@ -26,7 +26,7 @@ from ..alerts.visibility import alert_visible, count_by_status, scrub_silence, s
 from ..auth import groups
 from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
-from ..csvexport import csv_response
+from ..csvexport import csv_response, export_reason
 from ..filters import FilterError, parse_time
 from .query import read_time_limit
 
@@ -59,6 +59,7 @@ async def list_alerts(
     status: str | None = Query(None, pattern=STATUS_PATTERN),
     limit: int = Query(200, ge=1, le=1000),
     format: str = Query("json", pattern="^(json|csv)$"),
+    reason: str | None = Query(None, max_length=200),
 ):
     """알림 이력. counts = 기간 안의 처리 상태별 수(필터와 무관, 조회 범위 반영). format=csv 는 처리 기록 포함 증적."""
     start, user = _since(since), request.state.user
@@ -67,7 +68,7 @@ async def list_alerts(
     pairs = None if user.scopes is None else sorted({(g["rule"], g["group_key"]) for g in groups if alert_visible(user, g)})
     filters = {"rule": rule, "severity": severity, "group_key": host, "status": status}
     if format == "csv":
-        return await _alerts_csv(request, user, start, since, pairs, filters)
+        return await _alerts_csv(request, user, start, since, pairs, filters, export_reason(reason))
     items = await repository.list_alerts(start, limit, pairs=pairs, **filters)
     return {"items": items, "counts": count_by_status(user, groups)}
 
@@ -76,13 +77,14 @@ CSV_LIMIT = 10000
 
 
 async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
-                      pairs: list[tuple[str, str]] | None, filters: dict[str, str | None]) -> Response:
+                      pairs: list[tuple[str, str]] | None, filters: dict[str, str | None], reason: str) -> Response:
     rows = await repository.list_alerts(start, CSV_LIMIT + 1, pairs=pairs, **filters)
     truncated = len(rows) > CSV_LIMIT  # 잘렸다는 사실을 파일·응답 머리글·감사로그에 모두 남긴다 (증적이 몰래 빠지지 않게)
     rows = rows[:CSV_LIMIT]
     notes = await repository.alert_notes_for([a["id"] for a in rows])
     await db.audit(user.username, "alerts.export", "alerts",
-                   {"since": since, **filters, "rows": len(rows), "truncated": truncated}, actor_ip=client_ip(request))
+                   {"since": since, **filters, "rows": len(rows), "truncated": truncated, "reason": reason},
+                   actor_ip=client_ip(request), required=True)
 
     def lines():
         for a in rows:

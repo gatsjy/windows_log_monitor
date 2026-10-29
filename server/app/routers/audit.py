@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from .. import db, repository
 from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
-from ..csvexport import csv_response
+from ..csvexport import csv_response, export_reason
 from ..filters import FilterError, parse_time
 
 router = APIRouter(tags=["audit"], dependencies=[Depends(require_permission("audit.view"))])
@@ -79,6 +79,7 @@ ACTION_LABELS = {
     "report.deliver": "점검 보고서 자동 발송",
     "settings.report.save": "점검 보고서 설정",
     "retention.purge_reports": "보관기간 만료 점검 보고서 삭제",
+    "events.stats": "상위 값 조회 (사용자·IP·원본 필드)",
 }
 
 
@@ -91,6 +92,7 @@ async def list_audit(
     q: str | None = None,
     limit: int = Query(500, ge=1, le=10000),
     format: str = Query("json", pattern="^(json|csv)$"),
+    reason: str | None = Query(None, max_length=200),
     admin: User = Depends(require_permission("audit.view")),
 ):
     try:
@@ -102,8 +104,9 @@ async def list_audit(
         return {"items": rows, "labels": ACTION_LABELS, "actions": await repository.audit_actions()}
 
     await db.audit(admin.username, "audit.export", "audit_log",
-                   {"since": since, "actor": actor, "action": action, "q": q, "rows": len(rows)},
-                   actor_ip=client_ip(request))
+                   {"since": since, "actor": actor, "action": action, "q": q, "rows": len(rows),
+                    "reason": export_reason(reason)},
+                   actor_ip=client_ip(request), required=True)
     return csv_response(
         ["번호", "일시(UTC)", "사용자", "접속 IP", "행위 코드", "행위", "대상", "상세"],
         ([r["id"], r["at"].isoformat(), r["actor"], r["actor_ip"] or "", r["action"], ACTION_LABELS.get(r["action"], ""),
