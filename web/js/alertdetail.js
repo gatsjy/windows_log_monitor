@@ -121,11 +121,13 @@ export async function openAlert(id, { onChange } = {}) {
     const related = alert.related_unresolved || 0; // 같은 규칙·대상의 해결 안 된 다른 알림 수
     // 설정 변경 알림(ADR-043): 설명 첫 줄이 요약, 나머지 줄이 변경 목록. 무음으로 막을 수 없어 무음 단추가 없다
     const config = p.kind === 'config';
-    const [configSummary, ...configLines] = config ? (p.description || '').split('\n') : [];
+    // 내장 알림(설정 변경·알림 기능 문제, ADR-043·045): 설명 첫 줄이 요약, 나머지가 내용. 알림 기능 문제는 무음으로 막을 수 있다
+    const builtin = config || p.kind === 'system';
+    const [configSummary, ...configLines] = builtin ? (p.description || '').split('\n') : [];
     body.innerHTML = html`
       <div class="toolbar" style="margin-bottom:6px">${severityBadge(alert.severity)}<b>${alert.rule}</b>
         ${alert.group_key ? html`<span class="muted">· ${alert.group_key}</span>` : ''}</div>
-      <p class="ink-2" style="margin:0 0 14px">${config ? configSummary : p.kind === 'agent_silent'
+      <p class="ink-2" style="margin:0 0 14px">${builtin ? configSummary : p.kind === 'agent_silent'
         ? `${alert.group_key} 에서 ${fmtDuration(p.window_sec)} 이상 로그/하트비트가 들어오지 않았습니다.`
         : p.distinct_field
           ? `최근 ${fmtDuration(p.window_sec)} 동안 서로 다른 ${GROUP_LABELS[p.distinct_field] ?? p.distinct_field.replace(/^f\./, '')} ${fmtNum(p.distinct_count)}개 (기준 ${fmtNum(p.distinct_min)}개 이상) · 이벤트 ${fmtNum(alert.event_count)}건`
@@ -148,7 +150,7 @@ export async function openAlert(id, { onChange } = {}) {
       ${alert.silence ? html`<div class="hint-box" style="margin-bottom:14px">무음 #${alert.silence.id} 중에 발생해 보내지 않았습니다 —
         ${alert.silence.reason} (${alert.silence.created_by}, ${fmtTime(alert.silence.starts_at)} ~ ${fmtTime(alert.silence.ends_at)})</div>` : ''}
 
-      ${config ? (configLines.length ? html`<div class="hint-box" style="margin-bottom:14px;white-space:pre-line">${configLines.join('\n')}</div>` : '')
+      ${builtin ? (configLines.length ? html`<div class="hint-box" style="margin-bottom:14px;white-space:pre-line">${configLines.join('\n')}</div>` : '')
         : p.description ? html`<div class="hint-box" style="margin-bottom:14px">${p.description}</div>` : ''}
       ${p.tags?.length ? html`<div style="margin:-6px 0 12px">${p.tags.map((t) => html`<span class="type-tag" style="margin-right:4px">${t}</span>`)}</div>` : ''}
       <dl class="kv">
@@ -157,7 +159,8 @@ export async function openAlert(id, { onChange } = {}) {
         ${p.kind === 'agent_silent' ? html`<dt>마지막 수신</dt><dd>${fmtTime(alert.last_event_at)}</dd>` : ''}
         <dt>알림 번호</dt><dd class="num">#${alert.id}</dd>
       </dl>
-      ${config ? (can('audit.view') ? html`<a class="btn" data-link href="#/audit?action=alerts.config.">감사로그에서 설정 변경 보기 →</a>` : '')
+      ${p.kind === 'system' ? html`<a class="btn" data-link href="#/alerts/targets">알림 상태·알림 대상 보기 →</a>`
+        : config ? (can('audit.view') ? html`<a class="btn" data-link href="#/audit?action=alerts.config.">감사로그에서 설정 변경 보기 →</a>` : '')
         : hash ? html`<a class="btn" data-link href="${hash}">${p.kind === 'agent_silent' ? '수집 PC 화면 열기' : '이 알림의 이벤트 검색'} →</a>` : ''}
 
       <div class="section-title">처리 기록</div>

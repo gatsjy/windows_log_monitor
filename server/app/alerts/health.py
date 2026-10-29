@@ -52,7 +52,8 @@ def _names(names: list[str], limit: int = 5) -> str:
 
 
 def assess(engine: dict[str, Any], dispatcher: dict[str, Any], queue: list[dict[str, Any]], gave_up_24h: int,
-           rules: list[dict[str, Any]], used_targets: set[str], now: datetime) -> dict[str, Any]:
+           rules: list[dict[str, Any]], used_targets: set[str], now: datetime,
+           fallback: list[str] | None = None) -> dict[str, Any]:
     """engine = AlertEngine.health_snapshot(), dispatcher = Dispatcher.status() + enabled,
     rules = [{name, enabled, run}], used_targets = 켜진 규칙의 받는 곳. 돌려주는 값 = {status, problems, rules}."""
     problems: list[dict[str, Any]] = []
@@ -97,6 +98,9 @@ def assess(engine: dict[str, Any], dispatcher: dict[str, Any], queue: list[dict[
     used_down = [n for n in used_targets if n in failing and now - failing[n]["failing_since"] >= TARGET_DOWN]
     if used_targets and len(used_down) == len(used_targets):
         add("bad", "targets_all_down", "규칙이 쓰는 모든 알림 대상으로 15분 넘게 보내지 못하고 있습니다 — 알림이 아무에게도 가지 않습니다")
+    if fallback is not None and not fallback:
+        add("warn", "no_fallback", "알림 기능 문제(엔진 멈춤·전송 실패)를 받을 곳이 없습니다 — 환경설정 > 점검 보고서의 받는 곳을 정하거나"
+                                   " alerts.yaml 의 settings.fallback_notify 를 쓰세요")
     if gave_up_24h:
         add("warn", "gave_up", f"최근 24시간 동안 보내지 못하고 재시도를 멈춘 알림 {gave_up_24h:,}건", gave_up_24h)
 
@@ -155,14 +159,17 @@ async def current(now: datetime | None = None, *, fresh: bool = False) -> dict[s
         rules = [{"name": r.name, "enabled": r.enabled, "run": engine.runs[r.name].as_dict() if r.name in engine.runs else None}
                  for r in engine.config.rules]
         try:
+            from .watchdog import watchdog  # 감시가 상태 판단을 쓰므로 여기서 (순환 import 방지)
+
             queue = await repository.delivery_queue(now)
             gave_up = await repository.count_gave_up(now - timedelta(hours=24))
+            fallback = await watchdog.recipients()
         except Exception as exc:  # noqa: BLE001 - DB 에 물을 수 없으면 그것이 문제
             result = {"status": "down", "checked_at": now, "queue": [], "rules": {},
                       "problems": [{"level": "bad", "code": "db", "text": f"DB 에 물을 수 없습니다: {type(exc).__name__}", "n": 1}]}
         else:
             used = {n for r in engine.config.rules if r.enabled for n in r.notify}
-            result = assess(engine.health_snapshot(), dispatcher.status(), queue, gave_up, rules, used, now)
+            result = assess(engine.health_snapshot(), dispatcher.status(), queue, gave_up, rules, used, now, fallback)
             result["queue"] = queue
             result["rules"] = {r["name"]: r["state"] for r in rules}
         _cache = (now, result)

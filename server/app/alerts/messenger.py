@@ -61,7 +61,7 @@ def _facts(m: AlertMessage) -> list[tuple[str, str]]:
     facts = [("발생 시각", local(m.fired_at))]
     if m.first_event_at:
         facts.append(("이벤트 시각", f"{local(m.first_event_at)} ~ {local(m.last_event_at)}"))
-    if m.kind == "config":   # 설정 변경 알림(ADR-043)에는 건수 기준이 없다 — 변경 줄 수
+    if m.kind in ("config", "system"):   # 내장 알림(ADR-043·045)에는 건수 기준이 없다 — 내용 줄 수
         facts.append(("변경", f"{m.event_count:,}건"))
     elif m.kind != "agent_silent" and not m.test:
         facts.append(("건수", f"{m.event_count:,}건 (기준 {m.threshold:,}건 이상)"))
@@ -100,7 +100,7 @@ def build_json(m: AlertMessage) -> dict[str, Any]:
 def build_text(m: AlertMessage) -> dict[str, Any]:
     # Mattermost 는 16,383자를 넘으면 여러 글로 쪼갠다 → 다른 메신저 형식과 같은 상한
     text = f"{_title(m)}\n{_summary(m)}"
-    if m.kind == "config" and m.detail:   # 무엇이 바뀌었는지가 본문이다 (요약만으로는 어느 규칙인지 모른다)
+    if m.kind in ("config", "system") and m.detail:   # 무엇이 바뀌었는지가 본문이다 (요약만으로는 어느 규칙인지 모른다)
         text += "\n" + _description(m)
     return {"text": f"{text}\n{_link(m)}" if m.link else text}
 

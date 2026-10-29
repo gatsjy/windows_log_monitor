@@ -60,6 +60,8 @@ class Rule:
 class AlertConfig:
     interval_sec: int = 30
     rules: tuple[Rule, ...] = ()
+    # 알림 기능 자체의 문제(엔진 멈춤·전송 실패·규칙 동작 안 함)를 받을 곳 (ADR-045). 비우면 점검 보고서 받는 곳
+    fallback_notify: tuple[str, ...] = ()
 
     def used_targets(self) -> dict[str, list[str]]:
         """알림 대상 이름 → 그 대상을 쓰는 규칙 이름들 (대상 삭제·이름 변경 막을 때 사용)."""
@@ -67,6 +69,8 @@ class AlertConfig:
         for rule in self.rules:
             for name in rule.notify:
                 used.setdefault(name, []).append(rule.name)
+        for name in self.fallback_notify:
+            used.setdefault(name, []).append("(대체 경로)")
         return used
 
 
@@ -193,6 +197,7 @@ def parse(doc: Any) -> AlertConfig:
     raw_rules = doc.get("rules") or []
     if not isinstance(raw_rules, list):
         raise ConfigError("rules 는 목록이어야 합니다")
+    fallback = _str_list(settings.get("fallback_notify"), "settings.fallback_notify")
     rules = [_check_rule(i, r) for i, r in enumerate(raw_rules)]
     names = [r.name for r in rules]
     duplicated = {n for n in names if names.count(n) > 1}
@@ -202,7 +207,7 @@ def parse(doc: Any) -> AlertConfig:
     dup_sids = {s for s in sids if sids.count(s) > 1}
     if dup_sids:
         raise ConfigError(f"규칙 번호(sid)가 중복됩니다: {sorted(dup_sids)}")
-    return AlertConfig(interval_sec=interval, rules=tuple(rules))
+    return AlertConfig(interval_sec=interval, rules=tuple(rules), fallback_notify=fallback)
 
 
 def parse_text(text: str) -> AlertConfig:

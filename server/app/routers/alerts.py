@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from .. import db, repository
 from ..alerts import configdiff, health, ruleedit, targets
+from ..alerts.builtin import SYSTEM_RULES
 from ..alerts.dispatcher import dispatcher
 from ..alerts.engine import _with_group, engine  # _with_group: 엔진과 같은 묶음 조건 (알림 뒤 이벤트 수)
 from ..alerts.health import RULE_LABELS
@@ -177,7 +178,8 @@ async def _validate(text: str) -> AlertConfig:
     except ConfigError as exc:
         raise HTTPException(422, str(exc)) from exc
     known = await targets.target_names()
-    unknown = sorted({n for r in config.rules for n in r.notify if n not in known})
+    unknown = sorted({n for r in config.rules for n in r.notify if n not in known}
+                     | {n for n in config.fallback_notify if n not in known})
     if unknown:
         raise HTTPException(422, f"없는 알림 대상: {', '.join(unknown)} — 환경설정에서 수신 그룹·외부 연동을 먼저 만드세요")
     return config
@@ -539,7 +541,8 @@ async def list_silences(request: Request, since: str = "7d"):
 async def create_silence(body: SilenceBody, request: Request, user: User = Depends(require_permission("alerts.handle"))):
     rule = (body.rule or "").strip() or None
     group_key = body.group_key.strip() if body.group_key is not None else None
-    if rule is not None and rule not in {r.name for r in engine.config.rules}:
+    # 알림 기능 자체의 알림(엔진 멈춤 등)도 무음으로 막을 수 있다 — 메일 서버 점검처럼 예정된 일. 설정 변경 알림은 안 됨 (ADR-043)
+    if rule is not None and rule not in {r.name for r in engine.config.rules} | SYSTEM_RULES:
         raise HTTPException(422, f"없는 규칙입니다: {rule}")
     _check_silence_scope(user, rule, group_key)
     now = datetime.now(UTC)

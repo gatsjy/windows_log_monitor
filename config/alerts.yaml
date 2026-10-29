@@ -10,6 +10,9 @@
 
 settings:
   interval_sec: 30            # 규칙 평가 주기(초)
+  # 알림 기능 자체의 문제(엔진 멈춤·전송 실패·규칙 동작 안 함)를 받을 곳 — 비우면 '점검 보고서'의 받는 곳 (ADR-045)
+  # 메일이 멈춘 것을 메일로는 알 수 없으니 메신저 웹훅을 하나 넣어 두는 것이 좋습니다. 예) fallback_notify: [당직메신저]
+  # fallback_notify: []
 
 # sid: 규칙 번호 (Snort 처럼 고유 번호, 화면에서 만들면 자동 부여) · group: 규칙 묶음 (화면 왼쪽 목록)
 # kind: count (기본)      — window 동안 '수신된' 이벤트 중 match 에 맞는 것이 threshold 건 이상이면 알림

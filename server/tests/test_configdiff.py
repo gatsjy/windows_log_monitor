@@ -191,3 +191,9 @@ def test_messenger_shows_changes_not_a_count_threshold():
                      description="탐지를 약하게 하는 알림 설정 변경 2건\n- 규칙 'A' 끔\n- 규칙 'B' 삭제")
     assert ("변경", "2건") in messenger._facts(m) and all(k != "건수" for k, _ in messenger._facts(m))
     assert "- 규칙 'A' 끔" in messenger.build_text(m)["text"]
+
+
+def test_removing_a_fallback_receiver_weakens():
+    old = BASE.replace("  interval_sec: 30\n", "  interval_sec: 30\n  fallback_notify: [당직, 보안팀]\n")
+    assert _changes(old, old.replace("[당직, 보안팀]", "[당직]")) == [("fallback", True)]
+    assert _changes(old, old.replace("[당직, 보안팀]", "[당직, 보안팀, 운영팀]")) == [("fallback", False)]

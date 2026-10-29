@@ -18,6 +18,7 @@ from . import __version__, db, partitions, rejects, tlsutil
 from .alerts import health as alert_health
 from .alerts.dispatcher import dispatcher as alert_dispatcher
 from .alerts.engine import engine as alert_engine
+from .alerts.watchdog import watchdog as alert_watchdog
 from .auth import service as auth_service
 from .auth.deps import require_user
 from .config import display_zone, settings
@@ -68,12 +69,16 @@ async def lifespan(_: FastAPI):
     log_tls_problems()
     task = asyncio.create_task(_maintenance_loop())
     # 전송기를 먼저 — 엔진이 첫 주기에 넣은 알림을 바로 보낸다 (ADR-045). 끄는 것은 시험(conftest)뿐
-    dispatch_task = asyncio.create_task(alert_dispatcher.run_forever()) if settings.alert_dispatcher else None
+    alert_dispatcher.task = asyncio.create_task(alert_dispatcher.run_forever()) if settings.alert_dispatcher else None
     if not settings.alert_dispatcher:
         log.error("WLM_ALERT_DISPATCHER=off — 알림이 기록만 되고 나가지 않습니다")
-    alert_dispatcher.task = dispatch_task
-    alert_task = asyncio.create_task(alert_engine.run_forever())
-    alert_engine.task = alert_task
+    alert_engine.task = asyncio.create_task(alert_engine.run_forever())
+    # 감시: 멈춘 평가·전송 작업을 다시 시작하고 알림 기능 자체의 문제를 알린다 (ADR-045 2단계). 시험에서는 끈다(전송기와 함께)
+    watchdog_task = None
+    if settings.alert_dispatcher:
+        alert_watchdog.start(lambda: asyncio.create_task(alert_engine.run_forever()),
+                             lambda: asyncio.create_task(alert_dispatcher.run_forever()))
+        watchdog_task = asyncio.create_task(alert_watchdog.run_forever())
     rejects_task = asyncio.create_task(rejects.run_forever())
     report_task = asyncio.create_task(report_scheduler.run_forever()) if settings.report_scheduler else None
     log.info("Log Monitor %s 시작 (보관기간: 로그 %s일 · 알림 %s일 · 감사로그 %s일 · 점검 보고서 %s일)", __version__,
@@ -85,9 +90,13 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         task.cancel()
-        alert_task.cancel()   # 알림 기록은 한 트랜잭션이라 중간에 멈춰도 반쪽이 남지 않는다
-        if dispatch_task:   # 보내던 알림은 '보내는 중'으로 남고 다음 시작 때 다시 보낸다
-            dispatch_task.cancel()
+        if watchdog_task:
+            watchdog_task.cancel()
+        # 감시가 다시 시작했을 수 있으니 지금 작업을 끈다. 알림 기록은 한 트랜잭션이라 중간에 멈춰도 반쪽이 남지 않고,
+        # 보내던 알림은 '보내는 중'으로 남아 다음 시작 때 다시 보낸다
+        for running in (alert_engine.task, alert_dispatcher.task):
+            if running:
+                running.cancel()
         rejects_task.cancel()
         if report_task:
             report_task.cancel()

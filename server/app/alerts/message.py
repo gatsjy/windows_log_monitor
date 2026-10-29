@@ -99,7 +99,7 @@ class AlertMessage:
     def summary(self) -> str:
         if self.test:
             return "알림 대상 연결 확인용 테스트 메시지입니다."
-        if self.kind == "config":   # 설정 변경 알림 (ADR-043): 설명 첫 줄이 요약, 나머지가 변경 목록
+        if self.kind in ("config", "system"):   # 내장 알림 (ADR-043·045): 설명 첫 줄이 요약, 나머지가 내용
             return self.description.split("\n", 1)[0]
         if self.kind == "agent_silent":
             return (f"{self.group_key} 에서 {_window_text(self.window_sec)} 이상 로그/하트비트가 들어오지 않았습니다 "
@@ -143,7 +143,7 @@ class AlertMessage:
     def detail(self) -> str:
         """요약 아래에 붙는 설명. 설정 변경 알림은 첫 줄(요약)을 뺀 변경 목록.
         앞 알림과의 관계·지연 수신 줄을 앞에 붙인다 — 메일·메신저 형식이 모두 이것을 쓴다."""
-        if self.kind == "config":
+        if self.kind in ("config", "system"):
             return self.description.split("\n", 1)[1] if "\n" in self.description else ""
         return "\n".join(line for line in (self.lifecycle_line(), self.delayed_line(), self.description) if line)
 

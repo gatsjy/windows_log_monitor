@@ -115,6 +115,11 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
         changes.append({"rule": None, "sid": None, "key": None, "change": "interval",
                         "weakens": new.interval_sec > old.interval_sec,
                         "text": f"평가 주기 {old.interval_sec}초 → {new.interval_sec}초"})
+    if old.fallback_notify != new.fallback_notify:
+        gone = [n for n in old.fallback_notify if n not in new.fallback_notify]
+        changes.append({"rule": None, "sid": None, "key": None, "change": "fallback", "weakens": bool(gone),
+                        "text": f"알림 기능 문제를 받는 곳 {', '.join(old.fallback_notify) or '(점검 보고서 받는 곳)'} → "
+                                f"{', '.join(new.fallback_notify) or '(점검 보고서 받는 곳)'}"})
     before = {rule_key(r): r for r in old.rules}
     after = {rule_key(r): r for r in new.rules}
     # 같은 이름인데 열쇠가 바뀐 것(sid 없는 규칙을 화면에서 고치면 번호가 붙는다)은 삭제+추가가 아니라 같은 규칙
