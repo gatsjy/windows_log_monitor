@@ -107,8 +107,8 @@ def pick_host(record: dict, *keys: str) -> str:
     """agent_host(에이전트가 붙인 이름)를 최우선으로 쓴다. 호스트 기준이 소스마다 달라지지 않게 하기 위함."""
     for key in ("agent_host", *keys):
         value = record.get(key)
-        if value:
-            return str(value).strip()[:255]
+        if value and (text := str(value).replace("\x00", "").strip()):
+            return text[:255]
     return "unknown"
 
 
@@ -163,7 +163,7 @@ def clean_ip(value: Any) -> str | None:
     """'::ffff:10.0.0.5' → '10.0.0.5'. 비어 있거나 자기 자신(루프백)이면 None."""
     if value is None:
         return None
-    text = str(value).strip().strip("[]")
+    text = str(value).replace("\x00", "").strip().strip("[]")
     if text.lower().startswith("::ffff:"):
         text = text[7:]
     return None if text in _LOCAL_IPS else text[:64]
@@ -173,7 +173,7 @@ def clean_user(value: Any) -> str | None:
     """'-', 빈 값, 컴퓨터 계정(이름$), NULL SID 는 None."""
     if value is None:
         return None
-    text = str(value).strip()
+    text = str(value).replace("\x00", "").strip()
     if not text or text in ("-", "N/A", "S-1-0-0") or text.endswith("$"):
         return None
     return text[:128]

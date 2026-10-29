@@ -242,3 +242,19 @@ def test_agent_transport_from_heartbeat(client):
     assert by_host["TLS-PC"] == "tls" and by_host["PLAIN-PC"] == "plain" and by_host["WIN-T"] is None
     assert by_host["WEB-PORT-PC"] == "web"
     assert r["transport"] == {"tls": False, "ingest_plain": True}
+
+
+def test_nul_bytes_do_not_reject_the_whole_request(client):
+    """레코드 하나의 NUL 이 요청 전체(같은 청크의 다른 로그까지)를 거절시키지 않는다 — 에이전트는 거절된 청크를 끝없이 다시 보낸다."""
+    ok = {"pri": 38, "host": "NUL-OK", "ident": "sshd", "log_source": "syslog", "message": "fine"}
+    records = [ok,
+               {**ok, "host": "NUL-\x00SW", "message": "a\x00b", "weird\x00key": "v\x00"},
+               _win("NUL-\x00PC", 4625, {"TargetUserName": "ev\x00il", "IpAddress": "10.0.0.\x009"}, channel="Sec\x00urity"),
+               {"log": f"{datetime.now(UTC):%Y-%m-%d %H:%M:%S} 10.0.0.10 GET /x - 443 - 203.0.113.5 UA - 200 0 0 1", "file": "a\x00b",
+                "agent_host": "NUL-WEB", "log_source": "iis"}]
+    r = client.post("/api/ingest", json=records, headers=KEY)
+    assert r.status_code == 200 and r.json()["accepted"] == 4, r.text
+    stored = {i["host"]: i for i in _items(client, query="host:NUL-OK,NUL-SW,NUL-PC,NUL-WEB")}
+    assert set(stored) == {"NUL-OK", "NUL-SW", "NUL-PC", "NUL-WEB"}
+    assert (stored["NUL-PC"]["username"], stored["NUL-PC"]["src_ip"], stored["NUL-PC"]["channel"]) == ("evil", "10.0.0.9", "Security")
+

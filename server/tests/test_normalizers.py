@@ -498,3 +498,13 @@ def test_derive_common_matches_normalize_for_every_source():
     for e in events:
         assert derive_common(e.source, e.channel, e.provider, e.event_id, e.message, e.raw) == \
             (e.category, e.username, e.src_ip), (e.source, e.event_id, e.message[:60])
+
+
+def test_nul_bytes_are_removed_from_every_text_field():
+    # 회귀(벤치마킹 검토에서 재현): NUL 하나가 그 요청 전체를 500 으로 만들어 에이전트가 같은 청크를 끝없이 다시 보냈다
+    e = normalize({"pri": 38, "host": "sw\x00itch", "ident": "ss\x00hd", "log_source": "syslog",
+                   "message": "Failed password for ev\x00il from 203.0.113.\x0045 port 1 ssh2"}, NOW)
+    assert (e.host, e.provider, "\x00" in e.message) == ("switch", "sshd", False)
+    w = normalize(winevt(Channel="Sec\x00urity", EventData={"TargetUserName": "ki\x00m", "IpAddress": "10.0.0.\x005"}), NOW)
+    assert (w.channel, w.username, w.src_ip) == ("Security", "kim", "10.0.0.5")
+    assert normalize({"agent_host": "\x00", "log_source": "file", "log": "x"}, NOW).host == "unknown"

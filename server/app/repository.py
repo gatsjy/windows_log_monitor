@@ -199,10 +199,11 @@ def _field_stats(events: list[Event]) -> list[tuple]:
         flat: dict[str, Any] = {}
         _flatten(event.raw, flat)
         for path, value in flat.items():
-            entry = stats.setdefault((event.source, path), [None, 0, None])
+            # 원본 키·값의 NUL 은 TEXT 에 넣을 수 없다 — 경로·예시에서 지운다 (raw 자체는 _json 이 뺀다)
+            entry = stats.setdefault((event.source, path.replace("\x00", "")), [None, 0, None])
             entry[0] = _json_type(value)
             entry[1] += 1
-            entry[2] = (value if isinstance(value, str) else _json(value))[:200]
+            entry[2] = (value if isinstance(value, str) else _json(value)).replace("\x00", "")[:200]
     return [(src, path, t, n, sample) for (src, path), (t, n, sample) in sorted(stats.items())]
 
 
@@ -220,7 +221,8 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
 
             per_host: Counter[str] = Counter(e.host for e in events)
             # syslog 수신기를 거친 경우 실제 장비 IP 는 raw.source_ip 에 있다
-            host_ip = {e.host: str(e.raw.get("source_ip") or client_ip or "") or None for e in events}
+            host_ip = {e.host: str(e.raw.get("source_ip") or client_ip or "").replace("\x00", "")[:64] or None
+                       for e in events}
             await cur.executemany(
                 "INSERT INTO agents AS a (host, last_seen, last_event_at, last_ip, events_total)"
                 " VALUES (%s, now(), now(), %s, %s)"
@@ -498,12 +500,23 @@ async def alert_candidates(f: EventFilter, group_by: str, threshold: int,
     else:
         key_expr, key_params = _field_expr(group_by)
     where, params = where_clause(f)
+    where, params = _skip_missing_key(where, params, key_expr, key_params, group_by)
     select, select_params, having, having_params = _distinct_parts(distinct_field, distinct_min)
     query = sql.SQL(
         "SELECT {} AS key, count(*) AS n, min(ts) AS first_ts, max(ts) AS last_ts{}"
         " FROM events WHERE {} GROUP BY 1 HAVING count(*) >= %s{} ORDER BY {} DESC LIMIT 100"
     ).format(key_expr, select, where, having, sql.SQL("dn" if distinct_field else "n"))
     return await db.fetch_all(query, [*key_params, *select_params, *params, threshold, *having_params])
+
+
+def _skip_missing_key(where: sql.Composable, params: list, key_expr: sql.Composable, key_params: list,
+                      group_by: str) -> tuple[sql.Composable, list]:
+    """묶음 값이 없는(NULL) 이벤트는 알림 후보에서 뺀다 (group_by none 은 그대로).
+    IP 없는 로그온 실패(대화형·잠금 해제)가 모든 PC 에서 '빈 출발지' 하나로 합쳐져, 출발지·표본 없는 '무차별 대입'이나
+    병원 전체의 오타를 '서로 다른 계정 n개'로 세는 '패스워드 스프레이'가 되었다 (벤치마킹 검토, ADR-041)."""
+    if group_by == "none":
+        return where, params
+    return sql.SQL("{} AND {} IS NOT NULL").format(where, key_expr), [*params, *key_params]
 
 
 async def rule_preview(f: EventFilter, group_by: str, window_sec: int, threshold: int,
@@ -515,6 +528,7 @@ async def rule_preview(f: EventFilter, group_by: str, window_sec: int, threshold
     else:
         key_expr, key_params = _field_expr(group_by)
     where, params = where_clause(f)
+    where, params = _skip_missing_key(where, params, key_expr, key_params, group_by)
     if distinct_field:
         expr, expr_params = _field_expr(distinct_field)
         extra, extra_params = sql.SQL(", count(DISTINCT {}) AS dn").format(expr), expr_params

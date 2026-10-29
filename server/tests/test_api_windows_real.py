@@ -73,6 +73,8 @@ def client():
                     for i in range(4)]
         records += [_record(4625, "DC-S", TargetUserName=f"ghost{i}", SubStatus="0xc0000064", IpAddress="198.51.100.41")
                     for i in range(3)]
+        # IP 없는 대화형 로그온 실패(병원 전체의 오타) — 출발지 IP 규칙의 후보가 되면 안 된다
+        records += [_record(4625, f"WARD-{i}", TargetUserName=f"nurse{i}", IpAddress="-") for i in range(25)]
         records += [_record(4624, host, TargetUserName="kimrdp", LogonType=10, IpAddress="10.0.0.9")
                     for host in ("SRV-1", "SRV-2", "SRV-3")]
         records += [_record(4624, host, TargetUserName="parkrdp", LogonType=10, IpAddress="10.0.0.9")
@@ -155,4 +157,16 @@ def test_preview_counts_distinct(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["distinct"] == "user" and [(g["key"], g["max"]) for g in body["groups"]] == [("198.51.100.30", 10)]
+
+
+def test_events_without_the_group_value_are_not_candidates(client):
+    # 회귀(벤치마킹 검토): IP 없는 4625 25건(서로 다른 계정 25개)이 '빈 출발지' 하나로 합쳐져
+    # 무차별 대입(1000006, 20건)과 패스워드 스프레이(1000021, 계정 10개)가 출발지·표본 없이 울렸다
+    for sid in (1000006, 1000021):
+        keys = [r["key"] for r in _candidates(client, _rule(sid))]
+        assert None not in keys and "" not in keys, (sid, keys)
+    rule = {"name": "빈 출발지 미리보기", "match": {"event_id": "4625"}, "group_by": "ip", "window_sec": 600, "threshold": 20,
+            "severity": "error", "notify": []}
+    groups = client.post("/api/alerts/rules/preview", json={"rule": rule}, headers=CSRF).json()["groups"]
+    assert "" not in [g["key"] for g in groups]
 

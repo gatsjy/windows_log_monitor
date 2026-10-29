@@ -51,7 +51,26 @@ def normalize(record: dict, now: datetime, iis_ctx: iis.IisContext | None = None
     event = iis.normalize(record, now, iis_ctx) if handler is iis.normalize else handler(record, now)
     if event is not None and not event.category:
         event.category = classify(event.source, event.channel, event.provider)
+    if event is not None:
+        _scrub(event)
     return event
+
+
+_TEXT_FIELDS = ("host", "source", "category", "channel", "provider", "username", "src_ip", "message")
+
+
+def _scrub(event: Event) -> None:
+    """PostgreSQL TEXT 는 NUL 을 받지 못한다. 레코드 하나의 NUL 때문에 그 요청 전체가 500 이 되면 에이전트가 같은 청크를
+    끝없이 다시 보내 그 PC(수집기면 모든 장비)의 로그가 멈춘다(벤치마킹 검토에서 재현). 정규화 단계에서 지워 실시간·검색·저장이
+    같은 값을 본다. 원본 raw 는 저장할 때 \\u0000 만 뺀다(repository._json)."""
+    for name in _TEXT_FIELDS:
+        value = getattr(event, name)
+        if isinstance(value, str) and "\x00" in value:
+            cleaned = value.replace("\x00", "")
+            setattr(event, name, cleaned or (None if name in _NULLABLE else cleaned))
+
+
+_NULLABLE = frozenset({"username", "src_ip", "channel", "provider", "category"})
 
 
 def derive_common(source: str | None, channel: str | None, provider: str | None, event_id: int | None,
