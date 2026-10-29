@@ -463,8 +463,9 @@ async def retention_status():
             "alert_retention_days": settings.alert_retention_days, "audit_retention_days": settings.audit_retention_days,
             "report_retention_days": settings.report_retention_days,
             "warnings": partitions.retention_warnings(),
-            "legal": {"log_days": partitions.LEGAL_MIN_LOG_DAYS, "sensitive_log_days": partitions.LEGAL_SENSITIVE_LOG_DAYS,
-                      "audit_days": partitions.LEGAL_MIN_AUDIT_DAYS},
+            "legal": {"log_days": partitions.LEGAL_SENSITIVE_LOG_DAYS if settings.sensitive_access_log
+                      else partitions.LEGAL_MIN_LOG_DAYS, "sensitive_log_days": partitions.LEGAL_SENSITIVE_LOG_DAYS,
+                      "audit_days": partitions.LEGAL_MIN_AUDIT_DAYS, "sensitive": settings.sensitive_access_log},
         },
         "partitions": parts,
         "archives": archive.list_archives(),

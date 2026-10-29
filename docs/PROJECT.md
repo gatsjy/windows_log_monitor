@@ -617,7 +617,8 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
   - 해시가 맞지 않으면 복원을 거부합니다.
 - **파일 보관 끄기:** `WLM_DB_RETENTION_DAYS >= WLM_RETENTION_DAYS` 로 두면 파일 보관 없이 DB 에서 바로 삭제합니다.
 - **기록 종류별 보관기간 (ADR-040):** 알림 이력·처리 기록은 `WLM_ALERT_RETENTION_DAYS`(비우면 로그와 같음), 감사로그는 `WLM_AUDIT_RETENTION_DAYS`(기본 1095일 — 권한 부여·변경·말소 기록 3년), 점검 보고서는 `WLM_REPORT_RETENTION_DAYS`(기본 1095일) 동안 DB 에 둡니다.
-  - 법정 최소(접속기록 1년, 권한 기록 3년)보다 짧게 정하면 기동 로그 경고, 로그 보관 화면의 빨간 줄, 점검 보고서 '점검 필요'로 알립니다. 진료정보(민감정보) 처리 시스템의 접속기록이면 `WLM_RETENTION_DAYS` 를 730 이상으로 둡니다(안내만).
+  - 법정 최소(접속기록 1년, 권한 기록 3년)보다 짧게 정하면 기동 로그 경고, 로그 보관 화면의 빨간 줄, 점검 보고서 '점검 필요'로 알립니다. 진료정보(민감정보) 처리 시스템의 접속기록이면 `WLM_SENSITIVE_ACCESS_LOG=on` 으로 두면 경고 기준이 2년(730일)이 됩니다 — 보관기간 자체는 `WLM_RETENTION_DAYS` 로 정합니다.
+  - 예전 형식(v1) 보관 파일을 복원하면 공통 필드와 함께 Windows 이벤트의 EventData 이름(ADR-038)도 다시 붙여, 복원한 달에서도 `f.EventData.*` 조건이 맞습니다.
 - **그 밖의 로테이션:**
   - **Docker 컨테이너 로그:** 서비스마다 `json-file` 50MB × 5개로 제한합니다(`docker-compose.yml` 의 `x-logging`).
   - **에이전트 버퍼:** 서버 장애 때 디스크에 쌓는 버퍼의 상한은 1GB 입니다(`storage.total_limit_size`). 넘치면 오래된 것부터 버립니다.
@@ -661,6 +662,7 @@ HTTPS·에이전트 TLS (ADR-036, AIRGAP.md §7.5):
 | `WLM_ALERT_RETENTION_DAYS` | (로그와 같음) | 알림 이력·처리 기록·끝난 무음 |
 | `WLM_AUDIT_RETENTION_DAYS` | `1095` | 감사로그(이 시스템의 접속·권한 부여·변경·말소 기록). 법정 최소 3년 |
 | `WLM_REPORT_RETENTION_DAYS` | `1095` | 점검 보고서(점검 증적) |
+| `WLM_SENSITIVE_ACCESS_LOG` | `off` | `on`: 진료정보(민감정보) 처리 시스템의 접속기록을 받는 설치 — 로그 보관 경고 기준이 2년(730일) |
 
 ## 12. 확장 가이드
 

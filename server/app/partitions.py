@@ -133,7 +133,10 @@ LEGAL_MIN_AUDIT_DAYS = 1095       # 제5조: 권한 부여·변경·말소 내�
 def retention_warnings() -> list[str]:
     """보관기간이 법정 최소보다 짧은 설정. 어떤 로그가 '접속기록'인지는 사이트가 판단하므로 2년 기준은 안내만 한다."""
     out = []
-    if settings.retention_days < LEGAL_MIN_LOG_DAYS:
+    if settings.sensitive_access_log and settings.retention_days < LEGAL_SENSITIVE_LOG_DAYS:
+        out.append(f"로그 보관 {settings.retention_days}일 — 민감정보(진료정보) 처리 시스템의 접속기록 법정 최소 2년(730일)보다 "
+                   "짧습니다 (WLM_RETENTION_DAYS, WLM_SENSITIVE_ACCESS_LOG=on)")
+    elif settings.retention_days < LEGAL_MIN_LOG_DAYS:
         out.append(f"로그 보관 {settings.retention_days}일 — 접속기록 법정 최소 1년(365일)보다 짧습니다 (WLM_RETENTION_DAYS)")
     if settings.audit_retention_days < LEGAL_MIN_AUDIT_DAYS:
         out.append(f"감사로그 보관 {settings.audit_retention_days}일 — 권한 부여·변경·말소 기록 법정 최소 3년(1095일)보다 "

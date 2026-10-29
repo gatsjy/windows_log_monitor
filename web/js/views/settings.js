@@ -682,8 +682,8 @@ function retentionKinds(p) {
         <td class="r num">${min ? `${fmtNum(min)}일` : '–'}</td>
         <td><code>${env}</code></td>
         <td class="muted">${note}</td></tr>`)}</tbody></table></div>
-    ${p.retention_days < L.sensitive_log_days ? html`<p class="muted" style="font-size:12.5px;margin:8px 0 0">진료정보 등 민감정보를 처리하는
-      시스템의 접속기록이면 <code>WLM_RETENTION_DAYS</code> 를 ${fmtNum(L.sensitive_log_days)} 이상으로 두세요 (개인정보의 안전성 확보조치 기준 제8조).</p>` : ''}`;
+    ${!L.sensitive && p.retention_days < L.sensitive_log_days ? html`<p class="muted" style="font-size:12.5px;margin:8px 0 0">진료정보 등 민감정보를 처리하는
+      시스템의 접속기록이면 <code>WLM_SENSITIVE_ACCESS_LOG=on</code> 으로 표시하고 <code>WLM_RETENTION_DAYS</code> 를 ${fmtNum(L.sensitive_log_days)} 이상으로 두세요 (개인정보의 안전성 확보조치 기준 제8조).</p>` : ''}`;
 }
 
 async function retention(body) {

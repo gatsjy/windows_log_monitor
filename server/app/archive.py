@@ -27,7 +27,7 @@ from psycopg import sql
 
 from . import db
 from .config import settings
-from .normalizers import derive_common
+from .normalizers import derive_common, windows
 
 log = logging.getLogger(__name__)
 
@@ -153,6 +153,7 @@ async def restore(partition: str, hold_days: int, actor: str) -> int:
                 with gzip.open(data_path(partition), "rt", encoding="utf-8") as fh:
                     for line in fh:
                         row = json.loads(line)
+                        _add_windows_names(row)
                         if any(c not in row for c in COMMON):   # v1: 원본에서 다시 구한다
                             row["category"], row["username"], row["src_ip"] = derive_common(
                                 row.get("source"), row.get("channel"), row.get("provider"), row.get("event_id"),
@@ -169,6 +170,17 @@ async def restore(partition: str, hold_days: int, actor: str) -> int:
                    {"rows": restored, "hold_days": hold_days, "sha256": checked["sha256"],
                     "format": checked.get("format"), "common_fields_derived": derived})
     return restored
+
+
+def _add_windows_names(row: dict) -> None:
+    """ADR-038 이전에 저장한 Windows 이벤트에는 서버가 붙인 이름(raw.winevtlog.EventData)이 없다 — 복원한 달에서도
+    f.EventData.<이름> 규칙·검색이 맞게 수집 때와 같은 방법으로 붙인다 (원본 키는 건드리지 않음)."""
+    raw = row.get("raw")
+    if row.get("source") != windows.SOURCE or not isinstance(raw, dict) or windows.SOURCE in raw:
+        return
+    derived = windows.derived_event_data(raw, row.get("event_id"))
+    if derived:
+        row["raw"] = {**raw, windows.SOURCE: {"EventData": derived}}
 
 
 async def delete_expired(cutoff: datetime) -> list[str]:

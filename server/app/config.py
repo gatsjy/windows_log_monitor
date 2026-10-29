@@ -53,6 +53,8 @@ class Settings:
     #   점검 보고서(점검 증적): 기본 3년
     alert_retention_days: int = _int_opt("ALERT_RETENTION_DAYS") or retention_days
     audit_retention_days: int = _int("AUDIT_RETENTION_DAYS", 1095)
+    # 진료정보 등 민감정보를 처리하는 시스템의 접속기록을 모으는 사이트(병원) — 로그 보관 법정 최소를 2년으로 보고 경고한다 (제8조)
+    sensitive_access_log: bool = _env("SENSITIVE_ACCESS_LOG", "off").lower() in ("1", "on", "true", "yes")
     report_retention_days: int = _int("REPORT_RETENTION_DAYS", 1095)
     archive_dir: str = _env("ARCHIVE_DIR", "/app/archive")
     # DB 백업 일정 (backup 서비스가 실제로 돌린다, deploy/backup/backup.sh). 여기서는 화면 표시와 '오래됨' 판단에만 쓴다

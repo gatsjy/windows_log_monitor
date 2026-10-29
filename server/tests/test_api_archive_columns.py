@@ -126,8 +126,10 @@ def test_v1_archive_restores_with_the_common_fields_derived(client):
     at = V1[0].replace(day=3).isoformat()
     rows = []
     for i, e in enumerate(_events(), 1):
+        # ADR-038 이전에 저장된 Windows 이벤트처럼 서버가 붙인 이름(raw.winevtlog) 없이
+        raw = {k: v for k, v in e.raw.items() if k != "winevtlog"}
         row = {"id": 900000 + i, "received_at": at, "ts": at, "host": e.host, "source": e.source, "channel": e.channel,
-               "provider": e.provider, "event_id": e.event_id, "level": e.level, "message": e.message, "raw": e.raw}
+               "provider": e.provider, "event_id": e.event_id, "level": e.level, "message": e.message, "raw": raw}
         rows.append(json.dumps({k: row[k] for k in old_columns}, ensure_ascii=False))
     path = ARCHIVE / f"{V1_NAME}.jsonl.gz"
     ARCHIVE.mkdir(parents=True, exist_ok=True)
@@ -142,6 +144,9 @@ def test_v1_archive_restores_with_the_common_fields_derived(client):
     assert [s[1:] for s in _stored(V1_NAME)] == [
         ("security", "wlmci", None), ("iis", "lee", "198.51.100.9"), ("mssql", "sa", "198.51.100.20"),
         ("syslog", "admin", "203.0.113.45")]
+    # 복원한 달에서도 f.EventData.<이름> 이 맞게 이름을 붙였다
+    assert sql(f"SELECT raw->'winevtlog'->'EventData'->>'TargetUserName' FROM {V1_NAME} WHERE source = 'winevtlog'") \
+        == [("wlmci",)]
 
 
 def test_archive_has_every_events_column(client):

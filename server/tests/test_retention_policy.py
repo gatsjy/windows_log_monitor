@@ -15,6 +15,9 @@ from app import partitions
     ({"retention_days": 200}, "접속기록 법정 최소 1년"),
     ({"audit_retention_days": 365}, "권한 부여·변경·말소 기록 법정 최소 3년"),
     ({"report_retention_days": 100}, "점검 증적"),
+    ({"sensitive_access_log": True}, "민감정보(진료정보) 처리 시스템의 접속기록 법정 최소 2년"),   # 기본 365 < 730
+    ({"sensitive_access_log": True, "retention_days": 730}, None),
+    ({"sensitive_access_log": True, "retention_days": 200}, "2년"),   # 한 줄만 (1년 미달 문구와 겹치지 않게)
 ])
 def test_retention_warnings(monkeypatch, change, fragment):
     monkeypatch.setattr(partitions, "settings", replace(partitions.settings, **change))
