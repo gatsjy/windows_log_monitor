@@ -33,7 +33,13 @@ from .messenger import FORMATS
 
 
 class NotifierError(Exception):
-    """전송 실패 (화면/로그에 그대로 표시)."""
+    """전송 실패 (화면/로그에 그대로 표시).
+    target_down = 받는 곳 자체가 안 된다(연결 실패·시간 초과·5xx·429·설정 없음) — 전송기가 그 곳의 다른 대기 알림도
+    이번에는 시도하지 않고 실패로 넘긴다(같은 곳에 30초씩 줄줄이 기다리지 않게, ADR-045). 알림 하나의 문제(4xx 등)는 False."""
+
+    def __init__(self, message: str, *, target_down: bool = False):
+        super().__init__(message)
+        self.target_down = target_down
 
 
 SEVERITY_RANK = {"info": 1, "warning": 2, "error": 3, "critical": 4}
@@ -99,9 +105,10 @@ class EmailNotifier(Notifier):
 
     def _send(self, mail: EmailMessage) -> None:
         if not self.to:
-            raise NotifierError(f"수신 그룹 '{self.name}' 에 이메일이 있는 활성 수신자가 없습니다 (환경설정 > 수신자)")
+            raise NotifierError(f"수신 그룹 '{self.name}' 에 이메일이 있는 활성 수신자가 없습니다 (환경설정 > 수신자)",
+                                target_down=True)
         if not self.smtp.host:
-            raise NotifierError("메일 서버가 설정되지 않았습니다 (환경설정 > 메일 서버)")
+            raise NotifierError("메일 서버가 설정되지 않았습니다 (환경설정 > 메일 서버)", target_down=True)
         security = self.smtp.security.lower()
         smtp_cls = smtplib.SMTP_SSL if security == "ssl" else smtplib.SMTP
         try:
@@ -111,8 +118,8 @@ class EmailNotifier(Notifier):
                 if self.smtp.user:
                     smtp.login(self.smtp.user, self.smtp.password)
                 smtp.send_message(mail)
-        except (OSError, smtplib.SMTPException) as exc:
-            raise NotifierError(f"메일 전송 실패 ({self.smtp.host}:{self.smtp.port}): {exc}") from exc
+        except (OSError, smtplib.SMTPException) as exc:   # 같은 메일 서버로 가는 알림은 모두 같은 결과
+            raise NotifierError(f"메일 전송 실패 ({self.smtp.host}:{self.smtp.port}): {exc}", target_down=True) from exc
 
     async def send(self, message: AlertMessage) -> None:
         await asyncio.to_thread(self._send, self.build(message))
@@ -216,10 +223,11 @@ class WebhookNotifier(Notifier):
             # 넉넉히 읽어 가린 '뒤에' 자른다 — 먼저 자르면 경계에 걸친 토큰 앞부분이 가려지지 않고 남는다
             detail = self.redact(exc.read(4096).decode("utf-8", "replace"))[:300]
             moved = " — 다른 주소로 넘기려 합니다. 넘어간 뒤의 최종 주소를 넣으세요" if 300 <= exc.code < 400 else ""
-            raise NotifierError(f"웹훅 응답 {exc.code}{moved}: {detail}") from exc
+            raise NotifierError(f"웹훅 응답 {exc.code}{moved}: {detail}",
+                                target_down=exc.code >= 500 or exc.code == 429) from exc
         except (urllib.error.URLError, OSError) as exc:
             reason = self.redact(str(getattr(exc, "reason", exc)))
-            raise NotifierError(f"웹훅 연결 실패 ({self.target()}): {reason}") from exc
+            raise NotifierError(f"웹훅 연결 실패 ({self.target()}): {reason}", target_down=True) from exc
         except Exception as exc:  # http.client.InvalidURL·ValueError 등도 주소를 문구에 넣는다 → 가려서
             raise NotifierError(f"웹훅 전송 실패 ({self.target()}): {self.redact(str(exc))[:300]}") from exc
 
@@ -317,7 +325,7 @@ class OracleNotifier(Notifier):
         try:
             return oracle.execute(self.conn, self.sql, binds, commit=commit, clob_binds=("detail_json",))
         except oracle.OracleError as exc:
-            raise NotifierError(str(exc)) from exc
+            raise NotifierError(str(exc), target_down=exc.unreachable) from exc
 
     async def send(self, message: AlertMessage) -> None:
         await asyncio.to_thread(self._execute, self.binds(message), True)

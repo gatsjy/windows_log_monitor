@@ -94,6 +94,7 @@ services:
       WLM_HEARTBEAT_STALE_SEC: ${WLM_HEARTBEAT_STALE_SEC:-900}
       WLM_LOG_LEVEL: ${WLM_LOG_LEVEL:-INFO}
       WLM_SEARCH_TIMEOUT_SEC: ${WLM_SEARCH_TIMEOUT_SEC:-30}   # 화면 검색 쿼리 시간 상한 — 느린 검색이 쌓여 수집을 막지 않게
+      WLM_ALERT_RULE_TIMEOUT_SEC: ${WLM_ALERT_RULE_TIMEOUT_SEC:-20}   # 알림 규칙 쿼리 시간 상한 — 무거운 규칙 하나가 평가 전체를 멈추지 않게
       # 알림 (Phase 2) — 링크 주소, 메일 서버
       WLM_PUBLIC_URL: ${WLM_PUBLIC_URL:-http://localhost:8080}
       WLM_DISPLAY_TZ: ${WLM_DISPLAY_TZ:-Asia/Seoul}

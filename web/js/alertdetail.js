@@ -10,7 +10,7 @@ import { errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html } from './uti
 
 const DELIVERY = {
   sent: ['✓', '전송됨'],
-  pending: ['…', '전송 중'],
+  pending: ['…', '전송 대기'],   // 전송기가 곧 보낸다 (ADR-045). 잡고 보내는 중이면 claimed_at
   failed: ['!', '실패 · 재시도 예정'],
   gave_up: ['✕', '실패 · 재시도 중단'],
   skipped: ['–', '건너뜀'], // 사유(받을 최소 수준 미달, 무음)는 last_error 에
@@ -35,8 +35,9 @@ export function silenceScope(s) {
 export function deliveryChips(deliveries = []) {
   if (!deliveries.length) return html`<span class="muted">대상 없음</span>`;
   return html`${deliveries.map((d) => {
-    const [mark, label] = DELIVERY[d.status] ?? ['?', d.status];
-    return html`<span class="dlv ${d.status}" title="${label}${d.last_error ? `: ${d.last_error}` : ''}">${mark} ${d.notifier}</span>`;
+    const [mark, label] = d.claimed_at ? ['↗', '보내는 중'] : DELIVERY[d.status] ?? ['?', d.status];
+    const next = d.status === 'failed' && d.next_attempt_at ? ` · 다음 시도 ${fmtTime(d.next_attempt_at, { date: false })}` : '';
+    return html`<span class="dlv ${d.status}" title="${label}${next}${d.last_error ? `: ${d.last_error}` : ''}">${mark} ${d.notifier}</span>`;
   })}`;
 }
 

@@ -57,7 +57,7 @@ server/app/
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
-  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·재시도·무음·설정 판본) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
+  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
   backups.py         DB 백업·복구 시험 상태 (backup 서비스가 남긴 audit_log 로) — 로그 보관 화면·점검 보고서 공용
@@ -216,6 +216,10 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - `record()` 는 잠금 안에서 비교·기록한다. 판본을 남긴 뒤의 감사로그·알림은 `_owed` 로 다시 시도 — 판본을 두 번 넣지 않는다. 파일이 깨졌거나 없으면(`engine.config_error`) 규칙 단위 저장은 409.
   - 서버에서 고친 것을 기록하지 못한 채 화면 저장이 덮지 않게 `_store` 는 `_record_versions(strict=True)`(실패하면 503). 파일 변경은 (mtime, ctime, 크기, inode) 서명으로 본다.
 - 알림 엔진은 앱 안의 백그라운드 작업입니다. `uvicorn --reload` 로 재시작되면 다음 주기에 이어서 평가합니다.
+- **평가와 전송은 따로 (ADR-045):** 엔진의 `fire()` 는 `alert_deliveries`(대기열)에 넣고 깨울 뿐 보내지 않는다. 보내기·재시도는 `alerts/dispatcher.py`(lock 727_004).
+  - 시험에서는 전송기가 돌지 않는다(`WLM_ALERT_DISPATCHER=off`, conftest). 보낸 결과를 보려면 `client.portal.call(dispatcher.drain)`.
+  - 결과는 `repository.finish_delivery` 로만 쓴다 — `claimed_at` 이 그대로일 때만 바뀐다(풀린 뒤 늦게 온 결과는 버림). 새 전송기 오류는 `NotifierError(target_down=…)` 로 받는 곳 문제인지 알린다.
+  - 규칙 쿼리는 `db.background_time_limit`(조회 자리 SEARCH_SLOTS 를 쓰지 않음). 규칙 상태(`engine.runs`)·전송 상태(`dispatcher.targets`)는 메모리(워커 1개). 상태 판단은 `alerts/health.py` 한 곳 — 화면·`/healthz/alerts`·보고서가 같이 쓴다.
 - 상태를 바꾸는 API 를 테스트할 때는 `X-WLM-CSRF: 1` 헤더가 있어야 합니다. 로그인 세션은 쿠키(`wlm_session`)로 유지합니다.
 - `audit_log` 는 DB 트리거로 UPDATE·DELETE·TRUNCATE 를 막습니다. 테스트나 마이그레이션에서 지우려 하면 실패합니다.
 - 개발 DB 의 관리자 비밀번호는 저장소에 없습니다. `python -m app.cli reset-password admin` 으로 임시 비밀번호를 받습니다.

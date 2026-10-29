@@ -1,7 +1,8 @@
-"""알림 엔진: interval_sec 마다 규칙을 평가 → 알림 기록 → 알림 대상으로 전송 → 실패분 재시도.
+"""알림 엔진: interval_sec 마다 규칙을 평가 → 알림 기록. 보내기와 재시도는 전송기(dispatcher.py)가 한다 (ADR-045).
 
 - 규칙 파일(config/alerts.yaml)이 바뀌면 다음 주기에 자동으로 다시 읽는다 (재시작 불필요).
-- 알림 대상(수신 그룹·외부 연동·메일 서버)은 매 주기 환경설정(DB)에서 다시 만든다 → 화면에서 바꾸면 바로 반영.
+- 규칙마다 쿼리 시간 상한(WLM_ALERT_RULE_TIMEOUT_SEC) — 넘기거나 실패하면 그 규칙만 '시간 초과·오류'로 남기고 다음 규칙으로.
+  규칙마다 마지막 평가(RuleRun)를 기억해 화면·/healthz/alerts·점검 보고서가 '평가가 멈춤·느림·일부만'을 보인다(health.py).
   잘못된 파일이면 이전 설정을 유지하고 오류를 화면에 보여준다.
 - 같은 규칙·같은 대상(PC)은 cooldown 동안 다시 알리지 않는다.
 - 무음(alert_silences) 중이면 알림은 기록하되 보내지 않는다. 무음이 끝난 뒤에도 이벤트가 새로 들어오면
@@ -16,7 +17,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from dataclasses import replace
+import time
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -24,19 +26,17 @@ from typing import Any
 from .. import db, repository
 from ..config import settings
 from ..filters import EventFilter
-from . import configdiff, targets
+from . import configdiff
 from .builtin import CONFIG_RULE
+from .dispatcher import dispatcher
 from .message import AlertMessage, local, search_link
-from .notifiers import SEVERITY_LABELS, Notifier, NotifierError
 from .rules import AlertConfig, ConfigError, Rule, parse_text
 
 log = logging.getLogger(__name__)
 
 _LOCK_ID = 727_003
-MAX_ATTEMPTS = 5
-RETRY_BACKOFF = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=15), timedelta(hours=1))
-SEND_TIMEOUT_SEC = 30
 SAMPLE_COUNT = 5
+CANDIDATE_LIMIT = 100   # 한 번에 알리는 묶음 상한 — 넘으면 규칙에 '일부만' 표시 (ADR-045)
 _UNREAD = object()   # 아직 한 번도 읽지 않음 (파일이 없을 때의 서명 None 과 구별 — 시작 때 없는 파일도 읽은 것으로 쳐야 한다)
 HISTORY_VERSIONS = 200   # 다시 켠 규칙을 비교하려고 거슬러 보는 판본 수
 SOURCE_LABELS = {"ui": "화면에서 저장", "file": "서버에서 파일 직접 수정", "startup": "서버 시작 때 발견(꺼져 있는 동안 수정)"}
@@ -90,10 +90,15 @@ class AlertEngine:
         self.path = Path(path or settings.alerts_file)
         self.config = AlertConfig()
         self.config_error: str | None = None
-        self.notifiers: dict[str, Notifier] = {}
-        self.notifier_errors: dict[str, str] = {}
         self.last_run_at: datetime | None = None
         self.last_error: str | None = None
+        # 평가 상태 (ADR-045): 나아간 시각(규칙·묶음마다 갱신), 한 바퀴 시간, 평가 중인 규칙, 규칙마다의 마지막 평가
+        self.progress_at: datetime | None = None
+        self.cycle_sec: float | None = None
+        self.current_rule: str | None = None
+        self.standby = False
+        self.runs: dict[str, RuleRun] = {}
+        self.task: asyncio.Task | None = None   # main 이 넣는다 (상태 판단: 작업이 살아 있나)
         self._sig: object = _UNREAD
         # 판본 기록 (ADR-043). _applied = 마지막으로 기록한 판본 {id, sha, config, text} — None 이면 아직 DB 에서 읽지 않음
         self._applied: dict[str, Any] | None = None
@@ -297,7 +302,6 @@ class AlertEngine:
     async def notify_change(self, summary: str, lines: list[str], rules: list[Rule], who: str) -> int:
         """설정 변경·넓은 무음 알림. 받는 곳 = 그 규칙들의 알림을 받던 곳(바뀌기 전 설정) — 바꾼 사람이 받는 곳도
         같이 지울 수 있으니. 걸린 규칙이 없으면(규칙 0개) 받는 곳 없이 이력에만 남는다."""
-        await self.load_targets()
         shown = lines[:30] + ([f"… 외 {len(lines) - 30:,}건"] if len(lines) > 30 else [])
         message = AlertMessage(
             rule=CONFIG_RULE, severity=configdiff.severity(rules), kind="config", group_by="none", group_key=who,
@@ -307,54 +311,93 @@ class AlertEngine:
         )
         return await self.fire(message, configdiff.recipients(rules))
 
-    async def load_targets(self) -> None:
-        self.notifiers, self.notifier_errors = await targets.load_notifiers()
-
     # ------------------------------------------------------------ 루프
     async def run_forever(self) -> None:
+        loop = asyncio.get_running_loop()
         while True:
+            started = loop.time()
             try:
                 await self.tick()
                 self.last_error = None
             except Exception as exc:
                 self.last_error = str(exc)
                 log.exception("알림 평가 실패")
-            await asyncio.sleep(self.config.interval_sec)
+            # 시작 시각 기준으로 다음 주기 — 오래 걸린 주기 뒤에 주기 하나를 통째로 더 쉬어 공백이 커지지 않게 (ADR-045)
+            await asyncio.sleep(max(1.0, started + self.config.interval_sec - loop.time()))
 
     async def tick(self) -> None:
+        started = time.monotonic()
+        self.progress_at = datetime.now(UTC)
         self.reload()
         try:
             await self.record()
         except Exception:   # 기록이 실패해도 탐지는 계속한다 (다음 주기에 다시 기록)
             log.exception("알림 설정 판본 기록 실패")
-        await self.load_targets()
         async with await db.connect_autocommit() as conn:
             cur = await conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (_LOCK_ID,))
             if not (await cur.fetchone())["ok"]:
+                self.standby, self.progress_at = True, datetime.now(UTC)   # 다른 서버가 평가 중
                 return
+            self.standby = False
             try:
                 now = datetime.now(UTC)
                 for rule in self.config.rules:
-                    if not rule.enabled:
-                        continue
-                    try:
-                        await self.evaluate(rule, now)
-                    except Exception:
-                        log.exception("규칙 평가 실패: %s", rule.name)
-                await self.retry_failed(now)
+                    if rule.enabled:
+                        await self._run_rule(rule, now)
+                self.current_rule = None
+                names = {r.name for r in self.config.rules}
+                self.runs = {name: run for name, run in self.runs.items() if name in names}
                 self.last_run_at = now
+                self.cycle_sec = time.monotonic() - started
             finally:
+                self.current_rule = None
                 await conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
 
+    async def _run_rule(self, rule: Rule, now: datetime) -> None:
+        """규칙 하나 — 실패·시간 초과는 그 규칙에만 남기고 다음 규칙으로 (무거운 규칙 하나가 평가 전체를 멈추지 않게)."""
+        run = self.runs.setdefault(rule.name, RuleRun())
+        self.current_rule, self.progress_at = rule.name, datetime.now(UTC)
+        started = time.monotonic()
+        error = kind = None
+        try:
+            with db.background_time_limit(settings.alert_rule_timeout_sec):
+                run.fired = len(await self.evaluate(rule, now, run))
+        except db.QueryTimeout as exc:
+            error, kind = str(exc), "timeout"
+        except Exception as exc:  # 규칙 하나의 실패
+            log.exception("규칙 평가 실패: %s", rule.name)
+            error, kind = str(exc)[:500], "error"
+        run.last_run_at, run.duration_ms = now, int((time.monotonic() - started) * 1000)
+        if error:
+            run.error, run.error_kind = error, kind
+            run.errors_in_row += 1
+            run.error_since = run.error_since or now
+        else:
+            run.error = run.error_kind = run.error_since = None
+            run.errors_in_row, run.last_ok_at = 0, now
+            if rule.kind == "count":
+                # 앞 평가가 본 구간 끝과 이번 구간 시작 사이에 틈이 있으면 그 사이 들어온 로그는 이 규칙으로 보지 못했다
+                if run.last_query_at and now - rule.window > run.last_query_at:
+                    run.last_gap = {"from": run.last_query_at, "to": now - rule.window,
+                                    "sec": int((now - rule.window - run.last_query_at).total_seconds()), "at": now}
+                    log.warning("규칙 '%s' 평가 공백 %s ~ %s", rule.name, run.last_query_at, now - rule.window)
+                run.last_query_at = now
+        self.progress_at = datetime.now(UTC)
+
     # ------------------------------------------------------------ 평가
-    async def evaluate(self, rule: Rule, now: datetime) -> list[int]:
+    async def evaluate(self, rule: Rule, now: datetime, run: RuleRun | None = None) -> list[int]:
         if rule.kind == "agent_silent":
             return await self._evaluate_silent(rule, now)
         since = now - rule.window
         base = replace(rule.event_filter(), received_since=since)
         fired = []
-        for row in await repository.alert_candidates(base, rule.group_by, rule.threshold,
-                                                     rule.distinct_field, rule.distinct_min):
+        rows = await repository.alert_candidates(base, rule.group_by, rule.threshold,
+                                                 rule.distinct_field, rule.distinct_min, limit=CANDIDATE_LIMIT + 1)
+        if run is not None:
+            # 기준을 넘은 묶음이 상한보다 많으면 일부만 알린다 — 나머지는 다음 평가에서 (재알림 간격에 든 것이 빠지며 자리가 난다)
+            run.candidates, run.truncated = min(len(rows), CANDIDATE_LIMIT), len(rows) > CANDIDATE_LIMIT
+        for row in rows[:CANDIDATE_LIMIT]:
+            self.progress_at = datetime.now(UTC)
             key = "" if row["key"] is None else str(row["key"])
             last = await repository.last_alert(rule.name, key)
             if last is not None and _silence_over(last, now) and not await _resumed(base, rule, key, last, since):
@@ -362,7 +405,10 @@ class AlertEngine:
             if _in_cooldown(last, now, rule.cooldown):
                 continue
             scoped = _with_group(base, rule.group_by, key)
-            samples = await repository.list_events(scoped, SAMPLE_COUNT)
+            try:
+                samples = await repository.list_events(scoped, SAMPLE_COUNT)
+            except db.QueryTimeout:
+                samples = []   # 표본 때문에 알림을 잃지 않는다
             message = AlertMessage(
                 rule=rule.name, severity=rule.severity, kind=rule.kind, description=rule.description,
                 group_by=rule.group_by, group_key=key, event_count=row["n"], threshold=rule.threshold,
@@ -395,6 +441,7 @@ class AlertEngine:
 
     # ------------------------------------------------------------ 전송
     async def fire(self, message: AlertMessage, notify: tuple[str, ...]) -> int:
+        """알림을 기록하고 전송기를 깨운다 — 보내는 것은 전송기(dispatcher)다. 여기서는 네트워크를 쓰지 않는다 (ADR-045)."""
         # 설정 변경 알림은 무음으로 막지 않는다 — '모든 규칙' 무음을 건 뒤 규칙을 끄면 아무도 모르게 된다
         silence = (None if message.kind == "config"
                    else await repository.active_silence(message.rule, message.group_key, message.fired_at))
@@ -404,53 +451,12 @@ class AlertEngine:
             log.info("알림 발생 #%s %s — 무음 #%s 중이라 보내지 않음", alert_id, message.title(), silence["id"])
             return alert_id
         log.warning("알림 발생 #%s %s", alert_id, message.title())
-        await asyncio.gather(*(self.deliver(alert_id, name, message) for name in notify))
+        dispatcher.wake()
         return alert_id
 
-    async def deliver(self, alert_id: int, name: str, message: AlertMessage) -> bool:
-        notifier = self.notifiers.get(name)
-        if notifier is not None and not message.test and not notifier.accepts(message.severity):
-            reason = f"받을 최소 수준({SEVERITY_LABELS[notifier.min_severity]} 이상)보다 낮은 알림"
-            await repository.skip_delivery(alert_id, name, reason)
-            return False
-        try:
-            if notifier is None:
-                raise NotifierError(self.notifier_errors.get(name) or f"알림 대상 '{name}' 이 설정에 없습니다")
-            await asyncio.wait_for(notifier.send(message), timeout=SEND_TIMEOUT_SEC)
-        except Exception as exc:  # noqa: BLE001 - 어떤 실패든 기록하고 재시도 대상으로
-            error = "전송 시간 초과" if isinstance(exc, TimeoutError) else str(exc)
-            await repository.mark_delivery(alert_id, name, "failed", error[:1000])
-            log.warning("알림 #%s → %s 전송 실패: %s", alert_id, name, error)
-            return False
-        await repository.mark_delivery(alert_id, name, "sent")
-        return True
-
-    async def retry_failed(self, now: datetime) -> None:
-        for row in await repository.failed_deliveries():
-            attempts = row["attempts"]
-            if attempts >= MAX_ATTEMPTS:
-                await repository.give_up_delivery(row["alert_id"], row["notifier"])
-                continue
-            wait = RETRY_BACKOFF[min(attempts - 1, len(RETRY_BACKOFF) - 1)]
-            if now - row["updated_at"] < wait:
-                continue
-            message = AlertMessage.from_dict(row["payload"])
-            message.alert_id = row["alert_id"]
-            await self.deliver(row["alert_id"], row["notifier"], message)
-
     async def send_test(self, name: str) -> None:
-        """알림 대상 연결 확인. 실패하면 NotifierError."""
-        await self.load_targets()
-        notifier = self.notifiers.get(name)
-        if notifier is None:
-            raise NotifierError(self.notifier_errors.get(name) or f"알림 대상 '{name}' 이 설정에 없습니다")
-        now = datetime.now(UTC)
-        message = AlertMessage(
-            rule="테스트 알림", severity="info", kind="test", group_by="none", group_key="", event_count=0,
-            threshold=0, window_sec=0, fired_at=now, alert_id=0, test=True,
-            description=f"알림 대상 '{name}' ({notifier.type}) 연결 확인", link=f"{settings.public_url}/#/alerts",
-        )
-        await asyncio.wait_for(notifier.send(message), timeout=SEND_TIMEOUT_SEC)
+        """알림 대상 연결 확인 (대기열을 거치지 않는다). 실패하면 NotifierError 등."""
+        await dispatcher.send_test(name)
 
     # ------------------------------------------------------------ 상태
     def status(self) -> dict[str, Any]:
@@ -460,7 +466,36 @@ class AlertEngine:
             "interval_sec": self.config.interval_sec,
             "last_run_at": self.last_run_at,
             "last_error": self.last_error,
+            "progress_at": self.progress_at,
+            "cycle_sec": self.cycle_sec,
+            "current_rule": self.current_rule,
+            "standby": self.standby,
+            "rule_timeout_sec": settings.alert_rule_timeout_sec,
         }
+
+    def health_snapshot(self) -> dict[str, Any]:
+        return {**self.status(), "running": self.task is not None and not self.task.done()}
+
+
+@dataclass
+class RuleRun:
+    """규칙 하나의 마지막 평가 (메모리, 워커 1개 전제 — ADR-006). 다시 시작하면 한 주기 동안 '평가 전'."""
+
+    last_run_at: datetime | None = None
+    duration_ms: int = 0
+    candidates: int = 0
+    truncated: bool = False
+    fired: int = 0
+    error: str | None = None
+    error_kind: str | None = None      # timeout | error
+    errors_in_row: int = 0
+    last_ok_at: datetime | None = None
+    error_since: datetime | None = None
+    last_query_at: datetime | None = None   # 마지막으로 본 수신 구간의 끝
+    last_gap: dict[str, Any] | None = None  # 평가가 늦어 보지 못한 구간 {from, to, sec, at}
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 def _parse_or_none(text: str) -> AlertConfig | None:

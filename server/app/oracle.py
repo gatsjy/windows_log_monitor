@@ -26,7 +26,11 @@ MAX_QUERY_ROWS = 500
 
 
 class OracleError(Exception):
-    """사용자에게 보여줄 Oracle 관련 오류."""
+    """사용자에게 보여줄 Oracle 관련 오류. unreachable = 접속 자체가 안 됨 (알림 전송기가 그 곳의 다른 알림도 미룬다)."""
+
+    def __init__(self, message: str, *, unreachable: bool = False):
+        super().__init__(message)
+        self.unreachable = unreachable
 
 
 def tns_dir() -> Path:
@@ -120,7 +124,7 @@ class OracleConn:
         try:
             conn = oracledb.connect(**kwargs)
         except oracledb.Error as exc:
-            raise OracleError(f"접속 실패: {exc}") from exc
+            raise OracleError(f"접속 실패: {exc}", unreachable=True) from exc
         conn.call_timeout = CALL_TIMEOUT_MS
         return conn
 

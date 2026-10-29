@@ -57,14 +57,18 @@ def pool() -> AsyncConnectionPool:
 
 async def connect_autocommit() -> psycopg.AsyncConnection:
     """마이그레이션/유지보수처럼 트랜잭션을 직접 관리할 때 쓰는 단독 연결."""
+    # connect_timeout: 잠금용 연결(알림 엔진·전송기)이 네트워크 문제로 끝없이 매달리지 않게
     return await psycopg.AsyncConnection.connect(
-        settings.database_url, autocommit=True, row_factory=dict_row
+        settings.database_url, autocommit=True, row_factory=dict_row, connect_timeout=10
     )
 
 
 # 지금 작업의 쿼리마다 걸 시간 상한(초, 0 = 없음). 화면 조회 요청만 켠다(routers/query.search_time_limit).
 # 요청은 저마다 자기 작업(task)의 컨텍스트에서 돌아 다른 요청·알림 엔진·수집으로 번지지 않는다 (ADR-035)
 _statement_timeout: ContextVar[int] = ContextVar("wlm_statement_timeout", default=0)
+# 알림 규칙 평가의 쿼리 시간 상한 (ADR-045). 화면 조회와 달리 조회 자리(SEARCH_SLOTS)를 얻지 않는다 — 화면 검색이 자리를
+# 다 쓰고 있어도 알림 평가가 기다리지 않게. 쓰기(insert_alert·audit 는 pool() 을 바로 씀)에는 걸리지 않는다
+_background_timeout: ContextVar[int] = ContextVar("wlm_background_timeout", default=0)
 
 
 class QueryTimeout(Exception):
@@ -80,6 +84,16 @@ class QueryTimeout(Exception):
 def limit_statement_time(seconds: int) -> None:
     """지금 작업에서 이후의 fetch_all/fetch_one 에 시간 상한을 건다 (0 = 없음)."""
     _statement_timeout.set(max(0, seconds))
+
+
+@contextlib.contextmanager
+def background_time_limit(seconds: int):
+    """with 안의 fetch_all/fetch_one 에 시간 상한 (0 = 없음). 같은 작업 안에서는 await 를 지나도 유지되고 나가면 되돌린다."""
+    token = _background_timeout.set(max(0, seconds))
+    try:
+        yield
+    finally:
+        _background_timeout.reset(token)
 
 
 @contextlib.asynccontextmanager
@@ -103,7 +117,7 @@ async def _connection():
 
 
 async def _execute(conn: psycopg.AsyncConnection, query: Any, params: list | tuple | None) -> psycopg.AsyncCursor:
-    seconds = _statement_timeout.get()
+    seconds = _statement_timeout.get() or _background_timeout.get()
     if not seconds:
         return await conn.execute(query, params)
     # set_config(…, true) = SET LOCAL — 이 트랜잭션에만 걸린다. 풀에 돌려줄 때 트랜잭션이 끝나므로

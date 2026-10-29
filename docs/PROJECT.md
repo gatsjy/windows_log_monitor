@@ -340,11 +340,15 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
 ## 6. 알림 (Phase 2)
 
 ```
-config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interval_sec 마다, advisory lock 으로 1곳에서만)
+config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interval_sec 마다, advisory lock 727_003 으로 1곳에서만)
   규칙 평가: events(received_at ≥ now - window, match) GROUP BY group_by HAVING count ≥ threshold
-    → cooldown 확인 → alerts + alert_deliveries(pending) 기록 → 알림 대상들로 동시에 전송
+    (규칙마다 쿼리 시간 상한 WLM_ALERT_RULE_TIMEOUT_SEC, 넘기면 그 규칙만 '시간 초과' — ADR-045)
+    → cooldown 확인 → alerts + alert_deliveries(pending) 기록 → 전송기를 깨움 (엔진은 보내지 않는다)
     (무음 중이면 alerts 는 기록하고 alert_deliveries 는 skipped — 보내지 않음)
-  실패 → failed (1분 → 5분 → 15분 → 1시간 간격 재시도, 5회 후 gave_up)
+전송기 (alerts/dispatcher.py, advisory lock 727_004): 보낼 차례인 행을 하나씩 잡아(claimed_at) 보냄
+  받는 곳마다 한 줄씩·동시에 4곳까지·심각한 것부터. 실패 → failed (1분 → 5분 → 15분 → 1시간, 5회째 gave_up)
+  받는 곳 자체가 안 되면(연결 실패·시간 초과·5xx·429) 그 곳의 다른 대기 알림도 이번엔 실패로 넘김
+  보내는 중 서버가 멈추면 다음 시작 때 다시 보냄(두 번 갈 수 있음), 하루가 지난 대기 알림은 보내지 않음
 처리: open(처리 안 됨) → acked(확인함) → resolved(해결됨) ⇄ 다시 열기. 기록은 alert_notes (ADR-029)
 설정 판본: 바뀐 설정을 적용할 때마다 alert_config_versions + 감사로그 alerts.config.apply (ADR-043)
   탐지를 약하게 하는 변경·넓은 무음 → 내장 규칙 '알림 설정 변경' 으로 바뀌기 전 받는 곳에 (무음으로 막을 수 없음)
@@ -436,9 +440,19 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 - **본문:** 요약, 설명, 발생 시각(`WLM_DISPLAY_TZ`, 기본 Asia/Seoul), 최근 이벤트 5건, `WLM_PUBLIC_URL` 기준 검색 링크
 - **웹훅:** 형식별 본문은 §6.2 표. 형식별 실제 본문은 `server/tests/snapshots/webhook_<형식>.json` 에 있습니다.
 
+### 6.0b 알림 기능 상태 (ADR-045)
+
+- **상태 판단(`alerts/health.py`) 한 곳**을 알림 화면 상태 띠·규칙 '평가' 칸·알림 대상 줄, `GET /healthz/alerts`, 점검 보고서 '점검 필요'가 같이 씁니다.
+  - 나쁨(알림 멈춤): 평가가 max(3×주기, 2×규칙 상한+30초, 120초) 넘게 나아가지 않음, 전송기 멈춤·꺼짐, 규칙이 쓰는 모든 받는 곳이 15분 넘게 실패.
+  - 확인 필요: 평가 한 바퀴가 주기보다 김, 보낼 알림이 5분 넘게 밀림, 받는 곳 실패 중, 24시간 안 재시도 중단, 규칙 오류·시간 초과·일부만(기준을 넘은 묶음 100개 초과)·느림·평가 공백.
+- **`GET /healthz/alerts`**: 로그인 없음(사내 감시 도구용), 수와 코드만(이름·오류 문구 없음), 10초 캐시. `down` 이면 503, `?strict=1` 이면 `warn` 도 503. 수집 포트에서는 404. `/healthz` 는 그대로 DB 만 봅니다(Docker HEALTHCHECK 가 메일 서버 문제로 흔들리지 않게).
+- 규칙 상태는 메모리라 서버를 다시 시작하면 한 주기 동안 '평가 전'입니다. 아침 점검 보고서가 오지 않는 것도 신호입니다(보고서는 자기 경로로 보냅니다).
+
 ### 6.4 화면 (`#/alerts`)
 
-- 엔진 상태(마지막 평가, 설정 오류, 적용 중인 무음 수), 심각도별 수
+- 상태 띠: 알림 엔진 동작 중 / 확인 필요 / 알림 멈춤 (ADR-045 — 문제마다 한 줄), 마지막 평가·한 바퀴 시간·전송 대기·적용 중인 무음 수, 심각도별 수
+- 규칙 관리의 '평가' 칸: 정상·느림·일부만·시간 초과·오류·멈춤·평가 전·꺼짐(마우스를 올리면 마지막 평가·걸린 시간·후보·알림 수), 오류면 규칙 이름 아래 빨간 줄. 규칙 탭은 15초마다 표를 다시 그리지 않고 이 칸만 바꿉니다.
+- 알림 대상: 받는 곳마다 최근 전송 상태(정상·실패 중 몇 분째·대기 건수·마지막 오류). '테스트 발송'이 성공하면 그 곳의 실패분을 바로 다시 보냅니다.
 - 탭 4개: **알림 이력**(`#/alerts?status=`) / **규칙 관리**(`#/alerts/rules`) / **알림 대상**(`#/alerts/targets`) / **무음**(`#/alerts/silences`)
 - **알림 이력 (처리, ADR-029):**
   - 처리 상태 필터: 처리 안 됨 / 확인함 / 해결됨 / 전체 (각각 기간 안 건수). 기간은 24시간·7일·30일·1년·전체(보관기간 안 전부), 처리 안 됨·확인함은 기본이 '전체'입니다(사이드바 숫자와 같은 범위).
@@ -680,6 +694,7 @@ HTTPS·에이전트 TLS (ADR-036, AIRGAP.md §7.5):
 | `WLM_HSTS_MAX_AGE` | (빈 값) | https 응답의 HSTS 초. 비우면 보내지 않음, `0` 이면 `max-age=0`(되돌릴 때 브라우저의 기억을 지움). includeSubDomains 없음 |
 | `WLM_COOKIE_SECURE` | `false` | https 요청은 자동으로 Secure. true 면 http 에서도 강제하고 http 로그인은 400 |
 | `WLM_SEARCH_TIMEOUT_SEC` | `30` | 화면 조회 쿼리 시간 상한 (ADR-035) |
+| `WLM_ALERT_RULE_TIMEOUT_SEC` | `20` | 알림 규칙 쿼리 하나의 시간 상한. 넘기면 그 규칙만 '시간 초과', 다음 규칙은 평가 (ADR-045, 0 = 없음) |
 
 보관기간 (§9, ADR-040):
 

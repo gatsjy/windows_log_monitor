@@ -13,6 +13,7 @@ from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 
 from .. import archive, backups, db, partitions, repository
+from ..alerts import health
 from ..alerts.engine import engine
 from ..config import display_zone, settings
 from ..filters import EventFilter
@@ -203,6 +204,14 @@ def integrity_bad_count(check: dict[str, Any] | None) -> int:
         return 0
 
 
+async def _alerting() -> dict[str, Any]:
+    state = await health.current(fresh=True)
+    # 전송기를 끈 것(WLM_ALERT_DISPATCHER=off)은 시험용 설정이라 보고서에 싣지 않는다 — 화면·/healthz/alerts 에는 나온다
+    problems = [{"level": p["level"], "code": p["code"], "text": p["text"]} for p in state["problems"]
+                if p["code"] != "dispatcher_off"]
+    return {"problems": problems}
+
+
 def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
     """'점검 필요' — 사람이 들여다봐야 할 것만, 심각한 것부터. 없으면 빈 목록(= 특이 사항 없음)."""
     out: list[dict[str, str]] = []
@@ -223,6 +232,8 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
     if serious:
         out.append({"level": "bad" if unresolved.get("critical") else "warn",
                     "text": f"해결 안 된 심각·오류 알림 {serious:,}건"})
+    for problem in (p.get("alerting") or {}).get("problems", []):   # ADR-045 이전 보고서에는 없다
+        out.append({"level": problem["level"], "text": f"알림 기능: {problem['text']}"})
     al = p["alerts"]
     if al.get("config_error"):
         out.append({"level": "bad", "text": f"알림 설정 파일 오류: {al['config_error'][:200]}"})
@@ -268,6 +279,8 @@ async def build(kind: str, start: datetime, end: datetime, now: datetime | None 
         "agents": await _agents(now),
         # 수집 거절·격리 (B-40) — 에이전트 쪽 로그는 같은 출력이라 서버로 오지 못하니 여기서만 보인다
         "ingest": await repository.ingest_problem_counts(start, end),
+        # 알림 기능 자체 (ADR-045) — 보고서를 만든 시각 기준. 평가·전송이 멈췄으면 그 사이 알림은 오지 않았다
+        "alerting": await _alerting(),
         "retention": await _retention(),
         "backup": {"problems": backup["problems"],
                    "last_backup": _jsonable(backup["last_backup"]), "last_verify": _jsonable(backup["last_verify"]),

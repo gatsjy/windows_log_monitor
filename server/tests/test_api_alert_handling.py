@@ -96,8 +96,13 @@ def _scenario(TestClient, app, engine):
         engine.reload(force=True)
 
         def evaluate(at=None, rule=0):
-            """rule: 0 = 로그온 실패(건수), 1 = 서버 응답 없음(agent_silent)"""
-            return admin.portal.call(engine.evaluate, engine.config.rules[rule], at or datetime.now(UTC))
+            """rule: 0 = 로그온 실패(건수), 1 = 서버 응답 없음(agent_silent). 평가한 뒤 전송기로 보낸다 (ADR-045 — 시험에서는
+            전송기가 돌지 않는다)."""
+            from app.alerts.dispatcher import dispatcher
+
+            fired = admin.portal.call(engine.evaluate, engine.config.rules[rule], at or datetime.now(UTC))
+            admin.portal.call(dispatcher.drain)
+            return fired
 
         yield {"admin": admin, **clients, "evaluate": evaluate}
 

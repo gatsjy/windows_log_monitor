@@ -58,19 +58,30 @@ export async function mount(root, params, sub) {
   }));
 
   // ----------------------------------------------------------- 상단 공통
+  // 상태 띠 (ADR-045): 예전에는 설정 오류·마지막 오류가 비어 있으면 늘 초록이었다 — 평가가 멈춰도, 메일이 하루 종일 실패해도
+  const HEALTH = { ok: ['online', '알림 엔진 동작 중'], warn: ['stale', '확인 필요'], down: ['down', '알림 멈춤'] };
+
   function renderStatus() {
     const el = root.querySelector('[data-status]');
-    const problems = [config.config_error && `설정 파일 오류 (이전 설정으로 동작 중): ${config.config_error}`,
-      config.last_error && `평가 오류: ${config.last_error}`].filter(Boolean);
+    const health = config.health || { status: 'ok', problems: [] };
+    const problems = [
+      ...(config.config_error ? [{ level: 'bad', text: `설정 파일 오류: ${config.config_error}` }] : []),
+      ...(config.last_error ? [{ level: 'bad', text: `평가 오류: ${config.last_error}` }] : []),
+      ...health.problems,
+    ];
+    const status = problems.some((p) => p.level === 'bad') ? 'down' : problems.length ? 'warn' : 'ok';
+    const [cls, label] = HEALTH[status];
     const active = config.rules.filter((r) => r.enabled).length;
+    const waiting = config.notifiers.reduce((n, t) => n + (t.health?.queued || 0), 0);
     el.innerHTML = html`
       <div class="card status-strip">
-        <span class="status ${problems.length ? 'stale' : 'online'}"><span class="dot"></span>${problems.length ? '확인 필요' : '알림 엔진 동작 중'}</span>
+        <span class="status ${cls}"><span class="dot"></span>${label}</span>
         <span class="muted">${config.interval_sec}초마다 평가 · 마지막 평가 ${config.last_run_at ? fmtRelative(config.last_run_at) : '대기 중'}
-          · 규칙 ${active}/${config.rules.length}개 사용 중 · 알림 대상 ${config.notifiers.length}개</span>
+          ${config.cycle_sec != null ? html`(한 바퀴 ${config.cycle_sec < 10 ? config.cycle_sec.toFixed(1) : Math.round(config.cycle_sec)}초)` : ''}
+          · 전송 대기 ${fmtNum(waiting)}건 · 규칙 ${active}/${config.rules.length}개 사용 중 · 알림 대상 ${config.notifiers.length}개</span>
         ${config.silences_active ? html`<a class="ast silenced" href="#/alerts/silences?since=${since}">무음 ${config.silences_active}개 적용 중</a>` : ''}
       </div>
-      ${problems.map((p) => html`<div class="error-box" style="margin-top:8px">${p}</div>`)}`;
+      ${problems.map((p) => html`<div class="${p.level === 'bad' ? 'error-box' : 'hint-box'}" style="margin-top:8px">${p.text}</div>`)}`;
     root.querySelector('[data-tabcount="rules"]').textContent = String(config.rules.length);
     root.querySelector('[data-tabcount="targets"]').textContent = String(config.notifiers.length);
     root.querySelector('[data-tabcount="silences"]').textContent = config.silences_active ? String(config.silences_active) : '';
@@ -288,6 +299,40 @@ export async function mount(root, params, sub) {
     return `${fmtDuration(r.window_sec)} 동안 ${fmtNum(r.threshold)}건↑${distinct} · ${by}`;
   }
 
+  // 규칙 평가 상태 (ADR-045)
+  const RUN_LEVEL = { error: 'bad', timeout: 'bad', stale: 'bad', truncated: 'warn', slow: 'warn', ok: 'ok' };
+
+  function runChip(r) {
+    const run = r.run || {};
+    const tip = run.last_run_at ? `마지막 평가 ${fmtRelative(run.last_run_at)} · ${(run.duration_ms / 1000).toFixed(2)}초`
+      + ` · 기준 넘은 묶음 ${fmtNum(run.candidates || 0)}개 · 알림 ${fmtNum(run.fired || 0)}건` : '';
+    return html`<span class="run-chip ${RUN_LEVEL[run.state] ?? ''}" title="${tip}">${run.label ?? '–'}</span>`;
+  }
+
+  function runError(r) {
+    const run = r.run || {};
+    if (run.state !== 'error' && run.state !== 'timeout') return '';
+    const since = run.error_since ? `${fmtRelative(run.error_since).replace(/ 전$/, '')}째 ` : '';
+    return html`<div class="rule-run-error">⚠ ${since}동작하지 않음: ${run.error}${run.state === 'timeout'
+      ? ' — 조건을 좁히고 미리보기로 확인하세요' : ''}</div>`;
+  }
+
+  // 규칙 탭은 입력 중일 수 있어 표를 다시 그리지 않고 상태 띠와 평가 칸만 바꾼다
+  async function refreshRuns() {
+    try {
+      config = await api.get('/api/alerts/config', { since });
+    } catch {
+      return;
+    }
+    renderStatus();
+    for (const r of config.rules) {
+      const cell = root.querySelector(`[data-run="${CSS.escape(r.name)}"]`);
+      if (cell) cell.innerHTML = runChip(r);
+      const err = root.querySelector(`[data-run-error="${CSS.escape(r.name)}"]`);
+      if (err) err.innerHTML = runError(r);
+    }
+  }
+
   function renderRules() {
     const el = root.querySelector('[data-tab]');
     const admin = can('alerts.manage');
@@ -323,7 +368,7 @@ export async function mount(root, params, sub) {
             <button class="btn primary" data-new><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>규칙 추가</button>` : ''}
         </div>
         ${shown.length ? html`<div class="table-wrap"><table class="table rules-table">
-          <thead><tr><th>사용</th><th>SID</th><th>규칙</th><th>조건 · 기준</th><th>받는 곳</th><th class="r">발생</th></tr></thead>
+          <thead><tr><th>사용</th><th>SID</th><th>규칙</th><th>조건 · 기준</th><th>받는 곳</th><th>평가</th><th class="r">발생</th></tr></thead>
           <tbody>${shown.sort((a, b) => (a.sid ?? 1e9) - (b.sid ?? 1e9)).map((r) => html`
             <tr class="${admin ? 'clickable' : ''} ${r.enabled ? '' : 'rule-off'}" data-rule="${r.name}">
               <td>${admin ? html`<button type="button" class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${r.enabled}"
@@ -334,11 +379,13 @@ export async function mount(root, params, sub) {
                 <div class="rule-title">${severityBadge(r.severity)}<b>${r.name}</b></div>
                 ${r.description ? html`<div class="rule-desc">${r.description}</div>` : ''}
                 ${r.tags.length ? html`<div class="rule-tags">${r.tags.map((t) => html`<span class="type-tag">${t}</span>`)}</div>` : ''}
+                <div data-run-error="${r.name}">${runError(r)}</div>
               </td>
               <td class="rule-cond"><div class="ink-2">${r.kind === 'agent_silent' ? (r.hosts.length ? r.hosts.join(', ') : '모든 PC') : matchText(r.match)}</div>
                 <div class="muted rule-crit">${criteria(r)}</div></td>
               <td class="ink-2">${r.notify.join(', ')}${r.unknown_notify.length
                 ? html`<div class="tag-bad" style="font-size:12px">없는 대상: ${r.unknown_notify.join(', ')}</div>` : ''}</td>
+              <td class="nowrap" data-run="${r.name}">${runChip(r)}</td>
               <td class="r nowrap"><span class="num">${fmtNum(r.fired)}</span>
                 ${r.last_fired_at ? html`<div class="muted" style="font-size:12px">${fmtRelative(r.last_fired_at)}</div>` : ''}</td>
             </tr>`)}</tbody></table></div>`
@@ -428,6 +475,19 @@ export async function mount(root, params, sub) {
   }
 
   // ------------------------------------------------------------ 알림 대상
+  // 받는 곳마다 최근 전송 상태 (ADR-045, 서버를 다시 시작하면 처음부터)
+  function targetLine(n) {
+    const h = n.health || {};
+    const waiting = h.queued ? ` · 대기 ${fmtNum(h.queued)}건` : '';
+    if (h.state === 'failing') {
+      return html`<div class="tag-bad" style="font-size:12.5px;margin-top:4px">● 실패 중 · ${fmtRelative(h.failing_since).replace(/ 전$/, '')}째${waiting}
+        <div class="muted" style="font-weight:400">마지막 오류: ${h.last_error ?? ''}</div></div>`;
+    }
+    if (h.state === 'error') return '';   // 설정 오류는 아래 상자에
+    return html`<div class="${h.state === 'ok' ? 'tag-good' : 'muted'}" style="font-size:12.5px;margin-top:4px">● ${h.state === 'ok'
+      ? `정상 · 마지막 전송 ${fmtRelative(h.last_ok_at)}` : '아직 보낸 적 없음 (서버 시작 뒤)'}${waiting}</div>`;
+  }
+
   function renderNotifiers() {
     const el = root.querySelector('[data-tab]');
     if (!config.notifiers.length) {
@@ -440,6 +500,7 @@ export async function mount(root, params, sub) {
           ${can('alerts.manage') ? html`<button class="btn sm" data-test="${n.name}">테스트 발송</button>` : ''}</div>
         <div class="muted mono" style="font-size:12px;overflow-wrap:anywhere">${n.target || '–'}</div>
         <div class="muted" style="font-size:12.5px;margin-top:4px">${n.used_by.length ? `규칙 ${n.used_by.length}개에서 사용: ${n.used_by.slice(0, 4).join(', ')}${n.used_by.length > 4 ? ' …' : ''}` : '규칙에서 사용 안 함'}</div>
+        ${targetLine(n)}
         ${n.error ? html`<div class="error-box" style="margin-top:6px">${n.error}</div>` : ''}
         <div data-result="${n.name}"></div>
       </div></section>`)}</div>
@@ -485,7 +546,9 @@ export async function mount(root, params, sub) {
   await load();
   // 규칙 관리 화면은 입력 중일 수 있어 자동 새로고침하지 않는다. 이력에서 알림을 고르는 중일 때도 멈춘다
   timer = setInterval(() => {
-    if (tab !== 'rules' && !selected.size && !document.hidden && !document.querySelector('.drawer')) load();
+    if (document.hidden || document.querySelector('.drawer')) return;
+    if (tab === 'rules') refreshRuns();
+    else if (!selected.size) load();
   }, 15000);
   return () => clearInterval(timer);
 }

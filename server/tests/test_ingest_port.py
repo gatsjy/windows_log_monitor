@@ -37,6 +37,8 @@ def test_ingest_port_allows_only_ingest_and_health():
         assert call("/", port) == 404
         assert call("/api/events", port) == 404
         assert call("/api/auth/login", port) == 404
+        # 알림 기능 상태(로그인 없음, ADR-045)는 화면 포트에서만 — 수집 포트는 정확한 경로만 통과시킨다
+        assert call("/healthz/alerts", port) == 404
 
 
 def test_web_port_is_not_restricted():

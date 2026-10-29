@@ -45,6 +45,9 @@ os.environ["WLM_HSTS_MAX_AGE"] = ""
 os.environ["WLM_COOKIE_SECURE"] = "false"
 os.environ["WLM_SEARCH_TIMEOUT_SEC"] = "30"
 os.environ["WLM_SENSITIVE_ACCESS_LOG"] = "off"
+# 알림 전송기는 시험에서 돌지 않는다 — 시험이 dispatcher.drain() 으로 보낸다 (ADR-045, 백그라운드와 겨루지 않게)
+os.environ["WLM_ALERT_DISPATCHER"] = "off"
+os.environ["WLM_ALERT_RULE_TIMEOUT_SEC"] = "20"
 
 
 @pytest.fixture(scope="module", autouse=True)

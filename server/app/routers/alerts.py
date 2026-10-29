@@ -18,8 +18,10 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .. import db, repository
-from ..alerts import configdiff, ruleedit, targets
+from ..alerts import configdiff, health, ruleedit, targets
+from ..alerts.dispatcher import dispatcher
 from ..alerts.engine import engine
+from ..alerts.health import RULE_LABELS
 from ..alerts.message import local
 from ..alerts.notifiers import SEVERITY_LABELS, NotifierError
 from ..alerts.rules import AlertConfig, ConfigError, Rule, parse, parse_text
@@ -118,9 +120,12 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
     await _record_versions()
     stats = await repository.alert_stats(_since(since))
     known = await targets.target_names()
+    state = await health.current()
     rules = []
     for r in engine.config.rules:
         recent = stats["by_rule"].get(r.name, {})
+        run = engine.runs.get(r.name)
+        rule_state = state["rules"].get(r.name) or ("off" if not r.enabled else "never")
         rules.append({
             "name": r.name, "kind": r.kind, "enabled": r.enabled, "severity": r.severity,
             "description": r.description, "notify": list(r.notify), "match": r.match,
@@ -130,20 +135,33 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
             "unknown_notify": [n for n in r.notify if n not in known],
             "tags": list(r.tags), "sid": r.sid, "group": r.group,
             "distinct": {"field": r.distinct_field, "min": r.distinct_min} if r.distinct_field else None,
+            # 마지막 평가 (ADR-045): 상태 칩·오류 줄
+            "run": {**(run.as_dict() if run else {}), "state": rule_state, "label": RULE_LABELS[rule_state]},
         })
-    # 알림 대상 = 환경설정의 수신 그룹 + 외부 연동
-    await engine.load_targets()
+    # 알림 대상 = 환경설정의 수신 그룹 + 외부 연동 (엔진 상태를 건드리지 않게 따로 읽는다)
+    loaded, load_errors = await targets.load_notifiers()
     used = engine.config.used_targets()
+    queue = {q["notifier"]: q for q in state.get("queue", [])}
+
+    def target_health(name: str, error: str | None) -> dict[str, Any]:
+        t = dispatcher.targets.get(name)
+        q = queue.get(name, {})
+        status = "error" if error else "failing" if t and t.failing_since else "ok" if t and t.last_ok_at else "idle"
+        return {"state": status, **(t.as_dict() if t else {}), "due": q.get("due", 0), "sending": q.get("sending", 0),
+                "queued": q.get("queued", 0), "next_at": q.get("next_at")}
+
     notifiers = [
-        {"name": name, "type": n.type, "target": n.target(), "error": None, "used_by": used.get(name, [])}
-        for name, n in sorted(engine.notifiers.items())
+        {"name": name, "type": n.type, "target": n.target(), "error": None, "used_by": used.get(name, []),
+         "health": target_health(name, None)}
+        for name, n in sorted(loaded.items())
     ] + [
-        {"name": name, "type": "-", "target": "", "error": err, "used_by": used.get(name, [])}
-        for name, err in sorted(engine.notifier_errors.items())
+        {"name": name, "type": "-", "target": "", "error": err, "used_by": used.get(name, []), "health": target_health(name, err)}
+        for name, err in sorted(load_errors.items())
     ]
     path = engine.path
     return {
         **engine.status(),
+        "health": {"status": state["status"], "problems": state["problems"], "checked_at": state["checked_at"]},
         "silences_active": sum(silence_visible(user, r) for r in await repository.active_silence_refs(datetime.now(UTC))),
         "rules": rules,
         "notifiers": notifiers,

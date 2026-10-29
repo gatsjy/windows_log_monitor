@@ -70,6 +70,11 @@ class Settings:
     # 화면 검색·통계 쿼리 하나의 최대 시간(초, 0 = 없음). 연결 풀(10개)을 수집과 나눠 쓰므로 느린 검색이 쌓여
     # 수집까지 막히지 않게 한다. 알림 엔진·점검 보고서는 놓치면 안 되는 작업이라 걸지 않는다 (ADR-035)
     search_timeout_sec: int = _int("SEARCH_TIMEOUT_SEC", 30)
+    # 알림 규칙 쿼리 하나의 최대 시간(초, 0 = 없음, ADR-045). 넘기면 그 규칙만 '시간 초과'로 표시하고 다음 규칙을 평가한다 —
+    # 무거운 규칙 하나가 평가 전체를 멈추지 않게. 화면 조회 자리(SEARCH_SLOTS)는 쓰지 않는다
+    alert_rule_timeout_sec: int = _int("ALERT_RULE_TIMEOUT_SEC", 20)
+    # 알림 전송기(ADR-045). 시험에서만 끈다(conftest) — 시험은 dispatcher.drain() 을 직접 부른다
+    alert_dispatcher: bool = _env("ALERT_DISPATCHER", "on").lower() in ("1", "on", "true", "yes")
     dashboard_dir: str = _env("DASHBOARD_DIR", "/app/config/dashboards")
     web_dir: str = _env("WEB_DIR", "/app/web")
     # 에이전트 설치 묶음(수집 PC 화면 > 내려받기): 에이전트 스크립트 위치, Fluent Bit 설치 파일 위치(반입 묶음의 agent-installers)

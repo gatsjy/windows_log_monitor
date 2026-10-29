@@ -9,11 +9,14 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 
 from . import __version__, db, partitions, rejects, tlsutil
+from .alerts import health as alert_health
+from .alerts.dispatcher import dispatcher as alert_dispatcher
 from .alerts.engine import engine as alert_engine
 from .auth import service as auth_service
 from .auth.deps import require_user
@@ -64,7 +67,13 @@ async def lifespan(_: FastAPI):
         log.warning("WLM_DISPLAY_TZ '%s' 를 알 수 없어 UTC 로 표시·계산합니다 (예: Asia/Seoul)", settings.display_tz)
     log_tls_problems()
     task = asyncio.create_task(_maintenance_loop())
+    # 전송기를 먼저 — 엔진이 첫 주기에 넣은 알림을 바로 보낸다 (ADR-045). 끄는 것은 시험(conftest)뿐
+    dispatch_task = asyncio.create_task(alert_dispatcher.run_forever()) if settings.alert_dispatcher else None
+    if not settings.alert_dispatcher:
+        log.error("WLM_ALERT_DISPATCHER=off — 알림이 기록만 되고 나가지 않습니다")
+    alert_dispatcher.task = dispatch_task
     alert_task = asyncio.create_task(alert_engine.run_forever())
+    alert_engine.task = alert_task
     rejects_task = asyncio.create_task(rejects.run_forever())
     report_task = asyncio.create_task(report_scheduler.run_forever()) if settings.report_scheduler else None
     log.info("Log Monitor %s 시작 (보관기간: 로그 %s일 · 알림 %s일 · 감사로그 %s일 · 점검 보고서 %s일)", __version__,
@@ -76,7 +85,9 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         task.cancel()
-        alert_task.cancel()
+        alert_task.cancel()   # 알림 기록은 한 트랜잭션이라 중간에 멈춰도 반쪽이 남지 않는다
+        if dispatch_task:   # 보내던 알림은 '보내는 중'으로 남고 다음 시작 때 다시 보낸다
+            dispatch_task.cancel()
         rejects_task.cancel()
         if report_task:
             report_task.cancel()
@@ -211,6 +222,17 @@ app.include_router(agentpkg.router)  # 관리자 전용 (엔드포인트에서 �
 async def healthz():
     await db.fetch_one("SELECT 1")
     return {"status": "ok", "version": __version__}
+
+
+@app.get("/healthz/alerts", tags=["ops"])
+async def healthz_alerts(strict: bool = False):
+    """알림 기능 상태 — 사내 감시 도구(Zabbix·PRTG·curl -f)용, 로그인 없음 (ADR-045).
+    수와 코드만(규칙·받는 곳 이름, 오류 문구 없음), 10초 캐시. down 이면 503, strict 면 warn 도 503.
+    수집 포트에서는 열리지 않는다(INGEST_PORT_PATHS 는 정확한 경로만). /healthz 는 DB 만 본다 —
+    Docker HEALTHCHECK·install.sh 가 메일 서버 문제로 흔들리지 않게."""
+    view = alert_health.public_view(await alert_health.current(), __version__)
+    bad = view["status"] == "down" or (strict and view["status"] == "warn")
+    return JSONResponse(jsonable_encoder(view), status_code=503 if bad else 200)
 
 
 # API 라우트를 모두 등록한 뒤 마지막에 마운트해야 /api/* 를 가리지 않는다

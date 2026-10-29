@@ -365,6 +365,13 @@ textarea.input { height: auto; padding: 10px 11px; line-height: 1.55; }
 .status.online .dot { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 20%, transparent); }
 .status.stale .dot { background: var(--warning); }
 .status.offline .dot { background: var(--muted); }
+.status.down .dot { background: var(--bad-ink); }   /* 알림 기능이 멈춤 (ADR-045) */
+/* 규칙 평가 상태 칩 (ADR-045) */
+.run-chip { font-size: 12px; white-space: nowrap; }
+.run-chip.bad { color: var(--bad-ink); font-weight: 600; }
+.run-chip.warn { color: var(--serious); }
+.run-chip.ok { color: var(--good-ink); }
+.rule-run-error { color: var(--bad-ink); font-size: 12px; margin-top: 3px; }
 
 /* ------------------------------------------------------------------ table */
 .table-wrap { overflow-x: auto; }

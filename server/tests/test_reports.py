@@ -172,3 +172,14 @@ def test_bad_display_tz_falls_back_to_utc(monkeypatch):
     monkeypatch.setattr(app_config, "settings", replace(app_config.settings, display_tz="Asia/Seol"))
     assert app_config.display_zone().key == "UTC"
     assert builder.period_label("daily", datetime(2026, 10, 14, tzinfo=UTC), datetime(2026, 10, 15, tzinfo=UTC)) == "2026-10-14 (수)"
+
+
+def test_alerting_problems_are_in_attention():
+    """평가·전송이 멈췄으면 그 사이 알림은 오지 않았다 — 아침 보고서가 알린다 (ADR-045). 예전 보고서(alerting 없음)는 그대로."""
+    p = payload()
+    assert not [a for a in builder._attention(p) if a["text"].startswith("알림 기능")]
+    p["alerting"] = {"problems": [{"level": "bad", "code": "evaluator_down", "text": "알림 규칙 평가가 12분째 멈춰 있습니다"},
+                                  {"level": "warn", "code": "gave_up", "text": "최근 24시간 동안 보내지 못하고 재시도를 멈춘 알림 2건"}]}
+    lines = [a for a in builder._attention(p) if a["text"].startswith("알림 기능")]
+    assert lines == [{"level": "bad", "text": "알림 기능: 알림 규칙 평가가 12분째 멈춰 있습니다"},
+                     {"level": "warn", "text": "알림 기능: 최근 24시간 동안 보내지 못하고 재시도를 멈춘 알림 2건"}]

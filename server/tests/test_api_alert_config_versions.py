@@ -109,7 +109,11 @@ def _config_alerts():
     return sql("SELECT id, group_key, severity, silence_id, payload FROM alerts WHERE rule = '알림 설정 변경' ORDER BY id")
 
 
-def _deliveries(alert_id):
+def _deliveries(client, alert_id):
+    """전송기(ADR-045)가 보낸 뒤의 결과 — 시험에서는 전송기가 돌지 않아 직접 보낸다."""
+    from app.alerts.dispatcher import dispatcher
+
+    client.portal.call(dispatcher.drain)
     return sorted(sql("SELECT notifier, status FROM alert_deliveries WHERE alert_id = %s", (alert_id,)))
 
 
@@ -128,7 +132,7 @@ def test_disabling_a_rule_on_screen_notifies_its_receivers(client):
     [(alert_id, key, severity, silence_id, payload)] = _config_alerts()
     assert (key, severity, silence_id) == ("화면에서 저장 · admin", "warning", None)
     assert payload["kind"] == "config" and "판본 #2" in payload["description"]
-    assert _deliveries(alert_id) == [("다른곳", "sent"), ("설정감시", "sent")]
+    assert _deliveries(client, alert_id) == [("다른곳", "sent"), ("설정감시", "sent")]
     assert sorted(p for p, _ in _Receiver.received) == ["/other", "/watch"]
     audit = sql("SELECT actor, detail FROM audit_log WHERE action = 'alerts.config.apply' ORDER BY id")
     assert [(a, d["source"], d["weakened"]) for a, d in audit] == [("system", "startup", False), ("admin", "ui", True)]
@@ -153,7 +157,7 @@ def test_direct_file_edit_is_recorded_and_notified(client):
     alert_id, key, severity, _, _ = _config_alerts()[-1]
     # 바뀐 규칙의 받는 곳으로만, 그 규칙의 심각도로
     assert (key, severity) == ("서버에서 파일 직접 수정", "error")
-    assert _deliveries(alert_id) == [("설정감시", "sent")]
+    assert _deliveries(client, alert_id) == [("설정감시", "sent")]
 
 
 def test_unrecorded_file_edit_is_not_blamed_on_the_screen_user(client):
@@ -183,11 +187,11 @@ def test_wide_silence_notifies_and_cannot_be_silenced(client):
     # '모든 규칙·모든 대상' 무음이 걸려 있는데도 보낸다 (무음으로 막으면 그 뒤의 변경을 아무도 모른다)
     assert (key, silence_id) == ("무음 · admin", None)
     assert payload["description"].startswith("넓은 무음: 모든 규칙 · 모든 대상")
-    assert _deliveries(alert_id) == [("다른곳", "sent"), ("설정감시", "sent")]
+    assert _deliveries(client, alert_id) == [("다른곳", "sent"), ("설정감시", "sent")]
     long = {"rule": "로그온 실패 급증", "duration_sec": 3 * 86400, "reason": "오탐 조정"}
     assert client.post("/api/alerts/silences", json=long, headers=CSRF).status_code == 200
     alert_id, *_ = _config_alerts()[-1]
-    assert _deliveries(alert_id) == [("설정감시", "sent")]
+    assert _deliveries(client, alert_id) == [("설정감시", "sent")]
 
 
 def test_broken_file_at_startup_keeps_the_last_version(client):
