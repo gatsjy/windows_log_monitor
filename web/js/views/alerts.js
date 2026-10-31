@@ -292,8 +292,26 @@ export async function mount(root, params, sub) {
     });
   }
 
+  /** 규칙별 데이터 유무 (B-37 2단계): '채널 82/120 PC' — 빠진 PC 가 있으면 경고 색, 이벤트 ID 는 드물 수 있어 숫자만 */
+  function coverageBadge(r) {
+    const c = r.coverage;
+    if (!c || !c.pcs) return '';
+    const parts = [];
+    if (c.channel_pcs != null) parts.push(`${c.channels.join(', ')} ${fmtNum(c.channel_pcs)}/${fmtNum(c.pcs)} PC`);
+    // 규칙이 채널을 정하지 않으면 그 이벤트 ID 가 실제로 오는 채널로 본다 (4625 → Security)
+    if (c.event_pcs != null) parts.push(`이벤트 ${fmtNum(c.event_pcs)}/${fmtNum(c.pcs)} PC`);
+    const tip = [
+      `대상 PC ${fmtNum(c.pcs)}대 (최근 7일 같은 소스를 보낸 PC)`,
+      c.channel_pcs != null ? `채널 ${c.channels.join(', ')} 을(를) 7일 안에 보낸 PC ${fmtNum(c.channel_pcs)}대${c.channels_implied ? ' (규칙에 채널이 없어 이벤트 ID 가 오는 채널로 봄)' : ''}` : '',
+      c.event_pcs != null ? `이벤트 ${c.event_ids.join(', ')} 을(를) 30일 안에 보낸 PC ${fmtNum(c.event_pcs)}대 — 드물게 나는 이벤트는 적어도 정상` : '',
+      c.missing_total ? `채널을 보내지 않는 PC ${fmtNum(c.missing_total)}대: ${c.missing.join(', ')}${c.missing_total > c.missing.length ? ' …' : ''} — 감사 정책·에이전트 설정을 확인하세요` : '',
+    ].filter(Boolean).join('\n');
+    return html`<div class="rule-coverage ${c.missing_total ? 'gap' : ''}" title="${tip}">데이터 ${parts.join(' · ')}</div>`;
+  }
+
   function criteria(r) {
     if (r.kind === 'agent_silent') return `${fmtDuration(r.silent_for_sec)} 이상 수신 없음`;
+    if (r.kind === 'stream_silent') return '늘 오던 채널이 평소보다 오래 조용함 (PC 는 살아 있음)';
     const by = r.group_by === 'none' ? '전체 합산' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}별`;
     const distinct = r.distinct?.field ? ` · 서로 다른 ${GROUP_LABELS[r.distinct.field] ?? r.distinct.field} ${fmtNum(r.distinct.min)}↑` : '';
     return `${fmtDuration(r.window_sec)} 동안 ${fmtNum(r.threshold)}건↑${distinct} · ${by}`;
@@ -381,8 +399,10 @@ export async function mount(root, params, sub) {
                 ${r.tags.length ? html`<div class="rule-tags">${r.tags.map((t) => html`<span class="type-tag">${t}</span>`)}</div>` : ''}
                 <div data-run-error="${r.name}">${runError(r)}</div>
               </td>
-              <td class="rule-cond"><div class="ink-2">${r.kind === 'agent_silent' ? (r.hosts.length ? r.hosts.join(', ') : '모든 PC') : matchText(r.match)}</div>
-                <div class="muted rule-crit">${criteria(r)}</div></td>
+              <td class="rule-cond"><div class="ink-2">${r.kind === 'agent_silent' ? (r.hosts.length ? r.hosts.join(', ') : '모든 PC')
+                : r.kind === 'stream_silent' ? `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'} · ${r.channels.length ? r.channels.join(', ') : '모든 채널'}`
+                : matchText(r.match)}</div>
+                <div class="muted rule-crit">${criteria(r)}</div>${coverageBadge(r)}</td>
               <td class="ink-2">${r.notify.join(', ')}${r.unknown_notify.length
                 ? html`<div class="tag-bad" style="font-size:12px">없는 대상: ${r.unknown_notify.join(', ')}</div>` : ''}</td>
               <td class="nowrap" data-run="${r.name}">${runChip(r)}</td>

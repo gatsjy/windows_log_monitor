@@ -59,6 +59,16 @@ def _rule_changes(old: Rule, new: Rule) -> list[tuple[str, str, bool]]:
         out.append(("notify_removed", f"받는 곳에서 뺌: {', '.join(removed)}", True))
     if added:
         out.append(("notify_added", f"받는 곳 추가: {', '.join(added)}", False))
+    if old.kind == new.kind == "stream_silent":
+        for attr, label in (("hosts", "대상 PC"), ("channels", "볼 채널")):
+            # 채널은 대소문자를 가리지 않고 맞춘다(엔진) — 대소문자만 바꾼 것은 변경이 아니다. PC 는 정확히 맞춘다(SQL)
+            fold = str.casefold if attr == "channels" else str
+            before, after = {fold(v) for v in getattr(old, attr)}, {fold(v) for v in getattr(new, attr)}
+            if before != after:
+                # 비어 있으면 전부 — 전부에서 목록으로 좁히거나 목록에서 빼면 약해진다
+                weaker = bool(after) and (not before or bool(before - after))
+                out.append((attr, f"{label} {', '.join(sorted(before)) or '전체'} → {', '.join(sorted(after)) or '전체'}", weaker))
+        return out
     if old.kind == new.kind == "agent_silent":
         if old.silent_for != new.silent_for:
             out.append(("silent_for", f"끊김 판정 {_dur(old.silent_for)} → {_dur(new.silent_for)}",

@@ -22,7 +22,7 @@ import yaml
 # 파일에 쓰는 키 순서 (사람이 읽기 좋은 순서)
 FIELD_ORDER = (
     "name", "sid", "group", "description", "kind", "enabled", "match", "group_by", "window", "threshold",
-    "distinct", "cooldown", "silent_for", "hosts", "resolve", "severity", "tags", "notify",
+    "distinct", "cooldown", "silent_for", "hosts", "channels", "resolve", "severity", "tags", "notify",
 )
 SID_START = 1000001  # Snort 의 로컬 규칙 번호대처럼 100만 번대부터
 

@@ -532,6 +532,9 @@ button.live-badge:hover { border-color: var(--border-strong); }
 .dlv.gave_up { border-color: var(--critical); color: var(--bad-ink); }
 .dlv.skipped { border-style: dashed; color: var(--muted); }
 .dlv-cell { white-space: normal; }
+.rule-coverage { margin-top: 3px; font-size: 12px; color: var(--muted); }
+.rule-coverage.gap { color: var(--ink); }
+.rule-coverage.gap::before { content: '! '; color: var(--warning); font-weight: 650; }
 /* 처리 상태 칩: 점 색 + 글자 (색만으로 구분하지 않는다) */
 .ast { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 999px; font-size: 12px; font-weight: 550; white-space: nowrap; background: var(--surface-2); color: var(--ink-2); }
 .ast::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--dot, var(--muted)); flex: none; }

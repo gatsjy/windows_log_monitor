@@ -57,7 +57,7 @@ server/app/
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
-  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
+  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
   backups.py         DB 백업·복구 시험 상태 (backup 서비스가 남긴 audit_log 로) — 로그 보관 화면·점검 보고서 공용
@@ -200,7 +200,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 알려진 값 오류는 격리까지 가지 않게 미리 막는다(`normalizers._scrub` 의 범위, 수집의 NaN·서로게이트). 새로 알게 된 것도 그쪽에 — 격리는 모르는 것을 위한 그물이다. 시험은 `_write` 에 DB 값 오류를 넣어 격리를 본다(`test_api_ingest_problems.poison`).
   - `_json` 은 홀수 개 역슬래시 뒤의 `\u0000` 만 지운다(글자 그대로의 `\u0000` 을 지우면 JSON 이 깨진다 — 재현). 짝 없는 서로게이트는 수집 본문에서 U+FFFD 로.
   - 수집 거절은 `rejects.note()` 로 메모리에 모았다가 30초마다 `ingest_rejections` 에(인증 전 요청을 요청마다 DB 에 쓰지 않는다). 시험은 `rejects.flush()` 를 직접 부른다.
-- **수집 트랜잭션의 집계 (B-37, ADR-046):** `_write` 는 events COPY 뒤 agents → field_stats → agent_streams → iis_layouts 순서로 쓴다(같은 표 안에서는 정렬). 새 집계를 더할 때 이 순서를 지키고, 줄마다 upsert 하지 말고 문장 하나(`unnest`)로 — 줄마다면 PC 가 많은 묶음에서 수집이 13% 느려졌다(PERFORMANCE.md §2.5).
+- **수집 트랜잭션의 집계 (B-37, ADR-046):** `_write` 는 events COPY 뒤 agents → field_stats → agent_streams → agent_events → iis_layouts 순서로 쓴다(같은 표 안에서는 정렬). 새 집계를 더할 때 이 순서를 지키고, 줄마다 upsert 하지 말고 문장 하나(`unnest`)로 — 줄마다면 PC 가 많은 묶음에서 수집이 13% 느려졌다(PERFORMANCE.md §2.5).
 - IIS 열 순서는 DB `iis_layouts` 가 정본입니다(ADR-037). `repository._IIS_FILE`·`_IIS_SITE` 캐시는 커밋한 뒤에만 채우고(`remember_iis_layouts`), 시험에서 '서버 재시작'은 `forget_iis_layouts()` 로 흉내 냅니다.
   - 그 파일의 순서(머리줄)는 서버 필드 모양만 봅니다(`iis.plausible` — 요청자 값으로 해석이 깨지지 않게). 추정한 순서(같은 폴더·기본)는 `iis.plausible_guess` 로 더 엄격히 봅니다 — 칸이 밀리면 요청자 값('-'·IP 모양 UA)이 서버 칸을 통과해 공격자가 `src_ip` 를 정할 수 있었습니다(검토에서 재현).
   - 모양 규칙(`_SHAPES`·`_ALWAYS`·`_REQUEST_SHAPES`·`_REQUESTER_TEXT`)을 바꾸면 `tests/test_iis_context.py` 의 고정 목록(ALWAYS·SHAPES·REQUESTER_TEXT)도 고칩니다. 목록마다 항목 하나를 빼면 그것만으로 실패하는 동작 시험이 있습니다 — 시험 매개변수를 모듈의 목록에서 만들지 않습니다(항목을 빼면 시험도 같이 사라짐).

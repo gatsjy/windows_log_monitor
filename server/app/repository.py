@@ -18,6 +18,7 @@ import psycopg
 from psycopg import sql
 
 from . import db, partitions
+from .config import settings
 from .filters import EventFilter
 from .normalizers import Event, Heartbeat, IisContext
 from .querylang import RAW_ALIAS
@@ -225,6 +226,20 @@ def _stream_counts(events: list[Event]) -> tuple[list[str], list[str], list[str]
     return [k[0] for k, _ in rows], [k[1] for k, _ in rows], [k[2] for k, _ in rows], [n for _, n in rows]
 
 
+# 수신이 heartbeat_stale_sec 넘게 끊겼다가 다시 오면 '다시 켜진 시각'을 새로 (B-37 2단계, silent_streams 가 쓴다).
+# SET 의 오른쪽은 고치기 전 값을 본다 — last_seen 을 같은 문장에서 now() 로 바꿔도 이전 수신과 비교된다
+# 비어 있으면(올리기 전부터 있던 PC) 끊긴 적을 보기 전까지 비워 둔다 — 올린 직후 모든 PC 의 판단이 미뤄지지 않게
+_UP_SINCE = (f"up_since = CASE WHEN a.last_seen < now() - interval '{int(settings.heartbeat_stale_sec)} seconds'"
+             " THEN now() ELSE a.up_since END")
+
+
+def _event_keys(events: list[Event]) -> tuple[list[str], list[str], list[str], list[int]]:
+    """이벤트 ID 가 있는 이벤트의 (PC, 소스, 채널, 이벤트 ID) — 겹치지 않게, 정렬해서 (B-37 2단계, agent_events).
+    Windows 만이 아니다 — SQL Server 오류 번호·IIS 상태 코드도 규칙이 이벤트 ID 로 본다(검토)."""
+    keys = sorted({(e.host, e.source, e.channel or "", e.event_id) for e in events if e.event_id is not None})
+    return [k[0] for k in keys], [k[1] for k in keys], [k[2] for k in keys], [k[3] for k in keys]
+
+
 async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_ip: str | None,
                  transport: str | None = None, layouts: dict | None = None) -> None:
     async with conn.cursor() as cur:
@@ -242,9 +257,9 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
             host_ip = {e.host: str(e.raw.get("source_ip") or client_ip or "").replace("\x00", "")[:64] or None
                        for e in events}
             await cur.executemany(
-                "INSERT INTO agents AS a (host, last_seen, last_event_at, last_ip, events_total)"
-                " VALUES (%s, now(), now(), %s, %s)"
-                " ON CONFLICT (host) DO UPDATE SET last_seen = now(), last_event_at = now(),"
+                "INSERT INTO agents AS a (host, last_seen, last_event_at, last_ip, events_total, up_since)"
+                " VALUES (%s, now(), now(), %s, %s, now())"
+                f" ON CONFLICT (host) DO UPDATE SET {_UP_SINCE}, last_seen = now(), last_event_at = now(),"
                 " last_ip = COALESCE(EXCLUDED.last_ip, a.last_ip),"
                 " events_total = a.events_total + EXCLUDED.events_total",
                 [(host, host_ip[host], n) for host, n in sorted(per_host.items())],
@@ -255,7 +270,7 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
                 " json_type = EXCLUDED.json_type, sample = EXCLUDED.sample",
                 _field_stats(events),
             )
-            # 채널별 수신 (B-37) — 같은 트랜잭션. 잠금 순서는 agents → field_stats → agent_streams → iis_layouts
+            # 채널별 수신 (B-37) — 같은 트랜잭션. 잠금 순서는 agents → field_stats → agent_streams → agent_events → iis_layouts
             # 문장 하나로 (unnest) — 줄마다 upsert 하면 PC 가 많은 묶음(수집기)에서 수집이 13% 느려졌다 (PERFORMANCE.md §2.5)
             hosts, sources, channels, ns = _stream_counts(events)
             now = datetime.now(UTC)
@@ -266,14 +281,29 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
                 " n = s.n + EXCLUDED.n, last_at = GREATEST(s.last_at, EXCLUDED.last_at)",
                 (now.date(), now, now, hosts, sources, channels, ns),
             )
+            # PC 마다 보내는 이벤트 ID (B-37 2단계) — 규칙별 데이터 유무. 마지막 수신은 한 시간에 한 번만 고친다:
+            # 한 시간 안에 고친 줄은 고르기에서 빼서 잠그지도 쓰지도 않는다 — ON CONFLICT … WHERE 가 거짓이어도 그 줄을 잠그고
+            # WAL 을 남긴다(검토에서 확인). 거의 모든 묶음이 쓰기 없이 지나간다 (PERFORMANCE.md §2.6)
+            e_hosts, e_sources, e_channels, e_ids = _event_keys(events)
+            if e_hosts:
+                await cur.execute(
+                    "INSERT INTO agent_events AS a (host, source, channel, event_id, first_at, last_at)"
+                    " SELECT h, src, ch, eid, %(now)s, %(now)s"
+                    " FROM unnest(%(h)s::text[], %(s)s::text[], %(c)s::text[], %(e)s::int[]) AS t(h, src, ch, eid)"
+                    " WHERE NOT EXISTS (SELECT 1 FROM agent_events f WHERE f.host = t.h AND f.source = t.src"
+                    "   AND f.channel = t.ch AND f.event_id = t.eid AND f.last_at >= %(now)s - interval '1 hour')"
+                    " ON CONFLICT (host, source, channel, event_id) DO UPDATE SET last_at = EXCLUDED.last_at"
+                    " WHERE a.last_at < EXCLUDED.last_at - interval '1 hour'",
+                    {"now": now, "h": e_hosts, "s": e_sources, "c": e_channels, "e": e_ids},
+                )
 
         if heartbeats:
             latest = {hb.host: hb for hb in heartbeats}
             # 전송 방식은 하트비트에서만 — 에이전트가 직접 보낸 것이 확실하다 (이벤트는 수집기를 거쳐 올 수 있다)
             await cur.executemany(
-                "INSERT INTO agents AS a (host, last_seen, last_heartbeat_at, last_ip, meta, last_transport)"
-                " VALUES (%s, now(), now(), %s, %s::jsonb, %s)"
-                " ON CONFLICT (host) DO UPDATE SET last_seen = now(), last_heartbeat_at = now(),"
+                "INSERT INTO agents AS a (host, last_seen, last_heartbeat_at, last_ip, meta, last_transport, up_since)"
+                " VALUES (%s, now(), now(), %s, %s::jsonb, %s, now())"
+                f" ON CONFLICT (host) DO UPDATE SET {_UP_SINCE}, last_seen = now(), last_heartbeat_at = now(),"
                 " last_ip = COALESCE(EXCLUDED.last_ip, a.last_ip), meta = EXCLUDED.meta,"
                 " last_transport = COALESCE(EXCLUDED.last_transport, a.last_transport)",
                 [(host, client_ip, _json(hb.meta), transport) for host, hb in sorted(latest.items())],
@@ -281,7 +311,7 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
 
         if layouts:
             # 이벤트와 같은 트랜잭션 — 이벤트가 거절되면 머리줄도 남지 않고, 에이전트가 청크째 다시 보낼 때 다시 배운다.
-            # 잠금 순서는 agents → field_stats → agent_streams → iis_layouts, 같은 표 안에서는 정렬 순서 (동시 요청끼리 교착 방지)
+            # 잠금 순서는 agents → field_stats → agent_streams → agent_events → iis_layouts, 같은 표 안에서는 정렬 순서 (동시 요청끼리 교착 방지)
             await cur.executemany(
                 "INSERT INTO iis_layouts (host, file, dir, fields) VALUES (%s, %s, %s, %s)"
                 " ON CONFLICT (host, file) DO UPDATE SET fields = EXCLUDED.fields, dir = EXCLUDED.dir, seen_at = now()",
@@ -432,15 +462,43 @@ async def silent_streams(now: datetime, hosts: list[str] | None = None) -> list[
         "   COALESCE(sum(n) FILTER (WHERE day < %(today)s), 0) AS n7, max(last_at) AS last_at"
         "   FROM agent_streams WHERE day >= %(since)s AND (%(hosts)s::text[] IS NULL OR host = ANY(%(hosts)s))"
         "   GROUP BY host, source, channel),"
-        " q AS (SELECT s.*, a.last_seen, GREATEST(%(qmin)s::interval, LEAST(%(qmax)s::interval,"
+        " q AS (SELECT s.*, a.last_seen, a.up_since, GREATEST(%(qmin)s::interval, LEAST(%(qmax)s::interval,"
         "   (s.days * interval '1 day') / GREATEST(s.n7, 1) * %(factor)s)) AS quiet_limit"
         "   FROM s JOIN agents a USING (host) WHERE s.days >= %(min_days)s)"
         " SELECT host, source, channel, days, n7, last_at, last_seen, quiet_limit FROM q"
-        " WHERE last_seen >= %(now)s - %(qmin)s::interval AND last_at < %(now)s - quiet_limit"
+        # PC 가 지금 보내고 있고(하트비트 간격 몇 번), 조용한 시간은 PC 가 켜져 있던 동안만 센다 — 주말 동안 꺼진 PC 의 채널을
+        # 월요일 아침에 '끊김'으로 알리던 것(검토에서 재현). up_since 가 비면(올리기 전부터 있던 PC) 마지막 수신만
+        " WHERE last_seen >= %(now)s - %(alive)s::interval AND GREATEST(last_at, up_since) < %(now)s - quiet_limit"
         " ORDER BY last_at, host, source, channel",
         {"today": today, "since": since, "hosts": hosts, "qmin": STREAM_QUIET_MIN, "qmax": STREAM_QUIET_MAX,
-         "factor": STREAM_GAP_FACTOR, "min_days": STREAM_MIN_DAYS, "now": now})
+         "factor": STREAM_GAP_FACTOR, "min_days": STREAM_MIN_DAYS, "now": now,
+         "alive": timedelta(seconds=settings.heartbeat_stale_sec)})
     return rows
+
+
+EVENT_KEEP_DAYS = 90   # agent_events: 이만큼 보이지 않은 (PC, 이벤트 ID) 는 지운다 (규칙별 데이터 유무는 30일을 본다)
+
+
+async def alive_hosts(since: datetime) -> set[str]:
+    rows = await db.fetch_all("SELECT host FROM agents WHERE last_seen >= %s", (since,))
+    return {r["host"] for r in rows}
+
+
+async def stream_presence(since_day: Any) -> list[dict[str, Any]]:
+    """since_day 뒤로 받은 (PC, 소스, 채널) — 규칙별 데이터 유무(alerts/coverage.py)."""
+    return await db.fetch_all("SELECT DISTINCT host, source, channel FROM agent_streams WHERE day >= %s", (since_day,))
+
+
+async def event_presence(since: datetime, event_ids: list[int]) -> list[dict[str, Any]]:
+    """since 뒤로 받은 (PC, 소스, 채널, 이벤트 ID) 중 규칙이 쓰는 이벤트 ID 만."""
+    return await db.fetch_all(
+        "SELECT host, source, channel, event_id FROM agent_events WHERE last_at >= %s AND event_id = ANY(%s::int[])",
+        (since, event_ids))
+
+
+async def purge_agent_events(cutoff: datetime) -> int:
+    rows = await db.fetch_all("DELETE FROM agent_events WHERE last_at < %s RETURNING event_id", (cutoff,))
+    return len(rows)
 
 
 async def purge_agent_streams(cutoff_day: Any) -> int:
@@ -820,6 +878,16 @@ async def returned_agents(rule: str, alive_since: datetime) -> list[dict]:
         f" AND g.last_seen >= %s AND {_NOT_REOPENED.format('a')} GROUP BY a.group_key", (rule, alive_since))
 
 
+async def returned_streams(rule: str) -> list[dict]:
+    """채널 끊김 알림(해결 안 됨·다시 열지 않음) 중 그 (PC, 소스, 채널)이 알림 때의 마지막 수신보다 뒤에 다시 들어온 것."""
+    return await db.fetch_all(
+        "SELECT a.group_key, max(s.last_at) AS last_at FROM alerts a JOIN agent_streams s"
+        " ON s.host = a.payload->'stream'->>'host' AND s.source = a.payload->'stream'->>'source'"
+        " AND s.channel = a.payload->'stream'->>'channel' AND s.day >= (a.last_event_at AT TIME ZONE 'UTC')::date"
+        f" WHERE a.rule = %s AND a.status <> 'resolved' AND {_NOT_REOPENED.format('a')} AND s.last_at > a.last_event_at"
+        " GROUP BY a.group_key", (rule,))
+
+
 async def agents_last_seen(hosts: list[str]) -> dict[str, datetime]:
     """PC 별 마지막 수신 (agents 에 없는 이름은 빠진다 — syslog 장비 등)."""
     rows = await db.fetch_all("SELECT host, last_seen FROM agents WHERE host = ANY(%s::text[])", (hosts,))
@@ -1161,12 +1229,14 @@ _SILENCE_COLUMNS = (
 )
 
 
-async def active_silence(rule: str, group_key: str, at: datetime) -> dict | None:
-    """이 규칙·대상에 걸린 무음 (여러 개면 가장 늦게 끝나는 것). rule·group_key 가 NULL 인 무음은 전부에 걸린다."""
+async def active_silence(rule: str, group_key: str, at: datetime, host: str | None = None) -> dict | None:
+    """이 규칙·대상에 걸린 무음 (여러 개면 가장 늦게 끝나는 것). rule·group_key 가 NULL 인 무음은 전부에 걸린다.
+    host: 대상 이름이 PC 이름이 아닌 알림(채널 끊김 'PC · 채널')의 PC — 'DB-01' 로 건 PC 점검 무음도 걸리게(검토)."""
     return await db.fetch_one(
         "SELECT id, reason, ends_at FROM alert_silences WHERE starts_at <= %s AND ends_at > %s"
-        " AND (rule IS NULL OR rule = %s) AND (group_key IS NULL OR group_key = %s) ORDER BY ends_at DESC LIMIT 1",
-        (at, at, rule, group_key),
+        " AND (rule IS NULL OR rule = %s) AND (group_key IS NULL OR group_key = %s OR group_key = %s)"
+        " ORDER BY ends_at DESC LIMIT 1",
+        (at, at, rule, group_key, host if host is not None else group_key),
     )
 
 

@@ -20,6 +20,16 @@ def _rule_categories(rule_name: str) -> set[str]:
     return set(rule.categories) if rule else set()
 
 
+def alert_host(rule_name: str | None, key: str | None) -> str | None:
+    """알림 대상 이름에서 PC 이름. 채널 끊김 규칙(stream_silent)의 대상은 'PC · 채널' 이라 PC 만 떼어 범위와 비교한다 —
+    그대로 비교하면 'WS-02' 범위의 사용자가 'WS-02 · Security' 를 보지 못한다(와일드카드면 거꾸로 범위 밖 채널 이름을 본다)."""
+    rule = next((r for r in engine.config.rules if r.name == rule_name), None)
+    # 규칙을 지우거나 이름을 바꿨으면 종류를 모른다 — 'PC · 채널' 모양이면 PC 부분으로(와일드카드 범위가 채널 글자에 맞지 않게, 검토)
+    if key and " · " in key and (rule is None or rule.kind == "stream_silent"):
+        return key.rsplit(" · ", 1)[0]
+    return key
+
+
 def alert_visible(user: User, alert: dict[str, Any]) -> bool:
     """조회 범위가 있는 사용자: 그 범위의 분류를 감시하는 규칙이거나, 대상(PC)이 범위의 PC 패턴에 맞는 알림만."""
     if user.scopes is None:
@@ -29,7 +39,7 @@ def alert_visible(user: User, alert: dict[str, Any]) -> bool:
     cats = _rule_categories(alert["rule"])
     for scope in user.scopes:
         cat_ok = not scope.categories or bool(cats & set(scope.categories))
-        host_ok = scope.allows_host(alert["group_key"])
+        host_ok = scope.allows_host(alert_host(alert["rule"], alert["group_key"]))
         if cat_ok and host_ok:
             return True
     return False

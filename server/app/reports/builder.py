@@ -13,7 +13,7 @@ from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 
 from .. import archive, backups, db, partitions, repository
-from ..alerts import health
+from ..alerts import coverage, health
 from ..alerts.builtin import ADMIN_RULE
 from ..alerts.engine import engine
 from ..config import display_zone, settings
@@ -173,7 +173,11 @@ async def _agents(now: datetime) -> dict[str, Any]:
     silent.sort(key=lambda a: a["last_seen"] or "")
     # PC 는 보내는데 늘 오던 채널만 끊긴 것 (B-37) — GPO 변경으로 Security 수집만 멈춘 DC 같은 경우
     streams = await repository.silent_streams(now)
+    # 켜진 규칙이 보는 채널을 보내지 않는 PC (B-37 2단계) — 규칙은 켜져 있는데 그 PC 에서는 데이터가 오지 않는다
+    rules = engine.config.rules
+    gaps = coverage.gaps(rules, await coverage.current(rules, now, fresh=True))
     return {"total": len(rows), "online": online, "stale": stale, "offline": len(silent), "silent": silent[:20],
+            "coverage_gaps": gaps[:10],
             "silent_streams": [{"host": r["host"], "source": r["source"], "channel": r["channel"],
                                 "last_at": _iso(r["last_at"]), "per_day": round(r["n7"] / max(r["days"], 1))}
                                for r in streams[:30]],
@@ -284,6 +288,10 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
         more = p["agents"]["silent_streams_total"] - len(first)
         out.append({"level": "warn", "text": f"늘 오던 로그가 끊긴 채널 {p['agents']['silent_streams_total']:,}개: {names}"
                                              + (f" 외 {more:,}개" if more > 0 else "") + " — 감사 정책·에이전트 설정을 확인하세요"})
+    for g in p["agents"].get("coverage_gaps", [])[:3]:   # B-37 2단계 이전 보고서에는 없다
+        names = ", ".join(g["hosts"][:3]) + (f" 외 {g['total'] - 3:,}대" if g["total"] > 3 else "")
+        out.append({"level": "warn", "text": f"규칙이 보는 채널 {g['channel']} 을(를) 보내지 않는 PC {g['total']:,}대: {names}"
+                                             f" — 규칙 {len(g['rules'])}개가 이 PC 에서는 동작하지 않습니다 (감사 정책·에이전트 설정)"})
     if p["agents"]["offline"]:
         out.append({"level": "warn", "text": f"연락이 끊긴 PC {p['agents']['offline']:,}대"})
     if p["retention"]["archives_missing"]:

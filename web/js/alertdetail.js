@@ -89,6 +89,9 @@ export function ruleSummary(r) {
   if (r.kind === 'agent_silent') {
     return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'} · ${fmtDuration(r.silent_for_sec)} 이상 수신 없음`;
   }
+  if (r.kind === 'stream_silent') {
+    return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'} · ${r.channels.length ? r.channels.join(', ') : '모든 채널'} · 늘 오던 채널이 끊김`;
+  }
   const group = r.group_by === 'none' ? '전체 합산' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}별`;
   const distinct = r.distinct?.field ? ` · 서로 다른 ${GROUP_LABELS[r.distinct.field] ?? r.distinct.field.replace(/^f\./, '')} ${fmtNum(r.distinct.min)}개 이상` : '';
   return `${matchText(r.match)} · ${fmtDuration(r.window_sec)} 동안 ${fmtNum(r.threshold)}건 이상${distinct} · ${group} · 재알림 ${fmtDuration(r.cooldown_sec)}`;
@@ -131,6 +134,8 @@ export async function openAlert(id, { onChange } = {}) {
         ${alert.group_key ? html`<span class="muted">· ${alert.group_key}</span>` : ''}</div>
       <p class="ink-2" style="margin:0 0 14px">${builtin ? configSummary : p.kind === 'agent_silent'
         ? `${alert.group_key} 에서 ${fmtDuration(p.window_sec)} 이상 로그/하트비트가 들어오지 않았습니다.`
+        : p.kind === 'stream_silent'
+          ? `${alert.group_key} 로그가 ${fmtDuration(p.window_sec)} 넘게 들어오지 않습니다 — PC 는 살아 있습니다${p.stream?.per_day ? ` (평소 하루 ${fmtNum(p.stream.per_day)}건)` : ''}. 감사 정책·에이전트 설정을 확인하세요.`
         : p.distinct_field
           ? `최근 ${fmtDuration(p.window_sec)} 동안 서로 다른 ${GROUP_LABELS[p.distinct_field] ?? p.distinct_field.replace(/^f\./, '')} ${fmtNum(p.distinct_count)}개 (기준 ${fmtNum(p.distinct_min)}개 이상) · 이벤트 ${fmtNum(alert.event_count)}건`
           : `최근 ${fmtDuration(p.window_sec)} 동안 조건에 맞는 이벤트 ${fmtNum(alert.event_count)}건 (기준 ${fmtNum(p.threshold)}건 이상)`}</p>
@@ -159,12 +164,12 @@ export async function openAlert(id, { onChange } = {}) {
       <dl class="kv">
         <dt>발생 시각</dt><dd>${fmtTime(alert.fired_at)} <span class="muted">(${fmtRelative(alert.fired_at)})</span></dd>
         ${alert.first_event_at ? html`<dt>이벤트 시각</dt><dd>${fmtTime(alert.first_event_at)} ~ ${fmtTime(alert.last_event_at, { date: false })}</dd>` : ''}
-        ${p.kind === 'agent_silent' ? html`<dt>마지막 수신</dt><dd>${fmtTime(alert.last_event_at)}</dd>` : ''}
+        ${p.kind === 'agent_silent' || p.kind === 'stream_silent' ? html`<dt>마지막 수신</dt><dd>${fmtTime(alert.last_event_at)}</dd>` : ''}
         <dt>알림 번호</dt><dd class="num">#${alert.id}</dd>
       </dl>
       ${p.kind === 'system' ? html`<a class="btn" data-link href="#/alerts/targets">알림 상태·알림 대상 보기 →</a>`
         : config ? (can('audit.view') ? html`<a class="btn" data-link href="#/audit?action=alerts.config.">감사로그에서 설정 변경 보기 →</a>` : '')
-        : hash ? html`<a class="btn" data-link href="${hash}">${p.kind === 'agent_silent' ? '수집 PC 화면 열기' : '이 알림의 이벤트 검색'} →</a>` : ''}
+        : hash ? html`<a class="btn" data-link href="${hash}">${p.kind === 'agent_silent' || p.kind === 'stream_silent' ? '수집 PC 화면 열기' : '이 알림의 이벤트 검색'} →</a>` : ''}
 
       <div class="section-title">처리 기록</div>
       <ol class="timeline">

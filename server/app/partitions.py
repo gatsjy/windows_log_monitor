@@ -150,7 +150,9 @@ async def purge_agent_streams(now: datetime | None = None) -> None:
     """채널별 수신 집계는 '평소'를 보는 데만 쓴다 (B-37) — 한 달 남짓만 둔다(로그 자체가 아니라 감사 대상 아님)."""
     from . import repository
 
-    await repository.purge_agent_streams((now or datetime.now(UTC)).date() - timedelta(days=repository.STREAM_KEEP_DAYS))
+    now = now or datetime.now(UTC)
+    await repository.purge_agent_streams(now.date() - timedelta(days=repository.STREAM_KEEP_DAYS))
+    await repository.purge_agent_events(now - timedelta(days=repository.EVENT_KEEP_DAYS))
 
 
 async def purge_ingest_problems(now: datetime | None = None) -> None:

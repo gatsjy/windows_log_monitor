@@ -18,20 +18,20 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .. import db, repository
-from ..alerts import configdiff, health, ruleedit, targets
+from ..alerts import configdiff, coverage, health, ruleedit, targets
 from ..alerts.builtin import SYSTEM_RULES
 from ..alerts.dispatcher import dispatcher
-from ..alerts.engine import _with_group, engine  # _with_group: 엔진과 같은 묶음 조건 (알림 뒤 이벤트 수)
+from ..alerts.engine import _with_group, engine, stream_label  # _with_group: 엔진과 같은 묶음 조건 (알림 뒤 이벤트 수)
 from ..alerts.health import RULE_LABELS
 from ..alerts.message import local
 from ..alerts.notifiers import SEVERITY_LABELS, NotifierError
-from ..alerts.rules import AlertConfig, ConfigError, Rule, parse, parse_text
+from ..alerts.rules import SILENT_KINDS, AlertConfig, ConfigError, Rule, parse, parse_text
 from ..alerts.visibility import alert_visible, count_by_status, scrub_silence, silence_visible
 from ..auth import groups
 from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
 from ..csvexport import csv_response, export_reason
-from ..filters import FilterError, parse_time
+from ..filters import FilterError, parse_time, scopes_allow
 from .query import read_time_limit
 
 log = logging.getLogger(__name__)
@@ -122,6 +122,8 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
     await _record_versions()
     stats = await repository.alert_stats(_since(since))
     known = await targets.target_names()
+    # 규칙별 데이터 유무 (B-37 2단계) — 빠진 PC 이름이 들어 있어 조회 범위가 없는 사용자에게만
+    data = await coverage.current(engine.config.rules) if user.scopes is None else {}
     state = await health.current()
     rules = []
     for r in engine.config.rules:
@@ -137,7 +139,7 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
             "unknown_notify": [n for n in r.notify if n not in known],
             "tags": list(r.tags), "sid": r.sid, "group": r.group,
             "distinct": {"field": r.distinct_field, "min": r.distinct_min} if r.distinct_field else None,
-            "resolve": r.resolve,
+            "resolve": r.resolve, "channels": list(r.channels), "coverage": coverage.public(data.get(r.name)),
             # 마지막 평가 (ADR-045): 상태 칩·오류 줄
             "run": {**(run.as_dict() if run else {}), "state": rule_state, "label": RULE_LABELS[rule_state]},
         })
@@ -286,12 +288,16 @@ def _clean_rule(raw: dict[str, Any]) -> dict[str, Any]:
         rule["enabled"] = False
     # 해결 방식은 종류의 기본값과 다를 때만 적는다 (화면에서 저장해도 파일이 불필요하게 바뀌지 않게)
     resolve = text("resolve")
-    if resolve and resolve != ("auto" if kind == "agent_silent" else "manual"):
+    if resolve and resolve != ("auto" if kind in SILENT_KINDS else "manual"):
         rule["resolve"] = resolve
     if kind == "agent_silent":
         rule["silent_for"] = _duration_text(raw.get("silent_for_sec", 600), "끊김 판정 시간")
         if str_list("hosts"):
             rule["hosts"] = str_list("hosts")
+    elif kind == "stream_silent":
+        for key in ("hosts", "channels"):
+            if str_list(key):
+                rule[key] = str_list(key)
     else:
         match = {str(k).strip(): str(v).strip() for k, v in (raw.get("match") or {}).items()
                  if str(k).strip() and str(v).strip()}
@@ -398,6 +404,13 @@ async def preview_rule(body: PreviewBody, admin: User = Depends(require_permissi
     if rule.kind == "agent_silent":
         rows = await repository.silent_agents(now - rule.silent_for, rule.hosts)
         return {"kind": rule.kind, "silent": [{"host": r["host"], "last_seen": r["last_seen"]} for r in rows]}
+    if rule.kind == "stream_silent":
+        wanted = {c.casefold() for c in rule.channels}
+        rows = [r for r in await repository.silent_streams(now, list(rule.hosts) or None)
+                if (not wanted or (r["channel"] or r["source"]).casefold() in wanted)
+                and scopes_allow(admin.scopes, None, r["host"])]
+        return {"kind": rule.kind, "silent": [{"host": r["host"], "channel": stream_label(r["source"], r["channel"]),
+                                               "last_seen": r["last_at"]} for r in rows]}
     # 미리보기도 이벤트 수·대상 이름을 돌려주므로 사용자 그룹의 조회 범위를 붙인다 (ADR-025)
     base = replace(rule.event_filter(), received_since=now - timedelta(hours=body.hours), scopes=admin.scopes)
     window_sec = max(1, _seconds(rule.window))

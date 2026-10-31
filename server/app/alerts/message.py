@@ -68,6 +68,8 @@ class AlertMessage:
     event_action: str = "trigger"
     resolved_at: datetime | None = None
     started_at: datetime | None = None   # 해소 통지: 함께 자동 해결된 알림 중 가장 이른 발생 (문제가 얼마나 갔나)
+    # 채널 끊김 (B-37 2단계): {host, source, channel, per_day} — 다시 들어왔는지 볼 때 어느 채널인지 (대상 이름은 사람이 읽는 문구)
+    stream: dict[str, Any] | None = None
 
     # ------------------------------------------------------------ 직렬화
     def to_dict(self) -> dict[str, Any]:
@@ -75,6 +77,8 @@ class AlertMessage:
         if self.event_action == "trigger":   # 저장되는 payload 는 늘 알림 — 예전과 같게
             for key in ("event_action", "resolved_at", "started_at"):
                 data.pop(key)
+        if self.stream is None:
+            data.pop("stream")
         if not self.distinct_field:   # 건수 규칙의 본문(웹훅 json·저장된 payload)은 예전과 같게
             for key in ("distinct_field", "distinct_min", "distinct_count", "distinct_values"):
                 data.pop(key)
@@ -125,6 +129,8 @@ class AlertMessage:
         if self.resolved:
             if self.kind == "agent_silent":
                 return f"{self.group_key} 에서 로그/하트비트가 다시 들어옵니다 — 자동으로 해결했습니다 ({local(self.resolved_at)})"
+            if self.kind == "stream_silent":
+                return f"{self.group_key} 로그가 다시 들어옵니다 — 자동으로 해결했습니다 ({local(self.resolved_at)})"
             target = f"{self.group_key} 에서 " if self.group_key else ""
             return (f"{target}최근 {_window_text(self.window_sec)} 동안 조건에 맞는 이벤트가 기준({self.threshold:,}건) 아래로 "
                     f"내려가 자동으로 해결했습니다 ({local(self.resolved_at)})")
@@ -133,6 +139,11 @@ class AlertMessage:
         if self.kind == "agent_silent":
             return (f"{self.group_key} 에서 {_window_text(self.window_sec)} 이상 로그/하트비트가 들어오지 않았습니다 "
                     f"(마지막 수신 {local(self.last_event_at)})")
+        if self.kind == "stream_silent":
+            per_day = (self.stream or {}).get("per_day")
+            usual = f"평소 하루 {per_day:,}건, " if per_day else ""
+            return (f"{self.group_key} 로그가 {_window_text(self.window_sec)} 넘게 들어오지 않습니다 — PC 는 살아 있습니다 "
+                    f"({usual}마지막 수신 {local(self.last_event_at)}). 감사 정책·에이전트 설정을 확인하세요")
         target = f"{self.group_key} 에서 " if self.group_key else ""
         if self.distinct_field:
             label = DISTINCT_LABELS.get(self.distinct_field, self.distinct_field.removeprefix("f."))

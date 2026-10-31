@@ -52,7 +52,7 @@ def _alert_rules() -> list[tuple[str, dict]]:
     out = []
     for rule in doc.get("rules") or []:
         match = {str(k): ",".join(map(str, v)) if isinstance(v, list) else str(v) for k, v in (rule.get("match") or {}).items()}
-        if rule.get("kind", "count") != "agent_silent":
+        if rule.get("kind", "count") == "count":   # 끊김 규칙(agent_silent·stream_silent)은 이벤트 조건이 없다
             out.append((f"rule: {rule['name']}", match))
     return out
 

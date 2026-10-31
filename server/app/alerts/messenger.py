@@ -65,7 +65,7 @@ def _facts(m: AlertMessage) -> list[tuple[str, str]]:
         facts.append(("이벤트 시각", f"{local(m.first_event_at)} ~ {local(m.last_event_at)}"))
     if m.kind in ("config", "system"):   # 내장 알림(ADR-043·045)에는 건수 기준이 없다 — 내용 줄 수
         facts.append(("변경", f"{m.event_count:,}건"))
-    elif m.kind != "agent_silent" and not m.test and not m.resolved:
+    elif m.kind not in ("agent_silent", "stream_silent") and not m.test and not m.resolved:
         facts.append(("건수", f"{m.event_count:,}건 (기준 {m.threshold:,}건 이상)"))
     if m.group_key:
         facts.append(("대상", _cut(m.group_key, FACT_MAX)))

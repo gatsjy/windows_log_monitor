@@ -215,6 +215,11 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
             ["PC", "소스·채널", "마지막 수신", "평소 하루"],
             [[_e(s["host"]), _e(s["channel"] or s["source"]), _e(_t(s["last_at"])), _e(s["per_day"])] for s in ag["silent_streams"]],
             right=(3,)) + "</div>")
+    if ag.get("coverage_gaps"):   # B-37 2단계 이전 보고서에는 없다
+        body += ("<div style='margin-top:12px'><b style='font-size:13px'>규칙이 보는 채널을 보내지 않는 PC</b>" + _table(
+            ["채널", "PC 수", "PC (앞의 5대)", "그 채널을 보는 규칙"],
+            [[_e(g["channel"]), _e(g["total"]), _e(", ".join(g["hosts"])), _e(", ".join(g["rules"]))] for g in ag["coverage_gaps"]],
+            right=(1,)) + "</div>")
     if "ingest" in p:   # B-40 이전 보고서에는 없다
         ig = p["ingest"]
         body += (f"<div style='margin-top:12px'><b style='font-size:13px'>수집 거절·격리</b>"

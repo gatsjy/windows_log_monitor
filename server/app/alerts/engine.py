@@ -412,6 +412,8 @@ class AlertEngine:
     async def evaluate(self, rule: Rule, now: datetime, run: RuleRun | None = None) -> list[int]:
         if rule.kind == "agent_silent":
             return await self._evaluate_silent(rule, now)
+        if rule.kind == "stream_silent":
+            return await self._evaluate_stream_silent(rule, now)
         since = now - rule.window
         base = replace(rule.event_filter(), received_since=since)
         fired = []
@@ -489,7 +491,7 @@ class AlertEngine:
 
     async def _resolve(self, rule: Rule, key: str, now: datetime, reason: str) -> None:
         # 지금 무음이면 해소 통지도 보내지 않는다 — 점검 중에는 알림처럼 해소도 잡음이다
-        silenced = await repository.active_silence(rule.name, key, now) is not None
+        silenced = await repository.active_silence(rule.name, key, now, _key_host(rule, key)) is not None
         changed, queued = await repository.auto_resolve(rule.name, key, reason, notify=() if silenced else rule.notify,
                                                         at=now, notify_since=now - RECOVERY_NOTICE_MAX_AGE)
         if changed:
@@ -519,12 +521,41 @@ class AlertEngine:
             fired.append(await self.fire(message, rule.notify))
         return fired
 
+    async def _evaluate_stream_silent(self, rule: Rule, now: datetime) -> list[int]:
+        """늘 오던 (PC, 채널)이 끊김 (B-37 2단계) — 판단은 수집 PC 화면·점검 보고서와 같은 silent_streams.
+        한 번 끊긴 동안 한 번만, 다시 들어왔다가 또 끊기면 다시. 먼저 돌아온 채널을 해결한다(resolve: auto)."""
+        if rule.resolve == "auto":
+            for row in await repository.returned_streams(rule.name):
+                await self._resolve(rule, row["group_key"], now,
+                                    f"로그가 다시 들어와 자동으로 해결 (마지막 수신 {local(row['last_at'])})")
+        wanted = {c.casefold() for c in rule.channels}
+        fired = []
+        for row in await repository.silent_streams(now, list(rule.hosts) or None):
+            if wanted and (row["channel"] or row["source"]).casefold() not in wanted:
+                continue
+            key = stream_key(row["host"], stream_label(row["source"], row["channel"]))
+            last = await repository.last_alert(rule.name, key)
+            if last and last["fired_at"] >= row["last_at"] and not _silence_over(last, now):
+                continue
+            quiet = int(row["quiet_limit"].total_seconds())
+            message = AlertMessage(
+                rule=rule.name, severity=rule.severity, kind=rule.kind, description=rule.description,
+                group_by="host", group_key=key, event_count=0, threshold=0,
+                window_sec=quiet - quiet % 3600 if quiet >= 3600 else quiet, fired_at=now,
+                last_event_at=row["last_at"], link=f"{settings.public_url}/#/agents", tags=list(rule.tags),
+                stream={"host": row["host"], "source": row["source"], "channel": row["channel"],
+                        "per_day": round(row["n7"] / max(row["days"], 1))},
+            )
+            fired.append(await self.fire(message, rule.notify))
+        return fired
+
     # ------------------------------------------------------------ 전송
     async def fire(self, message: AlertMessage, notify: tuple[str, ...]) -> int:
         """알림을 기록하고 전송기를 깨운다 — 보내는 것은 전송기(dispatcher)다. 여기서는 네트워크를 쓰지 않는다 (ADR-045)."""
         # 설정 변경 알림은 무음으로 막지 않는다 — '모든 규칙' 무음을 건 뒤 규칙을 끄면 아무도 모르게 된다
+        host = (message.stream or {}).get("host")
         silence = (None if message.kind == "config"
-                   else await repository.active_silence(message.rule, message.group_key, message.fired_at))
+                   else await repository.active_silence(message.rule, message.group_key, message.fired_at, host))
         alert_id = await repository.insert_alert(message.to_dict(), notify, silence)
         message.alert_id = alert_id
         if silence:
@@ -578,6 +609,24 @@ class RuleRun:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def stream_label(source: str, channel: str) -> str:
+    """채널 끊김 대상의 채널 부분: Windows 는 채널 이름, 다른 소스는 '소스/채널' — 한 PC 의 journald 'kern' 과 syslog 'kern' 이
+    같은 이름이 되어 서로를 가리지 않게(검토)."""
+    if source == "winevtlog" and channel:
+        return channel
+    return f"{source}/{channel}" if channel else source
+
+
+def stream_key(host: str, label: str) -> str:
+    """채널 끊김 알림의 대상 이름 'PC · 채널' — 재알림 간격·무음·조회 범위가 이 이름으로 걸린다(visibility.alert_host)."""
+    return f"{host} · {label}"
+
+
+def _key_host(rule: Rule, key: str) -> str | None:
+    """대상 이름에서 PC — 채널 끊김 규칙만 'PC · 채널' 이다. 나머지는 None(대상 이름 그대로 무음과 비교)."""
+    return key.rsplit(" · ", 1)[0] if rule.kind == "stream_silent" and " · " in key else None
 
 
 def _parse_or_none(text: str) -> AlertConfig | None:

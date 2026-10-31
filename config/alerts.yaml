@@ -17,6 +17,7 @@ settings:
 # sid: 규칙 번호 (Snort 처럼 고유 번호, 화면에서 만들면 자동 부여) · group: 규칙 묶음 (화면 왼쪽 목록)
 # kind: count (기본)      — window 동안 '수신된' 이벤트 중 match 에 맞는 것이 threshold 건 이상이면 알림
 #        agent_silent      — PC 에서 silent_for 동안 아무것도(하트비트 포함) 안 들어오면 알림
+#        stream_silent     — PC 는 살아 있는데 늘 오던 채널(hosts·channels, 비우면 전부)이 평소보다 오래 끊기면 알림 (수집 PC 화면과 같은 판단)
 # match: 이벤트 검색과 같은 조건 — host, channel, provider, source, category, user, ip, level, event_id,
 #        q(메시지 포함, 'a|b' = 둘 중 하나), f.<원본 경로> (예: f.EventData.LogonType),
 #        query(검색 문장 — 이벤트 검색 화면과 같은 문법, 다른 조건과 AND. 따옴표가 들어가므로 작은따옴표로 감싸세요)
@@ -26,7 +27,7 @@ settings:
 # severity: critical | error | warning | info   (수신 그룹·연동의 '받을 최소 수준'과 비교됨)
 # resolve: manual(기본) | auto — auto 면 조건이 풀릴 때(집계 기간의 건수가 기준 아래) '해결됨(자동)'으로 바꾸고 그 알림을 받은 곳에
 #          해소 통지를 보냄. 오류 다발처럼 건수가 오르내리는 운영 규칙에만 — 한 번 나는 이벤트(서비스 종료 등)는 조용해져도
-#          고쳐진 것이 아니고, 보안 규칙은 사람이 검토해야 합니다. agent_silent 는 하트비트가 돌아오면 자동 해결이 기본
+#          고쳐진 것이 아니고, 보안 규칙은 사람이 검토해야 합니다. agent_silent·stream_silent 는 다시 들어오면 자동 해결이 기본
 rules:
   # ---------------------------------------------------------- 시스템·서비스
   - name: 시스템 심각 오류
@@ -75,6 +76,16 @@ rules:
     hosts: [WEB-01, WEB-02, APP-01, DB-01, DC-01, FILE-01]   # 서버만. 비우면 전체 (퇴근 시 꺼지는 PC 까지 알림)
     severity: error
     tags: [ISMS 2.9.2]
+    notify: [운영팀]
+
+  - name: 늘 오던 로그 끊김
+    sid: 1000024
+    group: 시스템·서비스
+    description: 서버는 살아 있는데 늘 오던 채널(Security 등)이 끊김 — GPO·감사 정책·에이전트 설정 변경을 확인
+    kind: stream_silent
+    hosts: [WEB-01, WEB-02, APP-01, DB-01, DC-01, FILE-01]   # 서버만. 비우면 모든 PC (평소 꾸준히 오는 채널만 봄)
+    severity: warning
+    tags: [ISMS 2.9.4]
     notify: [운영팀]
 
   # ---------------------------------------------------------- 계정·인증 공격

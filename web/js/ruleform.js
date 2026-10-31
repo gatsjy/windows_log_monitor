@@ -25,14 +25,19 @@ function splitUnit(sec) {
 const unitSize = (key) => UNITS.find(([k]) => k === key)[2];
 const quote = (s) => `"${String(s).replace(/"/g, '\\"')}"`;
 const list = (v) => String(v || '').split(',').map((x) => x.trim()).filter(Boolean);
-// 해결 방식 (B-35 2단계): 비어 있으면 종류의 기본값 — PC 수신 끊김은 auto, 건수 규칙은 manual (서버 rules.py 와 같음)
-const resolveOf = (r) => r.resolve || (r.kind === 'agent_silent' ? 'auto' : 'manual');
-const defaultResolve = (r) => (r.kind === 'agent_silent' ? 'auto' : 'manual');
+// 해결 방식 (B-35 2단계): 비어 있으면 종류의 기본값 — 끊김 규칙(PC·채널)은 auto, 건수 규칙은 manual (서버 rules.py SILENT_KINDS 와 같음)
+const SILENT = new Set(['agent_silent', 'stream_silent']);
+const resolveOf = (r) => r.resolve || (SILENT.has(r.kind) ? 'auto' : 'manual');
+const defaultResolve = (r) => (SILENT.has(r.kind) ? 'auto' : 'manual');
 
 /** 편집 중인 값 → Snort 식 한 줄 규칙 (보기 전용) */
 export function signature(r) {
   const parts = [`msg:${quote(r.name || '(이름 없음)')}`];
-  if (r.kind === 'agent_silent') {
+  if (r.kind === 'stream_silent') {
+    parts.push('stream:silent');
+    parts.push(`hosts:${r.hosts.length ? r.hosts.join(',') : 'any'}`);
+    parts.push(`channels:${r.channels.length ? quote(r.channels.join(',')) : 'any'}`);
+  } else if (r.kind === 'agent_silent') {
     parts.push(`heartbeat:silent ${r.silent_for_sec}s`);
     parts.push(`hosts:${r.hosts.length ? r.hosts.join(',') : 'any'}`);
   } else {
@@ -62,6 +67,10 @@ export function sentence(r) {
     return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'}에서 ${fmtSec(r.silent_for_sec)} 이상 로그가 오지 않으면 ${to} [${sev}] 알림.`
       + (resolveOf(r) === 'auto' ? ' 다시 들어오면 자동으로 해결하고 해소 통지.' : '');
   }
+  if (r.kind === 'stream_silent') {
+    return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'}에서 늘 오던 ${r.channels.length ? r.channels.join(', ') : '채널'} 로그가 평소보다 오래 끊기면`
+      + ` (PC 는 살아 있는데) ${to} [${sev}] 알림.` + (resolveOf(r) === 'auto' ? ' 다시 들어오면 자동으로 해결하고 해소 통지.' : '');
+  }
   const by = r.group_by === 'none' ? '전체를 합산해서' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}마다 따로 세어`;
   const distinct = r.distinct?.field ? `이고 ${distinctText(r.distinct)}` : '';
   return `${matchText(r.match)} 로그가 ${fmtSec(r.window_sec)} 동안 ${fmtNum(r.threshold)}건 이상${distinct}이면, ${by} ${to} [${sev}] 알림. `
@@ -90,7 +99,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
     kind: rule?.kind ?? 'count', enabled: rule?.enabled ?? true, severity: rule?.severity ?? 'warning',
     match: { ...(rule?.match ?? {}) }, group_by: rule?.group_by ?? 'host',
     window_sec: rule?.window_sec ?? 300, threshold: rule?.threshold ?? 5, cooldown_sec: rule?.cooldown_sec ?? 1800,
-    silent_for_sec: rule?.silent_for_sec ?? 600, hosts: [...(rule?.hosts ?? [])],
+    silent_for_sec: rule?.silent_for_sec ?? 600, hosts: [...(rule?.hosts ?? [])], channels: [...(rule?.channels ?? [])],
     notify: [...(rule?.notify ?? (config.notifiers[0] ? [config.notifiers[0].name] : []))], tags: [...(rule?.tags ?? [])],
     distinct: rule?.distinct ? { ...rule.distinct } : null,
     resolve: rule?.resolve ?? '',
@@ -141,10 +150,20 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
         <div class="seg" data-kind>
           <button type="button" data-v="count" class="${r.kind === 'count' ? 'on' : ''}">로그 건수</button>
           <button type="button" data-v="agent_silent" class="${r.kind === 'agent_silent' ? 'on' : ''}">PC 수신 끊김</button>
+          <button type="button" data-v="stream_silent" class="${r.kind === 'stream_silent' ? 'on' : ''}">채널 끊김</button>
         </div>
       </section>
 
-      ${r.kind === 'agent_silent' ? html`
+      ${r.kind === 'stream_silent' ? html`
+      <section class="form-section">
+        <h3>어떤 PC의 어떤 채널이</h3>
+        <label class="field"><span>대상 PC (쉼표로 구분, 비우면 모든 PC)</span><input class="input" data-hosts value="${r.hosts.join(', ')}" placeholder="DC-01, FILE-01"></label>
+        <label class="field"><span>볼 채널 (쉼표로 구분, 비우면 모든 채널 — 채널이 없는 로그는 소스 이름)</span><input class="input" data-channels value="${r.channels.join(', ')}" placeholder="Security, Microsoft-Windows-PowerShell/Operational"></label>
+        <p class="hint-box">지난 7일 중 5일 이상 오던 채널이 평소 간격의 10배(최소 6시간) 넘게 조용하면 알립니다. PC 자체가 끊긴 것은 'PC 수신 끊김'이 따로 알립니다.
+          GPO 변경으로 DC 의 Security 수집만 멈춘 경우 같은 조용한 실패를 잡습니다.</p>
+      </section>` : ''}
+
+      ${r.kind === 'stream_silent' ? '' : r.kind === 'agent_silent' ? html`
       <section class="form-section">
         <h3>어떤 PC가 얼마나 조용하면</h3>
         <label class="field"><span>대상 PC (쉼표로 구분, 비우면 모든 PC)</span><input class="input" data-hosts value="${r.hosts.join(', ')}" placeholder="WEB-01, DB-01"></label>
@@ -196,9 +215,9 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
         <h3>끝나면</h3>
         <div class="sentence-row"><select class="select" data-resolve aria-label="해결 방식">
           <option value="manual" ${resolveOf(r) === 'manual' ? 'selected' : ''}>담당자가 확인하고 해결</option>
-          <option value="auto" ${resolveOf(r) === 'auto' ? 'selected' : ''} ${r.kind === 'count' && r.distinct?.field ? 'disabled' : ''}>${r.kind === 'agent_silent' ? '다시 들어오면' : '조건이 풀리면'} 자동으로 해결하고 해소 통지</option>
+          <option value="auto" ${resolveOf(r) === 'auto' ? 'selected' : ''} ${r.kind === 'count' && r.distinct?.field ? 'disabled' : ''}>${SILENT.has(r.kind) ? '다시 들어오면' : '조건이 풀리면'} 자동으로 해결하고 해소 통지</option>
         </select></div>
-        <p class="muted" style="font-size:12.5px;margin:6px 0 0">${r.kind === 'agent_silent' ? '하트비트가 돌아오면 끝난 것이 분명합니다. 알림을 받은 곳에만 해소 통지를 보냅니다.'
+        <p class="muted" style="font-size:12.5px;margin:6px 0 0">${SILENT.has(r.kind) ? '다시 들어오면 끝난 것이 분명합니다. 알림을 받은 곳에만 해소 통지를 보냅니다.'
           : r.distinct?.field ? '서로 다른 값 수 규칙은 보안 규칙이라 담당자가 해결합니다.'
           : '오류 다발처럼 건수가 오르내리는 운영 규칙에만 권합니다. 한 번 나는 이벤트(서비스 종료 등)는 조용해져도 고쳐진 것이 아니고, 보안 규칙은 담당자가 검토해야 합니다.'}</p>
       </section>
@@ -320,6 +339,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
       body.querySelector(`[data-fk="${r.fields.length - 1}"]`)?.focus();
     });
     body.querySelector('[data-hosts]')?.addEventListener('input', (e) => { r.hosts = list(e.target.value); refresh(); });
+    body.querySelector('[data-channels]')?.addEventListener('input', (e) => { r.channels = list(e.target.value); refresh(); });
     body.querySelector('[data-tags]').addEventListener('input', (e) => { r.tags = list(e.target.value); refresh(); });
     body.querySelectorAll('[data-notify]').forEach((c) => c.addEventListener('change', () => {
       r.notify = [...body.querySelectorAll('[data-notify]:checked')].map((x) => x.dataset.notify);
@@ -341,6 +361,12 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
     out.innerHTML = '<div class="skeleton" style="height:60px"></div>';
     try {
       const p = await api.send('POST', '/api/alerts/rules/preview', { rule: payload() });
+      if (p.kind === 'stream_silent') {
+        out.innerHTML = p.silent.length
+          ? html`<div class="hint-box">지금 기준으로 <b>${p.silent.length}개</b> 채널이 끊김 상태입니다: ${p.silent.slice(0, 20).map((s) => `${s.host} ${s.channel}`).join(', ')}</div>`
+          : html`<div class="hint-box">지금 끊김 상태인 채널이 없습니다.</div>`;
+        return;
+      }
       if (p.kind === 'agent_silent') {
         out.innerHTML = p.silent.length
           ? html`<div class="hint-box">지금 기준으로 <b>${p.silent.length}대</b>가 끊김 상태입니다: ${p.silent.map((s) => s.host).join(', ')}</div>`

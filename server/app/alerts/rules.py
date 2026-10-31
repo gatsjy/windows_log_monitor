@@ -18,7 +18,8 @@ from ..repository import COLUMN_EXPR
 from .builtin import BUILTIN_RULES
 
 SEVERITIES = ("critical", "error", "warning", "info")
-RULE_KINDS = ("count", "agent_silent")
+RULE_KINDS = ("count", "agent_silent", "stream_silent")
+SILENT_KINDS = ("agent_silent", "stream_silent")   # 끊김 규칙: 다시 들어오면 끝난 것이 분명해 자동 해결이 기본
 # 해결 방식 (B-35 2단계): manual = 사람이 해결, auto = 조건이 풀리면 엔진이 해결하고 해소 통지.
 # PC 수신 끊김은 하트비트가 돌아오면 끝난 것이 분명해 auto 가 기본. 건수 규칙은 manual 이 기본 —
 # 사람이 검토하지 않은 보안 알림이 '해결됨'으로 보고서에 남지 않게 운영 규칙에만 auto 를 단다
@@ -34,7 +35,7 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class Rule:
     name: str
-    kind: str                       # count: 이벤트 수 기준 | agent_silent: PC 수신 끊김
+    kind: str                       # count: 이벤트 수 기준 | agent_silent: PC 수신 끊김 | stream_silent: 늘 오던 채널 끊김
     severity: str
     notify: tuple[str, ...]
     description: str = ""
@@ -46,6 +47,7 @@ class Rule:
     cooldown: timedelta = timedelta(minutes=30)
     silent_for: timedelta = timedelta(minutes=10)
     hosts: tuple[str, ...] = ()
+    channels: tuple[str, ...] = ()   # stream_silent: 볼 채널(비우면 전부). 채널이 없는 소스는 소스 이름으로
     tags: tuple[str, ...] = ()   # 예: "MITRE T1110", "ISMS 2.11.3" (화면·알림 본문에 표시)
     sid: int | None = None       # 규칙 번호 (Snort 의 sid 처럼 고유). 화면에서 만들면 자동 부여
     group: str = "기타"          # 규칙 묶음 (화면 왼쪽 목록, 묶음 단위로 켜고 끄기)
@@ -125,7 +127,7 @@ def _check_rule(index: int, raw: Any) -> Rule:
         "sid": sid, "group": str(raw.get("group") or "기타").strip() or "기타",
     }
 
-    resolve = raw.get("resolve", "auto" if kind == "agent_silent" else "manual")
+    resolve = raw.get("resolve", "auto" if kind in SILENT_KINDS else "manual")
     if resolve not in RESOLVE_MODES:
         raise ConfigError(f"{where}.resolve 는 {', '.join(RESOLVE_MODES)} 중 하나여야 합니다")
     common["resolve"] = resolve
@@ -133,6 +135,11 @@ def _check_rule(index: int, raw: Any) -> Rule:
     if kind == "agent_silent":
         return Rule(**common, silent_for=_duration(raw.get("silent_for", "10m"), f"{where}.silent_for"),
                     hosts=_str_list(raw.get("hosts"), f"{where}.hosts"), group_by="host")
+    if kind == "stream_silent":
+        # 끊김 판단은 수집 PC 화면·보고서와 같은 것(repository.silent_streams: 7일 중 5일 이상, 평소 간격의 10배·최소 6시간,
+        # PC 는 살아 있음)이라 기간 키가 없다 — 규칙마다 다르면 화면과 알림이 다른 말을 한다
+        return Rule(**common, hosts=_str_list(raw.get("hosts"), f"{where}.hosts"),
+                    channels=_str_list(raw.get("channels"), f"{where}.channels"), group_by="host")
 
     match = raw.get("match") or {}
     if not isinstance(match, dict):
