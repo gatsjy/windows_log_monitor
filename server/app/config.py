@@ -75,6 +75,10 @@ class Settings:
     alert_rule_timeout_sec: int = _int("ALERT_RULE_TIMEOUT_SEC", 20)
     # 알림 전송기(ADR-045). 시험에서만 끈다(conftest) — 시험은 dispatcher.drain() 을 직접 부른다
     alert_dispatcher: bool = _env("ALERT_DISPATCHER", "on").lower() in ("1", "on", "true", "yes")
+    # 알림 대상 정기 시험 전송 (B-34): 이 요일·시각(표시 시간대) 뒤 첫 감시 때, 규칙·대체 경로가 쓰는 받는 곳마다 시험 알림 한 건.
+    # 알림 경로(메일 비밀번호 만료·웹훅 토큰 폐기)가 깨진 것을 실제 알림이 나기 전에 안다. 1=월 … 7=일, 0=안 함
+    alert_test_weekday: int = _int("ALERT_TEST_WEEKDAY", 1)
+    alert_test_time: str = _env("ALERT_TEST_TIME", "09:00")
     # 백업·보관 파일 외부 저장소 복제 (B-17, backup 서비스가 한다). 켜져 있으면 화면·보고서가 복제가 밀리거나 실패한 것을 알린다
     replica: bool = _env("REPLICA", "off").lower() in ("1", "on", "true", "yes")
     dashboard_dir: str = _env("DASHBOARD_DIR", "/app/config/dashboards")

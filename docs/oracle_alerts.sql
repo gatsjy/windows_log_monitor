@@ -35,3 +35,19 @@ CREATE INDEX LOGMON_ALERTS_FIRED_IX ON LOGMON_ALERTS (FIRED_AT);
 -- CREATE USER LOGMON IDENTIFIED BY "..." ;
 -- GRANT CREATE SESSION TO LOGMON;
 -- GRANT INSERT ON 스키마.LOGMON_ALERTS TO LOGMON;   -- 다른 스키마 테이블이면 table: 스키마.LOGMON_ALERTS
+
+-- 생존 신호 (B-34, 선택): 외부 연동의 '생존 신호 SQL' 에 아래 MERGE 를 넣으면 1분마다 한 행을 갱신한다.
+--   서버 전체가 멈추면 AT 가 멈춘다 — 병원 DB 감시(예: AT 가 5분보다 오래되면 경보)가 Log Monitor 의 정지를 잡는다.
+--   바인드: :at (UTC TIMESTAMP), :status (ok·warn·down = 알림 기능 상태), :version, :problems (문제 수)
+CREATE TABLE LOGMON_HEARTBEAT (
+    ID        NUMBER(1)     NOT NULL,
+    AT        TIMESTAMP     NOT NULL,
+    STATUS    VARCHAR2(10)  NOT NULL,
+    VERSION   VARCHAR2(20),
+    PROBLEMS  NUMBER(5),
+    CONSTRAINT LOGMON_HEARTBEAT_PK PRIMARY KEY (ID)
+);
+-- MERGE INTO LOGMON_HEARTBEAT h USING dual ON (h.ID = 1)
+--   WHEN MATCHED THEN UPDATE SET h.AT = :at, h.STATUS = :status, h.VERSION = :version, h.PROBLEMS = :problems
+--   WHEN NOT MATCHED THEN INSERT (ID, AT, STATUS, VERSION, PROBLEMS) VALUES (1, :at, :status, :version, :problems)
+

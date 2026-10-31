@@ -92,6 +92,7 @@ async def lifespan(_: FastAPI):
         task.cancel()
         if watchdog_task:
             watchdog_task.cancel()
+        alert_watchdog.stop()
         # 감시가 다시 시작했을 수 있으니 지금 작업을 끈다. 알림 기록은 한 트랜잭션이라 중간에 멈춰도 반쪽이 남지 않고,
         # 보내던 알림은 '보내는 중'으로 남아 다음 시작 때 다시 보낸다
         for running in (alert_engine.task, alert_dispatcher.task):

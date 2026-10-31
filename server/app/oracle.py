@@ -210,8 +210,10 @@ def execute(conn_info: OracleConn, sql: str, binds: dict[str, Any], commit: bool
                 conn.rollback()
             return count
     except oracledb.IntegrityError as exc:
-        if "ORA-00001" in str(exc) and commit:
-            return 0  # 같은 키가 이미 있음 = 이전 시도에서 이미 들어감 (재시도 중복 방지)
+        # 같은 키가 이미 있음 = 이전 시도에서 이미 들어감 (재시도 중복 방지). 되돌리는 시험 실행(commit=False)도 성공 —
+        # 제약까지 닿았다면 SQL·연결·권한은 된다. 시험 알림 번호(0)가 이미 있는 표에서 매주 정기 시험이 실패하던 것(검토에서 재현)
+        if "ORA-00001" in str(exc):
+            return 0
         raise OracleError(f"Oracle 오류: {exc}") from exc
     except oracledb.Error as exc:
         raise OracleError(f"Oracle 오류: {exc}") from exc

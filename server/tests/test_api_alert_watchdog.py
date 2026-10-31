@@ -198,3 +198,89 @@ def test_unknown_fallback_target_is_refused(client):
     r = client.put("/api/alerts/config", content=RULES.replace("[당직, 메일]", "[없는곳]").encode(),
                    headers={**CSRF, "Content-Type": "text/plain"})
     assert r.status_code == 422 and "없는곳" in r.text
+
+
+# ------------------------------------------------------------------ 정기 시험 전송·Oracle 생존 신호 (B-34 남은 것)
+
+def test_weekly_test_send_reaches_each_target_once(client, monkeypatch):
+    from dataclasses import replace
+
+    from app.alerts import health
+    from app.alerts import watchdog as watchdog_module
+    from app.alerts.dispatcher import dispatcher
+    from app.alerts.watchdog import watchdog
+
+    monkeypatch.setattr(watchdog_module, "settings",
+                        replace(watchdog_module.settings, alert_test_weekday=1, alert_test_time="00:00"))
+    monkeypatch.setattr(watchdog_module, "RETEST_AFTER_SEC", 0)
+    assert client.post("/api/settings/channels", json={"name": "끊긴곳", "type": "webhook", "config": {"format": "json"},
+                                                       "url": "http://127.0.0.1:9/gone"}, headers=CSRF).status_code == 200
+
+    async def recipients(exclude=None):
+        return [n for n in ("당직", "메일", "끊긴곳") if n != exclude]
+
+    monkeypatch.setattr(watchdog, "recipients", recipients)
+    before = len(_Receiver.received)
+    results = client.portal.call(watchdog.scheduled_tests, datetime.now(UTC))
+    assert {(r["target"], r["ok"]) for r in results} == {("당직", True), ("메일", True), ("끊긴곳", False)}
+    sent = _Receiver.received[before:]
+    assert len(sent) == 2 and {b["alert"]["rule"] for b in sent} == {"정기 시험 알림"}
+    assert {t: d["ok"] for t, d in _audit("alerts.test.scheduled")} == {"당직": True, "메일": True, "끊긴곳": False}
+    # 실패한 곳은 '보내지 못하는 중' — 15분이 지나도 고쳐지지 않으면 '알림 전송 실패'가 다른 곳으로 나간다
+    assert dispatcher.health("끊긴곳").failing_since is not None
+    assert client.portal.call(watchdog.scheduled_tests, datetime.now(UTC)) == []   # 같은 주에는 한 번
+    # 다시 시작해 메모리 상태가 사라져도 상태 띠·보고서에 남는다 (감사로그)
+    dispatcher.targets.pop("끊긴곳")
+    state = client.portal.call(lambda: health.current(fresh=True))
+    assert "test_failed" in {p["code"] for p in state["problems"]}
+    # 고친 뒤 화면의 '테스트 발송'이 성공하면 사라진다 — 여기서는 받는 곳을 지운 것으로
+    channel_id = next(c["id"] for c in client.get("/api/settings/channels", headers=CSRF).json()["items"] if c["name"] == "끊긴곳")
+    assert client.delete(f"/api/settings/channels/{channel_id}", headers=CSRF).status_code == 200
+
+
+def test_oracle_heartbeat_state_changes_are_audited(client, monkeypatch):
+    from app.alerts import health, targets
+    from app.alerts.notifiers import NotifierError
+    from app.alerts.watchdog import watchdog
+
+    class Writer:
+        heartbeat_sql = "UPDATE H SET A = :at"
+        fail = True
+        calls: ClassVar[list[dict]] = []
+
+        async def heartbeat(self, values):
+            Writer.calls.append(values)
+            if Writer.fail:
+                raise NotifierError("ORA-12541: TNS:no listener", target_down=True)
+
+    async def load():
+        return {"사내DB": Writer(), "당직": object()}, {}
+
+    monkeypatch.setattr(targets, "load_notifiers", load)
+    now = datetime.now(UTC)
+    client.portal.call(watchdog.heartbeat, now)
+    client.portal.call(watchdog.heartbeat, now + timedelta(minutes=6))
+    assert [t for t, _ in _audit("alerts.health.heartbeat_fail")] == ["사내DB"]   # 바뀔 때만 (1분마다 쌓이지 않게)
+    state = client.portal.call(lambda: health.current(now + timedelta(minutes=6), fresh=True))
+    assert "heartbeat_failing" in {p["code"] for p in state["problems"]}
+    Writer.fail = False
+    client.portal.call(watchdog.heartbeat, now + timedelta(minutes=7))
+    [(_, ok)] = _audit("alerts.health.heartbeat_ok")
+    assert ok["sec"] == 420 and watchdog.heartbeats["사내DB"]["failing_since"] is None
+    assert set(Writer.calls[0]) == {"at", "status", "version", "problems"} and Writer.calls[0]["at"].tzinfo is None
+    watchdog.heartbeats.clear()
+    monkeypatch.setattr(health, "_cache", None)   # 앞으로 당긴 시각의 상태를 다음 시험 모듈에 남기지 않는다
+
+
+def test_only_tests_that_run_the_alert_path_count(client):
+    """Oracle '연결 시험'은 접속만 본다 — 알림 SQL 을 실행한 시험(SQL 시험 실행·테스트 발송)만 받는 곳의 시험으로 센다 (검토)."""
+    from app import repository
+
+    since = datetime.now(UTC) - timedelta(minutes=1)
+    sql("INSERT INTO audit_log (actor, action, target, detail) VALUES ('admin', 'settings.channel.test', '사내DB',"
+        " '{\"type\": \"oracle\", \"ok\": true}')")
+    assert client.portal.call(repository.latest_target_tests, ["사내DB"], since) == {}
+    sql("INSERT INTO audit_log (actor, action, target, detail) VALUES ('admin', 'settings.oracle.dry_run', '사내DB',"
+        " '{\"commit\": false, \"ok\": false, \"error\": \"ORA-00942\"}')")
+    tests = client.portal.call(repository.latest_target_tests, ["사내DB"], since)
+    assert tests["사내DB"]["ok"] is False and tests["사내DB"]["error"] == "ORA-00942"

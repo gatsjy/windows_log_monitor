@@ -20,6 +20,7 @@ import ssl
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC
 from email.message import EmailMessage
@@ -277,6 +278,21 @@ ORACLE_DEFAULT_SQL = (
 ORACLE_BINDS = ("alert_id", "rule_name", "severity", "host", "event_count", "window_sec", "first_event_at",
                 "last_event_at", "fired_at", "title", "message", "link", "detail_json", "dedup_key", "event_action")
 _BIND_RE = re.compile(r"(?<![:\w]):([A-Za-z_][A-Za-z0-9_]*)")
+# 생존 신호 SQL (B-34, 선택): 1분마다 실행 — 서버 전체가 멈추면 이 행이 갱신되지 않아 병원 DB 감시가 알아챈다
+HEARTBEAT_BINDS = ("at", "status", "version", "problems")
+# Oracle 호출은 전용 스레드에서 — 응답 없는 Oracle(접속 뒤 로그인 단계에서 멈춤)은 asyncio 의 시간 초과로 스레드를 멈추지 못한다.
+# 기본 스레드 풀을 나눠 쓰면 멈춘 호출이 쌓여 로그인(scrypt)·메일·웹훅까지 막혔다(검토에서 재현). 여기서는 넷까지만 쌓이고,
+# 생존 신호는 연동마다 앞의 것이 끝나야 다음을 낸다
+_ORACLE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="oracle-notify")
+_HEARTBEAT_INFLIGHT: dict[str, Future] = {}
+
+
+async def _in_oracle_pool(fn: Any, *args: Any) -> Any:
+    return await asyncio.get_running_loop().run_in_executor(_ORACLE_POOL, fn, *args)
+
+
+def _binds_in(sql: str) -> set[str]:
+    return set(_BIND_RE.findall(_strip_strings(sql)))
 
 
 def oracle_binds(sql: str, message: AlertMessage) -> dict[str, Any]:
@@ -314,16 +330,26 @@ def _strip_strings(sql: str) -> str:
     return re.sub(r"'(?:[^']|'')*'", "''", sql)
 
 
+def _one_statement(sql: str) -> str:
+    """끝의 ; 는 드라이버가 받지 않는다 — PL/SQL 블록(END;)만 그대로."""
+    return sql.strip().rstrip(";") if not sql.strip().upper().endswith("END;") else sql.strip()
+
+
 class OracleNotifier(Notifier):
     """사내 Oracle 에 SQL 한 문장 실행 (기본: LOGMON_ALERTS 에 INSERT, 테이블 DDL 은 docs/oracle_alerts.sql).
     프로시저를 부르려면 SQL 에 BEGIN 프로시저(:rule_name, ...); END; 처럼 쓴다."""
 
     type = "oracle"
 
-    def __init__(self, name: str, conn: oracle.OracleConn, sql: str):
+    def __init__(self, name: str, conn: oracle.OracleConn, sql: str, heartbeat_sql: str = ""):
         super().__init__(name)
         self.conn = conn
-        self.sql = sql.strip().rstrip(";") if not sql.strip().upper().endswith("END;") else sql.strip()
+        self.sql = _one_statement(sql)
+        self.heartbeat_sql = _one_statement(heartbeat_sql) if heartbeat_sql.strip() else ""
+        unknown = _binds_in(self.heartbeat_sql) - set(HEARTBEAT_BINDS)
+        if unknown:
+            raise NotifierError(f"생존 신호 SQL 에 알 수 없는 바인드 변수: {', '.join(sorted(unknown))}"
+                                f" (사용 가능: {', '.join(HEARTBEAT_BINDS)})")
 
     def target(self) -> str:
         return self.conn.describe()
@@ -333,19 +359,32 @@ class OracleNotifier(Notifier):
 
     def accepts_resolve(self) -> str | None:
         # 예전 SQL(기본 INSERT)은 알림과 해소를 가리지 못한다 — 같은 알림 번호의 줄이 하나 더 생겨 사고관리가 새 사고로 본다
-        if "event_action" in _BIND_RE.findall(_strip_strings(self.sql)):
+        if "event_action" in _binds_in(self.sql):
             return None
         return "SQL 에 :event_action 이 없어 해소 통지를 보내지 않습니다"
 
-    def _execute(self, binds: dict[str, Any], commit: bool) -> int:
+    def _execute(self, binds: dict[str, Any], commit: bool, sql: str | None = None) -> int:
         try:
+            if sql is not None:
+                return oracle.execute(self.conn, sql, binds, commit=commit)
             return oracle.execute(self.conn, self.sql, binds, commit=commit, clob_binds=("detail_json",))
         except oracle.OracleError as exc:
             raise NotifierError(str(exc), target_down=exc.unreachable) from exc
 
+    async def heartbeat(self, values: dict[str, Any]) -> None:
+        """생존 신호 한 번 (SQL 에 쓴 바인드만 넘긴다). 앞의 것이 아직 끝나지 않았으면 내지 않고 실패로 — 멈춘 Oracle 에
+        1분마다 스레드가 하나씩 쌓이지 않게."""
+        previous = _HEARTBEAT_INFLIGHT.get(self.name)
+        if previous is not None and not previous.done():
+            raise NotifierError("앞의 생존 신호가 아직 끝나지 않았습니다 — Oracle 이 응답하지 않습니다", target_down=True)
+        used = _binds_in(self.heartbeat_sql)
+        future = _ORACLE_POOL.submit(self._execute, {k: v for k, v in values.items() if k in used}, True, self.heartbeat_sql)
+        _HEARTBEAT_INFLIGHT[self.name] = future
+        await asyncio.wrap_future(future)
+
     async def send(self, message: AlertMessage) -> None:
-        await asyncio.to_thread(self._execute, self.binds(message), True)
+        await _in_oracle_pool(self._execute, self.binds(message), True)
 
     async def dry_run(self, message: AlertMessage) -> int:
         """실행만 해 보고 되돌린다 (환경설정의 'SQL 시험 실행')."""
-        return await asyncio.to_thread(self._execute, self.binds(message), False)
+        return await _in_oracle_pool(self._execute, self.binds(message), False)

@@ -48,6 +48,8 @@ os.environ["WLM_SENSITIVE_ACCESS_LOG"] = "off"
 # 알림 전송기는 시험에서 돌지 않는다 — 시험이 dispatcher.drain() 으로 보낸다 (ADR-045, 백그라운드와 겨루지 않게)
 os.environ["WLM_ALERT_DISPATCHER"] = "off"
 os.environ["WLM_ALERT_RULE_TIMEOUT_SEC"] = "20"
+# 정기 시험 전송은 감시가 실제 시각으로 보낸다 — 시험에서는 끄고 watchdog.scheduled_tests(now) 를 직접 부른다 (B-34)
+os.environ["WLM_ALERT_TEST_WEEKDAY"] = "0"
 
 
 @pytest.fixture(scope="module", autouse=True)

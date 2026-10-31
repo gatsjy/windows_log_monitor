@@ -22,6 +22,7 @@ from ..alerts.engine import engine
 from ..alerts.message import AlertMessage, search_link
 from ..alerts.messenger import FORMATS, URL_WARNINGS
 from ..alerts.notifiers import (
+    HEARTBEAT_BINDS,
     ORACLE_BINDS,
     ORACLE_DEFAULT_SQL,
     ORACLE_DEFAULT_TABLE,
@@ -89,6 +90,7 @@ async def meta():
         "secret_key_set": bool(settings.secret_key),
         "oracle_modes": oracle.MODES,
         "oracle_binds": ORACLE_BINDS,
+        "oracle_heartbeat_binds": HEARTBEAT_BINDS,
         "oracle_default_sql": ORACLE_DEFAULT_SQL.format(table=ORACLE_DEFAULT_TABLE),
         # 웹훅 보내는 형식 (메신저 프리셋). hosts = 주소로 형식을 권할 때 쓰는 호스트 끝부분
         "webhook_formats": [{"key": f.key, "label": f.label, "hosts": list(f.hosts), "https_only": f.https_only}

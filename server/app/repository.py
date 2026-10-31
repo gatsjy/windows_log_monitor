@@ -996,6 +996,25 @@ async def delivery_queue(now: datetime) -> list[dict[str, Any]]:
         (now, now, now))
 
 
+# 받는 곳의 시험 전송 기록 (B-34): 화면의 '테스트 발송'·환경설정의 연동 시험·Oracle SQL 시험 실행·매주 정기 시험 — detail.ok 가 결과.
+# Oracle 의 '연결 시험'(settings.channel.test, type oracle)은 접속만 보고 알림 SQL 을 실행하지 않아 세지 않는다(검토)
+TARGET_TEST_ACTIONS = ("alerts.test", "alerts.test.scheduled", "settings.channel.test", "settings.oracle.dry_run")
+
+
+async def latest_target_tests(names: list[str], since: datetime) -> dict[str, dict[str, Any]]:
+    """받는 곳마다 since 뒤의 마지막 시험 전송 {at, ok, error, scheduled}."""
+    if not names:
+        return {}
+    rows = await db.fetch_all(
+        "SELECT DISTINCT ON (target) target, at, action, detail FROM audit_log"
+        " WHERE action = ANY(%s) AND target = ANY(%s::text[]) AND at >= %s"
+        " AND NOT (action = 'settings.channel.test' AND detail->>'type' = 'oracle') ORDER BY target, at DESC",
+        (list(TARGET_TEST_ACTIONS), names, since))
+    return {r["target"]: {"at": r["at"], "ok": bool((r["detail"] or {}).get("ok")),
+                          "error": (r["detail"] or {}).get("error"), "scheduled": r["action"] == "alerts.test.scheduled"}
+            for r in rows}
+
+
 async def count_gave_up(since: datetime) -> int:
     row = await db.fetch_one("SELECT count(*) AS n FROM alert_deliveries WHERE status = 'gave_up' AND updated_at >= %s",
                              (since,))

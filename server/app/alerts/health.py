@@ -11,6 +11,8 @@ from typing import Any
 BACKLOG_WARN = timedelta(minutes=5)       # 보낼 차례가 된 지 이만큼 지난 알림이 있으면 '밀림'
 TARGET_DOWN = timedelta(minutes=15)       # 받는 곳이 이만큼 계속 실패하면 '모두 안 됨' 판단에 넣는다
 DISPATCH_STALL = timedelta(seconds=120)
+HEARTBEAT_DOWN = timedelta(minutes=5)     # Oracle 생존 신호를 이만큼 못 쓰면 알린다 (B-34)
+TEST_LOOKBACK = timedelta(days=8)         # 받는 곳의 마지막 시험 전송을 거슬러 보는 기간 (매주 시험 + 하루)
 
 RULE_LABELS = {"off": "꺼짐", "never": "평가 전", "error": "오류", "timeout": "시간 초과", "truncated": "일부만",
                "slow": "느림", "stale": "멈춤", "ok": "정상"}
@@ -53,9 +55,11 @@ def _names(names: list[str], limit: int = 5) -> str:
 
 def assess(engine: dict[str, Any], dispatcher: dict[str, Any], queue: list[dict[str, Any]], gave_up_24h: int,
            rules: list[dict[str, Any]], used_targets: set[str], now: datetime,
-           fallback: list[str] | None = None) -> dict[str, Any]:
+           fallback: list[str] | None = None, tests: dict[str, dict[str, Any]] | None = None,
+           heartbeats: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """engine = AlertEngine.health_snapshot(), dispatcher = Dispatcher.status() + enabled,
-    rules = [{name, enabled, run}], used_targets = 켜진 규칙의 받는 곳. 돌려주는 값 = {status, problems, rules}."""
+    rules = [{name, enabled, run}], used_targets = 켜진 규칙의 받는 곳, tests = 받는 곳마다 마지막 시험 전송(B-34),
+    heartbeats = Oracle 생존 신호 상태(watchdog). 돌려주는 값 = {status, problems, rules}."""
     problems: list[dict[str, Any]] = []
 
     def add(level: str, code: str, text: str, n: int = 1) -> None:
@@ -98,6 +102,18 @@ def assess(engine: dict[str, Any], dispatcher: dict[str, Any], queue: list[dict[
     used_down = [n for n in used_targets if n in failing and now - failing[n]["failing_since"] >= TARGET_DOWN]
     if used_targets and len(used_down) == len(used_targets):
         add("bad", "targets_all_down", "규칙이 쓰는 모든 알림 대상으로 15분 넘게 보내지 못하고 있습니다 — 알림이 아무에게도 가지 않습니다")
+    # 마지막 시험 전송이 실패한 곳 (B-34) — 다시 시작해 '보내지 못하는 중'이 메모리에서 사라져도 감사로그로 남는다
+    # 그 뒤 실제 알림이 그 곳으로 나갔으면(전송기 기억) 고쳐진 것이다 — 다음 주 시험까지 경고를 남기지 않는다
+    known = dispatcher.get("targets") or {}
+    for name, t in sorted((tests or {}).items()):
+        ok_after = (known.get(name) or {}).get("last_ok_at")
+        if not t["ok"] and name not in failing and not (ok_after and ok_after > t["at"]):
+            add("warn", "test_failed", f"'{name}'(으)로 {'정기 ' if t.get('scheduled') else ''}시험 전송이 실패했습니다"
+                                       f" ({_ago(now, t['at'])} 전): {(t.get('error') or '')[:120]} — 고친 뒤 '테스트 발송'을 누르세요")
+    for name, hb in sorted((heartbeats or {}).items()):
+        if hb.get("failing_since") and now - hb["failing_since"] >= HEARTBEAT_DOWN:
+            add("warn", "heartbeat_failing", f"Oracle '{name}' 에 생존 신호를 {_ago(now, hb['failing_since'])}째 쓰지 못하고"
+                                             f" 있습니다: {(hb.get('error') or '')[:120]} — 병원 DB 감시가 이 서버를 멈춘 것으로 봅니다")
     if fallback is not None and not fallback:
         add("warn", "no_fallback", "알림 기능 문제(엔진 멈춤·전송 실패)를 받을 곳이 없습니다 — 환경설정 > 점검 보고서의 받는 곳을 정하거나"
                                    " alerts.yaml 의 settings.fallback_notify 를 쓰세요")
@@ -148,13 +164,13 @@ async def current(now: datetime | None = None, *, fresh: bool = False) -> dict[s
 
     global _cache, _lock
     now = now or datetime.now(UTC)
-    if not fresh and _cache and now - _cache[0] < timedelta(seconds=CACHE_SEC):
+    if not fresh and _cache and timedelta(0) <= now - _cache[0] < timedelta(seconds=CACHE_SEC):
         return _cache[1]
     loop = asyncio.get_running_loop()
     if _lock is None or _lock[0] is not loop:
         _lock = (loop, asyncio.Lock())
     async with _lock[1]:
-        if not fresh and _cache and now - _cache[0] < timedelta(seconds=CACHE_SEC):
+        if not fresh and _cache and timedelta(0) <= now - _cache[0] < timedelta(seconds=CACHE_SEC):
             return _cache[1]
         rules = [{"name": r.name, "enabled": r.enabled, "run": engine.runs[r.name].as_dict() if r.name in engine.runs else None}
                  for r in engine.config.rules]
@@ -164,12 +180,14 @@ async def current(now: datetime | None = None, *, fresh: bool = False) -> dict[s
             queue = await repository.delivery_queue(now)
             gave_up = await repository.count_gave_up(now - timedelta(hours=24))
             fallback = await watchdog.recipients()
+            used = {n for r in engine.config.rules if r.enabled for n in r.notify}
+            tests = await repository.latest_target_tests(sorted(used | set(fallback)), now - TEST_LOOKBACK)
         except Exception as exc:  # noqa: BLE001 - DB 에 물을 수 없으면 그것이 문제
             result = {"status": "down", "checked_at": now, "queue": [], "rules": {},
                       "problems": [{"level": "bad", "code": "db", "text": f"DB 에 물을 수 없습니다: {type(exc).__name__}", "n": 1}]}
         else:
-            used = {n for r in engine.config.rules if r.enabled for n in r.notify}
-            result = assess(engine.health_snapshot(), dispatcher.status(), queue, gave_up, rules, used, now, fallback)
+            result = assess(engine.health_snapshot(), dispatcher.status(), queue, gave_up, rules, used, now, fallback,
+                            tests, watchdog.heartbeats)
             result["queue"] = queue
             result["rules"] = {r["name"]: r["state"] for r in rules}
         _cache = (now, result)

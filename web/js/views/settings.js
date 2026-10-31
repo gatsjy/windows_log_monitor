@@ -450,6 +450,12 @@ function editOracle(c, meta, aliases, done) {
     <textarea class="input editor mono" name="sql" style="min-height:150px" spellcheck="false">${cfg.sql ?? meta.oracle_default_sql}</textarea>
     <p class="muted" style="margin:0;font-size:12px">바인드 변수: ${meta.oracle_binds.map((b) => html`<code>:${b}</code> `)}
       · 시각은 UTC TIMESTAMP · 프로시저는 <code>BEGIN 프로시저(:rule_name, :host); END;</code> · 기본 테이블 DDL: docs/oracle_alerts.sql</p>
+
+    <div class="section-title" style="margin:10px 0 0">생존 신호 SQL <span class="muted" style="font-weight:400">(선택 · 1분마다 실행)</span></div>
+    <textarea class="input editor mono" name="heartbeat_sql" style="min-height:70px" spellcheck="false"
+      placeholder="MERGE INTO LOGMON_HEARTBEAT h USING dual ON (h.ID = 1) WHEN MATCHED THEN UPDATE SET h.AT = :at, h.STATUS = :status">${cfg.heartbeat_sql ?? ''}</textarea>
+    <p class="muted" style="margin:0;font-size:12px">서버 전체가 멈추면 이 행이 갱신되지 않아 병원 DB 감시가 알아챕니다.
+      바인드 변수: ${(meta.oracle_heartbeat_binds || []).map((b) => html`<code>:${b}</code> `)} (status = ok·warn·down) · 표 예시: docs/oracle_alerts.sql</p>
     <div data-error></div>
     <div class="toolbar"><button class="btn primary" type="submit">저장</button>
       ${c ? html`<button class="btn" type="button" data-dry>SQL 시험 실행 (되돌림)</button>
@@ -473,6 +479,7 @@ function editOracle(c, meta, aliases, done) {
   const config = () => ({
     mode, user: form.user.value, tns_alias: form.tns_alias.value, host: form.host.value, port: Number(form.port.value) || 1521,
     sid: form.sid.value, service_name: form.service_name.value, dsn: form.dsn.value, sql: form.sql.value,
+    heartbeat_sql: form.heartbeat_sql.value,
   });
   const out = form.querySelector('[data-error]');
 

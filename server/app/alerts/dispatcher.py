@@ -105,19 +105,26 @@ class Dispatcher:
             if not await self._pass(now or datetime.now(UTC), wait=True):
                 return
 
-    async def send_test(self, name: str) -> None:
-        """알림 대상 연결 확인 — 대기열을 거치지 않는다. 성공하면 그 곳의 실패분을 바로 다시 보낼 차례로 (고친 뒤 기다리지 않게)."""
+    async def send_test(self, name: str, scheduled: bool = False) -> None:
+        """알림 대상 연결 확인 — 대기열을 거치지 않는다. 성공하면 그 곳의 실패분을 바로 다시 보낼 차례로 (고친 뒤 기다리지 않게).
+        scheduled = 매주 정기 시험(B-34, 감시가 부른다). Oracle 은 실행만 해 보고 되돌린다 — 매주 사내 알림 표에 시험 행이 쌓이지 않게."""
         notifiers, errors = await targets.load_notifiers()
         notifier = notifiers.get(name)
         if notifier is None:
             raise NotifierError(errors.get(name) or f"알림 대상 '{name}' 이 설정에 없습니다")
         now = datetime.now(UTC)
         message = AlertMessage(
-            rule="테스트 알림", severity="info", kind="test", group_by="none", group_key="", event_count=0,
-            threshold=0, window_sec=0, fired_at=now, alert_id=0, test=True,
-            description=f"알림 대상 '{name}' ({notifier.type}) 연결 확인", link=f"{settings.public_url}/#/alerts",
+            rule="정기 시험 알림" if scheduled else "테스트 알림", severity="info", kind="test", group_by="none", group_key="",
+            event_count=0, threshold=0, window_sec=0, fired_at=now, alert_id=0, test=True,
+            description=(f"매주 알림 경로가 살아 있는지 확인하는 시험 알림입니다 — 알림 대상 '{name}' ({notifier.type}). 답할 필요는 없습니다"
+                         if scheduled else f"알림 대상 '{name}' ({notifier.type}) 연결 확인"),
+            link=f"{settings.public_url}/#/alerts",
         )
-        await asyncio.wait_for(notifier.send(message), timeout=SEND_TIMEOUT_SEC)
+        dry_run = getattr(notifier, "dry_run", None)
+        if scheduled and dry_run is not None:
+            await asyncio.wait_for(dry_run(message), timeout=SEND_TIMEOUT_SEC)
+        else:
+            await asyncio.wait_for(notifier.send(message), timeout=SEND_TIMEOUT_SEC)
         now = datetime.now(UTC)
         self.health(name).ok(now)
         if await repository.retry_target_now(name, now):

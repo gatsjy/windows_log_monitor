@@ -229,6 +229,9 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 시험에서는 전송기가 돌지 않는다(`WLM_ALERT_DISPATCHER=off`, conftest). 보낸 결과를 보려면 `client.portal.call(dispatcher.drain)`.
   - 결과는 `repository.finish_delivery` 로만 쓴다 — `claimed_at` 이 그대로일 때만 바뀐다(풀린 뒤 늦게 온 결과는 버림). 새 전송기 오류는 `NotifierError(target_down=…)` 로 받는 곳 문제인지 알린다.
   - 감시(`alerts/watchdog.py`)도 시험에서 돌지 않는다 — `watchdog.check(now)` 를 직접 부른다. 내장 알림 이름은 `alerts/builtin.py` 에만(규칙 이름으로 못 씀).
+  - 정기 시험 전송은 시험에서 꺼져 있다(`WLM_ALERT_TEST_WEEKDAY=0`, conftest) — `watchdog.scheduled_tests(now)` 를 직접 부른다. 시험 기록은 감사로그
+    (`repository.TARGET_TEST_ACTIONS`)가 정본이다: 받는 곳을 시험하는 새 API 를 만들면 그 동작 이름을 거기에 더한다(같은 주에 두 번 보내지 않게, `test_failed` 가 풀리게).
+  - Oracle 을 부르는 새 코드는 `notifiers._in_oracle_pool`(전용 스레드 넷)로 — `asyncio.to_thread` 는 기본 풀을 써서 응답 없는 Oracle 이 로그인·메일까지 막는다.
   - 규칙 쿼리는 `db.background_time_limit`(조회 자리 SEARCH_SLOTS 를 쓰지 않음). 규칙 상태(`engine.runs`)·전송 상태(`dispatcher.targets`)는 메모리(워커 1개). 상태 판단은 `alerts/health.py` 한 곳 — 화면·`/healthz/alerts`·보고서가 같이 쓴다.
 - 상태를 바꾸는 API 를 테스트할 때는 `X-WLM-CSRF: 1` 헤더가 있어야 합니다. 로그인 세션은 쿠키(`wlm_session`)로 유지합니다.
 - `audit_log` 는 DB 트리거로 UPDATE·DELETE·TRUNCATE 를 막습니다. 테스트나 마이그레이션에서 지우려 하면 실패합니다.

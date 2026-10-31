@@ -283,6 +283,8 @@ def _clean_channel_config(kind: str, config: dict[str, Any]) -> dict[str, Any]:
         "host": str(config.get("host", "")).strip(), "port": int(config.get("port") or 1521),
         "sid": str(config.get("sid", "")).strip(), "service_name": str(config.get("service_name", "")).strip(),
         "dsn": str(config.get("dsn", "")).strip(), "sql": sql,
+        # 생존 신호 SQL (B-34, 선택) — 비우면 쓰지 않는다
+        "heartbeat_sql": str(config.get("heartbeat_sql") or "").strip(),
     }
 
 
@@ -321,9 +323,12 @@ async def save_channel(channel_id: int | None, data: dict[str, Any], secret_upda
             "INSERT INTO channels (name, description, is_active, config, secret_enc, updated_by, min_severity, type)"
             " VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s) RETURNING id", (*values, kind)))["id"]
     await db.audit(actor, "settings.channel.save", name,
-                   {"id": channel_id, "type": kind, "config": {k: v for k, v in config.items() if k != "sql"},
+                   {"id": channel_id, "type": kind,
+                    "config": {k: v for k, v in config.items() if k not in ("sql", "heartbeat_sql")},
                     "min_severity": values[6],
                     "sql_changed": bool(old) and old["config"].get("sql") != config.get("sql") if kind == "oracle" else None,
+                    "heartbeat_sql_changed": ((old["config"].get("heartbeat_sql") or "") if old else "") != config.get("heartbeat_sql", "")
+                    if kind == "oracle" else None,
                     "secret_changed": sorted(k for k, v in secret_updates.items() if v not in ("",))},
                    actor_ip=ip)
     return channel_id
@@ -350,7 +355,8 @@ def build_channel(row: dict) -> Notifier:
             raise NotifierError("웹훅 주소가 저장되어 있지 않습니다")
         return WebhookNotifier(row["name"], secret["url"], config.get("format", "json"), secret.get("headers") or {},
                                config.get("timeout_sec", 10))
-    return OracleNotifier(row["name"], oracle_conn(config, row.get("secret_enc")), config.get("sql") or "")
+    return OracleNotifier(row["name"], oracle_conn(config, row.get("secret_enc")), config.get("sql") or "",
+                          config.get("heartbeat_sql") or "")
 
 
 # --------------------------------------------------------- 엔진이 쓰는 부분
