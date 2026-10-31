@@ -218,7 +218,7 @@ def integrity_bad_count(check: dict[str, Any] | None) -> int:
 
 # 관리 작업 요약의 묶음: (이름, 감사로그 동작 앞부분들). 수가 0 인 묶음도 보인다 — '없었음'도 점검 결과다
 ADMIN_GROUPS = (
-    ("권한·계정", ("user.", "user_group.")),
+    ("권한·계정", ("user.", "user_group.", "auth.mfa.reset", "auth.mfa.disable")),
     ("알림 규칙·무음", ("alerts.config.save", "alerts.config.apply", "alerts.rule.", "alerts.silence.")),
     ("알림 받는 곳", ("settings.group.", "settings.channel.save", "settings.channel.delete", "settings.contact.", "settings.smtp.save")),
     ("보관·복원", ("retention.restore_archive", "retention.rotate_now", "retention.delete_archive")),

@@ -95,9 +95,11 @@ function renderUser(me) {
       s.categories.map(categoryLabel).join('·'), s.hosts.join('·')].filter(Boolean).join(' / ')).join(' + ')}</div>` : ''}
     <div class="user-actions">
       <button class="btn ghost sm" type="button" data-pw>비밀번호 변경</button>
+      <button class="btn ghost sm" type="button" data-mfa title="${me.mfa?.enabled ? '사용 중' : '사용 안 함'}">2단계 인증</button>
       <button class="btn ghost sm" type="button" data-logout>로그아웃</button>
     </div>`;
   document.querySelector('#user-box [data-pw]').addEventListener('click', () => auth.showPasswordChange());
+  document.querySelector('#user-box [data-mfa]').addEventListener('click', () => auth.showMfaPanel());
   document.querySelector('#user-box [data-logout]').addEventListener('click', () => auth.logout());
   document.querySelectorAll('[data-admin]').forEach((el) => { el.hidden = !auth.isAdmin(); });
   document.querySelectorAll('[data-perm]').forEach((el) => { el.hidden = !auth.can(el.dataset.perm); });

@@ -18,6 +18,8 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 CSRF_HEADER = "X-WLM-CSRF"
 IDLE_HEADER = "X-WLM-Idle-Sec"
 PASSWORD_CHANGE_REASON = "password_change_required"
+MFA_REASON = "mfa_required"                # 비밀번호까지만 맞은 세션 — 인증 코드를 넣어야 한다 (B-74)
+MFA_SETUP_REASON = "mfa_setup_required"    # 2단계 인증이 필수인데 아직 등록하지 않았다
 
 
 def client_ip(request: Request) -> str | None:
@@ -31,8 +33,8 @@ def check_csrf(request: Request) -> None:
         raise HTTPException(403, "요청 검증에 실패했습니다 (CSRF 헤더 없음)")
 
 
-async def current_user(request: Request) -> User:
-    """로그인만 확인 (비밀번호 변경이 필요한 사용자도 통과). 인증 API 에서 사용."""
+async def session_user(request: Request) -> User:
+    """세션만 확인 — 2단계 코드를 기다리는 세션도 통과. 내 정보·로그아웃·인증 코드 확인에서만 쓴다 (B-74)."""
     cached = getattr(request.state, "user", None)
     if cached is not None:
         return cached
@@ -53,10 +55,20 @@ async def current_user(request: Request) -> User:
     return user
 
 
+async def current_user(user: User = Depends(session_user)) -> User:
+    """로그인 확인 (비밀번호 변경이 필요한 사용자도 통과). 인증 API 에서 사용. 2단계 코드를 기다리는 세션은 막는다 —
+    비밀번호만 아는 사람이 비밀번호를 바꾸거나 2단계를 다시 등록하지 못하게."""
+    if not user.mfa_ok:
+        raise HTTPException(403, "인증 코드를 넣어야 합니다", headers={"X-WLM-Reason": MFA_REASON})
+    return user
+
+
 async def require_user(user: User = Depends(current_user)) -> User:
-    """일반 API: 로그인 + 비밀번호 변경이 끝난 사용자."""
+    """일반 API: 로그인 + 비밀번호 변경 + (필수면) 2단계 인증 등록이 끝난 사용자."""
     if user.needs_password_change:
         raise HTTPException(403, "비밀번호를 변경해야 합니다", headers={"X-WLM-Reason": PASSWORD_CHANGE_REASON})
+    if user.needs_mfa_setup:
+        raise HTTPException(403, "2단계 인증을 등록해야 합니다", headers={"X-WLM-Reason": MFA_SETUP_REASON})
     return user
 
 

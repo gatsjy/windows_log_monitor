@@ -8,7 +8,7 @@ const GROUPS = [
   ['', '전체 행위'], ['auth.', '로그인·세션'], ['user.', '사용자 관리'], ['events.', '로그 조회'],
   ['alerts.', '알림 설정'], ['alerts.config.', '알림 설정 변경(판본)'], ['dashboard.', '대시보드'], ['settings.', '환경설정'], ['retention.', '보관기간 만료 삭제'], ['report.', '점검 보고서'], ['backup.', 'DB 백업'], ['audit.', '감사로그 내려받기'],
 ];
-const BAD = new Set(['auth.login_failed', 'auth.account_locked', 'auth.password_change_failed']);
+const BAD = new Set(['auth.login_failed', 'auth.account_locked', 'auth.password_change_failed', 'auth.mfa.failed', 'auth.mfa.enroll_failed']);
 
 function detailText(detail) {
   const entries = Object.entries(detail || {}).filter(([k]) => k !== 'user_agent');

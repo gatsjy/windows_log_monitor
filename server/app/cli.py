@@ -2,6 +2,7 @@
 
   docker compose exec api python -m app.cli list-users
   docker compose exec api python -m app.cli reset-password admin
+  docker compose exec api python -m app.cli reset-mfa admin --reason "휴대폰 분실"   # 2단계 인증 초기화 (비상, B-74)
   docker compose exec api python -m app.cli create-user kim.minsu --role admin --name 김민수
   docker compose exec api python -m app.cli retention-status          # DB 파티션·보관 파일 현황
   docker compose exec api python -m app.cli verify-archives           # 보관 파일 SHA-256 무결성 확인
@@ -48,6 +49,14 @@ async def _run(args: argparse.Namespace) -> None:
                 raise SystemExit(f"사용자 없음: {args.username}")
             username, temp = await service.reset_password(row["id"], "cli", None)
             print(f"{username} 의 임시 비밀번호: {temp}  (잠금 해제됨, 첫 로그인 때 변경 필요)")
+        elif args.command == "reset-mfa":
+            # 비상 절차: 관리자 모두가 인증 앱을 잃었을 때. 서버 셸에 들어올 수 있는 사람만 할 수 있다 (감사로그 actor=cli)
+            row = await db.fetch_one("SELECT id FROM users WHERE username = %s",
+                                     (service.normalize_username(args.username),))
+            if row is None:
+                raise SystemExit(f"사용자 없음: {args.username}")
+            username = await service.mfa_reset(row["id"], "cli", None, args.reason)
+            print(f"{username} 의 2단계 인증을 초기화했습니다 (세션 끊김). 다음 로그인 때 필수면 다시 등록합니다")
         elif args.command == "create-user":
             _, temp = await service.create_user(args.username, args.name or "", args.role, "cli", None)
             print(f"{args.username} 생성 ({args.role}) — 임시 비밀번호: {temp}  (첫 로그인 때 변경 필요)")
@@ -102,6 +111,9 @@ def main() -> None:
     sub.add_parser("list-users", help="사용자 목록")
     reset = sub.add_parser("reset-password", help="임시 비밀번호 발급 + 잠금 해제")
     reset.add_argument("username")
+    mfa = sub.add_parser("reset-mfa", help="2단계 인증 초기화 (인증 앱 분실 — 비상, 감사 로그에 기록)")
+    mfa.add_argument("username")
+    mfa.add_argument("--reason", default="", help="사유 (감사 로그에 남음)")
     create = sub.add_parser("create-user", help="사용자 추가")
     create.add_argument("username")
     create.add_argument("--role", choices=service.ROLES, default="viewer")

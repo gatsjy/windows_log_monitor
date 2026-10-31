@@ -234,6 +234,9 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - Oracle 을 부르는 새 코드는 `notifiers._in_oracle_pool`(전용 스레드 넷)로 — `asyncio.to_thread` 는 기본 풀을 써서 응답 없는 Oracle 이 로그인·메일까지 막는다.
   - 규칙 쿼리는 `db.background_time_limit`(조회 자리 SEARCH_SLOTS 를 쓰지 않음). 규칙 상태(`engine.runs`)·전송 상태(`dispatcher.targets`)는 메모리(워커 1개). 상태 판단은 `alerts/health.py` 한 곳 — 화면·`/healthz/alerts`·보고서가 같이 쓴다.
 - 상태를 바꾸는 API 를 테스트할 때는 `X-WLM-CSRF: 1` 헤더가 있어야 합니다. 로그인 세션은 쿠키(`wlm_session`)로 유지합니다.
+- **2단계 인증 (B-74, ADR-049):** 시험에서는 꺼져 있다(`WLM_MFA_REQUIRED=off`, conftest). 개발 서버는 기본 privileged 라 관리자 임시 계정도 등록해야 화면을 쓴다(코드는 `app.auth.totp.code_at`).
+  - 의존성: `session_user`(코드 대기 세션도 통과 — 내 정보·로그아웃·코드 확인만) → `current_user`(코드 대기 세션 막음) → `require_user`(비밀번호 변경·필수 등록까지). 새 인증 API 는 맞는 단계를 고른다.
+  - 실패 수(`failed_count`)는 정식 로그인이 끝날 때만 지운다(`service._complete_login`) — 비밀번호 단계에서 지우면 코드를 끝없이 맞혀 볼 수 있다.
 - `audit_log` 는 DB 트리거로 UPDATE·DELETE·TRUNCATE 를 막습니다. 테스트나 마이그레이션에서 지우려 하면 실패합니다.
 - 개발 DB 의 관리자 비밀번호는 저장소에 없습니다. `python -m app.cli reset-password admin` 으로 임시 비밀번호를 받습니다.
 - `.env`·`.env.example` 에 `KEY=    # 설명` 처럼 빈 값 뒤 주석을 쓰지 않습니다. compose 가 설명문을 값으로 읽습니다(첫 관리자 비밀번호 사고 사례, docs/AIRGAP.md §13).

@@ -57,7 +57,7 @@ export async function mount(root, params, sub) {
     }
     const me = currentUser();
     root.querySelector('[data-table]').innerHTML = html`<div class="table-wrap"><table class="table">
-      <thead><tr><th>아이디</th><th>이름</th><th>역할</th><th>그룹</th><th>상태</th><th>마지막 로그인</th><th>비밀번호 변경</th>
+      <thead><tr><th>아이디</th><th>이름</th><th>역할</th><th>그룹</th><th>상태</th><th>2단계</th><th>마지막 로그인</th><th>비밀번호 변경</th>
         <th class="r">접속 중</th><th></th></tr></thead>
       <tbody>${data.items.map((u) => html`<tr>
         <td class="nowrap"><b>${u.username}</b>${u.id === me.id ? html` <span class="type-tag">나</span>` : ''}</td>
@@ -65,11 +65,13 @@ export async function mount(root, params, sub) {
         <td class="nowrap">${u.role_label}</td>
         <td>${u.groups.length ? u.groups.map((g) => html`<span class="type-tag" style="margin-right:4px">${g}</span>`) : html`<span class="muted">–</span>`}</td>
         <td class="nowrap">${statusOf(u)}${u.failed_count ? html` <span class="muted">(실패 ${u.failed_count}회)</span>` : ''}</td>
+        <td class="nowrap">${u.mfa_enabled ? html`<span class="status online"><span class="dot"></span>사용</span>` : html`<span class="muted">–</span>`}</td>
         <td class="nowrap" title="${u.last_login_at ? fmtTime(u.last_login_at) : ''}">${u.last_login_at ? html`${fmtRelative(u.last_login_at)} <span class="muted num">${u.last_login_ip || ''}</span>` : html`<span class="muted">없음</span>`}</td>
         <td class="nowrap muted">${fmtTime(u.password_changed_at, { seconds: false })}</td>
         <td class="r num">${u.sessions}</td>
         <td class="nowrap r">
           ${u.locked ? html`<button class="btn sm" data-unlock="${u.id}">잠금 해제</button>` : ''}
+          ${u.mfa_enabled ? html`<button class="btn sm" data-mfa-reset="${u.id}" data-name="${u.username}">2단계 초기화</button>` : ''}
           <button class="btn sm" data-reset="${u.id}" data-name="${u.username}">비밀번호 초기화</button>
           <button class="btn sm" data-edit="${u.id}">수정</button>
         </td>
@@ -81,6 +83,22 @@ export async function mount(root, params, sub) {
       try {
         await api.send('POST', `/api/users/${b.dataset.unlock}/unlock`);
         toast('계정 잠금을 해제했습니다.', { type: 'success' });
+        load();
+      } catch (err) {
+        toast(err.message, { type: 'error' });
+      }
+    }));
+    root.querySelectorAll('[data-mfa-reset]').forEach((b) => b.addEventListener('click', async () => {
+      const ok = await confirmModal({
+        title: '2단계 인증 초기화',
+        message: `${b.dataset.name} 의 2단계 인증을 초기화할까요?\n인증 앱을 잃은 경우에만 — 접속 중인 세션은 끊기고, 다음 로그인 때 다시 등록합니다.\n다른 관리자에게 '관리 작업 알림'이 갑니다.`,
+        danger: true,
+        confirmText: '초기화',
+      });
+      if (!ok) return;
+      try {
+        await api.send('POST', `/api/users/${b.dataset.mfaReset}/mfa/reset`);
+        toast('2단계 인증을 초기화했습니다.', { type: 'success' });
         load();
       } catch (err) {
         toast(err.message, { type: 'error' });
@@ -109,7 +127,8 @@ export async function mount(root, params, sub) {
     root.querySelector('[data-policy]').innerHTML = html`
       <li>비밀번호: 영문 대·소문자, 숫자, 특수문자 중 3종 이상이면 8자 이상, 2종이면 10자 이상 · 아이디 포함 금지</li>
       <li>비밀번호 변경 주기: ${me.password_max_age_days ? `${me.password_max_age_days}일` : '사용 안 함'} · 임시 비밀번호는 첫 로그인 때 변경</li>
-      <li>로그인 연속 실패 시 계정 잠금 (기본 5회 / 10분) · ${me.session_idle_min}분 동안 조작이 없으면 자동 로그아웃</li>
+      <li>로그인 연속 실패 시 계정 잠금 (기본 5회 / 10분, 인증 코드 실패도 셈) · ${me.session_idle_min}분 동안 조작이 없으면 자동 로그아웃</li>
+      <li>2단계 인증(인증 앱 6자리): 관리자와 관리 권한 그룹은 필수(WLM_MFA_REQUIRED) · 휴대폰 분실은 '2단계 초기화' 또는 서버에서 <code>python -m app.cli reset-mfa</code></li>
       <li>모든 로그인·계정 변경·로그 조회는 <a href="#/audit">감사 로그</a>에 남습니다</li>
       <li class="muted">설정 값: 서버 <code>.env</code> 의 WLM_LOGIN_MAX_FAILURES, WLM_LOGIN_LOCKOUT_MIN, WLM_SESSION_IDLE_MIN, WLM_PASSWORD_MAX_AGE_DAYS</li>`;
   }

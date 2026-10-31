@@ -26,6 +26,8 @@ PERMISSIONS = {
     "reports.view": "점검 보고서 보기·점검 확인·지금 만들기 (조회 범위가 없는 사용자만)",
     "agents.deploy": "에이전트 설치 묶음 내려받기 (수집 API 키 포함)",
 }
+# 관리 권한 — 이것을 주면 '관리 작업 알림'(B-36), 가진 사람은 2단계 인증 필수(B-74, WLM_MFA_REQUIRED=privileged)
+PRIVILEGED = frozenset({"alerts.manage", "settings.manage", "audit.view", "agents.deploy"})
 
 
 class GroupError(ValueError):

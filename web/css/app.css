@@ -532,6 +532,11 @@ button.live-badge:hover { border-color: var(--border-strong); }
 .dlv.gave_up { border-color: var(--critical); color: var(--bad-ink); }
 .dlv.skipped { border-style: dashed; color: var(--muted); }
 .dlv-cell { white-space: normal; }
+.auth-steps { margin: 0 0 12px; padding-left: 18px; font-size: 13px; color: var(--ink-2); }
+.auth-steps li { margin-bottom: 8px; }
+.mfa-secret { margin: 6px 0; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 8px; font-size: 15px;
+  letter-spacing: .5px; user-select: all; word-break: break-all; }
+.mfa-codes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 14px; margin-bottom: 12px; font-size: 14px; }
 .rule-coverage { margin-top: 3px; font-size: 12px; color: var(--muted); }
 .rule-coverage.gap { color: var(--ink); }
 .rule-coverage.gap::before { content: '! '; color: var(--warning); font-weight: 650; }

@@ -50,6 +50,8 @@ os.environ["WLM_ALERT_DISPATCHER"] = "off"
 os.environ["WLM_ALERT_RULE_TIMEOUT_SEC"] = "20"
 # 정기 시험 전송은 감시가 실제 시각으로 보낸다 — 시험에서는 끄고 watchdog.scheduled_tests(now) 를 직접 부른다 (B-34)
 os.environ["WLM_ALERT_TEST_WEEKDAY"] = "0"
+# 2단계 인증은 시험에서 끈다 — 로그인하는 모든 시험이 등록부터 해야 한다. MFA 시험(test_api_mfa.py)이 설정을 바꿔 켠다 (B-74)
+os.environ["WLM_MFA_REQUIRED"] = "off"
 
 
 @pytest.fixture(scope="module", autouse=True)

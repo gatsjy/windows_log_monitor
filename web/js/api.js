@@ -30,11 +30,18 @@ async function handle(res, path) {
   try { body = await res.json(); } catch { /* 본문이 JSON 이 아님 */ }
   const message = errorText(body, res);
   const reason = res.headers.get('X-WLM-Reason');
-  // 로그인 API 자체의 실패(비밀번호 틀림 등)는 화면에서 처리한다
-  if (!path.startsWith('/api/auth/login')) {
+  // 로그인·인증 코드 API 자체의 실패(비밀번호·코드 틀림, 코드 대기 만료)는 그 화면에서 처리한다
+  if (!path.startsWith('/api/auth/login') && !path.startsWith('/api/auth/mfa/verify')) {
     if (res.status === 401) window.dispatchEvent(new CustomEvent('wlm:auth', { detail: { reason: 'login', message } }));
     if (res.status === 403 && reason === 'password_change_required') {
       window.dispatchEvent(new CustomEvent('wlm:auth', { detail: { reason: 'password', message } }));
+    }
+    // 2단계 인증 (B-74): 코드를 넣어야 하는 세션 / 필수인데 아직 등록하지 않음
+    if (res.status === 403 && reason === 'mfa_required') {
+      window.dispatchEvent(new CustomEvent('wlm:auth', { detail: { reason: 'mfa', message } }));
+    }
+    if (res.status === 403 && reason === 'mfa_setup_required') {
+      window.dispatchEvent(new CustomEvent('wlm:auth', { detail: { reason: 'mfa_setup', message } }));
     }
   }
   const error = new Error(message);

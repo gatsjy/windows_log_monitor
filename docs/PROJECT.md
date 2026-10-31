@@ -567,7 +567,8 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 | 비밀번호 정책 | 3종 이상 8자 / 2종 이상 10자, 아이디 포함·같은 문자 4연속 금지 | – |
 | 임시 비밀번호 | 계정 생성·초기화 시 발급, 첫 로그인 때 변경 강제. 화면에 한 번만 표시 | – |
 | 변경 주기 | 지나면 로그인 후 변경 강제 | `WLM_PASSWORD_MAX_AGE_DAYS`(90, 0=끔) |
-| 계정 잠금 | 연속 실패 시 잠금, 관리자 '잠금 해제' 또는 시간 경과 | `WLM_LOGIN_MAX_FAILURES`(5), `WLM_LOGIN_LOCKOUT_MIN`(10) |
+| 계정 잠금 | 연속 실패 시 잠금(인증 코드 실패도 셈), 관리자 '잠금 해제' 또는 시간 경과 | `WLM_LOGIN_MAX_FAILURES`(5), `WLM_LOGIN_LOCKOUT_MIN`(10) |
+| 2단계 인증 (B-74, ADR-049) | 인증 앱 6자리(TOTP, RFC 6238). 비밀번호 다음 코드(복구 코드도 됨), 같은 코드 두 번 불가. 필수면 첫 로그인 때 등록(키 직접 입력), 복구 코드 10개는 한 번만 표시. 휴대폰을 바꾸면 메뉴 '2단계 인증 > 휴대폰 바꾸기'(지금 코드나 복구 코드로). 분실 = 사용자 화면 '2단계 초기화' 또는 `python -m app.cli reset-mfa`. 코드 실패는 시도를 먼저 세는 같은 잠금(동시 요청도 기준 수까지만) | `WLM_MFA_REQUIRED`(privileged = 관리자·관리 권한 그룹 / all / off) |
 | 세션 | 서버 세션(DB 에는 토큰의 SHA-256만), HttpOnly·SameSite=Strict 쿠키. https 요청이면 자동으로 Secure | `WLM_COOKIE_SECURE`(true = http 에서도 Secure 강제, http 로그인은 안내와 함께 거부) |
 | 자동 로그아웃 | 사용자 조작이 없으면 만료. 자동 새로고침·실시간 스트림은 연장하지 않음 | `WLM_SESSION_IDLE_MIN`(30) |
 | 최대 세션 | 로그인 후 최대 유지 시간 | `WLM_SESSION_MAX_HOURS`(12) |

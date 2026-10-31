@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
+from ..auth import groups
 from ..config import settings
 from . import targets
 from .builtin import ADMIN_RULE
@@ -27,7 +28,7 @@ from .notifiers import SEVERITY_RANK
 log = logging.getLogger(__name__)
 
 # 탐지·받는 곳·접속기록·수집 키를 바꾸거나 볼 수 있는 권한 — 이것을 주는 것은 관리 권한 부여다
-PRIVILEGED = frozenset({"alerts.manage", "settings.manage", "audit.view", "agents.deploy"})
+PRIVILEGED = groups.PRIVILEGED
 
 
 async def _snapshot() -> dict[str, dict[str, Any]]:

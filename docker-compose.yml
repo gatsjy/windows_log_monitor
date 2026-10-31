@@ -96,6 +96,7 @@ services:
       WLM_SEARCH_TIMEOUT_SEC: ${WLM_SEARCH_TIMEOUT_SEC:-30}   # 화면 검색 쿼리 시간 상한 — 느린 검색이 쌓여 수집을 막지 않게
       WLM_ALERT_RULE_TIMEOUT_SEC: ${WLM_ALERT_RULE_TIMEOUT_SEC:-20}   # 알림 규칙 쿼리 시간 상한 — 무거운 규칙 하나가 평가 전체를 멈추지 않게
       WLM_ALERT_TEST_WEEKDAY: ${WLM_ALERT_TEST_WEEKDAY:-1}   # 알림 대상 정기 시험 전송 요일 (1=월 … 7=일, 0=안 함, B-34)
+      WLM_MFA_REQUIRED: ${WLM_MFA_REQUIRED:-privileged}   # 2단계 인증 필수: privileged(관리자·관리 권한) | all | off (B-74)
       WLM_ALERT_TEST_TIME: ${WLM_ALERT_TEST_TIME:-09:00}
       # 알림 (Phase 2) — 링크 주소, 메일 서버
       WLM_PUBLIC_URL: ${WLM_PUBLIC_URL:-http://localhost:8080}

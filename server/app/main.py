@@ -84,6 +84,9 @@ async def lifespan(_: FastAPI):
     log.info("Log Monitor %s 시작 (보관기간: 로그 %s일 · 알림 %s일 · 감사로그 %s일 · 점검 보고서 %s일)", __version__,
              settings.retention_days, settings.alert_retention_days, settings.audit_retention_days,
              settings.report_retention_days)
+    if settings.mfa_required != "off" and not settings.secret_key:
+        log.warning("WLM_MFA_REQUIRED=%s 이지만 WLM_SECRET_KEY 가 없어 2단계 인증을 강제하지 않습니다 (.env 확인)",
+                    settings.mfa_required)
     for warning in partitions.retention_warnings():
         log.warning("보관기간 확인 필요: %s", warning)
     try:

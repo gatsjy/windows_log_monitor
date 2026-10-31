@@ -45,6 +45,7 @@ async def list_users():
         row["role_label"] = ROLE_LABELS.get(row["role"], row["role"])
         row["locked"] = bool(row["locked_until"] and row["locked_until"] > now)
         row["password_expired"] = user.password_expired
+        row["mfa_enabled"] = user.mfa_enabled
     return {"items": items, "roles": ROLE_LABELS}
 
 
@@ -83,6 +84,18 @@ async def reset_password(user_id: int, request: Request, admin: User = Depends(r
     except AuthError as exc:
         raise _error(exc) from exc
     return {"username": username, "temp_password": temp}
+
+
+@router.post("/api/users/{user_id}/mfa/reset")
+async def reset_mfa(user_id: int, request: Request, admin: User = Depends(require_admin)):
+    """인증 앱을 잃은 사람의 2단계 인증 초기화 (B-74) — 그 사람의 세션을 끊고, 필수면 다음 로그인 때 다시 등록한다.
+    인증이 약해지는 관리 작업이라 다른 받는 곳에도 알린다 (B-36)."""
+    try:
+        username = await service.mfa_reset(user_id, admin.username, client_ip(request))
+    except AuthError as exc:
+        raise _error(exc) from exc
+    await adminwatch.notify(admin.username, "2단계 인증 초기화", [f"'{username}' 의 2단계 인증을 초기화했습니다"])
+    return {"ok": True, "username": username}
 
 
 @router.post("/api/users/{user_id}/unlock")

@@ -238,8 +238,10 @@ sudo ./deploy/airgap/install.sh --public-url https://logmon.corp.local:8080 --sy
 
 ### 7.3 첫 로그인과 환경설정
 
-1. `https://<서버>:8080` (평문 설치면 http) → `admin` + 임시 비밀번호 → 비밀번호 변경. 자체 CA 면 먼저 `tls/ca.crt` 를 브라우저 신뢰에 넣습니다(§7.5)
+1. `https://<서버>:8080` (평문 설치면 http) → `admin` + 임시 비밀번호 → 비밀번호 변경 → **2단계 인증 등록**(인증 앱에 키 입력 → 6자리 코드, B-74).
+   자체 CA 면 먼저 `tls/ca.crt` 를 브라우저 신뢰에 넣습니다(§7.5)
    - 임시 비밀번호를 놓쳤으면: `cd /opt/log-monitor && sudo docker compose -f docker-compose.yml exec api python -m app.cli reset-password admin`
+   - **복구 코드 10개는 이때 한 번만 보입니다** — 인쇄해 금고에(비상용 `admin` 것은 특히). 담당자 휴대폰 시계가 맞는지 확인합니다(30초 넘게 어긋나면 코드가 맞지 않음).
 2. **사용자** 화면: 담당자별 개인 계정을 만들고, 공용 `admin` 은 비상용으로만 씁니다(ISMS 2.5.x).
 3. **환경설정 > 메일 서버**: 사내 릴레이 입력 → 테스트 메일.
 4. **환경설정 > 수신자·수신 그룹**: 기본 그룹 '운영팀'에 담당자를 넣습니다(알림 규칙이 이 그룹으로 보냄).
@@ -448,6 +450,9 @@ sudo docker compose -f docker-compose.yml start api
 | api 가 DB 인증 실패 | 예전 설치의 DB 볼륨(`log-monitor_pgdata`)이 남아 비밀번호가 다름 | 새 설치라면 `docker volume rm log-monitor_pgdata` 후 다시 (데이터 삭제됨, 주의) |
 | 화면에서 대시보드·규칙 저장 실패 | `config/` 권한 또는 SELinux | §7.4, `sudo chown -R 10001:10001 config archive` |
 | 첫 관리자 비밀번호를 모름 | 로그를 놓침 | §7.3 의 `reset-password admin` |
+| 인증 앱을 잃음 (2단계 인증) | 휴대폰 교체·분실 | 복구 코드로 로그인 → 메뉴 '2단계 인증 > 휴대폰 바꾸기'(남은 복구 코드 하나로) → 새 휴대폰에 등록. 복구 코드도 없으면 다른 관리자가 사용자 화면 '2단계 초기화', 관리자 모두면 `sudo docker compose -f docker-compose.yml exec api python -m app.cli reset-mfa admin --reason "휴대폰 분실"` |
+| 2단계 인증 사용자가 모두 로그인 못 함 (503) | `WLM_SECRET_KEY` 가 없거나 바뀜 | 예전 키로 되돌리고 `up -d`. 되돌릴 수 없으면 사람마다 `reset-mfa` 후 다시 등록 |
+| 인증 코드가 늘 틀림 | 휴대폰 시계 어긋남 | 휴대폰 시간을 '자동'으로. 서버 시계도 확인(`timedatectl`) |
 | 에이전트가 '오프라인' | 방화벽(6977/6976), API 키, 서버 주소 | PC에서 `Test-NetConnection 서버 -Port 6977`(평문이면 6976), 서버 로그의 `[401]`. 예전 묶음(8080)으로 설치했다면 새 묶음으로 다시 설치 |
 | api 가 뜨지 않고 로그에 `기동 중단:` | TLS 설정 오류(인증서·키 없음·짝 안 맞음·암호 걸린 키, `WLM_TLS` 오타, `WLM_TRUSTED_PROXIES` 에 `*`·호스트 비트가 있는 대역 `10.0.0.5/24`) | 로그의 안내대로 고친 뒤 `up -d api`. 키는 암호 없이, 소유자 uid 10001·0600 |
 | 수집 PC '연결' 이 '평문(화면 포트)' | 0.4 이전 설치 묶음이 8080 으로 보냄 | TLS 를 켜기 전에 새 묶음으로 다시 설치 (§7.5 0단계) |
