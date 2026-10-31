@@ -532,6 +532,22 @@ button.live-badge:hover { border-color: var(--border-strong); }
 .dlv.gave_up { border-color: var(--critical); color: var(--bad-ink); }
 .dlv.skipped { border-style: dashed; color: var(--muted); }
 .dlv-cell { white-space: normal; }
+.ready-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+.ready-chip { padding: 3px 10px; border-radius: 999px; font-weight: 600; border: 1px solid var(--border-strong); }
+.ready-chip.bad { color: var(--bad-ink); border-color: var(--critical); }
+.ready-chip.warn { border-color: var(--warning); }
+.ready-chip.ok { color: var(--good-ink); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.ready-list { list-style: none; margin: 0; padding: 0; }
+.ready-item { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.ready-item:last-child { border-bottom: 0; }
+.ready-mark { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700;
+  color: #fff; background: var(--muted); }
+.ready-item.bad .ready-mark { background: var(--critical); }
+.ready-item.warn .ready-mark { background: var(--warning); }
+.ready-item.ok .ready-mark { background: var(--good); }
+.ready-body { flex: 1; min-width: 0; }
+.ready-detail { font-size: 13px; color: var(--ink-2); margin-top: 2px; overflow-wrap: anywhere; }
+.ready-doc { font-size: 12px; margin-top: 2px; }
 .auth-steps { margin: 0 0 12px; padding-left: 18px; font-size: 13px; color: var(--ink-2); }
 .auth-steps li { margin-bottom: 8px; }
 .mfa-secret { margin: 6px 0; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 8px; font-size: 15px;

@@ -30,7 +30,7 @@ from ..alerts.notifiers import (
     NotifierError,
     WebhookNotifier,
 )
-from ..auth.deps import client_ip, require_permission
+from ..auth.deps import client_ip, require_admin, require_permission
 from ..auth.service import User
 from ..config import settings
 from ..reports import config as report_config
@@ -83,6 +83,14 @@ def _example_message(severity: str) -> AlertMessage:
 
 
 # ------------------------------------------------------------------ 개요
+
+@router.get("/api/readiness")
+async def readiness(admin: User = Depends(require_admin)):
+    """운영 준비도 점검표 (B-75) — 계정·2단계 인증 이름, 받는 곳 오류 등이 들어 있어 관리자만."""
+    from .. import readiness as checks
+
+    return await checks.checklist()
+
 
 @router.get("/api/settings/meta")
 async def meta():

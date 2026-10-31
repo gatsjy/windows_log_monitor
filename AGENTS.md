@@ -60,6 +60,7 @@ server/app/
   alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
+  readiness.py       운영 준비도 점검표(B-75) — 각 화면·보고서의 원천을 모아 판정(collect → judge). 새 운영 신호를 만들면 여기에도 한 줄
   backups.py         DB 백업·복구 시험 상태 (backup 서비스가 남긴 audit_log 로) — 로그 보관 화면·점검 보고서 공용
   oracle.py          Oracle 접속(TNS/SID/서비스/접속문자열)·조회 전용 쿼리·SQL 실행
   secrets.py         환경설정 비밀값 암호화 (WLM_SECRET_KEY)
@@ -71,7 +72,7 @@ server/migrations/   번호순 SQL
 server/tests/        pytest (DB 없이 도는 단위 테스트)
 web/js/
   main.js            해시 라우터 (#/화면/하위?파라미터)
-  views/             화면: dashboard, live, events, alerts, agents, fields, reports(점검 보고서), users·audit·settings(관리자)
+  views/             화면: dashboard, live, events, alerts, agents, fields, reports(점검 보고서), users·audit·settings·readiness(관리자)
   auth.js            로그인·비밀번호 변경 화면, 현재 사용자 (main.js 가 init)
   widgets/           ★ 대시보드 위젯: stat, timeseries, top, events, hosts, text, alerts (live() = 실시간 갱신)
   querylang.js       ★ 검색 문장 파서·매처·옛 링크 접기·문장 편집 (import·DOM 없음 — node 로 시험)
