@@ -72,7 +72,7 @@ server/app/
   integrity.py       감사로그 해시 체인 검증(DB 함수와 따로 파이썬으로)·매일 DB 밖 앵커(archive/integrity-*.json) (ADR-050)
   eventdigest.py     수집 로그 시간별 다이제스트(감사로그 체인에 기록)·다시 계산 — 매일 검증·보관 파일 만들 때 (B-71 2단계)
   cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원, 감사로그 verify-chain, 인증서 tls-init·tls-renew·tls-status — DB 없이)
-  routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음)
+  routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음) · searches(저장한 검색)
 server/migrations/   번호순 SQL
 server/tests/        pytest (DB 없이 도는 단위 테스트)
 web/js/
@@ -83,6 +83,7 @@ web/js/
   querylang.js       ★ 검색 문장 파서·매처·옛 링크 접기·문장 편집 (import·DOM 없음 — node 로 시험)
   querybox.js        검색 문장 입력 칸 (해석·오류 위치·빠른 고침·도움말·자동완성)
   filterbar.js       검색·실시간 필터 막대 (문장이 정본, 드롭다운·수준 칩은 문장을 고치는 창)
+  savedsearch.js     저장한 검색 패널 (저장·적용·더하기·최근 검색)
   livefilter.js      대시보드 실시간 갱신용 조건 판단 (querylang.compileQuery 에 맡김)
   responsive.js      좁은 화면 보정: 표 칸에 data-label(모바일 카드), 카드 격자 줄 단위 재배치 (MutationObserver)
   ruleform.js        알림 규칙 편집 패널 (Snort 식 규칙 문장·우리말 요약·미리보기)
@@ -226,6 +227,8 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - MSSQL ERRORLOG 의 `Error:` 머리줄은 번호 없이 '상세'(5)로 저장됩니다. 오류 번호로 세는 규칙·위젯은 본문 줄 기준입니다(이중 집계 방지).
 - **규칙 예외 (B-46, ADR-051):** 규칙의 결과를 세는 새 코드는 `rule.event_filter(await repository.active_rule_exceptions(rule.name, now))` 로 — 그냥 `event_filter()` 면
   예외가 빠져 화면과 엔진 결과가 달라진다(엔진·규칙 미리보기·알림 뒤 이벤트 수가 이렇게 한다). `rule_exceptions` 는 끝내기만(트리거).
+  - 지금은 `await engine.rule_filter(rule, now)` 하나로 — 저장한 검색(`match.saved`, B-64·ADR-052)의 문장과 걸린 예외를 함께 합친다. 저장한 검색이 없으면 ValueError(그 규칙만 오류).
+  - 규칙이 쓰는 저장한 검색은 탐지 조건이다: 고치는 권한은 `alerts.manage`, 문장을 바꾸면 관리 작업 알림(`routers/searches.py`). 조회 범위 판단은 규칙 자체의 분류만 본다.
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - **알림 설정 판본 (ADR-043):** 설정을 적용하면 `engine.reload()` 가 `_pending` 을 두고 `await engine.record()` 가 판본(`alert_config_versions`, 추가만)·감사로그·약화 알림을 남긴다. 설정을 바꾸는 새 API 는 `routers/alerts._store` 를 거친다(쓰기 전 파일 직접 수정부터 기록 → `reload(force=True, source="ui", actor=…)`).
   - 내장 규칙 이름 `engine.CONFIG_RULE`('알림 설정 변경', kind `config`)은 무음을 건너뛴다. 받는 곳은 바뀌기 전 설정의 규칙들 — 새 약화 판단은 `configdiff._rule_changes` 와 `test_configdiff.py` 의 표에 함께.

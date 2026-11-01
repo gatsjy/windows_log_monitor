@@ -15,7 +15,7 @@ const TRACK = { host: 'by_host', ip: 'by_src', user: 'by_user', category: 'by_ca
 const DISTINCT = [['user', '사용자'], ['host', 'PC'], ['ip', '출발지 IP'], ['event_id', '이벤트 ID']];
 export const distinctText = (d) => (d?.field ? `서로 다른 ${GROUP_LABELS[d.field] ?? d.field.replace(/^f\./, '')} ${fmtNum(d.min)}개 이상` : '');
 const SEV_ORDER = ['critical', 'error', 'warning', 'info'];
-const MATCH_FIELDS = ['category', 'level', 'event_id', 'host', 'user', 'ip', 'source', 'channel', 'provider', 'q', 'query'];
+const MATCH_FIELDS = ['category', 'level', 'event_id', 'host', 'user', 'ip', 'source', 'channel', 'provider', 'q', 'query', 'saved'];
 
 function splitUnit(sec) {
   const [key] = [...UNITS].reverse().find(([, , size]) => sec % size === 0 && sec >= size) || UNITS[0];
@@ -45,7 +45,7 @@ export function signature(r) {
       if (!v) return;
       // 검색 문장은 query:"…" (Snort 의 msg: 와 겹치지 않게)
       parts.push(k.startsWith('f.') ? `field:${k.slice(2)}=${quote(v)}` : k === 'q' ? `content:${quote(v)}`
-        : k === 'query' ? `query:${quote(v)}` : `${k}:${v}`);
+        : k === 'query' || k === 'saved' ? `${k}:${quote(v)}` : `${k}:${v}`);
     });
     parts.push(`threshold:type both, track ${TRACK[r.group_by] || `by_${r.group_by.replace(/^f\./, '')}`}, count ${r.threshold}, seconds ${r.window_sec}`);
     if (r.distinct?.field) parts.push(`distinct:${TRACK[r.distinct.field] || `by_${r.distinct.field.replace(/^f\./, '')}`} ${r.distinct.min}`);
@@ -106,10 +106,14 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
   };
   const body = openDrawer({ title: isNew ? '새 알림 규칙' : '알림 규칙 수정', subtitle: isNew ? '규칙 번호(SID)는 저장할 때 자동으로 붙습니다' : `SID ${r.sid ?? '–'} · ${r.group || '기타'}` });
   body.innerHTML = '<div class="skeleton"></div>';
-  const [meta, fields] = await Promise.all([
+  const [meta, fields, searches] = await Promise.all([
     api.get('/api/meta').catch(() => ({ categories: CATEGORY_LABELS })),
     api.get('/api/fields').catch(() => ({ items: [] })),
+    api.get('/api/searches').catch(() => ({ items: [] })),
   ]);
+  // 저장한 검색(B-64) — 고른 것이 목록에 없으면(지워졌거나 남의 비공개 검색) 이름만 남겨 둔다
+  const savedNames = searches.items.map((x) => x.name);
+  if (r.match.saved && !savedNames.includes(r.match.saved)) savedNames.unshift(r.match.saved);
   const categories = Object.keys(meta.categories || CATEGORY_LABELS);
   const groups = [...new Set(config.rules.map((x) => x.group).filter(Boolean))];
   const fieldPaths = [...new Set(fields.items.map((f) => f.path))].slice(0, 300);
@@ -185,6 +189,9 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
           <label class="field"><span>출발지 IP</span><input class="input" data-m="ip" value="${r.match.ip ?? ''}" placeholder="203.0.113.5"></label>
         </div>
         <label class="field"><span>메시지에 포함 (여러 단어는 <code>a|b</code> = 둘 중 하나)</span><input class="input" data-m="q" value="${r.match.q ?? ''}" placeholder="Failed password|Invalid user"></label>
+        <label class="field"><span>저장한 검색 (선택 — 그 문장도 함께 만족, 검색 화면에서 고치면 다음 평가부터 반영)</span>
+          <select class="select" data-m="saved"><option value="">없음</option>
+            ${savedNames.map((n) => html`<option value="${n}" ${n === r.match.saved ? 'selected' : ''}>${n}</option>`)}</select></label>
         <div class="field"><span>검색 문장 (선택 — 위 조건과 모두 만족, 이벤트 검색과 같은 문법)</span><div data-rule-query></div></div>
         <div class="field"><span>원본 필드 조건</span>
           <datalist id="field-paths">${fieldPaths.map((p) => html`<option value="${p}">`)}</datalist>

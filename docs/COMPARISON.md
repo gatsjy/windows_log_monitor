@@ -181,7 +181,7 @@
 | 앞뒤 로그 | Kibana View surrounding documents, Graylog Show surrounding messages, Grafana Show context | ❌ 검색을 다시 짜야 함 | B-61 |
 | 통계 표 | Seq SQL(group by·distinct·행 상한), Datadog Log Analytics | △ 위젯(top·timeseries·stat)으로만. 이벤트 CSV 없음 | B-62 |
 | 로그온 세션 | Datadog Transactions(공통 키로 묶어 지속 시간) | ❌ 4624 를 하나씩 봄 | B-63 |
-| 저장한 검색 | Seq signals(공유·보호, 보존·알림·대시보드 재사용), Kibana saved queries | △ '링크 복사'(절대 구간)만 | B-64 |
+| 저장한 검색 | Seq signals(공유·보호, 보존·알림·대시보드 재사용), Kibana saved queries | ○ 저장·공유·보호·최근 검색, 알림 규칙 `match.saved` (위젯·보고서 재사용은 남음) | B-64 |
 | 값 자동완성·필드 패널·열 | Kibana 값 제안·필드 상위 값·히스토그램 끌기, Grafana Loki label browser | △ 키·미리 받은 목록만 자동완성, 표 열 6개 고정 | B-65 |
 | 조사 플레이북 | Security Onion Guided Analysis(질문 + 알림 값으로 채운 검색), Elastic investigation guides | ❌ 규칙 설명 한 줄, 최근 이벤트 5건·검색 링크 | B-66 |
 | 개체 페이지·관련 알림 | Sentinel entity pages, OpenSearch 자동 상관, Elastic Insights > Correlations | △ `user:`·`ip:`·`host:` 검색, 같은 규칙·대상의 미해결 알림만 | B-67 |

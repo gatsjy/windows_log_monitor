@@ -76,6 +76,7 @@ export function matchText(match = {}) {
     if (k === 'ip') return `IP ${v}`;
     if (k === 'provider') return `공급자 ${v}`;
     if (k === 'q') return `"${v}" 포함`;
+    if (k === 'saved') return `저장한 검색 '${v}'`;
     if (k === 'query') {
       try { return describe(parseTerms(v)); } catch { return `문장: ${v}`; }
     }

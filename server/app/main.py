@@ -23,7 +23,7 @@ from .auth import service as auth_service
 from .auth.deps import require_user
 from .config import display_zone, settings
 from .reports.scheduler import scheduler as report_scheduler
-from .routers import agentpkg, alerts, audit, auth, dashboards, ingest, query, reports, users
+from .routers import agentpkg, alerts, audit, auth, dashboards, ingest, query, reports, searches, users
 from .routers import settings as settings_router
 
 logging.basicConfig(
@@ -225,6 +225,7 @@ app.include_router(query.router, dependencies=[Depends(require_user)])
 app.include_router(dashboards.router, dependencies=[Depends(require_user)])
 app.include_router(alerts.router, dependencies=[Depends(require_user)])
 app.include_router(reports.router, dependencies=[Depends(require_user)])
+app.include_router(searches.router, dependencies=[Depends(require_user)])
 app.include_router(users.router)
 app.include_router(audit.router)
 app.include_router(settings_router.router)

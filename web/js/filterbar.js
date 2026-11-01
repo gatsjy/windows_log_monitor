@@ -7,6 +7,7 @@ import { LEVELS, categoryLabel, levelIcon, sourceLabel } from './levels.js';
 import { sinceDate } from './livefilter.js';
 import { KEY_LABELS, queryBox } from './querybox.js';
 import { foldParams, parseTerms, setKey, setLevels } from './querylang.js';
+import { openSavedSearches } from './savedsearch.js';
 import { TIME_RANGES, fmtTime, html, qs, toast } from './util.js';
 
 const KNOWN_KEYS = ['since', 'until', 'host', 'source', 'category', 'channel', 'provider', 'user', 'ip', 'level', 'event_id', 'q', 'query'];
@@ -163,6 +164,7 @@ export async function filterBar(el, initial, { showTime = true, onChange, loaded
         ${levels && !levels.length ? html`<span class="muted fb-hint">수준 조건이 서로 맞지 않습니다</span>` : ''}
       </div>
       <div class="fb-group fb-actions">
+        <button type="button" class="btn ghost" data-saved title="자주 쓰는 검색을 저장하고 불러옵니다 · 최근 검색">저장한 검색</button>
         ${showTime ? html`<button type="button" class="btn ghost" data-copy title="지금 보고 있는 구간으로 고정한 링크">링크 복사</button>` : ''}
         <button type="button" class="btn ghost" data-reset>초기화</button>
       </div>
@@ -190,6 +192,10 @@ export async function filterBar(el, initial, { showTime = true, onChange, loaded
     }));
     controls.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', () => commit({ [b.dataset.remove]: '' })));
     controls.querySelector('[data-clear-range]')?.addEventListener('click', () => commit({ since: '24h', until: '' }));
+    controls.querySelector('[data-saved]').addEventListener('click', () => openSavedSearches({
+      query: () => box.committed,
+      apply: (text) => { if (!destroyed) box.set(text, { commit: true }); },
+    }));
     controls.querySelector('[data-reset]').addEventListener('click', () => {
       state = showTime ? { since: '24h' } : {};
       box.set('');

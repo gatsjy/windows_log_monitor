@@ -1359,6 +1359,63 @@ async def alert_stats(since: datetime) -> dict[str, Any]:
     }
 
 
+# ------------------------------------------------------------------ 저장한 검색 (B-64)
+
+_SAVED_COLUMNS = "id, name, query, description, owner, shared, protected, created_at, updated_at"
+
+
+async def list_saved_searches(username: str, everything: bool = False) -> list[dict[str, Any]]:
+    """내 검색 + 공유된 검색 (관리자는 전부)."""
+    if everything:
+        return await db.fetch_all(f"SELECT {_SAVED_COLUMNS} FROM saved_searches ORDER BY lower(name)")
+    return await db.fetch_all(f"SELECT {_SAVED_COLUMNS} FROM saved_searches WHERE owner = %s OR shared ORDER BY lower(name)",
+                              (username,))
+
+
+async def get_saved_search(search_id: int) -> dict[str, Any] | None:
+    return await db.fetch_one(f"SELECT {_SAVED_COLUMNS} FROM saved_searches WHERE id = %s", (search_id,))
+
+
+async def saved_search_names() -> set[str]:
+    return {r["name"] for r in await db.fetch_all("SELECT name FROM saved_searches")}
+
+
+async def saved_query(name: str) -> str | None:
+    """알림 규칙의 match.saved — 이름으로 검색 문장."""
+    row = await db.fetch_one("SELECT query FROM saved_searches WHERE name = %s", (name,))
+    return row["query"] if row else None
+
+
+async def insert_saved_search(name: str, query: str, description: str, owner: str, shared: bool) -> dict[str, Any] | None:
+    """같은 이름이 있으면 None."""
+    return await db.fetch_one(
+        f"INSERT INTO saved_searches (name, query, description, owner, shared) VALUES (%s, %s, %s, %s, %s)"
+        f" ON CONFLICT (name) DO NOTHING RETURNING {_SAVED_COLUMNS}", (name, query, description, owner, shared))
+
+
+async def update_saved_search(search_id: int, name: str, query: str, description: str, shared: bool,
+                              protected: bool) -> dict[str, Any] | None:
+    try:
+        return await db.fetch_one(
+            f"UPDATE saved_searches SET name = %s, query = %s, description = %s, shared = %s, protected = %s, updated_at = now()"
+            f" WHERE id = %s RETURNING {_SAVED_COLUMNS}", (name, query, description, shared, protected, search_id))
+    except psycopg.errors.UniqueViolation:
+        return None
+
+
+async def delete_saved_search(search_id: int) -> dict[str, Any] | None:
+    return await db.fetch_one(f"DELETE FROM saved_searches WHERE id = %s RETURNING {_SAVED_COLUMNS}", (search_id,))
+
+
+async def recent_searches(username: str, since: datetime, limit: int = 10) -> list[dict[str, Any]]:
+    """최근 검색 문장 — 접속기록(events.search)에서. 같은 문장은 한 번, 마지막에 쓴 순."""
+    return await db.fetch_all(
+        "SELECT detail->'query'->>'query' AS query, max(at) AS last_at FROM audit_log"
+        " WHERE action = 'events.search' AND actor = %s AND at >= %s AND jsonb_typeof(detail->'query'->'query') = 'string'"
+        " AND detail->'query'->>'query' <> ''"
+        " GROUP BY 1 ORDER BY 2 DESC LIMIT %s", (username, since, limit))
+
+
 # ------------------------------------------------------------------ 규칙 예외 (B-46)
 
 _EXCEPTION_COLUMNS = ("id, rule, term, reason, created_by, created_at, expires_at, review_at, ended_at, ended_by, end_reason")

@@ -48,6 +48,19 @@ HISTORY_VERSIONS = 200   # 다시 켠 규칙을 비교하려고 거슬러 보는
 SOURCE_LABELS = {"ui": "화면에서 저장", "file": "서버에서 파일 직접 수정", "startup": "서버 시작 때 발견(꺼져 있는 동안 수정)"}
 
 
+async def rule_filter(rule: Rule, now: datetime, extra_exceptions: list[str] | tuple[str, ...] = ()) -> EventFilter:
+    """규칙이 실제로 보는 조건 — 저장한 검색(match.saved, B-64) + 걸린 규칙 예외(B-46). 엔진·규칙 미리보기·알림 뒤 이벤트 수·
+    예외 미리 보기가 같이 쓴다(따로 만들면 화면과 엔진의 결과가 달라진다). 평가마다 읽는다 — 화면에서 바꾸면 다음 주기부터.
+    저장한 검색이 없어졌으면 그 규칙만 오류(규칙 상태에 보인다)."""
+    saved = None
+    if rule.match.get("saved"):
+        saved = await repository.saved_query(str(rule.match["saved"]))
+        if saved is None:
+            raise ValueError(f"저장한 검색 '{rule.match['saved']}' 이(가) 없습니다")
+    exceptions = await repository.active_rule_exceptions(rule.name, now)
+    return rule.event_filter([*exceptions, *extra_exceptions], saved=saved)
+
+
 def _with_group(f: EventFilter, group_by: str, key: str) -> EventFilter:
     """묶음 값(예: PC 이름)을 필터에 더한다 → 그 묶음의 이벤트만."""
     if group_by == "none":
@@ -415,9 +428,7 @@ class AlertEngine:
         if rule.kind == "stream_silent":
             return await self._evaluate_stream_silent(rule, now)
         since = now - rule.window
-        # 규칙 예외(B-46)는 평가할 때마다 읽는다 — 화면에서 끝내거나 만료되면 다음 주기부터 다시 잡는다
-        exceptions = await repository.active_rule_exceptions(rule.name, now)
-        base = replace(rule.event_filter(exceptions), received_since=since)
+        base = replace(await rule_filter(rule, now), received_since=since)
         fired = []
         if run is not None:
             run.query_at = datetime.now(UTC)   # 이 쿼리가 본 구간의 끝 (주기 시작 시각이 아니라)

@@ -21,7 +21,12 @@ from .. import db, repository
 from ..alerts import adminwatch, configdiff, coverage, health, ruleedit, targets
 from ..alerts.builtin import SYSTEM_RULES
 from ..alerts.dispatcher import dispatcher
-from ..alerts.engine import _with_group, engine, stream_label  # _with_group: 엔진과 같은 묶음 조건 (알림 뒤 이벤트 수)
+from ..alerts.engine import (  # _with_group: 엔진과 같은 묶음 조건 (알림 뒤 이벤트 수)
+    _with_group,
+    engine,
+    rule_filter,
+    stream_label,
+)
 from ..alerts.health import RULE_LABELS
 from ..alerts.message import local
 from ..alerts.notifiers import SEVERITY_LABELS, NotifierError
@@ -189,6 +194,9 @@ async def _validate(text: str) -> AlertConfig:
                      | {n for n in config.fallback_notify if n not in known})
     if unknown:
         raise HTTPException(422, f"없는 알림 대상: {', '.join(unknown)} — 환경설정에서 수신 그룹·외부 연동을 먼저 만드세요")
+    wanted = {r.match["saved"] for r in config.rules if r.match.get("saved")}
+    if missing := sorted(wanted - await repository.saved_search_names()) if wanted else []:
+        raise HTTPException(422, f"없는 저장한 검색: {', '.join(missing)} — 이벤트 검색에서 먼저 저장하세요")
     return config
 
 
@@ -415,9 +423,12 @@ async def preview_rule(body: PreviewBody, admin: User = Depends(require_permissi
         return {"kind": rule.kind, "silent": [{"host": r["host"], "channel": stream_label(r["source"], r["channel"]),
                                                "last_seen": r["last_at"]} for r in rows]}
     # 미리보기도 이벤트 수·대상 이름을 돌려주므로 사용자 그룹의 조회 범위를 붙인다 (ADR-025)
-    # 미리보기는 지금 걸린 규칙 예외(B-46)까지 반영 — 실제 평가와 같은 결과
-    exceptions = await repository.active_rule_exceptions(rule.name, now)
-    base = replace(rule.event_filter(exceptions), received_since=now - timedelta(hours=body.hours), scopes=admin.scopes)
+    # 미리보기는 저장한 검색(B-64)·지금 걸린 규칙 예외(B-46)까지 반영 — 실제 평가와 같은 결과
+    try:
+        rule_f = await rule_filter(rule, now)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    base = replace(rule_f, received_since=now - timedelta(hours=body.hours), scopes=admin.scopes)
     window_sec = max(1, _seconds(rule.window))
     matched = (await repository.count(base))["current"]
     rows = await repository.rule_preview(base, rule.group_by, window_sec, rule.threshold,
@@ -483,10 +494,12 @@ def _exception_state(e: dict[str, Any], now: datetime) -> str:
 
 async def _exception_effect(rule: Rule, term: str, admin: User, now: datetime) -> dict[str, int]:
     """최근 24시간 동안 이 예외가 규칙에서 빼는 이벤트 수 (지금 걸린 다른 예외까지 반영, 조회 범위 적용)."""
-    active = await repository.active_rule_exceptions(rule.name, now)
     since = now - timedelta(hours=EXCEPTION_PREVIEW_HOURS)
-    before = replace(rule.event_filter(active), received_since=since, scopes=admin.scopes)
-    after = replace(rule.event_filter([*active, term]), received_since=since, scopes=admin.scopes)
+    try:
+        before = replace(await rule_filter(rule, now), received_since=since, scopes=admin.scopes)
+        after = replace(await rule_filter(rule, now, [term]), received_since=since, scopes=admin.scopes)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     matched = (await repository.count(before))["current"]
     return {"matched": matched, "removed": matched - (await repository.count(after))["current"], "hours": EXCEPTION_PREVIEW_HOURS}
 
@@ -739,8 +752,11 @@ async def _followup(alert: dict[str, Any]) -> dict[str, Any] | None:
     rule = next((r for r in engine.config.rules if r.name == alert["rule"]), None)
     if rule is None or rule.kind != "count" or not alert["is_latest"]:
         return None
-    exceptions = await repository.active_rule_exceptions(rule.name, datetime.now(UTC))   # 엔진과 같은 조건 (B-46)
-    f = _with_group(replace(rule.event_filter(exceptions), received_since=alert["fired_at"]), rule.group_by, alert["group_key"])
+    try:
+        rule_f = await rule_filter(rule, datetime.now(UTC))   # 엔진과 같은 조건 (저장한 검색·규칙 예외)
+    except ValueError:
+        return None
+    f = _with_group(replace(rule_f, received_since=alert["fired_at"]), rule.group_by, alert["group_key"])
     try:
         result = await repository.count_and_last(f)
     except db.QueryTimeout:

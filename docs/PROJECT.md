@@ -231,6 +231,9 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `POST /api/agents/delete` | 여러 PC 를 목록에서 한 번에 삭제 `{hosts:[...]}` (최대 500, 관리자). 응답 `deleted`·`missing`·`still_online` |
 | `GET /api/fields` | 필드 카탈로그 |
 | `GET /api/live?<필터>` | SSE. `event: events` 로 배열 전송 (시간 필터 무시). 조건이 틀리면 스트림 전에 400 |
+| `GET /api/searches` | 저장한 검색 (B-64): 내 것 + 공유된 것(관리자는 전부). 행마다 `used_by`(이 검색을 `match.saved` 로 쓰는 알림 규칙)·`can_edit` |
+| `POST /api/searches` · `PUT /api/searches/{id}` · `DELETE /api/searches/{id}` | `{name, query, description, shared, protected}` 저장·고치기·지우기. 문장은 검증해 정본 표기로 저장(틀리면 400), 이름 겹침 409. 고치고 지우기는 만든 사람·관리자, 보호(`protected`)는 관리자만. 알림 규칙이 쓰는 검색은 `alerts.manage` 만 고치고(문장을 바꾸면 관리 작업 알림), 이름 바꾸기·지우기는 409. 감사로그 `search.save`·`update`·`delete` |
+| `GET /api/searches/recent` | 최근 30일 내가 검색한 문장 (접속기록 `events.search` 에서, 같은 문장은 한 번·최근 순 10개) |
 | `GET /api/search/parse?query=` | 검색 문장 해석만 (`terms`·정규형 `canonical`·모순 `never`). 데이터 조회 없음 — 실시간 화면이 오류 위치를 받는 데 쓴다 |
 | `GET/PUT /api/dashboards/{name}` | 대시보드 JSON 읽기/저장 (저장은 audit_log 기록) |
 | `GET /api/alerts?since=&rule=&severity=&host=&status=` | 알림 이력 (전송·처리 상태 포함) + `counts`(기간 안 처리 상태별 수). `status` = `open`·`acked`·`resolved`·`unresolved` |
@@ -302,7 +305,9 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
 - **기술:** 순수 HTML/CSS/ES 모듈. 빌드, npm, 외부 CDN 없이 동작합니다(폐쇄망에서도 동작).
 - **라우팅:** `#/dashboard/<이름>`, `#/live`, `#/events?<필터>`, `#/alerts`, `#/agents`, `#/fields?source=&path=`, `#/reports/<번호>`
   - 필터는 URL에 남기 때문에 주소를 공유하면 같은 화면이 열립니다.
-- **필터 막대 (이벤트 검색·실시간):** 1행 = 검색 문장 칸(§4.1), 2행 = 기간·PC·분류·채널·수준 칩·링크 복사·초기화.
+- **필터 막대 (이벤트 검색·실시간):** 1행 = 검색 문장 칸(§4.1), 2행 = 기간·PC·분류·채널·수준 칩·저장한 검색·링크 복사·초기화.
+  - **저장한 검색 (B-64):** 지금 문장을 이름·설명·공유(·보호: 관리자)와 함께 저장하고, 목록에서 [적용](문장을 바꿈)·[더하기](지금 문장에 AND)·고치기·지우기. 기간은 저장하지 않습니다(불러올 때 지금 기간).
+    최근 30일 내가 검색한 문장도 다시 씁니다. 알림 규칙이 쓰는 검색은 '알림 규칙 n개가 씀'으로 보이고 지울 수 없습니다(§6.4).
   - 문장이 조건의 정본입니다. 드롭다운·수준 칩은 문장을 보여 주고 고치는 창입니다(그 키의 조건이 값 하나면 그 값, 아니면 '문장 조건').
   - 입력 중에 바로 해석해 `해석: …` 또는 틀린 곳(강조·빠른 고침)을 보여 주고, Enter·포커스 이동 때 확정합니다. 틀린 문장은 검색하지 않습니다.
   - [?] 도움말(키 표·예문), 자동완성(키·수준·분류·PC·채널·소스, 이미 받아 둔 목록만), `/` 로 문장 칸으로 이동.
@@ -409,7 +414,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 |---|---|---|
 | `name` | (필수) | 규칙 이름. 고유해야 하고, 쿨다운 기준이 됩니다. 이름을 바꾸면 새 규칙으로 취급합니다 |
 | `kind` | `count` | `count`: 이벤트 수 기준 / `agent_silent`: PC 수신 끊김 / `stream_silent`: PC 는 살아 있는데 늘 오던 채널이 끊김 |
-| `match` | `{}` | 검색 조건과 같은 키: `host, channel, provider, source, category, user, ip, level, event_id, q, f.<경로>`, `query`(검색 문장 §4.1, 문자열만 — YAML 에서는 작은따옴표로 감싸기) |
+| `match` | `{}` | 검색 조건과 같은 키: `host, channel, provider, source, category, user, ip, level, event_id, q, f.<경로>`, `query`(검색 문장 §4.1, 문자열만 — YAML 에서는 작은따옴표로 감싸기), `saved`(저장한 검색의 이름, B-64 — 그 문장도 함께 만족. 검색 화면에서 문장을 고치면 다음 평가부터 반영, 없으면 저장 422·평가 오류) |
 | `window` | `5m` | 최근 이 시간 동안 **수신된** 이벤트를 셉니다 (늦게 도착한 오류도 알림) |
 | `threshold` | `1` | 이 건수 이상이면 알림 |
 | `group_by` | `host` | 이 값마다 따로 세고 따로 알림. `ip`(공격 출발지별), `user`(계정별)도 가능. `none` 이면 전체 합산 |
@@ -513,6 +518,9 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
   추가 전 '미리 보기'로 최근 24시간에 빠지는 건수를 보고, 추가하면 관리 작업 알림으로 다른 관리자에게도 알립니다. 알림 상세의 [예외로…]는 묶음 기준 값으로 조건을 채워 엽니다.
   규칙 미리보기·알림 뒤 이어진 이벤트 수도 예외를 반영합니다. 점검 보고서에 걸린 예외 수와 검토일 지남('점검 필요')·7일 안 만료·만료 없음 표.
   API: `GET /api/alerts/exceptions` · `POST /api/alerts/exceptions/preview` · `POST /api/alerts/exceptions` `{rule, term, reason, expires_at?, review_at?}` · `POST /api/alerts/exceptions/{id}/end`
+- **저장한 검색을 쓰는 규칙 (B-64, ADR-052):** 규칙 편집기의 '저장한 검색'을 고르면 `match.saved` — 점검에 쓰는 검색과 알림 조건을 한 곳에서 고칩니다.
+  그 검색은 알림 규칙을 고칠 수 있는 사람(`alerts.manage`)만 고치고, 문장을 바꾸면 관리 작업 알림이 갑니다. 쓰는 동안은 이름 바꾸기·지우기를 막습니다.
+  조회 범위 판단은 규칙 자체의 분류(`match.category`·`query` 의 `category:`)만 보므로, 범위가 정해진 사용자에게 보이려면 규칙에도 분류를 적습니다.
 - **알림 이력 (처리, ADR-029):**
   - 처리 상태 필터: 처리 안 됨 / 확인함 / 해결됨 / 전체 (각각 기간 안 건수). 기간은 24시간·7일·30일·1년·전체(보관기간 안 전부), 처리 안 됨·확인함은 기본이 '전체'입니다(사이드바 숫자와 같은 범위).
   - 행마다 처리 상태 칩(누가·언제는 칩에 마우스), 무음 중 발생이면 '무음' 칩, 메모 수.

@@ -722,6 +722,14 @@ body.auth-open .app { visibility: hidden; }
 .field > span em { color: var(--critical); font-style: normal; }
 .field .input, .field .select { width: 100%; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* 저장한 검색 (B-64) */
+.saved-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.saved-item { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.saved-main { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.saved-q { display: block; overflow-wrap: anywhere; font-size: 12.5px; }
+.saved-meta, .saved-desc { font-size: 12.5px; }
+.saved-apply { height: auto; text-align: left; white-space: normal; }
+.saved-apply code { overflow-wrap: anywhere; }
 .cond-list { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .cond-row { display: grid; grid-template-columns: minmax(0, 1.4fr) auto minmax(0, 1fr) auto; gap: 6px; align-items: center; width: 100%; }
 .sentence-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }

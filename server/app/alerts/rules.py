@@ -25,7 +25,8 @@ SILENT_KINDS = ("agent_silent", "stream_silent")   # 끊김 규칙: 다시 들�
 # 사람이 검토하지 않은 보안 알림이 '해결됨'으로 보고서에 남지 않게 운영 규칙에만 auto 를 단다
 RESOLVE_MODES = ("manual", "auto")
 # query = 검색 문장 (B-01). 다른 키와 AND
-MATCH_KEYS = {"host", "channel", "provider", "source", "category", "user", "ip", "level", "event_id", "q", "query"}
+# saved = 저장한 검색의 이름(B-64) — 엔진이 그 문장을 규칙 문장 앞에 붙인다(engine.rule_filter)
+MATCH_KEYS = {"host", "channel", "provider", "source", "category", "user", "ip", "level", "event_id", "q", "query", "saved"}
 
 
 class ConfigError(ValueError):
@@ -59,13 +60,14 @@ class Rule:
     distinct_min: int = 0
     resolve: str = "manual"
 
-    def event_filter(self, exceptions: tuple[str, ...] | list[str] = ()) -> EventFilter:
+    def event_filter(self, exceptions: tuple[str, ...] | list[str] = (), saved: str | None = None) -> EventFilter:
         """exceptions: 규칙 예외(B-46)의 조건들(정본 표기) — 문장에 제외 항(-조건)으로 덧붙인다. 검색 문장의 제외 의미 그대로
-        (값이 없는 이벤트는 남김, 케이스 표가 보장). 예외끼리는 각각 뺀다(하나라도 맞으면 제외)."""
-        if not exceptions:
-            return EventFilter.from_params(self.match, default_since=None)
-        match = dict(self.match)
-        match["query"] = " ".join([str(match.get("query") or ""), *(f"-{t}" for t in exceptions)]).strip()
+        (값이 없는 이벤트는 남김, 케이스 표가 보장). 예외끼리는 각각 뺀다(하나라도 맞으면 제외).
+        saved: match.saved 가 가리키는 저장한 검색의 문장(B-64) — 규칙 문장 앞에 붙인다(AND). 찾는 일은 engine.rule_filter 가."""
+        match = {k: v for k, v in self.match.items() if k != "saved"}
+        if not exceptions and not saved:
+            return EventFilter.from_params(match, default_since=None)
+        match["query"] = " ".join([saved or "", str(match.get("query") or ""), *(f"-{t}" for t in exceptions)]).strip()
         return EventFilter.from_params(match, default_since=None)
 
 
