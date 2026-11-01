@@ -40,6 +40,11 @@ export default {
 
     if (metric === 'rate') {
       const s = await api.get('/api/stats/summary');
+      if (s.ingest_per_min == null) {   // 조회 범위가 있으면 전체 수집 속도는 보이지 않는다 (B-27)
+        body.innerHTML = html`<div class="stat"><div class="stat-value">–</div>
+          <div class="stat-meta">조회 범위가 정해진 사용자에게는 전체 수집 속도를 보이지 않습니다</div></div>`;
+        return;
+      }
       body.innerHTML = html`<div class="stat">
         <div class="stat-value"><span data-value>${fmtCompact(Math.round(s.ingest_per_min))}</span><small>건/분</small></div>
         <div class="stat-meta">최근 1분 수신 · 5분 평균 ${fmtNum(Math.round(s.ingest_per_min_5m))}건/분</div></div>`;

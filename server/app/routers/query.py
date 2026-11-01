@@ -338,20 +338,30 @@ async def stats_top(request: Request, field: str = "host", limit: int = Query(10
 
 @router.get("/api/stats/summary")
 async def stats_summary(request: Request):
-    """상단 상태 표시줄용: PC 상태 수 + 최근 수집 속도 + 확인 안 된 알림 수(사이드바 숫자, 조회 범위 반영)."""
+    """상단 상태 표시줄용: PC 상태 수 + 최근 수집 속도 + 확인 안 된 알림 수(사이드바 숫자).
+    조회 범위가 있으면 PC·알림 수는 범위 안만(수집 PC 화면·알림 목록과 같은 기준), 수집 속도·실시간 구독 수는 프로세스 전체 합이라
+    나눌 수 없어 보내지 않는다 — 병원 전체 규모를 짐작하지 않게 (B-27, ADR-025)."""
     user = request.state.user
+    day_ago = datetime.now(UTC) - timedelta(hours=24)
     if user.scopes is None:
-        alerts_open = await repository.count_open_alerts()
-    else:
-        alerts_open = count_by_status(user, await repository.alert_group_counts(status="open"))["open"]
+        return {
+            "agents": await repository.agent_counts(settings.heartbeat_online_sec, settings.heartbeat_stale_sec),
+            "ingest_per_min": live.ingest_rate.per_minute(60),
+            "ingest_per_min_5m": live.ingest_rate.per_minute(300),
+            "live_subscribers": live.broadcaster.subscriber_count,
+            "alerts_24h": await repository.count_alerts(day_ago),
+            "alerts_open": await repository.count_open_alerts(),
+            "server_time": datetime.now(UTC), "scoped": False,
+        }
+    agents = await repository.agents(datetime.now(UTC) - timedelta(days=7), user.scopes)
+    states = [agent_status(a["silent_sec"]) for a in agents]
+    counts = {s: states.count(s) for s in ("online", "stale", "offline")}
     return {
-        "agents": await repository.agent_counts(settings.heartbeat_online_sec, settings.heartbeat_stale_sec),
-        "ingest_per_min": live.ingest_rate.per_minute(60),
-        "ingest_per_min_5m": live.ingest_rate.per_minute(300),
-        "live_subscribers": live.broadcaster.subscriber_count,
-        "alerts_24h": await repository.count_alerts(datetime.now(UTC) - timedelta(hours=24)),
-        "alerts_open": alerts_open,
-        "server_time": datetime.now(UTC),
+        "agents": {"total": len(agents), **counts},
+        "ingest_per_min": None, "ingest_per_min_5m": None, "live_subscribers": None,
+        "alerts_24h": sum(count_by_status(user, await repository.alert_group_counts(since=day_ago)).values()),
+        "alerts_open": count_by_status(user, await repository.alert_group_counts(status="open"))["open"],
+        "server_time": datetime.now(UTC), "scoped": True,
     }
 
 

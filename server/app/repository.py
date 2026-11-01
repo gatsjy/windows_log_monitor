@@ -1357,6 +1357,15 @@ async def alert_stats(since: datetime) -> dict[str, Any]:
     }
 
 
+async def alert_rule_groups(since: datetime) -> list[dict]:
+    """(규칙, 대상, 심각도)별 since 이후 수·마지막 발생과 전체 기간 마지막 발생 — 조회 범위가 있는 사용자의 알림 화면 숫자를
+    보이는 (규칙, 대상)만으로 다시 셀 때 (B-27, alerts/visibility.alert_visible 로 거른다)."""
+    return await db.fetch_all(
+        "SELECT rule, group_key, severity, count(*) FILTER (WHERE fired_at >= %s) AS n,"
+        " max(fired_at) FILTER (WHERE fired_at >= %s) AS last_recent, max(fired_at) AS last_ever"
+        " FROM alerts GROUP BY 1, 2, 3", (since, since))
+
+
 async def count_alerts(since: datetime) -> int:
     row = await db.fetch_one("SELECT count(*) AS n FROM alerts WHERE fired_at >= %s", (since,))
     return row["n"]

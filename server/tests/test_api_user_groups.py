@@ -120,3 +120,24 @@ def test_group_validation_and_listing(ctx):
     assert {g["name"] for g in listing["items"]} == {"DB팀", "의료정보과", "보안팀"} and "alerts.manage" in listing["permissions"]
     users = {u["username"]: u["groups"] for u in admin.get("/api/users", headers=CSRF).json()["items"]}
     assert users["both-user"] == ["DB팀", "의료정보과"]
+
+
+def test_summary_and_alert_counts_follow_scope(ctx):
+    """요약 숫자도 범위 안만 (B-27): 상단 상태 표시줄의 PC·알림 수, 알림 화면의 심각도별·규칙별 수. 수집 속도는 전체 합이라 보내지 않는다.
+    예전에는 범위가 있는 사용자도 병원 전체 PC 수·알림 수를 보았다(ADR-025 한계)."""
+    admin, c = ctx
+    with psycopg.connect(os.environ["WLM_DATABASE_URL"], autocommit=True) as conn:
+        for rule, key, severity in (("범위 시험", "MED-01", "error"), ("범위 시험", "WEB-T", "warning"),
+                                    ("범위 시험", "DB-T", "critical"), ("다른 규칙", "WEB-T", "critical")):
+            conn.execute("INSERT INTO alerts (rule, severity, group_key, event_count, payload) VALUES (%s, %s, %s, 1, '{}')",
+                         (rule, severity, key))
+    full = admin.get("/api/stats/summary", headers=CSRF).json()
+    mine = c["med-user"].get("/api/stats/summary", headers=CSRF).json()
+    assert full["scoped"] is False and full["agents"]["total"] == 4 and full["alerts_24h"] >= 4 and full["ingest_per_min"] is not None
+    assert mine["scoped"] is True and mine["agents"]["total"] == 2           # MED-01·med-02
+    assert mine["ingest_per_min"] is None and mine["live_subscribers"] is None
+    assert mine["alerts_24h"] == 1 and mine["alerts_open"] == 1
+    cfg = c["med-user"].get("/api/alerts/config", headers=CSRF).json()
+    assert cfg["by_severity"] == {"error": 1}
+    whole = admin.get("/api/alerts/config", headers=CSRF).json()
+    assert whole["by_severity"].get("critical", 0) >= 2

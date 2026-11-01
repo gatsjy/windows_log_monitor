@@ -71,6 +71,25 @@ def scrub_silence(user: User, silence: dict[str, Any]) -> dict[str, Any]:
     return silence
 
 
+def alert_stats_for(user: User, groups: list[dict[str, Any]]) -> dict[str, Any]:
+    """repository.alert_rule_groups 결과 → repository.alert_stats 와 같은 모양(by_rule·by_severity·last_fired)을
+    이 사용자에게 보이는 알림만으로 (B-27 — 범위가 있는 사용자가 심각도별·규칙별 수로 병원 전체 규모를 짐작하지 않게)."""
+    by_rule: dict[str, dict[str, Any]] = {}
+    by_severity: Counter[str] = Counter()
+    last_fired: dict[str, Any] = {}
+    for g in groups:
+        if not alert_visible(user, g):
+            continue
+        rule = g["rule"]
+        if g["n"]:
+            cur = by_rule.setdefault(rule, {"n": 0, "last_fired_at": None})
+            cur["n"] += g["n"]
+            cur["last_fired_at"] = max(filter(None, (cur["last_fired_at"], g["last_recent"])), default=None)
+            by_severity[g["severity"]] += g["n"]
+        last_fired[rule] = max(filter(None, (last_fired.get(rule), g["last_ever"])), default=None)
+    return {"by_rule": by_rule, "by_severity": dict(by_severity), "last_fired": last_fired}
+
+
 def count_by_status(user: User, groups: list[dict[str, Any]]) -> dict[str, int]:
     """repository.alert_group_counts 결과 → 이 사용자에게 보이는 알림의 상태별 수."""
     counts: Counter[str] = Counter({"open": 0, "acked": 0, "resolved": 0})

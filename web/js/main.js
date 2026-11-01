@@ -71,7 +71,10 @@ async function refreshStatus() {
   try {
     const s = await api.get('/api/stats/summary');
     const flowing = s.ingest_per_min > 0;
-    el.innerHTML = html`
+    // 조회 범위가 있으면 전체 수집 속도는 오지 않는다(B-27) — 범위 안 PC 수만
+    el.innerHTML = s.scoped ? html`
+      <div class="row"><span class="pulse ${s.agents.online ? '' : 'off'}"></span>볼 수 있는 PC</div>
+      <div class="row muted">PC ${s.agents.online}/${s.agents.total} 온라인</div>` : html`
       <div class="row"><span class="pulse ${flowing ? '' : 'off'}"></span>${flowing ? '수집 중' : '대기 중'}
         <span class="muted num">${fmtNum(Math.round(s.ingest_per_min))}건/분</span></div>
       <div class="row muted">PC ${s.agents.online}/${s.agents.total} 온라인</div>`;

@@ -26,7 +26,7 @@ from ..alerts.health import RULE_LABELS
 from ..alerts.message import local
 from ..alerts.notifiers import SEVERITY_LABELS, NotifierError
 from ..alerts.rules import SILENT_KINDS, AlertConfig, ConfigError, Rule, parse, parse_text
-from ..alerts.visibility import alert_visible, count_by_status, scrub_silence, silence_visible
+from ..alerts.visibility import alert_stats_for, alert_visible, count_by_status, scrub_silence, silence_visible
 from ..auth import groups
 from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
@@ -120,7 +120,9 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
     """화면용: 엔진 상태 + 규칙 목록(최근 발생 포함) + 알림 대상(비밀값 제외) + 원본 YAML(관리자만)."""
     # 파일을 다시 읽어 적용하면 판본도 바로 — 적용만 하고 기록이 늦으면 그 사이 되돌린 변경이 흔적 없이 지나간다(검토에서 재현)
     await _record_versions()
-    stats = await repository.alert_stats(_since(since))
+    # 조회 범위가 있으면 보이는 (규칙, 대상)의 알림만 센다 (B-27)
+    stats = (await repository.alert_stats(_since(since)) if user.scopes is None
+             else alert_stats_for(user, await repository.alert_rule_groups(_since(since))))
     known = await targets.target_names()
     # 규칙별 데이터 유무 (B-37 2단계) — 빠진 PC 이름이 들어 있어 조회 범위가 없는 사용자에게만
     data = await coverage.current(engine.config.rules) if user.scopes is None else {}
