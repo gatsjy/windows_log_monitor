@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -162,17 +163,26 @@ SYSLOG_FACILITIES = (
 
 # ------------------------------------------------------- 공통 필드 정리
 
-_LOCAL_IPS = {"", "-", "::1", "127.0.0.1", "0.0.0.0", "localhost", "LOCAL"}
-
-
 def clean_ip(value: Any) -> str | None:
-    """'::ffff:10.0.0.5' → '10.0.0.5'. 비어 있거나 자기 자신(루프백)이면 None."""
+    """'::ffff:10.0.0.5' → '10.0.0.5', '10.0.0.5:51234'·'[fe80::1%12]:443' → 주소만(표준 표기). IP 가 아니거나('-'·호스트 이름·
+    'LOCAL') 자기 자신(루프백·0.0.0.0)이면 None — 예전에는 아무 글자나 src_ip(검색 ip:·알림 묶음 키)에 들어갔다(B-23).
+    원본 값은 raw 에 그대로 있다."""
     if value is None:
         return None
-    text = str(value).replace("\x00", "").strip().strip("[]")
-    if text.lower().startswith("::ffff:"):
-        text = text[7:]
-    return None if text in _LOCAL_IPS else text[:64]
+    text = str(value).replace("\x00", "").strip()
+    if not text or len(text) > 64:
+        return None
+    if text.startswith("["):                 # [v6]:포트
+        text = text[1:].split("]", 1)[0]
+    elif text.count(":") == 1:               # v4:포트
+        text = text.split(":", 1)[0]
+    try:
+        addr = ipaddress.ip_address(text.split("%", 1)[0])   # v6 영역 표시(%12)는 뗀다
+    except ValueError:
+        return None
+    if addr.version == 6 and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return None if addr.is_loopback or addr.is_unspecified else str(addr)
 
 
 def clean_user(value: Any) -> str | None:

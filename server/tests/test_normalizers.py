@@ -524,3 +524,17 @@ def test_a_normalizer_failure_keeps_the_record_as_a_generic_log(monkeypatch):
     assert event.raw["_ingest"] == {"error": "KeyError: 'EventData'"} and event.raw["pri"] == 38
     assert "_ingest" not in record
     assert normalizers.normalize_safely({"log_source": "file", "message": "ok"}, NOW).raw == {"log_source": "file", "message": "ok"}
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("10.0.0.5", "10.0.0.5"), ("::ffff:10.0.0.5", "10.0.0.5"), (" 10.0.0.5:51234 ", "10.0.0.5"),
+    ("[fe80::1%12]:443", "fe80::1"), ("FE80::0:1", "fe80::1"), ("2001:db8::5", "2001:db8::5"),
+    ("-", None), ("", None), (None, None), ("127.0.0.1", None), ("::1", None), ("0.0.0.0", None), ("LOCAL", None),
+    ("localhost", None), ("WORKSTATION01", None), ("\\\\SERVER", None), ("10.0.0.999", None), ("x" * 80, None),
+    ("10.0.0.5\x00", "10.0.0.5"),
+])
+def test_clean_ip_keeps_only_real_addresses(value, expected):
+    """src_ip 는 검색(ip:)·알림 묶음 키 — 로그를 보낸 쪽이 정하는 아무 글자나 들어가지 않게 IP 만 (B-23)."""
+    from app.normalizers.base import clean_ip
+
+    assert clean_ip(value) == expected

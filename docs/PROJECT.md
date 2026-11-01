@@ -158,7 +158,8 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | MSSQL | `Login failed for user '...'` | `[CLIENT: ...]` |
 | SSH (syslog/journald) | `Failed password for (invalid user) X` | `from X` |
 
-- 의미 없는 값은 버립니다: `-`, `N/A`, `S-1-0-0`, `$` 로 끝나는 컴퓨터 계정, `::1`·`127.0.0.1`. `::ffff:` 접두사는 뗍니다.
+- 의미 없는 값은 버립니다: `-`, `N/A`, `S-1-0-0`, `$` 로 끝나는 컴퓨터 계정, `::1`·`127.0.0.1`·`0.0.0.0`.
+  - `src_ip` 는 IP 인 값만(호스트 이름·`LOCAL` 등은 버림, B-23). `::ffff:` 접두사·포트(`10.0.0.5:51234`, `[v6]:443`)·IPv6 영역 표시(`%12`)는 떼고 표준 표기로 저장합니다.
 - Windows 에이전트(Fluent Bit 4.0)는 EventData 를 이름 없이 `StringInserts` 배열로만 보냅니다. 서버가 알려진 이벤트(`normalizers/win_templates.py` — 로그온·계정·그룹·서비스·예약 작업·Kerberos·PowerShell 4104 등)에 이름을 붙여 `raw.winevtlog.EventData` 에 덧붙입니다(ADR-038).
   - 검색·규칙은 `f.EventData.LogonType` 처럼 이름으로 씁니다 — 에이전트가 이름을 보내면 그 값, 아니면 서버가 붙인 값. 템플릿이 없는 이벤트는 `f.StringInserts.N`(0부터).
 

@@ -698,10 +698,10 @@
 - `requirements.txt` 가 버전 범위만 적혀 있어 빌드 시점마다 패키지 버전이 달라짐 — 잠금 파일(`requirements.lock`, pip-tools BSD) 도입. 지금은 묶음의 `images/PACKAGES.txt` 로 기록만 함.
 - 종단 기능 검증 스크립트(2026-10-04 에 122개 항목으로 수동 실행)를 `tools/smoke_test.py` 로 저장소에 넣고, 설치 확인(AIRGAP.md §9)에 활용.
 - 실시간 스트림의 원본(raw) 문자열에는 NUL 문자가 남습니다(저장할 때만 제거) — 정규화 단계에서 지워 화면·서버 매칭이 같은 값을 보게(ADR-033 남는 차이).
-- `clean_ip` 가 IP 인지 확인하지 않아 IP 가 아닌 글자가 `src_ip` 에 들어갈 수 있습니다. IIS 는 값 모양 검사로 막았지만(ADR-037) 다른 소스(Windows `IpAddress` 등)는 그대로 — 확인 후 아니면 None.
+- ~~`clean_ip` 가 IP 인지 확인하지 않음~~ — 2026-11-01 완료: `ipaddress` 로 확인(포트·v6 영역 표시 제거, 표준 표기, 루프백·0.0.0.0 은 None). 이미 저장된 옛 값은 그대로(원본 raw 로 다시 구할 수 있음).
 - **벤치마킹(2026-10-29) 추가:**
   - 에이전트 기본 채널(`install.ps1` 의 `$DefaultChannels`)에 PowerShell 7(`PowerShellCore/Operational`)과 'Windows PowerShell'(엔진 시작 400 — 버전 2 다운그레이드 탐지에 필요)이 없고, `-Iis` 설치가 `Microsoft-IIS-Configuration/Operational`(모듈·로깅 설정 변경)을 받지 않습니다. 채널을 더할 때 B-48 규칙과 함께.
-  - `web/js/catalog.js` 가 EventRecordID 를 '누락 확인에 사용'이라 설명하지만 확인하는 코드가 없습니다 — B-56 전까지는 문구를 '채널 안의 일련번호'로.
+  - ~~`web/js/catalog.js` 의 EventRecordID '누락 확인에 사용' 문구~~ — 2026-11-01 '채널 안의 일련번호'로 고침(확인 코드는 B-56).
 
 ---
 

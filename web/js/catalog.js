@@ -14,7 +14,7 @@ export const FIELD_DOCS = {
   'winevtlog:Opcode': '작업 코드',
   'winevtlog:Keywords': '분류 비트마스크. 보안 로그 감사 성공 0x8020…, 감사 실패 0x8010…',
   'winevtlog:TimeCreated': '이벤트 발생 시각 (PC 의 로컬 시간대 포함)',
-  'winevtlog:EventRecordID': '채널 안에서의 레코드 일련번호 (누락 확인에 사용)',
+  'winevtlog:EventRecordID': '채널 안에서의 레코드 일련번호 (PC·채널마다 늘어나는 번호)',
   'winevtlog:ActivityID': '연관 작업 추적 ID',
   'winevtlog:RelatedActivityID': '상위 작업 추적 ID',
   'winevtlog:ProcessID': '이벤트를 기록한 프로세스 ID',
