@@ -5,7 +5,7 @@ import { openDrawer } from './drawer.js';
 import { EVENT_HEAD, bindRows, eventRow } from './eventtable.js';
 import { categoryLabel, levelLabel, severityBadge, sourceLabel } from './levels.js';
 import { describe } from './querybox.js';
-import { parseTerms } from './querylang.js';
+import { formatTerm, parseTerms } from './querylang.js';
 import { errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html } from './util.js';
 
 const DELIVERY = {
@@ -118,6 +118,16 @@ export async function openAlert(id, { onChange } = {}) {
     }
   };
 
+  // 늘 예상되는 대상(백업 계정·업체 IP)이면 규칙 예외로 (B-46) — 묶음 기준 값으로 조건을 미리 채워 예외 탭을 연다
+  function exceptionLink(alert, p) {
+    if (!can('alerts.manage') || p.kind !== 'count' || !p.group_by || p.group_by === 'none' || !alert.group_key) return '';
+    const term = p.group_by.startsWith('f.')
+      ? formatTerm({ key: 'f', path: p.group_by.slice(2).split('.'), values: [alert.group_key], neg: false })
+      : formatTerm({ key: p.group_by, values: [alert.group_key], neg: false, path: [] });
+    const href = `#/alerts/exceptions?rule=${encodeURIComponent(alert.rule)}&term=${encodeURIComponent(term)}`;
+    return html`<a class="btn ghost" href="${href}" title="이 대상은 이 규칙에서 늘 빼기 (사유·만료와 함께)">예외로…</a>`;
+  }
+
   function render(alert) {
     const p = alert.payload || {};
     const samples = p.samples || [];
@@ -152,6 +162,7 @@ export async function openAlert(id, { onChange } = {}) {
           ${handler && alert.status !== 'resolved' ? html`<button class="btn primary" data-form="resolve">해결…</button>` : ''}
           ${handler && alert.status !== 'open' ? html`<button class="btn" data-form="reopen" title="처리 안 됨으로 되돌립니다">다시 열기…</button>` : ''}
           ${handler && !config ? html`<button class="btn ghost" data-form="silence" title="점검·작업 중 이 알림을 잠시 보내지 않습니다">무음…</button>` : ''}
+          ${exceptionLink(alert, p)}
         </div>
         <div data-formbox></div>
       </div>

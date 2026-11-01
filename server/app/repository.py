@@ -1359,6 +1359,36 @@ async def alert_stats(since: datetime) -> dict[str, Any]:
     }
 
 
+# ------------------------------------------------------------------ 규칙 예외 (B-46)
+
+_EXCEPTION_COLUMNS = ("id, rule, term, reason, created_by, created_at, expires_at, review_at, ended_at, ended_by, end_reason")
+
+
+async def active_rule_exceptions(rule: str, now: datetime) -> list[str]:
+    """지금 걸려 있는 이 규칙의 예외 조건(정본 표기) — 엔진이 평가할 때마다 (끝내거나 만료되면 다음 주기부터 빠진다)."""
+    rows = await db.fetch_all("SELECT term FROM rule_exceptions WHERE rule = %s AND ended_at IS NULL"
+                              " AND (expires_at IS NULL OR expires_at > %s) ORDER BY id", (rule, now))
+    return [r["term"] for r in rows]
+
+
+async def list_rule_exceptions() -> list[dict[str, Any]]:
+    return await db.fetch_all(f"SELECT {_EXCEPTION_COLUMNS} FROM rule_exceptions ORDER BY ended_at IS NOT NULL, id DESC LIMIT 500")
+
+
+async def add_rule_exception(rule: str, term: str, reason: str, actor: str, expires_at: datetime | None,
+                             review_at: datetime | None) -> dict[str, Any]:
+    return await db.fetch_one(
+        f"INSERT INTO rule_exceptions (rule, term, reason, created_by, expires_at, review_at) VALUES (%s, %s, %s, %s, %s, %s)"
+        f" RETURNING {_EXCEPTION_COLUMNS}", (rule, term, reason, actor, expires_at, review_at))
+
+
+async def end_rule_exception(exception_id: int, actor: str, reason: str | None) -> dict[str, Any] | None:
+    """끝내기 — 지우지 않는다(트리거). 이미 끝났으면 None."""
+    return await db.fetch_one(
+        f"UPDATE rule_exceptions SET ended_at = now(), ended_by = %s, end_reason = %s WHERE id = %s AND ended_at IS NULL"
+        f" RETURNING {_EXCEPTION_COLUMNS}", (actor, reason, exception_id))
+
+
 async def alert_rule_groups(since: datetime) -> list[dict]:
     """(규칙, 대상, 심각도)별 since 이후 수·마지막 발생과 전체 기간 마지막 발생 — 조회 범위가 있는 사용자의 알림 화면 숫자를
     보이는 (규칙, 대상)만으로 다시 셀 때 (B-27, alerts/visibility.alert_visible 로 거른다)."""

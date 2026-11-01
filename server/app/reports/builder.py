@@ -330,10 +330,31 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
     if bad:
         out.append({"level": "bad", "text": f"마지막 보관 파일 무결성 확인에서 문제 {bad}건"})
     out.extend(dict(n) for n in (p["retention"].get("audit_chain") or {}).get("notices") or [])   # B-71 이전 보고서에는 없다
+    due = (p.get("rule_exceptions") or {}).get("review_due") or []   # B-46 이전 보고서에는 없다
+    if due:
+        out.append({"level": "warn", "text": f"검토일이 지난 알림 규칙 예외 {len(due)}건 — 아직 필요한지 확인하고 끝내거나 다시 정하세요"})
     weak = (p.get("exports") or {}).get("weak_total")   # B-38 이전 보고서에는 없다
     if weak:
         out.append({"level": "warn", "text": f"사유가 짧은 개인정보 내려받기 {weak}건 — 누가 왜 꺼냈는지 확인하세요"})
     return sorted(out, key=lambda a: a["level"] != "bad")
+
+
+EXCEPTION_SOON = timedelta(days=7)
+
+
+async def _rule_exceptions(now: datetime) -> dict[str, Any]:
+    open_ = [e for e in await repository.list_rule_exceptions()
+             if e["ended_at"] is None and (e["expires_at"] is None or e["expires_at"] > now)]
+
+    def row(e: dict[str, Any]) -> dict[str, Any]:
+        return {"rule": e["rule"], "term": e["term"], "reason": e["reason"], "created_by": e["created_by"],
+                "expires_at": _iso(e["expires_at"]), "review_at": _iso(e["review_at"])}
+    return {
+        "active": len(open_),
+        "expiring": [row(e) for e in open_ if e["expires_at"] and e["expires_at"] <= now + EXCEPTION_SOON][:20],
+        "review_due": [row(e) for e in open_ if e["review_at"] and e["review_at"] <= now][:20],
+        "no_expiry": [row(e) for e in open_ if e["expires_at"] is None][:20],
+    }
 
 
 async def _exports(start: datetime, end: datetime) -> dict[str, Any]:
@@ -364,6 +385,8 @@ async def build(kind: str, start: datetime, end: datetime, now: datetime | None 
         "admin": await _admin(start, end),
         # 개인정보 내려받기와 사유 (B-38) — 사유가 뜻이 없을 만큼 짧은 것은 따로
         "exports": await _exports(start, end),
+        # 걸려 있는 알림 규칙 예외 (B-46) — 만료 임박·검토일 지남·만료 없음
+        "rule_exceptions": await _rule_exceptions(now),
         "retention": await _retention(now),
         "backup": {"problems": backup["problems"],
                    "last_backup": _jsonable(backup["last_backup"]), "last_verify": _jsonable(backup["last_verify"]),

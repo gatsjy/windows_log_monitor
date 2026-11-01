@@ -219,6 +219,7 @@ def test_search_routes_have_time_limit(client, monkeypatch):
     rule = {"name": "미리보기", "severity": "error", "match": {"event_id": "4625"}, "group_by": "ip",
             "window_sec": 600, "threshold": 2, "cooldown_sec": 3600}
     assert limited("POST", "/api/alerts/rules/preview", json={"rule": rule})
+    assert limited("POST", "/api/alerts/exceptions/preview", json={"rule": "x", "term": "user:a"})   # 규칙 예외 (B-46)
     assert not limited("POST", "/api/ingest", json=[], headers=KEY)
     assert not limited("GET", "/api/auth/me")
     # 쓰기는 잠금을 기다려서라도 끝낸다

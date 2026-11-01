@@ -18,7 +18,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .. import db, repository
-from ..alerts import configdiff, coverage, health, ruleedit, targets
+from ..alerts import adminwatch, configdiff, coverage, health, ruleedit, targets
 from ..alerts.builtin import SYSTEM_RULES
 from ..alerts.dispatcher import dispatcher
 from ..alerts.engine import _with_group, engine, stream_label  # _with_group: 엔진과 같은 묶음 조건 (알림 뒤 이벤트 수)
@@ -32,6 +32,7 @@ from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
 from ..csvexport import csv_response, export_reason
 from ..filters import FilterError, parse_time, scopes_allow
+from ..querylang import QueryError, format_term, parse_terms
 from .query import read_time_limit
 
 log = logging.getLogger(__name__)
@@ -414,7 +415,9 @@ async def preview_rule(body: PreviewBody, admin: User = Depends(require_permissi
         return {"kind": rule.kind, "silent": [{"host": r["host"], "channel": stream_label(r["source"], r["channel"]),
                                                "last_seen": r["last_at"]} for r in rows]}
     # 미리보기도 이벤트 수·대상 이름을 돌려주므로 사용자 그룹의 조회 범위를 붙인다 (ADR-025)
-    base = replace(rule.event_filter(), received_since=now - timedelta(hours=body.hours), scopes=admin.scopes)
+    # 미리보기는 지금 걸린 규칙 예외(B-46)까지 반영 — 실제 평가와 같은 결과
+    exceptions = await repository.active_rule_exceptions(rule.name, now)
+    base = replace(rule.event_filter(exceptions), received_since=now - timedelta(hours=body.hours), scopes=admin.scopes)
     window_sec = max(1, _seconds(rule.window))
     matched = (await repository.count(base))["current"]
     rows = await repository.rule_preview(base, rule.group_by, window_sec, rule.threshold,
@@ -434,6 +437,108 @@ async def preview_rule(body: PreviewBody, admin: User = Depends(require_permissi
         "fires": sum(g["fires"] for g in ranked), "targets": len(ranked),
         "groups": [{"key": g["key"], "fires": g["fires"], "max": g["max"]} for g in ranked[:10]],
     }
+
+
+# ------------------------------------------------------------ 규칙 예외 (B-46)
+EXCEPTION_PREVIEW_HOURS = 24
+
+
+class ExceptionBody(BaseModel):
+    rule: str = Field(min_length=1, max_length=200)
+    term: str = Field(min_length=1, max_length=500)
+    reason: str = Field(default="", max_length=500)
+    expires_at: datetime | None = None
+    review_at: datetime | None = None
+
+
+class ExceptionEndBody(BaseModel):
+    reason: str = Field(default="", max_length=500)
+
+
+def _exception_rule(name: str) -> Rule:
+    rule = next((r for r in engine.config.rules if r.name == name), None)
+    if rule is None:
+        raise HTTPException(404, f"규칙 '{name}' 이(가) 없습니다")
+    if rule.kind in SILENT_KINDS:
+        raise HTTPException(400, "끊김 규칙에는 예외 대신 대상(hosts)·무음을 씁니다")
+    return rule
+
+
+def _exception_term(text: str) -> str:
+    """예외 = 검색 조건 하나(포함 조건). 여러 조건의 'AND 를 빼기'는 검색 문장으로 나타낼 수 없어(제외 항은 각각 뺀다) 하나만 받는다."""
+    try:
+        terms = parse_terms(text)
+    except QueryError as exc:
+        raise HTTPException(400, f"조건을 읽을 수 없습니다: {exc}") from exc
+    if len(terms) != 1 or terms[0].neg:
+        raise HTTPException(400, "예외는 조건 하나입니다 (예: user:svc_backup, ip:10.0.0.5,10.0.0.6, host:BACKUP-01)")
+    return format_term(terms[0])
+
+
+def _exception_state(e: dict[str, Any], now: datetime) -> str:
+    if e["ended_at"]:
+        return "ended"
+    return "expired" if e["expires_at"] and e["expires_at"] <= now else "active"
+
+
+async def _exception_effect(rule: Rule, term: str, admin: User, now: datetime) -> dict[str, int]:
+    """최근 24시간 동안 이 예외가 규칙에서 빼는 이벤트 수 (지금 걸린 다른 예외까지 반영, 조회 범위 적용)."""
+    active = await repository.active_rule_exceptions(rule.name, now)
+    since = now - timedelta(hours=EXCEPTION_PREVIEW_HOURS)
+    before = replace(rule.event_filter(active), received_since=since, scopes=admin.scopes)
+    after = replace(rule.event_filter([*active, term]), received_since=since, scopes=admin.scopes)
+    matched = (await repository.count(before))["current"]
+    return {"matched": matched, "removed": matched - (await repository.count(after))["current"], "hours": EXCEPTION_PREVIEW_HOURS}
+
+
+@router.get("/api/alerts/exceptions")
+async def list_exceptions(_: User = Depends(require_permission("alerts.manage"))):
+    now = datetime.now(UTC)
+    items = await repository.list_rule_exceptions()
+    for e in items:
+        e["state"] = _exception_state(e, now)
+    return {"items": items, "rules": [r.name for r in engine.config.rules if r.kind not in SILENT_KINDS]}
+
+
+@router.post("/api/alerts/exceptions/preview", dependencies=[Depends(read_time_limit)])
+async def preview_exception(body: ExceptionBody, admin: User = Depends(require_permission("alerts.manage"))):
+    rule, term = _exception_rule(body.rule), _exception_term(body.term)
+    return {"term": term, **await _exception_effect(rule, term, admin, datetime.now(UTC))}
+
+
+@router.post("/api/alerts/exceptions", dependencies=[Depends(read_time_limit)])
+async def add_exception(body: ExceptionBody, request: Request, admin: User = Depends(require_permission("alerts.manage"))):
+    """예외 추가 — 사유 필수, 만료·검토일은 선택. 탐지를 약하게 하는 변경이라 관리 작업 알림으로 다른 관리자에게도 알린다(B-36)."""
+    rule, term = _exception_rule(body.rule), _exception_term(body.term)
+    reason = body.reason.strip()
+    if len(reason) < 2:
+        raise HTTPException(400, "예외 사유를 적어 주세요 (예: 백업 서비스 계정 — 매일 02시 정상 로그온)")
+    now = datetime.now(UTC)
+    if body.expires_at and body.expires_at <= now:
+        raise HTTPException(400, "만료 시각은 지금 뒤여야 합니다")
+    effect = await _exception_effect(rule, term, admin, now)
+    row = await repository.add_rule_exception(rule.name, term, reason, admin.username, body.expires_at, body.review_at)
+    await db.audit(admin.username, "alerts.exception.add", rule.name,
+                   {"id": row["id"], "term": term, "reason": reason,
+                    "expires_at": body.expires_at.isoformat() if body.expires_at else None,
+                    "review_at": body.review_at.isoformat() if body.review_at else None,
+                    "removed_24h": effect["removed"]}, actor_ip=client_ip(request))
+    until = local(body.expires_at) if body.expires_at else "만료 없음"
+    await adminwatch.notify(admin.username, "알림 규칙 예외를 더했습니다 — 이 조건의 이벤트는 이제 알리지 않습니다",
+                            [f"규칙 '{rule.name}' 에서 {term} 제외 (최근 24시간 {effect['removed']:,}건)", f"사유: {reason}",
+                             f"만료: {until}"])
+    return {**row, "state": _exception_state(row, now), **effect}
+
+
+@router.post("/api/alerts/exceptions/{exception_id}/end")
+async def end_exception(exception_id: int, body: ExceptionEndBody, request: Request,
+                        admin: User = Depends(require_permission("alerts.manage"))):
+    row = await repository.end_rule_exception(exception_id, admin.username, body.reason.strip() or None)
+    if row is None:
+        raise HTTPException(404, "끝낼 예외가 없습니다 (이미 끝났거나 없음)")
+    await db.audit(admin.username, "alerts.exception.end", row["rule"], {"id": exception_id, "term": row["term"],
+                                                                         "reason": row["end_reason"]}, actor_ip=client_ip(request))
+    return {**row, "state": "ended"}
 
 
 @router.post("/api/alerts/test/{name}")
@@ -634,7 +739,8 @@ async def _followup(alert: dict[str, Any]) -> dict[str, Any] | None:
     rule = next((r for r in engine.config.rules if r.name == alert["rule"]), None)
     if rule is None or rule.kind != "count" or not alert["is_latest"]:
         return None
-    f = _with_group(replace(rule.event_filter(), received_since=alert["fired_at"]), rule.group_by, alert["group_key"])
+    exceptions = await repository.active_rule_exceptions(rule.name, datetime.now(UTC))   # 엔진과 같은 조건 (B-46)
+    f = _with_group(replace(rule.event_filter(exceptions), received_since=alert["fired_at"]), rule.group_by, alert["group_key"])
     try:
         result = await repository.count_and_last(f)
     except db.QueryTimeout:

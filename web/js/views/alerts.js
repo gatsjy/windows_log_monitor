@@ -17,7 +17,8 @@ import { confirmModal, errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html
 const TYPE_LABELS = { email: '수신 그룹 (메일)', webhook: '웹훅', oracle: 'Oracle DB', '-': '설정 오류' };
 // '전체' = 보관기간 안 전부 (서버 보관기간보다 넉넉한 10년) — 사이드바 숫자(확인 안 된 알림 전체)와 맞추려고
 const RANGES = [['24h', '24시간'], ['7d', '7일'], ['30d', '30일'], ['365d', '1년'], ['3650d', '전체']];
-const TABS = [['', '알림 이력'], ['rules', '규칙 관리'], ['targets', '알림 대상'], ['silences', '무음']];
+const TABS = [['', '알림 이력'], ['rules', '규칙 관리'], ['targets', '알림 대상'], ['silences', '무음'], ['exceptions', '예외']];
+const EXCEPTION_STATE = { active: ['online', '적용 중'], expired: ['stale', '만료'], ended: ['offline', '끝냄'] };
 const STATUS_FILTERS = [['open', ALERT_STATUS.open], ['acked', ALERT_STATUS.acked], ['resolved', ALERT_STATUS.resolved], ['', '전체']];
 const EMPTY_TEXT = { open: '확인하지 않은 알림이 없습니다 ✓', acked: '확인만 하고 해결하지 않은 알림이 없습니다 ✓',
   resolved: '이 기간에 해결한 알림이 없습니다.', '': '이 기간에 발생한 알림이 없습니다.' };
@@ -25,7 +26,9 @@ const SILENCE_STATE = { active: ['online', '적용 중'], upcoming: ['stale', '�
 const HISTORY_LIMIT = 200;
 
 export async function mount(root, params, sub) {
-  const tab = TABS.some(([k]) => k === sub) ? sub : '';
+  // 예외 탭(B-46)은 규칙을 관리하는 사람만 — 서버도 alerts.manage 로 막는다
+  const tabs = TABS.filter(([k]) => k !== 'exceptions' || can('alerts.manage'));
+  const tab = tabs.some(([k]) => k === sub) ? sub : '';
   let status = STATUS_FILTERS.some(([k]) => k === params.status) ? params.status : '';
   // 처리할 알림 목록(처리 안 됨·확인함)은 오래된 것까지 봐야 하므로 기본 기간을 '전체'로 (사이드바 숫자와 맞춤)
   let since = params.since || (status === 'open' || status === 'acked' ? '3650d' : '7d');
@@ -45,7 +48,7 @@ export async function mount(root, params, sub) {
     </div>
     <div data-status style="margin-bottom:14px"></div>
     <div class="grid" data-summary style="margin-bottom:16px"></div>
-    <div class="tabs" role="tablist">${TABS.map(([k, l]) => html`
+    <div class="tabs" role="tablist">${tabs.map(([k, l]) => html`
       <a role="tab" href="#/alerts${k ? `/${k}` : ''}?since=${since}${!k && status ? `&status=${status}` : ''}" class="${k === tab ? 'on' : ''}" aria-selected="${k === tab}">${l}<span class="tab-count" data-tabcount="${k}"></span></a>`)}</div>
     <div data-tab></div>`;
 
@@ -541,13 +544,93 @@ export async function mount(root, params, sub) {
     }));
   }
 
+  // ------------------------------------------------------------------ 규칙 예외 (B-46)
+  function renderExceptions(data) {
+    const el = root.querySelector('[data-tab]');
+    el.innerHTML = html`<div class="toolbar" style="margin:14px 0;gap:12px;flex-wrap:wrap">
+        <p class="muted" style="margin:0;font-size:13px;flex:1 1 320px">규칙에서 늘 빼야 하는 조건 하나(백업 서비스 계정, 유지보수 업체 IP 등)를 사유와 함께 둡니다 —
+          규칙 문장을 고치지 않아도 되고, 누가·왜·언제까지 뺐는지 남습니다. 무음과 달리 만료가 없을 수 있으니 검토일을 정해 두세요.</p>
+        <button class="btn primary" data-new><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>예외 추가</button></div>
+      ${data.items.length ? html`<section class="card"><div class="table-wrap"><table class="table"><thead><tr>
+          <th>상태</th><th>규칙</th><th>제외 조건</th><th>사유</th><th>만든 사람</th><th>만료</th><th>검토일</th><th></th></tr></thead>
+        <tbody>${data.items.map((e) => html`<tr>
+          <td class="nowrap">${statusBadgeText(EXCEPTION_STATE[e.state])}</td><td>${e.rule}</td><td class="nowrap"><code>${e.term}</code></td>
+          <td class="ink-2">${e.reason}</td><td class="nowrap muted">${e.created_by} · ${fmtTime(e.created_at, { seconds: false })}</td>
+          <td class="nowrap">${e.expires_at ? fmtTime(e.expires_at, { seconds: false }) : html`<span class="muted">없음</span>`}</td>
+          <td class="nowrap">${e.review_at ? fmtTime(e.review_at, { seconds: false }) : '–'}</td>
+          <td class="r">${e.state === 'active' ? html`<button class="btn sm" data-end="${e.id}">끝내기</button>`
+            : e.ended_by ? html`<span class="muted" style="font-size:12px">${e.ended_by}</span>` : ''}</td></tr>`)}</tbody></table></div></section>`
+        : html`<div class="empty">규칙 예외가 없습니다.</div>`}`;
+    el.querySelector('[data-new]').addEventListener('click', () => exceptionForm(data.rules));
+    el.querySelectorAll('[data-end]').forEach((b) => b.addEventListener('click', async () => {
+      const e = data.items.find((x) => String(x.id) === b.dataset.end);
+      const ok = await confirmModal({ title: '예외 끝내기', message: `'${e.rule}' 에서 ${e.term} 을(를) 다시 잡습니다. 끝낼까요?`,
+        confirmText: '끝내기', cancelText: '그대로 두기' });
+      if (!ok) return;
+      try {
+        await api.send('POST', `/api/alerts/exceptions/${e.id}/end`, {});
+        toast('예외를 끝냈습니다 — 다음 평가부터 다시 잡습니다', { type: 'success' });
+        load();
+      } catch (err) {
+        toast(err.message, { type: 'error' });
+      }
+    }));
+    if (params.rule && params.term && !renderExceptions.prefilled) {   // 알림 상세의 '예외로 빼기'에서 왔으면 한 번 열어 준다
+      renderExceptions.prefilled = true;
+      exceptionForm(data.rules, { rule: params.rule, term: params.term });
+    }
+  }
+
+  function statusBadgeText([cls, label]) {
+    return html`<span class="status ${cls}"><span class="dot"></span>${label}</span>`;
+  }
+
+  function exceptionForm(rules, preset = {}) {
+    const body = openDrawer({ title: '규칙 예외 추가', subtitle: '이 조건의 이벤트는 이 규칙에서 알리지 않습니다' });
+    const date = (d) => (d ? new Date(`${d}T23:59:59`).toISOString() : null);
+    body.innerHTML = html`<div class="form">
+      <label class="field"><span>규칙</span><select class="select" data-rule>${rules.map((r) => html`<option ${r === preset.rule ? 'selected' : ''}>${r}</option>`)}</select></label>
+      <label class="field"><span>제외 조건 (하나)</span><input class="input" data-term placeholder="예) user:svc_backup · ip:10.0.0.5,10.0.0.6 · host:BACKUP-01"></label>
+      <label class="field"><span>사유</span><input class="input" data-reason placeholder="예) 백업 서비스 계정 — 매일 02시 정상 로그온"></label>
+      <div class="toolbar" style="gap:12px;flex-wrap:wrap">
+        <label class="field"><span>만료 (선택)</span><input class="input" type="date" data-expires></label>
+        <label class="field"><span>검토일 (선택)</span><input class="input" type="date" data-review></label></div>
+      <div data-effect class="muted" style="font-size:13px;margin:6px 0 10px"></div>
+      <div class="toolbar"><button class="btn" data-preview>미리 보기 (최근 24시간)</button><button class="btn primary" data-save>예외 걸기</button></div>
+    </div>`;
+    body.querySelector('[data-term]').value = preset.term || '';
+    const value = () => ({ rule: body.querySelector('[data-rule]').value, term: body.querySelector('[data-term]').value.trim(),
+      reason: body.querySelector('[data-reason]').value.trim(), expires_at: date(body.querySelector('[data-expires]').value),
+      review_at: date(body.querySelector('[data-review]').value) });
+    const effect = body.querySelector('[data-effect]');
+    body.querySelector('[data-preview]').addEventListener('click', async () => {
+      try {
+        const r = await api.send('POST', '/api/alerts/exceptions/preview', value());
+        effect.textContent = `최근 ${r.hours}시간 이 규칙에 맞은 ${fmtNum(r.matched)}건 중 ${fmtNum(r.removed)}건을 뺍니다 (조건: ${r.term})`;
+      } catch (err) {
+        effect.textContent = err.message;
+      }
+    });
+    body.querySelector('[data-save]').addEventListener('click', async () => {
+      try {
+        const r = await api.send('POST', '/api/alerts/exceptions', value());
+        closeDrawer();
+        toast(`예외를 걸었습니다 — 최근 24시간 기준 ${fmtNum(r.removed)}건이 빠집니다. 다른 관리자에게도 알렸습니다`, { type: 'success' });
+        load();
+      } catch (err) {
+        effect.textContent = err.message;
+      }
+    });
+  }
+
   async function load() {
     try {
       // 다른 탭에서도 이력 탭의 숫자(기간 안 전체)를 보여 주려고 counts 만 가볍게 받는다
       const [cfg, history, silences] = await Promise.all([
         api.get('/api/alerts/config', { since }),
         api.get('/api/alerts', tab ? { since, limit: 1 } : { since, status, limit: HISTORY_LIMIT }),
-        tab === 'silences' ? api.get('/api/alerts/silences', { since }) : null,
+        tab === 'silences' ? api.get('/api/alerts/silences', { since })
+          : tab === 'exceptions' ? api.get('/api/alerts/exceptions') : null,
       ]);
       config = cfg;
       renderStatus();
@@ -557,6 +640,7 @@ export async function mount(root, params, sub) {
       if (tab === 'rules') renderRules();
       else if (tab === 'targets') renderNotifiers();
       else if (tab === 'silences') renderSilences(silences);
+      else if (tab === 'exceptions') renderExceptions(silences);
       else renderHistory(history.items, c);
     } catch (err) {
       const box = root.querySelector('[data-tab]');
@@ -569,6 +653,7 @@ export async function mount(root, params, sub) {
   timer = setInterval(() => {
     if (document.hidden || document.querySelector('.drawer')) return;
     if (tab === 'rules') refreshRuns();
+    else if (tab === 'exceptions') return;   // 예외는 바뀔 일이 드물고 표를 다시 그리면 끝내기 확인이 어긋난다
     else if (!selected.size) load();
   }, 15000);
   return () => clearInterval(timer);

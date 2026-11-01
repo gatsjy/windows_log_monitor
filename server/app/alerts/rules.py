@@ -59,8 +59,14 @@ class Rule:
     distinct_min: int = 0
     resolve: str = "manual"
 
-    def event_filter(self) -> EventFilter:
-        return EventFilter.from_params(self.match, default_since=None)
+    def event_filter(self, exceptions: tuple[str, ...] | list[str] = ()) -> EventFilter:
+        """exceptions: 규칙 예외(B-46)의 조건들(정본 표기) — 문장에 제외 항(-조건)으로 덧붙인다. 검색 문장의 제외 의미 그대로
+        (값이 없는 이벤트는 남김, 케이스 표가 보장). 예외끼리는 각각 뺀다(하나라도 맞으면 제외)."""
+        if not exceptions:
+            return EventFilter.from_params(self.match, default_since=None)
+        match = dict(self.match)
+        match["query"] = " ".join([str(match.get("query") or ""), *(f"-{t}" for t in exceptions)]).strip()
+        return EventFilter.from_params(match, default_since=None)
 
 
 @dataclass(frozen=True)

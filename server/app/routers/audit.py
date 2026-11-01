@@ -76,6 +76,8 @@ ACTION_LABELS = {
     "alerts.silence.create": "알림 무음 설정",
     "alerts.silence.end": "알림 무음 해제",
     "alerts.export": "알림 이력 내려받기",
+    "alerts.exception.add": "알림 규칙 예외 추가",
+    "alerts.exception.end": "알림 규칙 예외 끝냄",
     "settings.smtp.save": "메일 서버 설정",
     "settings.smtp.test": "메일 서버 테스트",
     "settings.contact.save": "수신자 저장",

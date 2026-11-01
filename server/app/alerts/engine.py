@@ -415,7 +415,9 @@ class AlertEngine:
         if rule.kind == "stream_silent":
             return await self._evaluate_stream_silent(rule, now)
         since = now - rule.window
-        base = replace(rule.event_filter(), received_since=since)
+        # 규칙 예외(B-46)는 평가할 때마다 읽는다 — 화면에서 끝내거나 만료되면 다음 주기부터 다시 잡는다
+        exceptions = await repository.active_rule_exceptions(rule.name, now)
+        base = replace(rule.event_filter(exceptions), received_since=since)
         fired = []
         if run is not None:
             run.query_at = datetime.now(UTC)   # 이 쿼리가 본 구간의 끝 (주기 시작 시각이 아니라)

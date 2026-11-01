@@ -206,6 +206,18 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
                  f"{_n(ad['alerts'])}건 — 내용은 알림 이력의 '관리 작업 알림'과 감사로그에 있습니다</p>")
         out.append(_section("관리 작업 요약", body))
 
+    # 알림 규칙 예외 (B-46 이전 보고서에는 없다)
+    if (rx := p.get("rule_exceptions")) and rx["active"]:
+        body = f"<p style='margin:0 0 6px'>걸려 있는 예외 {_n(rx['active'])}건 — 이 조건의 이벤트는 알리지 않습니다</p>"
+        for title, items in (("검토일이 지난 예외", rx["review_due"]), ("7일 안에 끝나는 예외", rx["expiring"]),
+                             ("만료가 없는 예외", rx["no_expiry"])):
+            if items:
+                body += f"<b style='font-size:13px'>{_e(title)}</b>" + _table(
+                    ["규칙", "제외 조건", "사유", "만든 사람", "만료", "검토일"],
+                    [[_e(x["rule"]), _e(x["term"]), _e(x["reason"]), _e(x["created_by"]), _e(_t(x["expires_at"]) if x["expires_at"] else "없음"),
+                      _e(_t(x["review_at"]) if x["review_at"] else "-")] for x in items])
+        out.append(_section("알림 규칙 예외", body))
+
     # 개인정보 내려받기 (B-38 이전 보고서에는 없다)
     if "exports" in p:
         ex = p["exports"]
