@@ -300,9 +300,9 @@ def test_event_view_records_whose_record_was_viewed(client):
 
 
 def test_personal_top_values_are_logged_once_per_ten_minutes(client):
-    from app.routers import query
+    from app import accesslog
 
-    query._stats_audited.clear()
+    accesslog.forget()
     before = len(_audit_rows("events.stats"))
     for _ in range(3):   # 대시보드 위젯이 같은 조건으로 되풀이해 불러도 10분에 한 번
         assert client.get("/api/stats/top", params={"since": "1h", "field": "user"}, headers=CSRF).status_code == 200
@@ -313,8 +313,7 @@ def test_personal_top_values_are_logged_once_per_ten_minutes(client):
 
 def test_views_fail_closed_when_the_access_log_cannot_be_written(client, monkeypatch):
     """접속기록을 남기지 못하면 개인정보가 보이는 조회·내려받기는 결과를 내주지 않는다 (503) — 기록 없이 열람되지 않게."""
-    from app import db
-    from app.routers import query
+    from app import accesslog, db
 
     event_id = _items(client, user="kim")[0]["id"]
     real_audit = db.audit
@@ -325,13 +324,48 @@ def test_views_fail_closed_when_the_access_log_cannot_be_written(client, monkeyp
         return await real_audit(*args, required=required, **kwargs)
 
     monkeypatch.setattr(db, "audit", broken)
-    query._stats_audited.clear()
+    accesslog.forget()
     for path, params in (("/api/events", {"since": "1h"}), (f"/api/events/{event_id}", {}),
                          ("/api/stats/top", {"since": "1h", "field": "user"}),
                          ("/api/audit", {"format": "csv", "reason": "시험"}),
+                         ("/api/audit", {"since": "1d"}), ("/api/live", {}),
+                         ("/api/stats/timeseries", {"since": "1h", "group": "ip"}),
                          ("/api/alerts", {"format": "csv", "reason": "시험"})):
         r = client.get(path, params=params, headers=CSRF)
         assert r.status_code == 503 and "접속기록" in r.json()["detail"], (path, r.status_code)
     # 개인정보가 아닌 조회는 그대로
     assert client.get("/api/stats/top", params={"since": "1h", "field": "host"}, headers=CSRF).status_code == 200
+
+
+def test_personal_timeseries_live_stream_and_audit_list_are_logged(client, monkeypatch):
+    """사용자·IP 로 나눈 시계열, 실시간 스트림 열기, 감사로그 목록도 개인정보가 보이는 조회 — 접속기록에 (B-38). 같은 조건은 10분에 한 번."""
+    from app import accesslog
+    from app.routers import query
+
+    accesslog.forget()
+    before = len(_audit_rows("events.stats"))
+    for _ in range(2):
+        assert client.get("/api/stats/timeseries", params={"since": "1h", "group": "user"}, headers=CSRF).status_code == 200
+    assert client.get("/api/stats/timeseries", params={"since": "1h", "group": "level"}, headers=CSRF).status_code == 200
+    assert [r[0] for r in _audit_rows("events.stats")[before:]] == ["user"]
+
+    # 스트림은 끝나지 않으므로 기록 바로 뒤(구독)에서 멈춘다 — 기록이 흐름보다 먼저인지도 같이 본다
+    class Opened(Exception):
+        pass
+
+    def opened():
+        raise Opened
+
+    monkeypatch.setattr(query.live.broadcaster, "subscribe", opened)
+    live_before = len(_audit_rows("events.live"))
+    for _ in range(2):   # 끊겼다 다시 붙어도 10분에 한 번
+        with pytest.raises(Opened):
+            client.get("/api/live", params={"query": "user:kim"}, headers=CSRF)
+    rows = _audit_rows("events.live")[live_before:]
+    assert len(rows) == 1 and rows[0][1]["query"] == {"query": "user:kim"}
+
+    audit_before = len(_audit_rows("audit.list"))
+    for _ in range(2):
+        assert client.get("/api/audit", params={"since": "1d"}, headers=CSRF).status_code == 200
+    assert len(_audit_rows("audit.list")) == audit_before + 1
 

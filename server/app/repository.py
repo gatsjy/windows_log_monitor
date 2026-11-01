@@ -1435,6 +1435,16 @@ _AUDIT_CHAIN_COLUMNS = (
     " CASE WHEN isfinite(at) THEN at END AS at, actor, actor_ip, action, target, detail::text AS detail")
 
 
+EXPORT_ACTIONS = ("audit.export", "alerts.export")
+
+
+async def audit_exports(start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """기간의 개인정보 내려받기(CSV)와 사유 — 점검 보고서 '개인정보 내려받기' 절 (B-38)."""
+    return await db.fetch_all(
+        "SELECT at, actor, action, detail->>'reason' AS reason, (detail->>'rows')::bigint AS rows FROM audit_log"
+        " WHERE action = ANY(%s) AND at >= %s AND at < %s ORDER BY at", (list(EXPORT_ACTIONS), start, end))
+
+
 async def audit_chain_head() -> dict[str, Any] | None:
     """체인 머리 + 마지막 행의 시각(앵커에 함께 남긴다 — 그 행이 보관기간 만료로 지워질 만한지 판단)."""
     return await db.fetch_one(

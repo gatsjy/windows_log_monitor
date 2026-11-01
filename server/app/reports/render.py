@@ -17,6 +17,7 @@ from .builder import integrity_bad_count
 
 INK, MUTED, LINE, WASH = "#0b0b0b", "#52514e", "#e4e4e1", "#f5f5f3"
 BAD, WARN, GOOD = SEVERITY_COLORS["critical"], SEVERITY_COLORS["warning"], "#2f8f3a"
+EXPORT_LABELS = {"audit.export": "감사로그", "alerts.export": "알림 이력"}
 LEVEL_LABELS = {"critical": "심각", "error": "오류", "warning": "경고", "info": "정보", "verbose": "상세"}
 STATUS_LABELS = {"open": "처리 안 됨", "acked": "확인함", "resolved": "해결됨"}
 
@@ -205,6 +206,17 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
                  f"{_n(ad['alerts'])}건 — 내용은 알림 이력의 '관리 작업 알림'과 감사로그에 있습니다</p>")
         out.append(_section("관리 작업 요약", body))
 
+    # 개인정보 내려받기 (B-38 이전 보고서에는 없다)
+    if "exports" in p:
+        ex = p["exports"]
+        body = f"<p style='margin:0 0 6px'>기간 중 개인정보가 든 파일 내려받기 {_n(ex['total'])}건 (사유는 감사로그에 함께 남습니다)</p>"
+        if ex["weak"]:
+            body += f"<b style='font-size:13px'>사유가 짧은 내려받기 {_n(ex['weak_total'])}건</b>" + _table(
+                ["일시", "사용자", "무엇", "사유", "건수"],
+                [[_e(_t(w["at"])), _e(w["actor"]), _e(EXPORT_LABELS.get(w["action"], w["action"])), _e(w["reason"] or "-"),
+                  _e(w["rows"] if w["rows"] is not None else "-")] for w in ex["weak"]], right=(4,))
+        out.append(_section("개인정보 내려받기", body))
+
     # 수집 PC
     body = _stats([("전체", _n(ag["total"]), "보고서를 만든 시각 기준"), ("온라인", _n(ag["online"]), ""),
                    ("지연", _n(ag["stale"]), ""), ("연락 끊김", _n(ag["offline"]), "")])
@@ -259,12 +271,17 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
             + ";max-width:860px;line-height:1.5;font-size:14px'>" + "".join(out) + "</div>")
 
 
-def page(payload: dict[str, Any], report_id: int, review: dict[str, Any] | None = None) -> str:
-    """화면 iframe·인쇄용 완전한 HTML 문서 (밝은 바탕)."""
+def page(payload: dict[str, Any], report_id: int, review: dict[str, Any] | None = None,
+         printed: dict[str, Any] | None = None) -> str:
+    """화면 iframe·인쇄용 완전한 HTML 문서 (밝은 바탕). printed = 인쇄용으로 연 사람·시각·IP — 출력물 맨 위와 맨 아래에 찍는다(B-38)."""
+    stamp = ""
+    if printed:
+        stamp = (f"<p style='font-size:11.5px;color:{MUTED};margin:0 0 10px;text-align:right'>출력: {_e(printed['by'])} · "
+                 f"{_e(local(printed['at']))} · {_e(printed['ip'] or '-')} — 보고서 #{_e(report_id)}</p>")
     return ("<!doctype html><html lang='ko'><head><meta charset='utf-8'><title>" + escape(payload["title"]) + "</title>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'><link rel='icon' href='data:,'>"
             "<style>body{margin:0;padding:24px;background:#fff}@media print{body{padding:0}}</style></head><body>"
-            + html(payload, report_id, review, link=False) + "</body></html>")
+            + stamp + html(payload, report_id, review, link=False) + stamp + "</body></html>")
 
 
 def text(payload: dict[str, Any], report_id: int | None = None) -> str:

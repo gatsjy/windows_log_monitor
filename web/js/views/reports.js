@@ -120,7 +120,7 @@ export async function mount(root, params, sub) {
             <div class="toolbar"><button class="btn primary" data-review>점검 확인 남기기</button><span data-msg></span></div>`}
       </div>
       <div class="toolbar" style="margin:0 0 8px">
-        <a class="btn sm" href="/api/reports/${r.id}/html" target="_blank" rel="noopener">인쇄용으로 열기</a>
+        <a class="btn sm" href="/api/reports/${r.id}/html?print=1" target="_blank" rel="noopener">인쇄용으로 열기</a>
         ${sendButton}
         <span class="muted" style="font-size:12px" title="${r.sha256}">내용 해시 ${r.sha256.slice(0, 12)}… · 전송 ${r.deliveries.length ? '' : '없음'}</span>
         ${r.deliveries.length ? deliveries(r.deliveries) : ''}

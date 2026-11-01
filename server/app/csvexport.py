@@ -34,6 +34,13 @@ def export_reason(reason: str | None) -> str:
     return text[:200]
 
 
+def weak_reason(text: str | None) -> bool:
+    """뜻이 없을 만큼 짧은 사유 — 점검 보고서가 따로 보인다(B-38). '월간 점검'·'사고 조사' 같은 짧은 문구는 통과,
+    '확인'·'업무'·'ㅁㅁㅁㅁ'·'....' 은 걸린다."""
+    compact = "".join((text or "").split())
+    return len(compact) < 4 or len(set(compact)) == 1 or not any(ch.isalpha() for ch in compact)
+
+
 def csv_response(header: list[str], rows: Iterable[list[Any]], filename: str,
                  headers: dict[str, str] | None = None) -> Response:
     buffer = io.StringIO()

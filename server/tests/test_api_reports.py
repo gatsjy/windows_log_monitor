@@ -298,3 +298,63 @@ def test_purge_after_retention(ctx):
     deleted = ctx["admin"].portal.call(repository.purge_reports, NOW + timedelta(days=1))
     assert deleted >= 3
     assert ctx["admin"].get("/api/reports", headers=CSRF).json()["items"] == []
+
+
+def _audit(action):
+    with psycopg.connect(os.environ["WLM_DATABASE_URL"]) as conn:
+        return conn.execute("SELECT actor, target, detail FROM audit_log WHERE action = %s ORDER BY id", (action,)).fetchall()
+
+
+def test_viewing_and_printing_are_access_logged(ctx, monkeypatch):
+    """보고서에는 PC·계정·IP 가 든다 — 열람·인쇄를 접속기록에, 인쇄본에는 출력자·시각·IP 를 찍는다 (B-38)."""
+    from app import accesslog, db
+
+    accesslog.forget()
+    admin = ctx["admin"]
+    report_id = _generate(ctx)
+    before_view, before_print = len(_audit("report.view")), len(_audit("report.print"))
+    admin.get(f"/api/reports/{report_id}", headers=CSRF)
+    admin.get(f"/api/reports/{report_id}/html", headers=CSRF)       # 화면은 요약 + iframe — 한 번의 열람
+    admin.get(f"/api/reports/{report_id}", headers=CSRF)
+    assert [(a, t) for a, t, _ in _audit("report.view")[before_view:]] == [("admin", str(report_id))]
+    plain = admin.get(f"/api/reports/{report_id}/html", headers=CSRF).text
+    assert "출력:" not in plain
+    page = admin.get(f"/api/reports/{report_id}/html", params={"print": 1}, headers=CSRF)
+    assert page.text.count("출력: admin") == 2 and "testclient" in page.text and f"보고서 #{report_id}" in page.text
+    assert len(_audit("report.print")) == before_print + 1
+    ctx["reviewer"].get(f"/api/reports/{report_id}", headers=CSRF)   # 다른 사람의 열람은 따로
+    assert [a for a, _, _ in _audit("report.view")[before_view:]] == ["admin", "reviewer"]
+
+    real = db.audit
+
+    async def broken(*args, required=False, **kwargs):
+        if required:
+            raise db.AuditError("시험")
+        return await real(*args, required=required, **kwargs)
+
+    monkeypatch.setattr(db, "audit", broken)
+    accesslog.forget()
+    for path in (f"/api/reports/{report_id}", f"/api/reports/{report_id}/html"):
+        assert admin.get(path, headers=CSRF).status_code == 503   # 기록을 못 하면 보여 주지 않는다
+
+
+def test_report_lists_exports_with_weak_reasons(ctx):
+    """개인정보 내려받기와 사유 — 사유가 뜻이 없을 만큼 짧은 것은 '점검 필요'와 따로 표로 (B-38). 옛 보고서도 그린다."""
+    from app import db
+    from app.reports import builder, render
+
+    async def put():
+        await db.audit("kim", "audit.export", "audit_log", {"rows": 10, "reason": "확인"})
+        await db.audit("lee", "alerts.export", "alerts", {"rows": 3, "reason": "월간 점검"})
+
+    ctx["admin"].portal.call(put)
+    now = datetime.now(UTC)
+    payload = ctx["admin"].portal.call(builder.build, "daily", now - timedelta(hours=1), now + timedelta(minutes=1))
+    ex = payload["exports"]
+    reasons = [w["reason"] for w in ex["weak"]]
+    assert ex["total"] >= 2 and "확인" in reasons and "월간 점검" not in reasons
+    assert any("사유가 짧은 개인정보 내려받기" in a["text"] for a in payload["attention"])
+    page = render.html(payload, 1)
+    assert ">개인정보 내려받기</h2>" in page and "확인" in page
+    old = {k: v for k, v in payload.items() if k != "exports"}
+    assert ">개인정보 내려받기</h2>" not in render.html(old, 1)

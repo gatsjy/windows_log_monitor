@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import db, repository
+from .. import accesslog, db, repository
 from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
 from ..csvexport import csv_response, export_reason
@@ -87,6 +87,10 @@ ACTION_LABELS = {
     "settings.oracle.query": "Oracle 쿼리 실행",
     "settings.oracle.tnsnames.save": "tnsnames.ora 저장",
     "audit.export": "감사로그 내려받기",
+    "audit.list": "감사로그 조회",
+    "events.live": "실시간 로그 보기",
+    "report.view": "점검 보고서 열람",
+    "report.print": "점검 보고서 인쇄",
     "retention.drop_partition": "보관기간 만료 로그 삭제",
     "retention.purge_alerts": "보관기간 만료 알림 삭제",
     "retention.purge_audit": "보관기간 만료 감사로그 삭제",
@@ -132,6 +136,9 @@ async def list_audit(
         raise HTTPException(400, str(exc)) from exc
     rows = await repository.list_audit(start, limit, actor=actor, action=action, q=q)
     if format == "json":
+        # 감사로그 목록에는 직원 계정·접속 IP 가 보인다 — 조회도 접속기록에 (B-38, 같은 조건은 10분 묶음)
+        conditions = {"since": since, "actor": actor, "action": action, "q": q}
+        await accesslog.record(request, admin.username, "audit.list", "audit_log", {**conditions, "rows": len(rows)}, key=conditions)
         return {"items": rows, "labels": ACTION_LABELS, "actions": await repository.audit_actions()}
 
     await db.audit(admin.username, "audit.export", "audit_log",

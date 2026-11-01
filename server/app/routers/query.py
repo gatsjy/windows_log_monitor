@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import __version__, db, live, repository
+from .. import __version__, accesslog, db, live, repository
 from ..alerts.visibility import count_by_status
 from ..auth import service as auth_service
 from ..auth.deps import client_ip, require_admin, require_user
@@ -200,6 +200,7 @@ async def stats_timeseries(
         key = "" if row["key"] is None else str(row["key"])
         series.setdefault(key, [0] * len(axis))[i] += row["n"]
 
+    await _audit_stats(request, group, len(series))   # 사용자·IP 로 나눈 시계열은 상위 값과 같은 정보 (B-38)
     if group == "level":
         keys = sorted(series, key=lambda k: int(k) if k.isdigit() else 99)
     else:
@@ -217,27 +218,17 @@ async def stats_timeseries(
     }
 
 
-# 상위 값 목록 중 사람·출발지가 보이는 것은 접속기록에 남긴다 (ADR-042). 원본 필드(f.)는 무엇이든 될 수 있어 함께 본다.
-# 대시보드 위젯이 같은 조건으로 몇 분마다 다시 부르므로 같은 사용자·같은 조건은 10분에 한 번만 기록한다
+# 상위 값·시계열 중 사람·출발지로 나눈 것은 접속기록에 남긴다 (ADR-042, B-38). 원본 필드(f.)는 무엇이든 될 수 있어 함께 본다.
+# 대시보드 위젯이 같은 조건으로 몇 분마다 다시 부르므로 같은 사용자·같은 조건은 10분에 한 번만(accesslog)
 PERSONAL_FIELDS = frozenset({"user", "ip", "username", "src_ip"})
-STATS_AUDIT_EVERY = 600.0
-_stats_audited: dict[tuple[str, str], float] = {}
 
 
 async def _audit_stats(request: Request, field: str, rows: int) -> None:
     if field not in PERSONAL_FIELDS and not field.startswith("f."):
         return
-    user = request.state.user
-    conditions = {k: v for k, v in request.query_params.items() if k not in ("limit",)}
-    key = (user.username, json.dumps(conditions, sort_keys=True, ensure_ascii=False))
-    now = time.monotonic()
-    if now - _stats_audited.get(key, -STATS_AUDIT_EVERY) < STATS_AUDIT_EVERY:
-        return
-    if len(_stats_audited) > 10000:
-        _stats_audited.clear()
-    await db.audit(user.username, "events.stats", field, {"query": conditions, "rows": rows},
-                   actor_ip=client_ip(request), required=True)
-    _stats_audited[key] = now   # 기록에 성공한 뒤에만 (실패하면 다음 조회에서 다시 시도)
+    conditions = accesslog.conditions(request)
+    await accesslog.record(request, request.state.user.username, "events.stats", field, {"query": conditions, "rows": rows},
+                           key=conditions)
 
 
 @router.get("/api/stats/top")
@@ -399,6 +390,8 @@ async def live_stream(request: Request):
     """Server-Sent Events. `event: events` 로 정규화된 이벤트 배열을 보낸다 (시간 필터는 무시)."""
     f = _filter(request, default_since=None)
     token = request.state.session_token
+    # 사용자·IP 가 든 이벤트가 그대로 흐른다 — 여는 것을 접속기록에 (B-38). 끊겼다 다시 붙는 것은 10분 묶음
+    await accesslog.record(request, request.state.user.username, "events.live", "live", {"query": accesslog.conditions(request)})
     queue = live.broadcaster.subscribe()
 
     async def stream():

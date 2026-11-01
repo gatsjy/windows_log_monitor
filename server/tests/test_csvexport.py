@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.csvexport import csv_response, safe_cell
+from app.csvexport import csv_response, safe_cell, weak_reason
 
 
 @pytest.mark.parametrize(("value", "expected"), [
@@ -29,3 +29,13 @@ def test_csv_response_has_bom_and_neutralized_cells():
     body = r.body.decode("utf-8")
     assert body.startswith("﻿대상,건수") and "'=1+1,3" in body
     assert r.headers["content-disposition"] == 'attachment; filename="x.csv"' and r.headers["x-test"] == "1"
+
+
+@pytest.mark.parametrize(("reason", "weak"), [
+    ("확인", True), ("업무", True), ("업무용", True), ("ㅁㅁㅁㅁ", True), ("....", True), ("1234", True), (" a a ", True),
+    ("월간 점검", False), ("사고 조사", False), ("민원 대응 자료", False), ("audit Q3", False),
+])
+def test_weak_export_reason(reason, weak):
+    """사유가 뜻이 없을 만큼 짧은 내려받기는 점검 보고서가 따로 보인다 (B-38) — 짧아도 뜻이 있는 문구는 통과."""
+    assert weak_reason(reason) is weak
+

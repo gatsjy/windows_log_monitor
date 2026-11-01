@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from .. import db, repository
+from .. import accesslog, db, repository
 from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
 from ..config import display_zone
@@ -46,17 +46,28 @@ async def list_reports(limit: int = Query(100, ge=1, le=500), user: User = Depen
     }
 
 
+# 보고서에는 PC·계정·IP 가 든다 — 열람·인쇄를 접속기록에 (B-38). 화면은 요약(JSON)과 iframe(HTML)을 함께 부르므로 같은 '열람'으로 묶인다
+async def _record_view(request: Request, user: User, report_id: int, row: dict, printed: bool) -> None:
+    await accesslog.record(request, user.username, "report.print" if printed else "report.view", str(report_id),
+                           {"kind": row["kind"], "title": row["payload"].get("title")})
+
+
 @router.get("/api/reports/{report_id}")
-async def get_report(report_id: int, user: User = Depends(report_reader)):
+async def get_report(report_id: int, request: Request, user: User = Depends(report_reader)):
     row = await _report(report_id)
+    await _record_view(request, user, report_id, row, printed=False)
     return {**row, "summary": render.summary(row["payload"]), "sha256": scheduler.payload_sha256(row["payload"])}
 
 
 @router.get("/api/reports/{report_id}/html", response_class=HTMLResponse)
-async def report_html(report_id: int, user: User = Depends(report_reader)):
-    """화면 iframe·인쇄용. 로그에서 온 값이 들어 있어 스크립트를 막는 CSP 를 걸고, 같은 출처 iframe 만 허용한다."""
+async def report_html(report_id: int, request: Request, print_: bool = Query(False, alias="print"),
+                      user: User = Depends(report_reader)):
+    """화면 iframe·인쇄용. 로그에서 온 값이 들어 있어 스크립트를 막는 CSP 를 걸고, 같은 출처 iframe 만 허용한다.
+    print=1(인쇄용으로 열기)이면 출력자·시각·IP 를 문서에 찍는다 — 출력물이 누구 것인지 남게(출력·복사 안전조치)."""
     row = await _report(report_id)
-    return HTMLResponse(render.page(row["payload"], report_id, row), headers={
+    await _record_view(request, user, report_id, row, printed=print_)
+    printed = {"by": user.username, "at": datetime.now(UTC), "ip": client_ip(request)} if print_ else None
+    return HTMLResponse(render.page(row["payload"], report_id, row, printed=printed), headers={
         "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'",
         "X-Frame-Options": "SAMEORIGIN", "Cache-Control": "no-store"})
 

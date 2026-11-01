@@ -17,6 +17,7 @@ from ..alerts import coverage, health
 from ..alerts.builtin import ADMIN_RULE
 from ..alerts.engine import engine
 from ..config import display_zone, settings
+from ..csvexport import weak_reason
 from ..filters import EventFilter
 
 PAYLOAD_VERSION = 1
@@ -319,7 +320,18 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
     if bad:
         out.append({"level": "bad", "text": f"마지막 보관 파일 무결성 확인에서 문제 {bad}건"})
     out.extend(dict(n) for n in (p["retention"].get("audit_chain") or {}).get("notices") or [])   # B-71 이전 보고서에는 없다
+    weak = (p.get("exports") or {}).get("weak_total")   # B-38 이전 보고서에는 없다
+    if weak:
+        out.append({"level": "warn", "text": f"사유가 짧은 개인정보 내려받기 {weak}건 — 누가 왜 꺼냈는지 확인하세요"})
     return sorted(out, key=lambda a: a["level"] != "bad")
+
+
+async def _exports(start: datetime, end: datetime) -> dict[str, Any]:
+    rows = await repository.audit_exports(start, end)
+    weak = [r for r in rows if weak_reason(r["reason"])]
+    return {"total": len(rows), "weak_total": len(weak),
+            "weak": [{"at": _iso(r["at"]), "actor": r["actor"], "action": r["action"], "reason": r["reason"] or "",
+                      "rows": r["rows"]} for r in weak[:20]]}
 
 
 async def build(kind: str, start: datetime, end: datetime, now: datetime | None = None) -> dict[str, Any]:
@@ -340,6 +352,8 @@ async def build(kind: str, start: datetime, end: datetime, now: datetime | None 
         "alerting": await _alerting(),
         # 관리 작업 요약 (B-36) — 관리자 행위 점검(ISMS 2.9.5)
         "admin": await _admin(start, end),
+        # 개인정보 내려받기와 사유 (B-38) — 사유가 뜻이 없을 만큼 짧은 것은 따로
+        "exports": await _exports(start, end),
         "retention": await _retention(now),
         "backup": {"problems": backup["problems"],
                    "last_backup": _jsonable(backup["last_backup"]), "last_verify": _jsonable(backup["last_verify"]),
