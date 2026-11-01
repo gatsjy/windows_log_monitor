@@ -706,11 +706,38 @@ function retentionKinds(p) {
       시스템의 접속기록이면 <code>WLM_SENSITIVE_ACCESS_LOG=on</code> 으로 표시하고 <code>WLM_RETENTION_DAYS</code> 를 ${fmtNum(L.sensitive_log_days)} 이상으로 두세요 (개인정보의 안전성 확보조치 기준 제8조).</p>` : ''}`;
 }
 
+/** 감사로그 위·변조 증명 (B-71): 해시 체인의 마지막 검증, 체인 머리, DB 밖 앵커 */
+function integrityCard(g) {
+  if (!g) return '';
+  const v = g.last_verify;
+  const d = v?.detail || {};
+  const tone = { bad: 'error-box', warn: 'warn-box' };
+  return html`<section class="card" style="margin-bottom:14px"><div class="card-body">
+    <div class="section-title" style="margin-top:0">감사로그 위·변조 증명</div>
+    <p class="muted" style="font-size:12.5px;margin:0 0 10px">감사로그 행마다 앞 행의 해시를 넣은 SHA-256 을 남깁니다(해시 체인). 행을 고치거나 지우면 이어짐이 끊기고,
+      매일 마지막 번호·해시를 DB 밖(보관 폴더 <code>integrity-*.json</code> → 외부 저장소 복제, 점검 보고서 메일)에 남겨 끝을 지우거나 통째로 다시 쓴 것도 드러납니다.</p>
+    ${(g.notices || []).map((n) => html`<div class="${tone[n.level] || 'warn-box'}" style="margin-bottom:8px">${n.text}</div>`)}
+    ${v && !d.ok ? (d.problems || []).slice(1).map((t) => html`<div class="error-box" style="margin-bottom:8px">${t}</div>`) : ''}
+    <dl class="kv" style="margin-bottom:10px">
+      <dt>마지막 검증</dt><dd style="flex-wrap:wrap">${v ? html`${fmtTime(v.at)} — ${d.ok ? html`<span class="tag-good">정상</span>` : html`<span class="tag-bad">위·변조 의심</span>`}
+        <span class="muted">(감사로그 ${fmtNum(d.rows ?? 0)}행 · 앵커 ${fmtNum(d.anchors_checked ?? 0)}개 대조${d.anchors_expired ? ` · 보관기간 지난 앵커 ${fmtNum(d.anchors_expired)}개` : ''})</span>` : '아직 없음 (매일 자동)'}</dd>
+      ${d.superseded?.length ? html`<dt>DB 복원</dt><dd style="flex-wrap:wrap"><span class="muted">백업으로 되돌리기 전에 남긴 앵커 ${fmtNum(d.superseded.length)}개는 버려진 갈래라 대조하지 않았습니다
+        (복원 기록 #${d.superseded[0].restore_id} — 감사로그 '백업으로 DB 복원')</span></dd>` : ''}
+      <dt>체인 머리</dt><dd class="mono" style="font-size:12.5px;overflow-wrap:anywhere">${g.head ? `#${g.head.last_id} · ${g.head.last_hash}` : '없음'}</dd>
+      <dt>앵커</dt><dd style="flex-wrap:wrap">${fmtNum(g.anchors)}개 ${g.last_anchor ? html`<span class="muted">(마지막 ${fmtTime(g.last_anchor.at)})</span>` : ''}
+        ${g.replica ? '' : html`<span class="muted"> — 외부 저장소 복제가 꺼져 있어 앵커도 이 서버 디스크에만 있습니다</span>`}</dd>
+    </dl>
+    <div class="toolbar"><button class="btn sm" type="button" data-chain-verify>지금 검증</button>
+      <span class="muted" style="font-size:12.5px">서버에서는 <code>python -m app.cli verify-chain</code> (복제본 앵커로도: <code>--anchors 폴더</code>)</span></div>
+  </div></section>`;
+}
+
 async function retention(body) {
-  const s = await api.get('/api/settings/retention');
+  const [s, chain] = await Promise.all([api.get('/api/settings/retention'), api.get('/api/settings/integrity').catch(() => null)]);
   const p = s.policy;
   body.innerHTML = html`
     ${backupCard(s.backup)}
+    ${integrityCard(chain)}
     <section class="card" style="margin-bottom:14px"><div class="card-body">
       <div class="section-title" style="margin-top:0">로그 로테이션 정책</div>
       <div class="rotation">
@@ -749,6 +776,16 @@ async function retention(body) {
           </tr>`)}</tbody></table></div>` : html`<div class="empty">아직 보관 파일이 없습니다 (DB 보관기간이 지난 달이 생기면 자동으로 만들어집니다)</div>`}</div></section>
     </div>`;
   const msg = body.querySelector('[data-msg]');
+  body.querySelector('[data-chain-verify]')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try {
+      await api.send('POST', '/api/settings/integrity/verify');
+      retention(body);   // 결과는 위 카드에 (감사로그 integrity.verify)
+    } catch (err) {
+      e.target.disabled = false;
+      e.target.insertAdjacentHTML('afterend', errorBox(err));
+    }
+  });
   body.querySelector('[data-rotate]').addEventListener('click', (e) => run(e.target, msg, async () => {
     await api.send('POST', '/api/settings/retention/rotate');
     retention(body);

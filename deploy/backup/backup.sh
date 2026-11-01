@@ -456,7 +456,8 @@ do_replicate() {
     return 1
   fi
   replicate_dir "$BACKUP_DIR" "$REPLICA_DIR/backups" '*.dump' '*.dump.sha256' 'wlm-*.json' '*.config.tar.gz'
-  replicate_dir "$ARCHIVE_DIR" "$REPLICA_DIR/archive" 'events_*.jsonl.gz' 'events_*.meta.json'
+  # integrity-*.json = 감사로그 해시 체인의 매일 앵커 (B-71) — DB 밖·서버 밖에 한 벌 더 있어야 끝을 지운 변조가 드러난다
+  replicate_dir "$ARCHIVE_DIR" "$REPLICA_DIR/archive" 'events_*.jsonl.gz' 'events_*.meta.json' 'integrity-*.json'
   for _f in "$REPLICA_DIR"/archive/events_*; do
     [ -f "$_f" ] || continue
     if archive_expired "$_f"; then
@@ -610,9 +611,12 @@ SQL
   REPLICA_DIR=$(mktemp -d); ARCHIVE_DIR=$(mktemp -d); RETENTION_DAYS=365
   old=events_$(( $(date +%Y) - 3 ))_08; new=$(date +events_%Y_%m)
   for a in "$old" "$new"; do echo "$a" > "$ARCHIVE_DIR/$a.jsonl.gz"; echo '{}' > "$ARCHIVE_DIR/$a.meta.json"; done
+  anchor=integrity-$(( $(date +%Y) - 3 ))-08-01.json   # 감사로그 체인 앵커(B-71) — 오래돼도 만료로 지우지 않는다
+  echo '{"last_id": 1}' > "$ARCHIVE_DIR/$anchor"
   do_replicate >/dev/null; check "$?" 0 "복제"
   check "$(ls "$REPLICA_DIR"/archive | wc -l | tr -d ' ')|$(ls "$REPLICA_DIR"/backups/*.dump | wc -l | tr -d ' ')" \
-    "2|$(ls "$BACKUP_DIR"/*.dump | wc -l | tr -d ' ')" "만료 안 된 보관 파일·백업이 복제됨 (만료된 것은 복제 뒤 지움)"
+    "3|$(ls "$BACKUP_DIR"/*.dump | wc -l | tr -d ' ')" "만료 안 된 보관 파일·앵커·백업이 복제됨 (만료된 것은 복제 뒤 지움)"
+  check "$(cat "$REPLICA_DIR/archive/$anchor" 2>/dev/null)" '{"last_id": 1}' "오래된 체인 앵커도 복제·유지"
   check "$([ -e "$REPLICA_DIR/archive/$old.jsonl.gz" ] && echo y || echo n)" n "만료된 보관 파일은 복제하지 않음"
   # 예전에 복제해 둔 것이 만료되면 복제본에서도 지운다
   cp "$ARCHIVE_DIR/$old.jsonl.gz" "$ARCHIVE_DIR/$old.meta.json" "$REPLICA_DIR/archive/"

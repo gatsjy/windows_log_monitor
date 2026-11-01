@@ -135,12 +135,18 @@ def test_partition_ddl_does_not_queue_behind_a_backup(client, monkeypatch):
     assert future in partitions()
 
 
-def test_audit_log_outlives_the_log_retention(client):
+def test_audit_log_outlives_the_log_retention(client, rechain):
     """감사로그(권한 부여·변경·말소 기록)는 로그와 따로 3년 — 예전에는 로그와 같은 365일에 지워졌다 (ADR-040)."""
     from app import partitions
 
-    sql("INSERT INTO audit_log (at, actor, action, target) VALUES (now() - interval '400 days', 'ret-test', 'user.role', 'kim'),"
-        " (now() - interval '1200 days', 'ret-test', 'user.create', 'old')")
+    # 해시 체인(B-71): 트리거가 시각을 지금으로 정하고, 만료 삭제는 번호 순서의 앞부분만 지운다(지울 행이 체인과 맞아야 함).
+    # 오래전부터 쌓인 감사로그를 흉내 낸다 — 이미 있는 행을 3년 전으로 돌리고 오래된 것부터 넣은 뒤 체인을 다시 잇는다
+    with psycopg.connect(os.environ["WLM_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("SET session_replication_role = replica")
+        conn.execute("UPDATE audit_log SET at = now() - interval '1300 days'")
+        conn.execute("INSERT INTO audit_log (at, actor, action, target) VALUES (now() - interval '1200 days', 'ret-test', 'user.create', 'old')")
+        conn.execute("INSERT INTO audit_log (at, actor, action, target) VALUES (now() - interval '400 days', 'ret-test', 'user.role', 'kim')")
+    rechain()
     client.portal.call(partitions.purge_audit)
     left = {r[0] for r in sql("SELECT target FROM audit_log WHERE actor = 'ret-test'")}
     assert left == {"kim"}   # 400일(로그 보관기간 365일보다 오래) 은 남고, 1200일(3년 넘음)만 지운다

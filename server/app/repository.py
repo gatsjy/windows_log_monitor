@@ -10,6 +10,8 @@ import json
 import logging
 import re
 from collections import Counter
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -525,7 +527,7 @@ async def _insert(events: list[Event], heartbeats: list[Heartbeat], client_ip: s
             if attempt == 2:
                 raise
             log.warning("파티션 없음 → 생성 후 재시도")
-            await partitions.run_maintenance()
+            await partitions.run_maintenance(with_integrity=False)
 
 
 # IIS 열 순서 캐시 (ADR-037). 정본은 iis_layouts 표 — 이것은 요청마다 DB 에 묻지 않기 위한 것뿐이라
@@ -1383,15 +1385,98 @@ async def audit_actions() -> list[str]:
     return [r["action"] for r in rows]
 
 
-async def purge_audit(cutoff: datetime) -> int:
+async def purge_audit(cutoff: datetime, retention_days: int, check: Any) -> dict[str, Any]:
     """보관기간 만료분 삭제. append-only 트리거의 예외 스위치를 이 트랜잭션에서만 켠다.
-    알림 설정 판본(ADR-043)도 같은 보관기간 — 단 마지막 판본은 남긴다(파일이 깨진 채 다시 시작할 때 쓰는 설정)."""
+    알림 설정 판본(ADR-043)도 같은 보관기간 — 단 마지막 판본은 남긴다(파일이 깨진 채 다시 시작할 때 쓰는 설정).
+    해시 체인(B-71):
+    - 번호 순서로 앞부분만 지운다(아직 보관기간 안인 첫 행 앞까지) — 시각 순서로 지우면 오래 걸린 트랜잭션의 행이 가운데 빠져 체인이 끊긴다.
+    - 지우기 전에 지울 행과 남을 첫 행을 `check`(integrity.Chain)로 맞춰 본다. 고친 행의 시각을 과거로 돌려 만료 삭제가 지우게 하면
+      변조가 세탁됐다(검토에서 재현) — 맞지 않으면 지우지 않고 문제를 돌려준다.
+    - 지운 마지막 번호·해시를 남기는 감사로그(retention.purge_audit)는 **같은 트랜잭션**에 넣는다 — 따로 넣다 실패하면 정상 삭제가
+      '앞부분이 지워졌다'로 보였다."""
     async with db.pool().connection() as conn:
         await conn.execute("SET LOCAL wlm.audit_purge = 'on'")
-        cur = await conn.execute("DELETE FROM audit_log WHERE at < %s", (cutoff,))
+        cur = await conn.execute(
+            "SELECT id, row_hash FROM audit_log WHERE id < COALESCE((SELECT min(id) FROM audit_log WHERE at >= %s),"
+            " (SELECT max(id) + 1 FROM audit_log)) ORDER BY id DESC LIMIT 1", (cutoff,))
+        last = await cur.fetchone()
+        if last is None:
+            return {"deleted": 0}
+        after = 0
+        while True:
+            cur = await conn.execute(f"SELECT {_AUDIT_CHAIN_COLUMNS} FROM audit_log WHERE id > %s AND id <= %s ORDER BY id LIMIT 5000",
+                                     (after, last["id"]))
+            batch = await cur.fetchall()
+            if not batch:
+                break
+            for r in batch:
+                check.feed(r)
+            after = batch[-1]["id"]
+        cur = await conn.execute(f"SELECT {_AUDIT_CHAIN_COLUMNS} FROM audit_log WHERE id > %s ORDER BY id LIMIT 1", (last["id"],))
+        if (following := await cur.fetchone()) is not None:
+            check.feed(following)
+        if check.problems:
+            return {"deleted": 0, "upto_id": last["id"], "refused": check.problems}
+        cur = await conn.execute("DELETE FROM audit_log WHERE id <= %s", (last["id"],))
+        deleted = cur.rowcount
         await conn.execute("DELETE FROM alert_config_versions WHERE applied_at < %s"
                            " AND id < (SELECT max(id) FROM alert_config_versions)", (cutoff,))
-        return cur.rowcount
+        await conn.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES ('system', 'retention.purge_audit', 'audit_log', %s)",
+                           (json.dumps({"deleted": deleted, "retention_days": retention_days, "cutoff": cutoff.isoformat(),
+                                        "upto_id": last["id"], "last_hash": last["row_hash"]}),))
+        return {"deleted": deleted, "upto_id": last["id"], "last_hash": last["row_hash"]}
+
+
+# ---------------------------------------------------------------- 감사로그 해시 체인 (B-71, app/integrity.py)
+
+# 검증 재료: 시각은 UTC 마이크로초(무한대면 NULL — 형 변환 오류로 검증이 멈추지 않게), detail 은 jsonb 의 글 모양 그대로 (트리거와 같은 재료)
+_AUDIT_CHAIN_COLUMNS = (
+    "id, prev_hash, row_hash, CASE WHEN isfinite(at) THEN (extract(epoch FROM at) * 1000000)::bigint END AS at_us,"
+    " CASE WHEN isfinite(at) THEN at END AS at, actor, actor_ip, action, target, detail::text AS detail")
+
+
+async def audit_chain_head() -> dict[str, Any] | None:
+    """체인 머리 + 마지막 행의 시각(앵커에 함께 남긴다 — 그 행이 보관기간 만료로 지워질 만한지 판단)."""
+    return await db.fetch_one(
+        "SELECT c.start_hash, c.started_at, c.backfill_rows, c.backfill_max_id, c.last_id, c.last_hash,"
+        " CASE WHEN isfinite(l.at) THEN l.at END AS last_at FROM audit_chain c LEFT JOIN audit_log l ON l.id = c.last_id")
+
+
+class AuditSnapshot:
+    """검증용 한 시점: 머리와 행을 같은 REPEATABLE READ 트랜잭션에서 읽는다 — 시간마다 도는 만료 삭제·새 기록과 겹쳐도
+    머리·행·표시가 서로 맞는 한 장면을 본다(따로 읽으면 '지금 검증'이 정리와 겹칠 때 거짓 경보)."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    async def head(self) -> dict[str, Any] | None:
+        cur = await self._conn.execute(
+            "SELECT start_hash, started_at, backfill_rows, backfill_max_id, last_id, last_hash FROM audit_chain WHERE id = 1")
+        return await cur.fetchone()
+
+    async def rows(self, after_id: int, limit: int) -> list[dict[str, Any]]:
+        cur = await self._conn.execute(f"SELECT {_AUDIT_CHAIN_COLUMNS} FROM audit_log WHERE id > %s ORDER BY id LIMIT %s",
+                                       (after_id, limit))
+        return await cur.fetchall()
+
+
+@asynccontextmanager
+async def audit_snapshot() -> AsyncIterator[AuditSnapshot]:
+    async with db.pool().connection() as conn, conn.transaction():
+        await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        yield AuditSnapshot(conn)
+
+
+async def latest_audit_by_id(actions: list[str]) -> dict[str, dict]:
+    """행위별 가장 마지막에 넣은 감사로그 한 줄 — 시각이 아니라 번호 순서. 위·변조 증명의 마지막 검증·앵커를 고를 때(트리거를 끄고
+    미래 시각으로 넣은 가짜 '정상' 기록이 최신이 되어 매일 검증을 멈추게 했다 — 검토에서 재현). (action, id) 인덱스(022)를 탄다."""
+    rows = await db.fetch_all(
+        "SELECT a.action, l.id, l.at, l.actor, l.target, l.detail FROM unnest(%s::text[]) AS a(action)"
+        " CROSS JOIN LATERAL (SELECT id, at, actor, target, detail FROM audit_log WHERE action = a.action"
+        "                     ORDER BY id DESC LIMIT 1) l",
+        (actions,),
+    )
+    return {r.pop("action"): r for r in rows}
 
 
 # ---------------------------------------------------------------- 알림 설정 판본 (ADR-043)

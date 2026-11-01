@@ -38,6 +38,7 @@ def _names(names: list[str], limit: int = 5) -> str:
 
 
 async def collect(now: datetime | None = None) -> dict[str, Any]:
+    from . import integrity
     from .alerts import coverage, health
     from .alerts.engine import engine
     from .alerts.targets import load_notifiers, smtp_config
@@ -77,6 +78,7 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "retention_warnings": partitions.retention_warnings(),
         "backup": await backup_status(now),
         "replica": settings.replica,
+        "integrity": (await integrity.status(now))["notices"],
         "weakened": [v for v in await repository.report_config_changes(now - CHANGE_LOOKBACK, now) if v["weakened"]],
     }
 
@@ -188,6 +190,11 @@ def judge(f: dict[str, Any]) -> list[Item]:
     else:
         status, detail = ("bad", "; ".join(replica_problems[:2])) if replica_problems else ("ok", "외부 저장소 복제가 정상입니다")
     add(Item("replica", "보관", "외부 저장소 복제", status, detail, "#/settings/retention", "AIRGAP.md §11, ADR-047"))
+    notices = f.get("integrity") or []
+    worst = "bad" if any(n["level"] == "bad" for n in notices) else "warn" if notices else "ok"
+    add(Item("audit_chain", "보관", "감사로그 위·변조 증명", worst,
+             "; ".join(n["text"] for n in notices[:2]) or "매일 검증·앵커가 정상입니다",
+             "#/settings/retention", "ADR-050, ISMS 2.9.4"))
 
     # ------------------------------------------------------------ 변경 감시
     weak = f["weakened"]

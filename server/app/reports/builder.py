@@ -184,12 +184,29 @@ async def _agents(now: datetime) -> dict[str, Any]:
             "silent_streams_total": len(streams)}
 
 
-async def _retention() -> dict[str, Any]:
+async def _audit_chain(now: datetime) -> dict[str, Any]:
+    """감사로그 위·변조 증명 (B-71): 체인 머리(번호·해시·시각)와 마지막 검증 — 보고서가 메일로 나가므로 이 번호·해시가 서버 밖 앵커가
+    된다. notices = 판단(검증 실패·만료 삭제 멈춤·검증/앵커가 오래 없음, integrity.status) — 머리가 없어도 보고서에서 사라지지 않게."""
+    from .. import integrity  # repository 와 순환 import 를 피해 여기서
+
+    st = await integrity.status(now)
+    head, chain = st["head"], st["last_verify"]
+    return {"last_id": head["last_id"] if head else None, "last_hash": head["last_hash"] if head else None,
+            "last_at": _iso(head["last_at"]) if head else None,
+            "verify": {"at": _iso(chain["at"]), "ok": bool(chain["detail"].get("ok")),
+                       "problems": chain["detail"].get("problems") or [],
+                       "superseded": len(chain["detail"].get("superseded") or [])} if chain else None,
+            "notices": st["notices"]}
+
+
+async def _retention(now: datetime) -> dict[str, Any]:
     async with await db.connect_autocommit() as conn:
         parts = await partitions.list_partitions(conn)
     files = archive.list_archives()
-    check = (await repository.latest_audit(["retention.verify_archives"])).get("retention.verify_archives")
+    latest = await repository.latest_audit(["retention.verify_archives"])
+    check = latest.get("retention.verify_archives")
     return {
+        "audit_chain": await _audit_chain(now),
         "db_retention_days": settings.db_retention_days, "retention_days": settings.retention_days,
         "audit_retention_days": settings.audit_retention_days, "warnings": partitions.retention_warnings(),
         "partitions": len(parts), "rows_estimate": sum(p["rows_estimate"] for p in parts),
@@ -301,6 +318,7 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
     bad = integrity_bad_count(p["retention"]["last_integrity_check"])
     if bad:
         out.append({"level": "bad", "text": f"마지막 보관 파일 무결성 확인에서 문제 {bad}건"})
+    out.extend(dict(n) for n in (p["retention"].get("audit_chain") or {}).get("notices") or [])   # B-71 이전 보고서에는 없다
     return sorted(out, key=lambda a: a["level"] != "bad")
 
 
@@ -322,7 +340,7 @@ async def build(kind: str, start: datetime, end: datetime, now: datetime | None 
         "alerting": await _alerting(),
         # 관리 작업 요약 (B-36) — 관리자 행위 점검(ISMS 2.9.5)
         "admin": await _admin(start, end),
-        "retention": await _retention(),
+        "retention": await _retention(now),
         "backup": {"problems": backup["problems"],
                    "last_backup": _jsonable(backup["last_backup"]), "last_verify": _jsonable(backup["last_verify"]),
                    "last_verify_ok_at": _iso(backup["last_verify_ok_at"])},

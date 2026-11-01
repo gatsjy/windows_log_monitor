@@ -231,6 +231,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; letter-spacing: 
 
 .empty { padding: 32px 12px; text-align: center; color: var(--muted); font-size: 13.5px; }
 .error-box { padding: 12px 14px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--critical) 9%, transparent); color: var(--bad-ink); font-size: 13.5px; }
+.warn-box { padding: 12px 14px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--ink); font-size: 13.5px; }
 .skeleton { height: 120px; border-radius: var(--radius-sm); background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 

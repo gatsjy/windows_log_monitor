@@ -62,3 +62,34 @@ def _fresh_alert_engine():
 
     engine.forget()
     yield
+
+
+# 감사로그 해시 체인(B-71)을 다시 잇는다 — 체인 트리거가 시각을 지금으로 정하므로, 오래전에 쌓인 기록을 흉내 내는 시험은 트리거를
+# 건너뛰어(session_replication_role = replica, 이 연결만) 넣거나 시각을 돌린 뒤 이것으로 '그때부터 이어져 온' 체인을 만든다.
+# 머리를 먼저 잠가 그 사이 앱이 넣는 기록이 끼지 않게 한다
+_RECHAIN = """
+DO $$
+DECLARE h TEXT; r RECORD;
+BEGIN
+    SELECT start_hash INTO h FROM audit_chain WHERE id = 1 FOR UPDATE;
+    FOR r IN SELECT id, at, actor, actor_ip, action, target, detail FROM audit_log ORDER BY id LOOP
+        UPDATE audit_log SET prev_hash = h,
+               row_hash = audit_log_hash(audit_log_canonical(h, r.id, r.at, r.actor, r.actor_ip, r.action, r.target, r.detail))
+         WHERE id = r.id RETURNING row_hash INTO h;
+    END LOOP;
+    UPDATE audit_chain SET last_id = COALESCE((SELECT max(id) FROM audit_log), 0), last_hash = h WHERE id = 1;
+END
+$$
+"""
+
+
+@pytest.fixture
+def rechain():
+    import psycopg
+
+    def run():
+        with psycopg.connect(os.environ["WLM_DATABASE_URL"], autocommit=True) as conn:
+            conn.execute("SET session_replication_role = replica")
+            conn.execute(_RECHAIN)
+
+    return run

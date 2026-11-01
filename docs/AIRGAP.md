@@ -373,6 +373,11 @@ sudo ./deploy/airgap/install.sh --upgrade --syslog        # 처음 설치와 같
 - DB 구조 변경(마이그레이션)은 기동할 때 자동 적용됩니다.
 - **TLS:** 업그레이드는 TLS 설정을 바꾸지 않습니다. 평문으로 운영 중이면 완료 출력에 '[확인 필요] 평문 운영'이 나옵니다 — §7.5 순서로 옮깁니다. `tls/`·`tls-ca/` 는 덮어쓰지 않습니다.
 - **보관기간 (ADR-040):** 이 버전부터 감사로그·점검 보고서는 기본 3년(`WLM_AUDIT_RETENTION_DAYS`·`WLM_REPORT_RETENTION_DAYS`), 알림 이력은 로그와 같은 기간입니다. `.env` 에 없으면 기본값이 적용됩니다. 진료정보(민감정보) 처리 시스템의 접속기록이면 `WLM_RETENTION_DAYS=730` 과 `WLM_SENSITIVE_ACCESS_LOG=on`(2년 미달 경고)으로 둡니다. 업그레이드 뒤 로그 보관 화면의 '기록 종류별 보관기간'에 빨간 줄이 없는지 확인합니다.
+- **감사로그 해시 체인 (B-71, 마이그레이션 022):** 첫 기동 때 기존 감사로그 행마다 해시를 채웁니다(내용은 그대로, 행 100만 개에 약 40초 — 그동안 화면이 늦게 뜹니다.
+  감사로그가 수백만 행이면 install.sh 의 기동 대기(2분)를 넘길 수 있습니다 — 그때는 `docker compose logs -f api` 로 '마이그레이션 적용'이 끝나는지 봅니다).
+  첫 정기 정리(기동 1시간 뒤) 다음 `sudo docker compose -f docker-compose.yml exec api python -m app.cli verify-chain` 이 '정상'이면 됩니다.
+  022 이전 이미지로 1)만 되돌리면 체인은 DB 트리거라 계속 이어지지만, **옛 이미지의 감사로그 만료 삭제는 시각 기준이라** 다시 올린 뒤 '체인의 시작이 맞지 않습니다'가
+  날 수 있습니다 — 되돌린 동안은 `.env` 의 `WLM_AUDIT_RETENTION_DAYS` 를 크게(예: 3650) 두고 다시 올린 뒤 원래대로 합니다.
 - **에이전트는 서버 다음에:** 새 서버로 올린 뒤에 PC 에 새 설치 묶음을 배포합니다. 설치 묶음은 서버의 에이전트 틀로 만들어지므로 화면에서 받으면 자연히 이 순서가 됩니다.
   - 설정 버전 **0.4.0**(SQL Server ERRORLOG 여러 줄 묶기, ADR-037)을 옛 서버에 보내면 묶인 레코드의 시각·오류 번호를 읽지 못합니다. 저장소 파일로 직접 설치할 때 주의합니다.
   - 다시 설치해도 읽은 위치(`tail-*.sqlite`)와 버퍼가 남아 유실·중복이 없습니다. 바꿀 PC 찾기: 수집 PC 화면의 설정 버전이 0.3.0 이하이면서 ERRORLOG 를 수집하는 DB 서버.
@@ -439,6 +444,10 @@ sudo docker compose -f docker-compose.yml start api
   4. 확인: `sudo docker compose -f docker-compose.yml exec backup backup.sh replicate` → 환경설정 > 로그 보관 '외부 저장소 복제'가 정상, 감사로그 '외부 저장소 복제'.
   - NAS 가 지원하면 그 폴더에 **스냅숏·객체 잠금(WORM)** 을 켭니다(잠금 기간 = `WLM_RETENTION_DAYS`). 서버를 빼앗겨도 지난 복제본은 지우지 못합니다.
     잠금 때문에 만료 파일을 지우지 못하면 남긴 채 셉니다(`kept`).
+- **감사로그 위·변조 증명 (B-71, ADR-050):** api 가 매일 `archive/integrity-YYYY-MM-DD.json`(감사로그 마지막 번호·해시·시각)을 남기고 외부 저장소 복제가 함께 옮깁니다. 복제본·점검 보고서 메일에 남은 앵커가 'DB 밖 증거'이므로 복제를 켜 두는 것을 권합니다(가능하면 WORM). 앵커는 작아서(하루 1개, 수백 바이트) 만료로 지우지 않습니다.
+  `sudo docker compose -f docker-compose.yml exec api python -m app.cli verify-chain` — 실패하면 종료 코드 1 과 문제 행 번호.
+  **복제본의 앵커로 대조**(서버의 앵커 파일까지 지워졌을 때): `sudo docker compose -f docker-compose.yml run --rm -v /mnt/wlm-replica/archive:/anchors:ro api python -m app.cli verify-chain --anchors /anchors`
+  백업으로 복원하면 백업 뒤에 남긴 앵커는 '참고: DB 복원 전의 갈래라 대조하지 않음'으로 나옵니다(실패 아님 — 복원 기록이 감사로그에 남습니다).
 - `.env`(암호화 키)는 백업에 넣지 않습니다. **따로** 안전한 곳에 보관합니다 — 백업만 유출되어도 화면에서 넣은 비밀값을 풀 수 없게(ISMS 2.7.2).
 - 백업 파일 권한은 600(소유자만), `backups/` 는 700 입니다. 로그·계정 정보가 들어 있습니다. SELinux(Enforcing)에서는 설치 스크립트가 `backups/` 에 컨테이너 레이블을 붙입니다.
 
@@ -463,6 +472,9 @@ sudo docker compose -f docker-compose.yml start api
 | Fluent Bit 서비스가 계속 다시 시작 | `tls.ca_file` 파일 없음 (설정 검사는 통과하지만 실행 때 종료) | 설치 스크립트로 다시 설치(CA 를 `C:\ProgramData\wlm-agent\ca.crt` 로 복사) |
 | http 북마크로 화면이 빈 응답 | TLS 를 켠 뒤 화면은 https 만 받음 | `https://<인증서 이름>:8080` 으로 |
 | 로그인했는데 바로 로그인 화면 / 'HTTPS 주소로 접속하세요' | `WLM_COOKIE_SECURE=true` 인데 http 로 접속 | https 로 접속 (https 요청은 자동으로 Secure 쿠키라 보통 이 값은 false 로 둠) |
+| '감사로그 만료 삭제 멈춤' (로그 보관 화면·점검 보고서) | 보관기간이 지난 감사로그 중 체인과 맞지 않는 행이 있음(누군가 고친 행의 시각을 과거로 돌림) | 지우지 않고 남겨 둡니다(증거 — 고쳐진 행은 되돌릴 수 없으므로 만료 삭제는 계속 멈춰 있습니다). 아래 '검증 실패'와 같이 조사하고, 감사로그가 법정 기간보다 오래 남는 것은 조사 기록과 함께 둡니다 |
+| 'DB 복원 기록 전에 남긴 앵커 n개를 대조하지 않았습니다' (노란 줄, 한 달) | 백업으로 DB 를 되돌림 — 그 사이에 남긴 앵커는 버려진 갈래 | 그 무렵 `backup.sh restore` 를 했다면 정상(감사로그 '백업으로 DB 복원'). 하지 않았다면 누군가 끝을 지우고 복원 기록을 꾸민 것 — '검증 실패'와 같이 조사 |
+| '감사로그 위·변조 검증 실패' (로그 보관 화면·점검 보고서) | 누군가 DB 에서 트리거를 끄고 감사로그를 고침·지움, 또는 `backup.sh restore` 없이 DB 를 바꿔 끼움 (백업으로 복원한 것은 실패가 아니라 '참고'로 나옴 ) | 증거 보존 먼저: DB 백업을 지금 한 벌 더(`backup.sh backup`), 외부 복제본의 `integrity-*.json` 과 점검 보고서 메일을 보관. `verify-chain` 의 행 번호·시각으로 그 시간대 DB 접속(서버 계정·`docker compose exec db` 사용 기록)을 조사. `backup.sh restore` 를 거치지 않고 DB 를 바꿨다면(직접 `pg_restore` 등) 그 사실을 기록에 남기고 앵커와 날짜를 대조 |
 | 알림 메일이 안 옴 | 릴레이 주소·포트·인증 | 환경설정 > 메일 서버 > 테스트의 오류 문구 확인 |
 
 ## 13. 검증 기록 (2026-10-04, 개발 PC 리허설)

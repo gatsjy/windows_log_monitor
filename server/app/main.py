@@ -58,7 +58,7 @@ async def _maintenance_loop() -> None:
 async def lifespan(_: FastAPI):
     await db.migrate()
     await db.open_pool()
-    await partitions.run_maintenance()
+    await partitions.run_maintenance(with_integrity=False)
     await auth_service.bootstrap_admin()
     if not settings.ingest_api_keys:
         log.warning("WLM_INGEST_API_KEYS 가 비어 있어 로그 수집이 거부됩니다")

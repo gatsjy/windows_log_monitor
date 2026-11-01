@@ -443,12 +443,13 @@ def test_scoped_users_do_not_see_config_alerts(client):
 
 
 def test_versions_are_append_only_and_purge_keeps_the_last(client):
-    from app import repository
+    from app import integrity, repository
 
     with pytest.raises(psycopg.errors.RaiseException):
         sql("UPDATE alert_config_versions SET actor = 'x'")
     with pytest.raises(psycopg.errors.RaiseException):
         sql("DELETE FROM alert_config_versions")
     last = sql("SELECT max(id) FROM alert_config_versions")[0][0]
-    client.portal.call(repository.purge_audit, datetime.now(UTC) + timedelta(days=1))
+    check = client.portal.call(integrity.purge_check)
+    client.portal.call(repository.purge_audit, datetime.now(UTC) + timedelta(days=1), 1095, check)
     assert sql("SELECT id FROM alert_config_versions") == [(last,)]

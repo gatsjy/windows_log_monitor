@@ -92,6 +92,21 @@ async def readiness(admin: User = Depends(require_admin)):
     return await checks.checklist()
 
 
+@router.get("/api/settings/integrity")
+async def integrity_status(admin: User = Depends(require_permission("settings.manage"))):
+    """감사로그 위·변조 증명 (B-71): 체인 머리, 마지막 검증 결과, 앵커 파일."""
+    from .. import integrity
+
+    return await integrity.status()
+
+
+@router.post("/api/settings/integrity/verify")
+async def integrity_verify(request: Request, admin: User = Depends(require_permission("settings.manage"))):
+    from .. import integrity
+
+    return await integrity.record_verify(actor=admin.username, ip=client_ip(request))
+
+
 @router.get("/api/settings/meta")
 async def meta():
     return {

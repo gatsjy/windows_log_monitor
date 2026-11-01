@@ -66,7 +66,8 @@ server/app/
   secrets.py         환경설정 비밀값 암호화 (WLM_SECRET_KEY)
   csvexport.py       CSV 내려받기 공용 (BOM, 엑셀 수식 주입 방지) — 감사로그·알림 이력
   archive.py         로그 보관 파일 만들기·검증·복원
-  cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원, 인증서 tls-init·tls-renew·tls-status — DB 없이)
+  integrity.py       감사로그 해시 체인 검증(DB 함수와 따로 파이썬으로)·매일 DB 밖 앵커(archive/integrity-*.json) (ADR-050)
+  cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원, 감사로그 verify-chain, 인증서 tls-init·tls-renew·tls-status — DB 없이)
   routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음)
 server/migrations/   번호순 SQL
 server/tests/        pytest (DB 없이 도는 단위 테스트)
@@ -239,6 +240,14 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 의존성: `session_user`(코드 대기 세션도 통과 — 내 정보·로그아웃·코드 확인만) → `current_user`(코드 대기 세션 막음) → `require_user`(비밀번호 변경·필수 등록까지). 새 인증 API 는 맞는 단계를 고른다.
   - 실패 수(`failed_count`)는 정식 로그인이 끝날 때만 지운다(`service._complete_login`) — 비밀번호 단계에서 지우면 코드를 끝없이 맞혀 볼 수 있다.
 - `audit_log` 는 DB 트리거로 UPDATE·DELETE·TRUNCATE 를 막습니다. 테스트나 마이그레이션에서 지우려 하면 실패합니다.
+- **감사로그 해시 체인 (ADR-050):** INSERT 트리거가 `audit_chain` 한 줄을 잠그고 잠근 뒤 `id`·`at` 을 정한다 — 감사 INSERT 는 줄을 서므로 긴 트랜잭션 안에서 `db.audit` 를 부르고 오래 붙잡지 않는다(다른 감사 기록이 모두 기다린다).
+  - **`at` 을 넣어도 무시된다**(트리거가 `clock_timestamp()`). 지난 기록을 흉내 내는 시험은 `SET session_replication_role = replica`(그 연결만 트리거를 건너뜀)로 넣고, 체인을 보는 시험이면 conftest 의 `rechain` 픽스처로 다시 잇는다.
+  - 행의 글 모양은 SQL `audit_log_canonical` 과 `integrity.canonical` 이 한 글자도 같아야 한다(`test_api_audit_chain.py` 가 비교). 칸을 더하면 둘 다·새 마이그레이션으로. SQL 쪽은 칸마다 CASE 로 — 인자를 여러 번 쓰는 도우미 함수는 인라인되지 않아 7배 느렸다.
+  - 감사로그 만료 삭제는 번호 앞부분만, 지울 행이 체인과 맞을 때만(`repository.purge_audit(cutoff, days, integrity.purge_check())`). 기록은 같은 트랜잭션에 넣는다.
+  - 마지막 검증·앵커는 `repository.latest_audit_by_id`(번호 순서)로 고른다 — 시각 순서면 미래 시각의 가짜 기록이 최신이 된다. 상태 판단은 `integrity.status` 한 곳(화면·보고서·준비도).
+  - 전체 검증은 기동 중·수집 요청 안에서 하지 않는다(`run_maintenance(with_integrity=False)`).
+  - 백업 복원 뒤 앵커는 `backup.restore` 기록(번호·시각)으로 '버려진 갈래'를 가린다 — backup.sh 의 복원 기록 이름·대상을 바꾸면 `integrity.verify` 도.
+  - `verify` 는 보관 폴더의 앵커도 대조한다. 다른 DB 로 검증할 때는 `WLM_ARCHIVE_DIR` 를 빈 폴더로(개발 DB 의 앵커와 비교해 실패한다).
 - 개발 DB 의 관리자 비밀번호는 저장소에 없습니다. `python -m app.cli reset-password admin` 으로 임시 비밀번호를 받습니다.
 - `.env`·`.env.example` 에 `KEY=    # 설명` 처럼 빈 값 뒤 주석을 쓰지 않습니다. compose 가 설명문을 값으로 읽습니다(첫 관리자 비밀번호 사고 사례, docs/AIRGAP.md §13).
 - 컨테이너 이미지·의존성·포트·볼륨을 바꾸면 `deploy/airgap/` 스크립트와 docs/AIRGAP.md 도 확인합니다. 폐쇄망은 인터넷 없이 `--pull never` 로 기동합니다.

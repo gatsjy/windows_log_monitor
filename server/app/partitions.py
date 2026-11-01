@@ -181,15 +181,21 @@ async def purge_alerts(now: datetime | None = None) -> None:
 
 
 async def purge_audit(now: datetime | None = None) -> None:
-    """감사로그는 감사로그 보관기간(기본 3년 — 권한 부여·변경·말소 기록, 제5조). 삭제 사실 자체를 다시 감사로그에 남긴다."""
-    from . import repository
+    """감사로그는 감사로그 보관기간(기본 3년 — 권한 부여·변경·말소 기록, 제5조). 삭제 사실(지운 마지막 번호·해시)은 repository 가
+    같은 트랜잭션에 감사로그로 남긴다(B-71). 지울 행이 체인과 맞지 않으면 지우지 않는다 — 변조를 만료로 세탁하지 않게."""
+    from . import integrity, repository
 
-    cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.audit_retention_days)
-    deleted = await repository.purge_audit(cutoff)
-    if deleted:
-        log.warning("보관기간 만료 감사로그 삭제: %s건", deleted)
-        await db.audit("system", "retention.purge_audit", "audit_log",
-                       {"deleted": deleted, "retention_days": settings.audit_retention_days, "cutoff": cutoff.isoformat()})
+    now = now or datetime.now(UTC)
+    cutoff = now - timedelta(days=settings.audit_retention_days)
+    result = await repository.purge_audit(cutoff, settings.audit_retention_days, await integrity.purge_check(now))
+    if result.get("refused"):
+        log.error("감사로그 만료 삭제를 멈춤 — 지울 행이 체인과 맞지 않음: %s", "; ".join(result["refused"][:3]))
+        last = (await repository.latest_audit_by_id(["retention.purge_audit_refused"])).get("retention.purge_audit_refused")
+        if last is None or now - last["at"] >= timedelta(hours=23):   # 시간마다 다시 보지만 기록은 하루 한 번
+            await db.audit("system", "retention.purge_audit_refused", "audit_log",
+                           {"cutoff": cutoff.isoformat(), "upto_id": result["upto_id"], "problems": result["refused"][:5]})
+    elif result["deleted"]:
+        log.warning("보관기간 만료 감사로그 삭제: %s건", result["deleted"])
 
 
 async def purge_reports(now: datetime | None = None) -> None:
@@ -223,7 +229,9 @@ async def purge_sessions() -> None:
     await service.purge_sessions()
 
 
-async def run_maintenance() -> None:
+async def run_maintenance(with_integrity: bool = True) -> None:
+    """with_integrity=False: 기동 중(수집·화면을 열기 전)이나 수집 요청 안(새 달 파티션)에서 부를 때 — 감사로그 전체 검증·앵커(B-71)는
+    건너뛰고 다음 정기 실행에서 한다(행이 많으면 기동이 그만큼 늦어 설치 스크립트의 기동 대기를 넘었다 — 검토에서 측정)."""
     async with await db.connect_autocommit() as conn:
         cur = await conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (_LOCK_ID,))
         if not (await cur.fetchone())["ok"]:
@@ -239,5 +247,11 @@ async def run_maintenance() -> None:
             await purge_sessions()
             await purge_ingest_problems()
             await purge_agent_streams()
+            if with_integrity:
+                from . import (
+                    integrity,  # 감사로그 해시 체인 검증·앵커 (B-71) — repository 와 순환 import 를 피해 여기서
+                )
+
+                await integrity.daily()
         finally:
             await conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))

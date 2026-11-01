@@ -601,7 +601,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
   - 관리자만: 사용자·사용자 그룹 관리 (권한 상승 방지)
 - **감사로그(audit_log):**
   - 기록 대상: 로그인 성공·실패·잠금·로그아웃·세션 만료, 비밀번호 변경, 사용자 관리, 이벤트 검색 조건·상세 조회, 모든 설정 변경, Oracle 쿼리 실행, 보관·삭제
-  - DB 트리거로 **수정·삭제·TRUNCATE 를 막습니다**(보관기간 만료 삭제만 예외).
+  - DB 트리거로 **수정·삭제·TRUNCATE 를 막습니다**(보관기간 만료 삭제만 예외). 트리거를 끄고 고친 것은 해시 체인으로 드러납니다(§9.1, ADR-050).
   - 화면 '감사 로그'에서 조회하고 CSV(엑셀 호환)로 내려받습니다. 내려받은 사실도 기록합니다.
   - **개인정보가 보이는 조회의 접속기록 (ADR-042):** 이벤트 상세(`events.view`)에는 누구의 기록을 봤는지(이벤트의 사용자·IP·분류), 사용자·IP·원본 필드의 상위 값 조회는 `events.stats`(같은 사람·같은 조건은 10분에 한 번)로 남깁니다.
   - 검색·상세·개인정보 상위 값·CSV 내려받기는 **접속기록을 남기지 못하면 결과를 내주지 않습니다**(503). CSV(감사로그·알림 이력)는 내려받는 사유를 받아 기록에 함께 남깁니다(없으면 400).
@@ -612,6 +612,7 @@ docker compose exec api python -m app.cli list-users
 docker compose exec api python -m app.cli reset-password admin      # 임시 비밀번호 + 잠금 해제
 docker compose exec api python -m app.cli create-user kim --role admin --name 김민수
 docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # 비활성 계정만, 감사 로그에 기록
+docker compose exec api python -m app.cli verify-chain                 # 감사로그 위·변조 검증 (§9.1, 실패면 종료 코드 1)
 ```
 
 ### 7.1 사용자 그룹 (`#/users/groups`, 관리자)
@@ -716,6 +717,21 @@ docker compose exec api python -m app.cli delete-user kim --reason 퇴사   # �
   - **에이전트 버퍼:** 서버 장애 때 디스크에 쌓는 버퍼의 상한은 1GB 입니다(`storage.total_limit_size`). 넘치면 오래된 것부터 버립니다.
   - **Windows 이벤트 로그 자체:** 로그가 넘쳐 덮어써지기 전에 에이전트가 읽어야 합니다. 보안 로그 크기를 GPO 로 충분히 키웁니다(`agent/windows/README.md`).
   - **파일 로그(tail):** Fluent Bit 이 이름 변경·잘라내기(rotate)를 따라갑니다. 읽은 위치는 DB 파일에 기록합니다.
+
+### 9.1 감사로그 위·변조 증명 (B-71, ADR-050)
+
+- **해시 체인:** 감사로그 행마다 `row_hash = SHA-256(앞 행 해시 + 이 행)` 을 DB 트리거가 넣습니다(`prev_hash`·`row_hash`, 머리 `audit_chain`, 마이그레이션 022).
+  번호·시각도 트리거가 정합니다. 가운데 행을 고치거나 지우거나 끼워 넣으면 그 뒤가 어긋납니다. 022 이전 행에도 업그레이드 때 해시를 채웁니다.
+- **검증:** `app/integrity.py` 가 DB 함수와 따로 파이썬으로, 한 시점에서 모든 행을 다시 계산합니다. 매일 정기 정리 때 자동(감사로그 `integrity.verify`),
+  로그 보관 화면의 **지금 검증**, `python -m app.cli verify-chain` (외부 복제본의 앵커로도: `--anchors <폴더>`).
+- **DB 밖 앵커:** 매일 마지막 번호·해시·그 행의 시각을 보관 폴더 `archive/integrity-YYYY-MM-DD.json` 에 쓰고(외부 저장소 복제로 NAS 에도), 점검 보고서(메일)에도
+  넣습니다. 보관기간 안의 앵커가 가리키는 행은 있어야 하고 다시 계산한 해시가 같아야 합니다 — 끝을 지우거나 체인을 통째로 다시 써도 드러납니다.
+- **보관기간 만료:** 감사로그는 번호 순서의 앞부분만, 지울 행이 체인과 맞을 때만 지우고(맞지 않으면 멈추고 '감사로그 만료 삭제 멈춤'), 지운 마지막 번호·해시를
+  같은 트랜잭션의 `retention.purge_audit` 에 남깁니다.
+- **백업으로 되돌린 뒤:** 복원 기록(`backup.restore`) 앞의 백업 시점과 복원 사이에 남긴 앵커는 '버려진 갈래'로 따로 보입니다(실패 아님, 화면·CLI·보고서).
+- **알림:** 검증 실패·만료 삭제 멈춤은 빨간 줄, 이틀 넘게 검증·앵커가 없으면 노란 줄 — 로그 보관 화면, 점검 보고서 '점검 필요', 운영 준비도(`integrity.status`).
+- **한계:** DB 슈퍼유저는 마지막으로 서버 밖에 나간 앵커 뒤를 통째로 다시 쓸 수 있고 이 서버의 앵커 파일도 지울 수 있습니다 — 그때의 근거는 복제본(WORM)·메일의
+  앵커입니다. 이벤트(접속기록) 다이제스트는 B-71 2단계.
 
 ## 10. 성능
 

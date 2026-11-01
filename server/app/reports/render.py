@@ -236,6 +236,7 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
         [_e("보관 파일"), _e(f"{rt['archives']}개" + (f" (없는 파일 {rt['archives_missing']}개)" if rt["archives_missing"] else "")
                            + f" · 전체 보관 {rt['retention_days']}일")],
         [_e("마지막 무결성 확인"), _e(f"{_t(check['at'])} — 문제 {integrity_bad_count(check)}건" if check else "아직 없음")],
+        *_chain_rows(rt.get("audit_chain")),
         [_e("마지막 백업"), _e(f"{_t(lb['at'])} · {lb['file']}" if lb else "없음")],
         [_e("마지막 복구 시험"), _e((f"{_t(lv2['at'])} — {'성공' if lv2.get('ok') else '실패'}") if lv2 else "없음")],
     ]
@@ -299,4 +300,19 @@ def _resolved_note(al: dict) -> str:
     auto = al.get("auto_resolved_in_period") or 0
     text = f"기간 안에 해결 {al['resolved_in_period']:,}건"
     return f"{text} (자동 {auto:,}건, 중앙값은 사람이 해결한 것만)" if auto else text
+
+
+def _chain_rows(chain: dict | None) -> list[list[str]]:
+    """감사로그 위·변조 증명 (B-71). 이 번호·해시가 메일로 나가 서버 밖 앵커가 된다 — 나중에 이 행이 바뀌었으면 검증이 잡는다.
+    예전 보고서에는 없다."""
+    if not chain:
+        return []
+    v = chain.get("verify")
+    state = (f"{_t(v['at'])} — {'정상' if v['ok'] else '위·변조 의심: ' + (v['problems'] or [''])[0]}") if v else "아직 없음"
+    if v and v.get("superseded"):   # 예전 보고서에는 없다
+        state += f" (DB 복원 전 앵커 {v['superseded']}개는 대조하지 않음)"
+    anchor = f"#{chain['last_id']} · {chain['last_hash']}" if chain.get("last_id") is not None else "체인 머리가 없습니다"
+    if chain.get("last_at"):
+        anchor += f" · {_t(chain['last_at'])}"
+    return [[_e("감사로그 위·변조 검증"), _e(state)], [_e("감사로그 체인 앵커"), _e(anchor)]]
 

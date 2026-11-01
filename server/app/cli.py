@@ -6,6 +6,8 @@
   docker compose exec api python -m app.cli create-user kim.minsu --role admin --name 김민수
   docker compose exec api python -m app.cli retention-status          # DB 파티션·보관 파일 현황
   docker compose exec api python -m app.cli verify-archives           # 보관 파일 SHA-256 무결성 확인
+  docker compose exec api python -m app.cli verify-chain              # 감사로그 해시 체인·앵커 확인 (B-71)
+  ... verify-chain --anchors /anchors                                # 외부 복제본의 앵커로도 대조 (복제 폴더를 읽기 전용으로 마운트)
   docker compose exec api python -m app.cli restore-archive events_2026_06 --hold-days 14
   docker compose exec api python -m app.cli rotate-now                # 로그 로테이션 즉시 실행
 
@@ -91,6 +93,19 @@ async def _run(args: argparse.Namespace) -> None:
             await db.audit("cli", "retention.verify_archives", None, {"files": len(archive.list_archives()), "bad": bad})
             if bad:
                 raise SystemExit(f"무결성 문제 {len(bad)}건")
+        elif args.command == "verify-chain":
+            from . import integrity
+
+            result = await integrity.record_verify(actor="cli", anchor_dirs=args.anchors)
+            print(f"감사로그 {result['rows']:,}행 (앵커 {result['anchors_checked']}개 대조, 보관기간 지난 앵커 {result['anchors_expired']}개)"
+                  f" — 마지막 #{result['last_id']} {(result['last_hash'] or '')[:16]}…")
+            for text in result["problems"]:
+                print(f"  문제: {text}")
+            for s in result["superseded"]:
+                print(f"  참고: 앵커 {s['file']} 는 DB 복원(#{s['restore_id']}, {s['backup']}) 전의 갈래라 대조하지 않았습니다")
+            if not result["ok"]:
+                raise SystemExit("위·변조 의심 — 위 문제를 확인하세요 (감사로그 integrity.verify)")
+            print("정상: 고쳐지거나 지워진 행이 없습니다")
         elif args.command == "restore-archive":
             rows = await archive.restore(args.partition, args.hold_days, "cli")
             print(f"{args.partition}: {rows:,}건 복원. {args.hold_days}일 동안 자동 정리에서 제외됩니다")
@@ -122,6 +137,9 @@ def main() -> None:
     delete.add_argument("username")
     delete.add_argument("--reason", default="", help="삭제 사유 (감사 로그에 남음)")
     sub.add_parser("retention-status", help="DB 파티션과 보관 파일 현황")
+    chain = sub.add_parser("verify-chain", help="감사로그 해시 체인·DB 밖 앵커 확인 (위·변조 증명, B-71)")
+    chain.add_argument("--anchors", action="append", default=[],
+                       help="앵커(integrity-*.json)를 더 읽을 폴더 (여러 번) — 외부 저장소 복제본의 archive 폴더 등")
     sub.add_parser("verify-archives", help="보관 파일 SHA-256 무결성 확인")
     restore = sub.add_parser("restore-archive", help="보관 파일을 DB 로 다시 불러오기 (조사용)")
     restore.add_argument("partition", help="예: events_2026_06")

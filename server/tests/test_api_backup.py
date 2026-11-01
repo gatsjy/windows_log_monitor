@@ -20,7 +20,9 @@ NOW = datetime.now(UTC).replace(microsecond=0)
 
 
 def audit(action, at, detail, target="wlm-x.dump"):
+    # 감사로그 체인 트리거(B-71)는 시각을 지금으로 정한다 — 지난 백업 기록을 흉내 내려고 이 연결에서만 트리거를 건너뛴다(해시 없는 행)
     with psycopg.connect(os.environ["WLM_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("SET session_replication_role = replica")
         conn.execute("INSERT INTO audit_log (at, actor, action, target, detail) VALUES (%s, 'system', %s, %s, %s)",
                      (at, action, target, json.dumps(detail)))
 

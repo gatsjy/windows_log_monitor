@@ -30,7 +30,7 @@ def _facts(**overrides):
         "report_targets": ["운영팀"],
         "tls": {"enabled": True, "days_left": 400, "errors": []}, "plain_pcs": [], "ingest_plain": False,
         "offline_pcs": [], "silent_streams": 0, "coverage_gaps": [], "retention_warnings": [],
-        "backup": {"problems": []}, "replica": True, "weakened": [],
+        "backup": {"problems": []}, "replica": True, "integrity": [], "weakened": [],
     }
     facts.update(overrides)
     return facts
@@ -58,6 +58,8 @@ def test_a_finished_install_is_all_green():
     ({"tests": {"운영팀": {"at": NOW, "ok": True}}}, "targets", "warn", "시험 전송한 적 없는 곳: 당직"),
     ({"unknown_targets": ["없는곳"]}, "targets", "bad", "없는곳"),
     ({"enabled_rules": 0}, "targets", "bad", "아무에게도"),
+    ({"integrity": [{"level": "bad", "text": "감사로그 위·변조 검증 실패: #3 내용이 해시와 다릅니다"}]}, "audit_chain", "bad", "#3"),
+    ({"integrity": [{"level": "warn", "text": "감사로그 위·변조 검증이 이틀 넘게 없습니다"}]}, "audit_chain", "warn", "이틀"),
     ({"smtp_host": ""}, "smtp", "bad", "메일 서버가 없는데"),
     ({"fallback": []}, "fallback", "warn", "메신저 웹훅"),
     ({"report_targets": []}, "report", "warn", "아무에게도"),
@@ -89,10 +91,16 @@ def client():
             conn.execute(f'CREATE DATABASE "{TEST_DB_NAME}"')
     except psycopg.Error as exc:
         pytest.skip(f"테스트 DB 를 만들 수 없음: {exc}")
+    from pathlib import Path
+
     from fastapi.testclient import TestClient
 
+    from app.alerts.engine import engine
     from app.main import app
 
+    # 새 설치처럼 규칙 없이 — 앞 시험 모듈이 남긴 규칙 파일에 따라 '받는 곳' 판정이 달라지지 않게
+    Path(os.environ["WLM_ALERTS_FILE"]).write_text("settings:\n  interval_sec: 30\n\nrules:\n", encoding="utf-8")
+    engine.reload(force=True)
     with TestClient(app) as c:
         initial = os.environ["WLM_ADMIN_INITIAL_PASSWORD"]
         c.post("/api/auth/login", json={"username": "admin", "password": initial}, headers=CSRF)
