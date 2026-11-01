@@ -161,6 +161,10 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 - 의미 없는 값은 버립니다: `-`, `N/A`, `S-1-0-0`, `$` 로 끝나는 컴퓨터 계정, `::1`·`127.0.0.1`·`0.0.0.0`.
   - `src_ip` 는 IP 인 값만(호스트 이름·`LOCAL` 등은 버림, B-23). `::ffff:` 접두사·포트(`10.0.0.5:51234`, `[v6]:443`)·IPv6 영역 표시(`%12`)는 떼고 표준 표기로 저장합니다.
 - Windows 에이전트(Fluent Bit 4.0)는 EventData 를 이름 없이 `StringInserts` 배열로만 보냅니다. 서버가 알려진 이벤트(`normalizers/win_templates.py` — 로그온·계정·그룹·서비스·예약 작업·Kerberos·PowerShell 4104 등)에 이름을 붙여 `raw.winevtlog.EventData` 에 덧붙입니다(ADR-038).
+  - **해석 (B-68):** 목록·상세·실시간에 서버가 만든 **한 줄 요약**(예: 'kim 로그온 실패 — 비밀번호가 틀림, 원격 데스크톱, 접속지 10.0.0.5')을 보이고, 상세에는 코드 풀이
+    (LogonType·Status/SubStatus·Kerberos 실패 코드·`%%2313` 같은 실패 이유·토큰 승격). 사전은 `server/app/catalog/windows.json`(요약 틀은 EventData 이름, 문구는 Microsoft
+    문서를 근거로 직접 씀), 계산은 `app/wincatalog.py`. 계정 잠김(4740) 상세의 **잠김 원인 찾기**는 같은 사용자의 로그온 실패(4625·4771·4776)를 잠김 30분 전~5분 뒤에서
+    접속지·PC 마다 셉니다(`GET /api/events/{id}/lockout`, 조회 범위·접속기록 `events.lockout`). CSV 에도 요약 칸.
   - 검색·규칙은 `f.EventData.LogonType` 처럼 이름으로 씁니다 — 에이전트가 이름을 보내면 그 값, 아니면 서버가 붙인 값. 템플릿이 없는 이벤트는 `f.StringInserts.N`(0부터).
 
 ### 3.3 데이터 모델 (`server/migrations/`)

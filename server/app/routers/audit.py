@@ -93,6 +93,7 @@ ACTION_LABELS = {
     "audit.list": "감사로그 조회",
     "events.live": "실시간 로그 보기",
     "events.context": "앞뒤 로그 보기",
+    "events.lockout": "계정 잠김 원인 보기",
     "events.export": "로그·통계 내려받기",
     "report.view": "점검 보고서 열람",
     "report.print": "점검 보고서 인쇄",

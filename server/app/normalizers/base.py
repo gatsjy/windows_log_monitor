@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from .. import wincatalog
+
 # 공통 수준(level). Windows 이벤트 로그의 Level 값과 같은 체계를 쓴다.
 CRITICAL, ERROR, WARNING, INFO, VERBOSE = 1, 2, 3, 4, 5
 LEVEL_NAMES = {CRITICAL: "Critical", ERROR: "Error", WARNING: "Warning", INFO: "Information", VERBOSE: "Verbose"}
@@ -51,6 +53,7 @@ class Event:
             "src_ip": self.src_ip,
             "message": self.message,
             "raw": self.raw,
+            "summary": wincatalog.summarize(self.provider, self.event_id, self.raw) if self.source == "winevtlog" else None,
         }
 
 

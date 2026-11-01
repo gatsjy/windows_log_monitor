@@ -127,7 +127,7 @@ def test_csv_needs_a_reason_is_logged_and_neutralizes_formulas(ctx):
     r = admin.get("/api/events", params={"since": "2h", "format": "csv", "reason": "사고 조사"}, headers=CSRF)
     table = list(csv.reader(io.StringIO(r.content.decode("utf-8-sig"))))
     assert table[0][0] == "발생 시각(UTC)" and len(table) == 1 + 10
-    assert any(row[11] == "'=HYPERLINK(\"x\")" for row in table[1:])
+    assert any(row[12] == "'=HYPERLINK(\"x\")" for row in table[1:])
     exports = sql("SELECT target, detail FROM audit_log WHERE action = 'events.export' ORDER BY id")
     assert [(t, d["reason"], d["rows"]) for t, d in exports] == [("stats.group", "월간 점검", 5), ("events", "사고 조사", 10)]
 

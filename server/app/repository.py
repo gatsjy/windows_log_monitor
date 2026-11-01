@@ -42,7 +42,9 @@ COLUMN_EXPR = {
 
 _LIST_COLUMNS = sql.SQL(
     "id, received_at, ts, host, source, category, channel, provider, event_id, level, username, src_ip,"
-    " left(message, 400) AS message"
+    " left(message, 400) AS message,"
+    # Windows 한 줄 요약(B-68)의 재료 — 라우터가 요약을 만들고 뺀다. 에이전트가 보낸 맵, 없으면 서버가 붙인 맵(ADR-038)
+    " CASE WHEN source = 'winevtlog' THEN COALESCE(raw->'EventData', raw->'winevtlog'->'EventData') END AS edata"
 )
 
 

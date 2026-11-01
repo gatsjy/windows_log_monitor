@@ -238,6 +238,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; letter-spacing: 
 .ctx-table tr.ctx-base td { background: var(--accent-wash); font-weight: 600; }
 .ctx-table tr.ctx-base td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .ctx-table .ctx-msg { overflow-wrap: anywhere; }
+.summary-line { margin: 0 0 4px; font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
 .skeleton { height: 120px; border-radius: var(--radius-sm); background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import __version__, accesslog, db, live, repository
+from .. import __version__, accesslog, db, live, repository, wincatalog
 from ..alerts.message import LEVEL_LABELS
 from ..alerts.visibility import count_by_status
 from ..auth import service as auth_service
@@ -105,7 +105,15 @@ def agent_status(silent_sec: int) -> str:
 
 EXPORT_MAX_ROWS = 10000   # 이벤트 CSV 한 번에 (넘으면 잘리고 X-WLM-Truncated — 기간을 나눠 받는다)
 EVENT_CSV_HEAD = ["발생 시각(UTC)", "수집 시각(UTC)", "PC", "소스", "분류", "채널", "공급자", "이벤트 ID", "수준", "사용자", "IP",
-                  "메시지(앞 400자)"]
+                  "요약", "메시지(앞 400자)"]
+
+
+def _summarize(rows: list[dict]) -> list[dict]:
+    """목록 행에 Windows 한 줄 요약(B-68)을 붙이고 재료(edata)는 뺀다."""
+    for r in rows:
+        edata = r.pop("edata", None)
+        r["summary"] = wincatalog.summarize(r["provider"], r["event_id"], {"EventData": edata}) if edata else None
+    return rows
 
 
 @router.get("/api/events")
@@ -119,7 +127,7 @@ async def list_events(request: Request, limit: int = Query(100, ge=1, le=EXPORT_
         raise HTTPException(400, "limit 은 1000 이하 (CSV 는 10000)")
     position = _cursor(cursor) if cursor else None
     try:
-        rows = await repository.list_events(f, limit + 1, position)
+        rows = _summarize(await repository.list_events(f, limit + 1, position))
     except db.QueryTimeout as exc:
         # 끝나지 않은 검색도 접속기록에 남긴다 — 시도한 조건이 기록에서 빠지지 않게 (ISMS 2.9.4)
         if cursor is None:
@@ -136,7 +144,7 @@ async def list_events(request: Request, limit: int = Query(100, ge=1, le=EXPORT_
 async def _events_csv(request: Request, user: User, f, reason: str):
     """이벤트 CSV (B-62): 개인정보가 든 파일이라 사유를 받아 접속기록(events.export)에 함께 — 기록 못 하면 내주지 않는다(ADR-042).
     로그에서 온 값이 엑셀 수식으로 실행되지 않게 csv_response 로."""
-    rows = await repository.list_events(f, EXPORT_MAX_ROWS + 1)
+    rows = _summarize(await repository.list_events(f, EXPORT_MAX_ROWS + 1))
     truncated = len(rows) > EXPORT_MAX_ROWS
     rows = rows[:EXPORT_MAX_ROWS]
     await db.audit(user.username, "events.export", "events",
@@ -145,7 +153,8 @@ async def _events_csv(request: Request, user: User, f, reason: str):
     return csv_response(EVENT_CSV_HEAD,
                         ([r["ts"].isoformat(), r["received_at"].isoformat(), r["host"], r["source"], r["category"] or "",
                           r["channel"] or "", r["provider"] or "", r["event_id"] if r["event_id"] is not None else "",
-                          LEVEL_LABELS.get(r["level"], r["level"]), r["username"] or "", r["src_ip"] or "", r["message"] or ""]
+                          LEVEL_LABELS.get(r["level"], r["level"]), r["username"] or "", r["src_ip"] or "", r["summary"] or "",
+                          r["message"] or ""]
                          for r in rows),
                         f"events_{datetime.now(UTC):%Y%m%d_%H%M%S}.csv",
                         headers={"X-WLM-Truncated": "1"} if truncated else None)
@@ -182,7 +191,34 @@ async def get_event(event_id: int, request: Request, user: User = Depends(requir
                    {"host": row["host"], "event_id": row["event_id"], "username": row.get("username"),
                     "src_ip": row.get("src_ip"), "category": row.get("category")},
                    actor_ip=client_ip(request), required=True)
+    if row["source"] == "winevtlog":   # 한 줄 요약·코드 풀이 (B-68)
+        row["summary"] = wincatalog.summarize(row["provider"], row["event_id"], row["raw"])
+        row["decoded"] = wincatalog.decode(row["provider"], row["event_id"], row["raw"])
     return row
+
+
+LOCKOUT_EVENT, LOCKOUT_CAUSES = 4740, [4625, 4771, 4776]   # 계정 잠김 ← 로그온 실패·Kerberos 사전 인증 실패·NTLM 확인 실패
+LOCKOUT_BEFORE, LOCKOUT_AFTER = timedelta(minutes=30), timedelta(minutes=5)
+
+
+@router.get("/api/events/{event_id}/lockout")
+async def lockout_cause(event_id: int, request: Request, user: User = Depends(require_user)):
+    """계정 잠김(4740)의 원인 추적 (B-68): 같은 사용자의 로그온 실패(4625·4771·4776)를 잠김 30분 전~5분 뒤에서 접속지·PC·이벤트마다 묶는다.
+    헬프데스크 최다 문의 — 손으로 4740 → 4771 → 4625 를 따라가던 것. 조회 범위가 붙고 접속기록(events.lockout)."""
+    base = await repository.get_event(event_id)
+    if base is None or not scopes_allow(user.scopes, base.get("category"), base.get("host")):
+        raise HTTPException(404, "이벤트를 찾을 수 없습니다")
+    if base["event_id"] != LOCKOUT_EVENT or base["source"] != "winevtlog" or not base.get("username"):
+        raise HTTPException(400, "계정 잠김(4740) 이벤트에서만 원인을 찾습니다")
+    f = EventFilter(since=base["ts"] - LOCKOUT_BEFORE, until=base["ts"] + LOCKOUT_AFTER, users=[base["username"]],
+                    event_ids=LOCKOUT_CAUSES, scopes=user.scopes)
+    rows = await repository.group_stats(f, ["ip", "host", "event_id"], [], 51)
+    await accesslog.record(request, user.username, "events.lockout", str(event_id),
+                           {"username": base["username"], "rows": len(rows)}, key={})
+    return {"username": base["username"], "locked_at": base["ts"], "since": f.since, "until": f.until,
+            "items": [{"ip": r["k0"], "host": r["k1"], "event_id": int(r["k2"]) if r["k2"] else None, "n": r["n"],
+                       "first_ts": r["first_ts"], "last_ts": r["last_ts"]} for r in rows[:50]],
+            "truncated": len(rows) > 50}
 
 
 @router.get("/api/events/{event_id}/context")
@@ -195,8 +231,8 @@ async def event_context(event_id: int, request: Request, direction: Literal["bef
     if base is None or not scopes_allow(user.scopes, base.get("category"), base.get("host")):
         raise HTTPException(404, "이벤트를 찾을 수 없습니다")
     position = _cursor(cursor) if cursor else (base["ts"], base["id"])
-    rows = await repository.event_context(base["host"], base["source"] if same == "source" else None, user.scopes,
-                                          position, direction, limit + 1)
+    rows = _summarize(await repository.event_context(base["host"], base["source"] if same == "source" else None, user.scopes,
+                                                     position, direction, limit + 1))
     has_more = len(rows) > limit
     rows = rows[:limit]
     await accesslog.record(request, user.username, "events.context", str(event_id),

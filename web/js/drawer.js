@@ -4,7 +4,7 @@ import { eventDoc } from './catalog.js';
 import { jsonView } from './jsonview.js';
 import { categoryLabel, levelBadge, sourceLabel } from './levels.js';
 import { addTerm, aliasPath, formatTerm, parseTerms } from './querylang.js';
-import { errorBox, fmtRelative, fmtTime, html, navigate } from './util.js';
+import { errorBox, fmtNum, fmtRelative, fmtTime, html, navigate } from './util.js';
 
 let current = null;
 // 이벤트 검색·실시간 화면이 열려 있는 동안: { query(): 지금 확정된 문장, apply(text): 문장을 바꿔 바로 검색 }
@@ -140,6 +140,29 @@ function contextLogs(body, ev) {
   }));
 }
 
+// 계정 잠김 원인 (B-68): 같은 사용자의 로그온 실패(4625·4771·4776)를 접속지·PC 마다. 헬프데스크가 4740 → 4771 → 4625 를 손으로 따라가던 것
+const LOCKOUT_EVENTS = { 4625: '로그온 실패', 4771: 'Kerberos 사전 인증 실패', 4776: 'NTLM 확인 실패' };
+
+async function lockoutCause(box, ev) {
+  box.innerHTML = '<div class="skeleton"></div>';
+  let res;
+  try {
+    res = await api.get(`/api/events/${ev.id}/lockout`);
+  } catch (err) {
+    box.innerHTML = errorBox(err);
+    return;
+  }
+  box.innerHTML = res.items.length ? html`<p class="muted" style="font-size:12.5px;margin:0 0 6px">
+      접속지가 많은 순 — 가장 위가 오래된 비밀번호를 계속 넣는 곳일 가능성이 큽니다(휴대폰 메일·매핑 드라이브·예약 작업·서비스 계정 등).</p>
+    <div class="table-wrap"><table class="table ctx-table"><thead><tr><th>접속지 IP</th><th>기록한 PC</th><th>무엇</th>
+      <th class="r">횟수</th><th>처음</th><th>마지막</th></tr></thead>
+      <tbody>${res.items.map((i) => html`<tr><td class="nowrap num">${i.ip ?? html`<span class="muted">(없음)</span>`}</td>
+        <td class="nowrap">${i.host}</td><td class="nowrap ink-2">${LOCKOUT_EVENTS[i.event_id] ?? i.event_id}</td>
+        <td class="r num"><b>${fmtNum(i.n)}</b></td><td class="nowrap muted">${fmtTime(i.first_ts)}</td>
+        <td class="nowrap">${fmtTime(i.last_ts)}</td></tr>`)}</tbody></table></div>`
+    : html`<p class="muted">잠김 30분 전~5분 뒤에 ${res.username} 의 로그온 실패가 없습니다 — 도메인 컨트롤러의 감사 정책(Kerberos 인증·자격 증명 확인)이 켜져 있는지 확인하세요.</p>`;
+}
+
 /** 이벤트 하나의 상세. ev 에 raw 가 있으면(실시간 화면) 그대로, 아니면 id 로 조회 */
 export async function openEvent(evOrId) {
   const body = openDrawer({ title: '이벤트 상세' });
@@ -177,6 +200,13 @@ export async function openEvent(evOrId) {
       ${ev.username ? row('사용자', ev.username, { user: ev.username }) : ''}
       ${ev.src_ip ? row('접속 IP', ev.src_ip, { ip: ev.src_ip }) : ''}
     </dl>
+    ${ev.summary ? html`<div class="section-title">요약</div><p class="summary-line">${ev.summary}</p>` : ''}
+    ${ev.decoded?.length ? html`<div class="section-title">코드 풀이</div>
+      <dl class="kv">${ev.decoded.map((d) => html`<dt>${d.field}</dt><dd><code>${d.value}</code> <span class="ink-2">${d.meaning}</span></dd>`)}</dl>` : ''}
+    ${ev.event_id === 4740 && ev.source === 'winevtlog' && ev.id != null ? html`<div class="section-title"
+        style="display:flex;justify-content:space-between;align-items:center">
+      <span>계정 잠김 원인 <span class="muted" style="font-weight:400">잠김 30분 전~5분 뒤의 로그온 실패</span></span>
+      <button class="btn sm" type="button" data-lockout>찾기</button></div><div data-lockout-out></div>` : ''}
     <div class="section-title">메시지</div>
     <pre class="message-box">${ev.message || '(메시지 없음)'}</pre>
     ${ev.id != null ? html`<div class="section-title" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
@@ -207,6 +237,7 @@ export async function openEvent(evOrId) {
     bind(picked);
   });
   if (ev.id != null) contextLogs(body, ev);
+  body.querySelector('[data-lockout]')?.addEventListener('click', () => lockoutCause(body.querySelector('[data-lockout-out]'), ev));
   body.querySelector('[data-copy]').addEventListener('click', async (e) => {
     try {
       await navigator.clipboard.writeText(JSON.stringify(ev.raw, null, 2));

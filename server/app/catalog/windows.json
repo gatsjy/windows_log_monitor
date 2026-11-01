@@ -1,0 +1,103 @@
+{
+  "_about": "Windows 이벤트 해석 (BACKLOG B-68). summary = 한 줄 요약 틀 — {이름}은 EventData 의 값(코드면 아래 codes 로 풀어 씀), {A/B} 는 A 가 비었거나 0x0 이면 B. codes = 칸 이름 → 코드 → 뜻(코드는 소문자로 맞춰 찾음, 값이 문자열이면 다른 사전 이름). event.codes 는 그 이벤트에서만 다른 사전을 쓸 칸. 문구는 Microsoft Learn 의 이벤트 문서를 근거로 이 프로젝트가 직접 쓴 것.",
+  "events": {
+    "Microsoft-Windows-Security-Auditing": {
+      "4624": {"summary": "{TargetUserName} 로그온 성공 — {LogonType}, 접속지 {IpAddress/WorkstationName}"},
+      "4625": {"summary": "{TargetUserName} 로그온 실패 — {SubStatus/Status}, {LogonType}, 접속지 {IpAddress/WorkstationName}"},
+      "4634": {"summary": "{TargetUserName} 로그오프 — {LogonType}"},
+      "4647": {"summary": "{TargetUserName} 이(가) 직접 로그오프"},
+      "4648": {"summary": "{SubjectUserName} 이(가) 다른 자격 증명({TargetUserName})으로 로그온 시도 — 대상 {TargetServerName}"},
+      "4672": {"summary": "{SubjectUserName} 특수 권한으로 로그온 (관리자급)"},
+      "4688": {"summary": "{SubjectUserName} 이(가) 프로그램 실행 — {NewProcessName} ({TokenElevationType})"},
+      "4697": {"summary": "{SubjectUserName} 이(가) 서비스 설치 — {ServiceName} ({ServiceFileName})"},
+      "4698": {"summary": "{SubjectUserName} 이(가) 예약 작업 만듦 — {TaskName}"},
+      "4699": {"summary": "{SubjectUserName} 이(가) 예약 작업 삭제 — {TaskName}"},
+      "4702": {"summary": "{SubjectUserName} 이(가) 예약 작업 바꿈 — {TaskName}"},
+      "4719": {"summary": "{SubjectUserName} 이(가) 감사 정책을 바꿈"},
+      "4720": {"summary": "{SubjectUserName} 이(가) 계정 만듦 — {TargetUserName}"},
+      "4722": {"summary": "{SubjectUserName} 이(가) 계정을 사용으로 — {TargetUserName}"},
+      "4723": {"summary": "{TargetUserName} 비밀번호 변경 시도 (본인)"},
+      "4724": {"summary": "{SubjectUserName} 이(가) {TargetUserName} 의 비밀번호를 재설정"},
+      "4725": {"summary": "{SubjectUserName} 이(가) 계정을 사용 안 함으로 — {TargetUserName}"},
+      "4726": {"summary": "{SubjectUserName} 이(가) 계정 삭제 — {TargetUserName}"},
+      "4728": {"summary": "{SubjectUserName} 이(가) 전역 보안 그룹 {TargetUserName} 에 구성원 추가 — {MemberName/MemberSid}"},
+      "4729": {"summary": "{SubjectUserName} 이(가) 전역 보안 그룹 {TargetUserName} 에서 구성원 제거 — {MemberName/MemberSid}"},
+      "4732": {"summary": "{SubjectUserName} 이(가) 로컬 그룹 {TargetUserName} 에 구성원 추가 — {MemberName/MemberSid}"},
+      "4733": {"summary": "{SubjectUserName} 이(가) 로컬 그룹 {TargetUserName} 에서 구성원 제거 — {MemberName/MemberSid}"},
+      "4738": {"summary": "{SubjectUserName} 이(가) 계정 속성을 바꿈 — {TargetUserName}"},
+      "4740": {"summary": "{TargetUserName} 계정 잠김 — 잠금을 일으킨 PC {TargetDomainName}"},
+      "4756": {"summary": "{SubjectUserName} 이(가) 유니버설 그룹 {TargetUserName} 에 구성원 추가 — {MemberName/MemberSid}"},
+      "4757": {"summary": "{SubjectUserName} 이(가) 유니버설 그룹 {TargetUserName} 에서 구성원 제거 — {MemberName/MemberSid}"},
+      "4767": {"summary": "{SubjectUserName} 이(가) 계정 잠금 해제 — {TargetUserName}"},
+      "4768": {"summary": "{TargetUserName} Kerberos 인증 요청(TGT) — {Status}, 접속지 {IpAddress}", "codes": {"Status": "KerberosStatus"}},
+      "4769": {"summary": "{TargetUserName} 서비스 티켓 요청 — {ServiceName}, {Status}, 접속지 {IpAddress}", "codes": {"Status": "KerberosStatus"}},
+      "4771": {"summary": "{TargetUserName} Kerberos 사전 인증 실패 — {Status}, 접속지 {IpAddress}", "codes": {"Status": "KerberosStatus"}},
+      "4776": {"summary": "{TargetUserName} NTLM 자격 증명 확인 — {Status}, PC {Workstation}"}
+    },
+    "Microsoft-Windows-Eventlog": {
+      "1102": {"summary": "보안 감사 로그를 지움 — {SubjectUserName}"}
+    },
+    "Service Control Manager": {
+      "7045": {"summary": "서비스 설치 — {ServiceName} ({ImagePath}), 실행 계정 {AccountName}"}
+    },
+    "Microsoft-Windows-PowerShell": {
+      "4104": {"summary": "PowerShell 스크립트 블록 기록 — {Path}"}
+    }
+  },
+  "codes": {
+    "LogonType": {
+      "2": "대화형(PC 앞에서)", "3": "네트워크(공유 폴더·원격 관리 등)", "4": "일괄 작업(예약 작업)", "5": "서비스",
+      "7": "잠금 해제", "8": "네트워크 평문 비밀번호", "9": "새 자격 증명(RunAs /netonly)", "10": "원격 데스크톱",
+      "11": "캐시된 자격 증명(도메인 연결 없이)", "12": "캐시된 원격 데스크톱", "13": "캐시된 잠금 해제"
+    },
+    "Status": {
+      "0x0": "성공",
+      "0xc000006a": "비밀번호가 틀림",
+      "0xc0000064": "없는 사용자 이름",
+      "0xc000006d": "사용자 이름 또는 인증 정보가 틀림",
+      "0xc000006e": "계정 제한으로 로그온할 수 없음",
+      "0xc000006f": "허용된 시간 밖의 로그온",
+      "0xc0000070": "허용되지 않은 PC 에서 로그온",
+      "0xc0000071": "비밀번호가 만료됨",
+      "0xc0000072": "사용 안 함으로 된 계정",
+      "0xc0000133": "PC 와 도메인 컨트롤러의 시계가 너무 다름",
+      "0xc000015b": "이 PC 에서 허용되지 않은 로그온 유형",
+      "0xc000018c": "도메인 트러스트 관계 실패",
+      "0xc0000192": "NetLogon 서비스가 시작되지 않음",
+      "0xc0000193": "계정이 만료됨",
+      "0xc0000224": "다음 로그온 때 비밀번호를 바꿔야 함",
+      "0xc0000234": "계정이 잠김",
+      "0xc0000413": "인증 방화벽이 막음"
+    },
+    "SubStatus": "Status",
+    "KerberosStatus": {
+      "0x0": "성공",
+      "0x6": "없는 사용자 이름",
+      "0x7": "없는 서비스(SPN)",
+      "0xc": "정책 제한(로그온 시간·PC)",
+      "0x12": "계정이 사용 안 함·만료·잠김",
+      "0x17": "비밀번호가 만료됨",
+      "0x18": "사전 인증 실패 — 대개 비밀번호가 틀림",
+      "0x1f": "티켓 무결성 확인 실패",
+      "0x20": "티켓이 만료됨",
+      "0x25": "PC 와 도메인 컨트롤러의 시계가 너무 다름"
+    },
+    "FailureReason": {
+      "%%2304": "로그온 중 오류",
+      "%%2305": "계정이 만료됨",
+      "%%2306": "NetLogon 구성 요소가 동작하지 않음",
+      "%%2307": "계정이 잠김",
+      "%%2308": "이 PC 에서 요청한 로그온 유형이 허용되지 않음",
+      "%%2309": "비밀번호가 만료됨",
+      "%%2310": "사용 안 함으로 된 계정",
+      "%%2311": "로그온 시간 제한 위반",
+      "%%2312": "이 PC 에서 로그온이 허용되지 않음",
+      "%%2313": "사용자 이름이 없거나 비밀번호가 틀림"
+    },
+    "TokenElevationType": {
+      "%%1936": "전체 권한 토큰(UAC 없이 관리자)",
+      "%%1937": "관리자 권한으로 승격",
+      "%%1938": "제한된 토큰(일반 권한)"
+    }
+  }
+}

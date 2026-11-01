@@ -66,6 +66,7 @@ server/app/
   oracle.py          Oracle 접속(TNS/SID/서비스/접속문자열)·조회 전용 쿼리·SQL 실행
   secrets.py         환경설정 비밀값 암호화 (WLM_SECRET_KEY)
   csvexport.py       CSV 내려받기 공용 (BOM, 엑셀 수식 주입 방지, 사유·짧은 사유 판단) — 감사로그·알림 이력
+  wincatalog.py      Windows 이벤트 한 줄 요약·코드 풀이 (사전 app/catalog/windows.json — 요약 틀은 EventData 이름, B-68)
   accesslog.py       개인정보가 보이는 조회의 접속기록 (같은 사람·행위·조건 10분 묶음, 기록 실패면 503 — ADR-042, B-38)
   archive.py         로그 보관 파일 만들기·검증·복원
   integrity.py       감사로그 해시 체인 검증(DB 함수와 따로 파이썬으로)·매일 DB 밖 앵커(archive/integrity-*.json) (ADR-050)

@@ -15,7 +15,8 @@ export const EVENT_HEAD = html`<tr>
 
 export function eventRow(ev, key, { flash = false } = {}) {
   const doc = eventDoc(ev.event_id, ev.source);
-  const firstLine = (ev.message || '').split(/\r?\n/, 1)[0];
+  // Windows 이벤트는 서버가 만든 한 줄 요약(B-68)을 먼저 — 원래 메시지 첫 줄은 마우스를 올리면
+  const firstLine = ev.summary || (ev.message || '').split(/\r?\n/, 1)[0];
   return html`<tr class="clickable${flash ? ' flash' : ''}" data-k="${key}">
     <td class="nowrap num muted">${shortTime(ev.ts)}</td>
     <td class="nowrap">${levelBadge(ev.level)}</td>
