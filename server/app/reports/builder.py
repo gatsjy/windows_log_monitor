@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 
-from .. import archive, backups, db, partitions, repository
+from .. import archive, assets, backups, db, partitions, repository
 from ..alerts import coverage, health
 from ..alerts.builtin import ADMIN_RULE
 from ..alerts.engine import engine
@@ -177,8 +177,14 @@ async def _agents(now: datetime) -> dict[str, Any]:
     # 켜진 규칙이 보는 채널을 보내지 않는 PC (B-37 2단계) — 규칙은 켜져 있는데 그 PC 에서는 데이터가 오지 않는다
     rules = engine.config.rules
     gaps = coverage.gaps(rules, await coverage.current(rules, now, fresh=True))
+    # 수집 대상 대조 (B-55) — 목록에 있는데 보내지 않는 시스템(설치 안 됨·끊김)
+    cov = await assets.coverage(now)
+    listed = {"total": cov["total"], "collecting": cov["collecting"], "percent": cov["percent"],
+              "missing_total": cov["missing_total"], "critical_missing": cov["critical_missing"],
+              "missing": [{"name": m["name"], "grade": m["grade"], "status": m["status"], "last_seen": _iso(m["last_seen"])}
+                          for m in cov["missing"][:15]]} if cov["total"] else None
     return {"total": len(rows), "online": online, "stale": stale, "offline": len(silent), "silent": silent[:20],
-            "coverage_gaps": gaps[:10],
+            "assets": listed, "coverage_gaps": gaps[:10],
             "silent_streams": [{"host": r["host"], "source": r["source"], "channel": r["channel"],
                                 "last_at": _iso(r["last_at"]), "per_day": round(r["n7"] / max(r["days"], 1))}
                                for r in streams[:30]],
@@ -310,6 +316,10 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
         names = ", ".join(g["hosts"][:3]) + (f" 외 {g['total'] - 3:,}대" if g["total"] > 3 else "")
         out.append({"level": "warn", "text": f"규칙이 보는 채널 {g['channel']} 을(를) 보내지 않는 PC {g['total']:,}대: {names}"
                                              f" — 규칙 {len(g['rules'])}개가 이 PC 에서는 동작하지 않습니다 (감사 정책·에이전트 설정)"})
+    listed = p["agents"].get("assets")   # B-55 이전 보고서에는 없다
+    if listed and listed["critical_missing"]:
+        names = ", ".join(m["name"] for m in listed["missing"] if m["grade"] == "critical")
+        out.append({"level": "warn", "text": f"로그가 오지 않는 중요 시스템 {listed['critical_missing']}대: {names} — 에이전트 설치·연결 확인"})
     if p["agents"]["offline"]:
         out.append({"level": "warn", "text": f"연락이 끊긴 PC {p['agents']['offline']:,}대"})
     if p["retention"]["archives_missing"]:

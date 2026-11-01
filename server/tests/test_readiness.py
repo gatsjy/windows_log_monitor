@@ -30,6 +30,7 @@ def _facts(**overrides):
         "report_targets": ["운영팀"],
         "tls": {"enabled": True, "days_left": 400, "errors": []}, "plain_pcs": [], "ingest_plain": False,
         "offline_pcs": [], "silent_streams": 0, "coverage_gaps": [], "retention_warnings": [],
+        "assets": {"total": 3, "collecting": 3, "missing_total": 0, "critical_missing": 0, "missing": []},
         "backup": {"problems": []}, "replica": True, "integrity": [], "weakened": [],
     }
     facts.update(overrides)
@@ -58,6 +59,11 @@ def test_a_finished_install_is_all_green():
     ({"tests": {"운영팀": {"at": NOW, "ok": True}}}, "targets", "warn", "시험 전송한 적 없는 곳: 당직"),
     ({"unknown_targets": ["없는곳"]}, "targets", "bad", "없는곳"),
     ({"enabled_rules": 0}, "targets", "bad", "아무에게도"),
+    ({"assets": {"total": 0}}, "assets", "warn", "목록이 없습니다"),
+    ({"assets": {"total": 3, "collecting": 2, "missing_total": 1, "critical_missing": 1,
+                 "missing": [{"name": "DB-01", "grade": "critical"}]}}, "assets", "bad", "DB-01"),
+    ({"assets": {"total": 3, "collecting": 2, "missing_total": 1, "critical_missing": 0,
+                 "missing": [{"name": "PC-09", "grade": "normal"}]}}, "assets", "warn", "PC-09"),
     ({"integrity": [{"level": "bad", "text": "감사로그 위·변조 검증 실패: #3 내용이 해시와 다릅니다"}]}, "audit_chain", "bad", "#3"),
     ({"integrity": [{"level": "warn", "text": "감사로그 위·변조 검증이 이틀 넘게 없습니다"}]}, "audit_chain", "warn", "이틀"),
     ({"smtp_host": ""}, "smtp", "bad", "메일 서버가 없는데"),

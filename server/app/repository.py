@@ -890,6 +890,27 @@ async def returned_streams(rule: str) -> list[dict]:
         " GROUP BY a.group_key", (rule,))
 
 
+async def list_assets() -> list[dict[str, Any]]:
+    """수집 대상 목록 (B-55)."""
+    return await db.fetch_all("SELECT host, name, grade, note, updated_at FROM assets ORDER BY host")
+
+
+async def replace_assets(items: list[dict[str, str]]) -> None:
+    """목록을 통째로 바꾼다 — 한 트랜잭션(바꾸는 사이 화면이 빈 목록을 보지 않게)."""
+    async with db.pool().connection() as conn, conn.transaction():
+        await conn.execute("DELETE FROM assets")
+        if items:
+            await conn.execute(
+                "INSERT INTO assets (host, name, grade, note)"
+                " SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[])",
+                ([i["host"] for i in items], [i["name"] for i in items], [i["grade"] for i in items], [i["note"] for i in items]))
+
+
+async def agent_hosts() -> list[dict[str, Any]]:
+    """보낸 적이 있는 모든 PC 와 마지막 수신 — 수집 대상 대조용 (B-55)."""
+    return await db.fetch_all("SELECT host, last_seen FROM agents")
+
+
 async def agents_last_seen(hosts: list[str]) -> dict[str, datetime]:
     """PC 별 마지막 수신 (agents 에 없는 이름은 빠진다 — syslog 장비 등)."""
     rows = await db.fetch_all("SELECT host, last_seen FROM agents WHERE host = ANY(%s::text[])", (hosts,))

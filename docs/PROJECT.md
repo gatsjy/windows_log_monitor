@@ -66,6 +66,11 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 수집 PC 화면 위쪽 상자와 점검 보고서 '점검 필요'에 나옵니다. GPO 변경으로 DC 의 Security 수집만 멈춰도 하트비트는 계속 와서 예전에는 조용했습니다. 집계는 35일 뒤 지웁니다.
 알림으로 받으려면 규칙 종류 `stream_silent`(기본 팩 '늘 오던 로그 끊김' — 서버만, B-37 2단계).
 
+**수집 대상 대조 (B-55).** 수집 PC 화면은 한 번이라도 보낸 PC 만 보여, 에이전트를 설치하지 않은 서버는 어디에도 나타나지 않습니다. 관리자가 로그를 받아야 할
+시스템 목록(`assets`, 한 줄에 하나 또는 Get-ADComputer CSV, 등급 중요/일반)을 붙여 넣으면 `agents` 와 짧은 이름(FQDN 의 첫 마디·소문자, 끝의 `$` 제외)으로 맞춰
+'수집 중'(7일 안에 받음)·'7일 넘게 끊김'·'한 번도 없음'을 나눕니다(`app/assets.py`). 수집 PC 화면의 '수집 대상 대조', 점검 보고서(수집 PC 절, 중요 시스템이
+빠지면 '점검 필요'), 운영 준비도(목록 없음 = 노랑, 중요 빠짐 = 빨강)에 나옵니다.
+
 **규칙별 데이터 유무 (B-37 2단계).** 이벤트 ID 가 있는 로그(Windows·SQL Server 오류 번호·IIS 상태)는 (PC, 채널, 이벤트 ID)마다 처음·마지막 수신을 `agent_events` 에 쌓습니다(한 시간에 한 번만 고침, 90일 보이지 않으면 지움).
 규칙의 PC·채널 조건은 규칙과 같이 정확히 맞춥니다. 규칙이 채널을 정하지 않았으면 그 이벤트 ID 가 실제로 오는 채널로 봅니다(4625 → Security — 기본 팩의 보안 규칙).
 알림 > 규칙 관리 표의 규칙마다 '데이터 Security 82/120 PC · 이벤트 40/120 PC' — 대상은 7일 안에 같은 소스를 보낸 살아 있는 PC, 채널은 7일·이벤트는 30일.
@@ -213,6 +218,8 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/agents?since=` | PC 목록 + 기간 내 이벤트/오류/경고 수 + 상태 + `last_transport`(마지막 하트비트의 전송 방식: `tls`·`plain`·`web`=화면 포트로 보낸 옛 묶음). `transport{tls, ingest_plain}`. `silent_streams` = 늘 오던 로그가 끊긴 (PC, 소스, 채널) (B-37, 조회 범위 반영) |
 | `GET /api/agents/problems?since=` | 수집 거절 장부·격리 레코드 목록 (관리자, B-40) |
 | `GET /api/agents/quarantine/{id}` | 격리 레코드 원본 (관리자, 접속기록 `events.quarantine.view`) |
+| `GET /api/agents/assets` | 수집 대상 대조 (관리자, B-55): `total`·`collecting`·`percent`·`missing`(중요·한 번도 없음 먼저)·`critical_missing`·`unexpected`(목록에 없는데 보내는 PC 수) |
+| `PUT /api/agents/assets` · `DELETE /api/agents/assets` | 수집 대상 목록을 통째로 바꾸기 `{text}`(한 줄에 하나 `이름[,중요]` 또는 Name·DNSHostName·호스트 열이 있는 CSV — Get-ADComputer 내보내기) · 지우기 (관리자, `agent.assets.save`·`clear`) |
 | `DELETE /api/agents/{host}` | 수집 PC 목록에서 삭제 (관리자, audit_log 기록, 이벤트는 보존) |
 | `POST /api/agents/delete` | 여러 PC 를 목록에서 한 번에 삭제 `{hosts:[...]}` (최대 500, 관리자). 응답 `deleted`·`missing`·`still_online` |
 | `GET /api/fields` | 필드 카탈로그 |

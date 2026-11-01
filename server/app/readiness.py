@@ -38,7 +38,7 @@ def _names(names: list[str], limit: int = 5) -> str:
 
 
 async def collect(now: datetime | None = None) -> dict[str, Any]:
-    from . import integrity
+    from . import assets, integrity
     from .alerts import coverage, health
     from .alerts.engine import engine
     from .alerts.targets import load_notifiers, smtp_config
@@ -74,6 +74,7 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "ingest_plain": settings.ingest_plain,
         "offline_pcs": sorted(a["host"] for a in agents if a["silent_sec"] > settings.heartbeat_stale_sec),
         "silent_streams": len(await repository.silent_streams(now)),
+        "assets": {k: v for k, v in (await assets.coverage(now)).items() if k != "items"},
         "coverage_gaps": coverage.gaps(rules, await coverage.current(rules, now)),
         "retention_warnings": partitions.retention_warnings(),
         "backup": await backup_status(now),
@@ -175,6 +176,16 @@ def judge(f: dict[str, Any]) -> list[Item]:
         agent_problems.append(f"늘 오던 로그가 끊긴 채널 {f['silent_streams']}개")
     add(Item("agents", "수집", "수집 PC", "warn" if agent_problems else "ok",
              "; ".join(agent_problems) or "최근 7일 수집 PC 가 모두 들어오고 있습니다", "#/agents", "AIRGAP.md §9 4"))
+    ls = f.get("assets") or {"total": 0}
+    if not ls["total"]:
+        status, detail = "warn", "수집 대상 목록이 없습니다 — 에이전트를 설치하지 않은 서버는 어디에도 나타나지 않습니다 (수집 PC 화면에서 목록 붙여 넣기)"
+    elif ls["missing_total"]:
+        status = "bad" if ls["critical_missing"] else "warn"
+        detail = (f"목록의 {ls['total']}대 중 로그가 오지 않는 시스템 {ls['missing_total']}대(중요 {ls['critical_missing']}대): "
+                  + _names([m["name"] for m in ls["missing"]]))
+    else:
+        status, detail = "ok", f"목록의 {ls['total']}대가 모두 로그를 보내고 있습니다"
+    add(Item("assets", "수집", "수집 대상 대조", status, detail, "#/agents", "BACKLOG B-55, ISMS 2.9.4"))
 
     # ------------------------------------------------------------ 보관
     add(Item("retention", "보관", "법정 보관기간", "bad" if f["retention_warnings"] else "ok",

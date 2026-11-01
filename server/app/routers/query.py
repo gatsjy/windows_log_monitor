@@ -280,6 +280,39 @@ async def list_agents(request: Request, since: str = "24h"):
     }
 
 
+# 수집 대상 대조 (B-55). '/api/agents/{host:path}' 삭제보다 먼저 등록해야 DELETE /api/agents/assets 가 PC 삭제로 가지 않는다
+class AssetsBody(BaseModel):
+    text: str = Field(max_length=2_000_000)
+
+
+@router.get("/api/agents/assets")
+async def assets_coverage(_: User = Depends(require_admin)):
+    from .. import assets
+
+    return await assets.coverage()
+
+
+@router.put("/api/agents/assets")
+async def save_assets(body: AssetsBody, request: Request, admin: User = Depends(require_admin)):
+    from .. import assets
+
+    items, problems = assets.parse(body.text)
+    if not items:
+        raise HTTPException(400, "; ".join(problems))
+    await repository.replace_assets(items)
+    await db.audit(admin.username, "agent.assets.save", "assets",
+                   {"count": len(items), "critical": sum(1 for i in items if i["grade"] == "critical"), "problems": problems[:5]},
+                   actor_ip=client_ip(request))
+    return {**await assets.coverage(), "problems": problems}
+
+
+@router.delete("/api/agents/assets")
+async def clear_assets(request: Request, admin: User = Depends(require_admin)):
+    await repository.replace_assets([])
+    await db.audit(admin.username, "agent.assets.clear", "assets", {}, actor_ip=client_ip(request))
+    return {"ok": True}
+
+
 class AgentDeleteBody(BaseModel):
     hosts: list[str] = Field(min_length=1, max_length=_MAX_AGENT_DELETE)
 

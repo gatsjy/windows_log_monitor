@@ -40,6 +40,7 @@ export async function mount(root, params) {
     <div class="grid" data-summary style="margin-bottom:14px"></div>
     <section class="card" style="margin-bottom:14px"><div class="card-body flush" data-table><div class="skeleton"></div></div></section>
     <section class="card" style="margin-bottom:14px" data-problems hidden></section>
+    <section class="card" style="margin-bottom:14px" data-assets hidden></section>
     <section class="card"><div class="card-head"><h2 class="card-title">에이전트 설치</h2></div>
       <div class="card-body" data-guide></div></section>`;
 
@@ -51,6 +52,7 @@ export async function mount(root, params) {
   }));
 
   renderGuide();
+  loadAssets();
 
   // 폐쇄망 PC 배포용: 서버 주소·수집 포트·API 키가 채워진 설치 묶음(zip)을 내려받는다 (관리자)
   async function renderGuide() {
@@ -218,6 +220,70 @@ export async function mount(root, params) {
           <td class="r"><button class="btn sm" data-quarantine="${q.id}">원본 보기</button></td></tr>`)}</tbody></table></div>` : ''}
       </div>`;
     box.querySelectorAll('[data-quarantine]').forEach((b) => b.addEventListener('click', () => showQuarantine(b.dataset.quarantine)));
+  }
+
+  // 수집 대상 대조 (B-55): 보내야 할 시스템 목록과 실제로 보내는 PC. 이 표에는 한 번이라도 보낸 PC 만 나오므로,
+  // 설치되지 않은 서버는 목록을 붙여 넣어야 보인다. 관리자만 (서버도 require_admin)
+  async function loadAssets(editing = false) {
+    const box = root.querySelector('[data-assets]');
+    if (!box || !isAdmin()) return;
+    box.hidden = false;
+    let cov;
+    try {
+      cov = await api.get('/api/agents/assets');
+    } catch (err) {
+      box.innerHTML = errorBox(err);
+      return;
+    }
+    const statusText = { never: '한 번도 없음', silent: '7일 넘게 끊김' };
+    const editor = html`<div data-asset-editor ${editing || !cov.total ? '' : 'hidden'} style="margin-top:12px">
+      <p class="muted" style="font-size:12.5px;margin:0 0 6px">한 줄에 하나(<code>DB-01</code>, 중요하면 <code>DB-01,중요</code>) 또는 CSV 를 그대로 붙여 넣습니다 —
+        머리줄에 <code>Name</code>(또는 DNSHostName·호스트) 열, 선택으로 <code>등급</code>(중요/일반)·<code>Description</code> 열.
+        AD 에서: <code>Get-ADComputer -Filter * -Properties Description | Select Name,Description | Export-Csv -Encoding UTF8 assets.csv</code>.
+        이름은 첫 마디(FQDN 의 점 앞)로 맞춥니다. 저장하면 목록을 통째로 바꿉니다.</p>
+      <textarea class="input" data-asset-text rows="8" style="width:100%;font-family:var(--font-mono);font-size:12.5px"
+        placeholder="DC-01,중요&#10;DB-01,중요&#10;WEB-01&#10;PC-0012"></textarea>
+      <div class="toolbar" style="margin-top:8px"><button class="btn primary sm" type="button" data-asset-save>목록 저장</button>
+        ${cov.total ? html`<button class="btn sm" type="button" data-asset-cancel>취소</button>` : ''}<span data-asset-msg class="muted"></span></div></div>`;
+    box.innerHTML = html`<div class="card-head"><h2 class="card-title">수집 대상 대조</h2>
+        ${cov.total ? html`<div class="toolbar"><button class="btn sm" type="button" data-asset-edit>목록 바꾸기</button>
+          <button class="btn sm" type="button" data-asset-clear>목록 지우기</button></div>` : ''}</div>
+      <div class="card-body">
+      ${cov.total ? html`<p style="margin:0 0 10px">목록의 <b>${fmtNum(cov.total)}대</b> 중 수집 중 <b>${fmtNum(cov.collecting)}대</b> (${cov.percent}%)
+          · 로그가 오지 않음 <b class="${cov.missing_total ? 'tag-bad' : ''}">${fmtNum(cov.missing_total)}대</b>${cov.critical_missing ? html` (중요 ${fmtNum(cov.critical_missing)}대)` : ''}
+          ${cov.unexpected ? html`<span class="muted"> · 목록에 없는데 보내는 PC ${fmtNum(cov.unexpected)}대 (목록이 낡았는지 확인)</span>` : ''}</p>
+        ${cov.missing.length ? html`<div class="table-wrap"><table class="table"><thead><tr><th>시스템</th><th>등급</th><th>상태</th><th>마지막 수신</th><th>비고</th></tr></thead>
+          <tbody>${cov.missing.map((m) => html`<tr><td class="nowrap"><b>${m.name}</b></td>
+            <td class="nowrap">${m.grade === 'critical' ? html`<span class="tag-bad">중요</span>` : '일반'}</td>
+            <td class="nowrap ink-2">${statusText[m.status]}</td>
+            <td class="nowrap muted">${m.last_seen ? fmtRelative(m.last_seen) : '–'}</td><td class="ink-2">${m.note}</td></tr>`)}</tbody></table></div>
+          ${cov.missing_total > cov.missing.length ? html`<p class="muted" style="font-size:12.5px">앞의 ${fmtNum(cov.missing.length)}대만 보입니다</p>` : ''}`
+        : html`<p class="muted" style="margin:0">목록의 시스템이 모두 7일 안에 로그를 보냈습니다.</p>`}`
+      : html`<p class="hint-box" style="margin:0">이 화면에는 한 번이라도 로그를 보낸 PC 만 나옵니다. 에이전트를 설치하지 않은 서버는 어디에도 보이지 않습니다 —
+          로그를 받아야 할 시스템 목록을 붙여 넣으면 빠진 곳을 보여 주고 점검 보고서·운영 준비도에도 나옵니다.</p>`}
+      ${editor}</div>`;
+    box.querySelector('[data-asset-edit]')?.addEventListener('click', () => {
+      box.querySelector('[data-asset-editor]').hidden = false;
+      box.querySelector('[data-asset-text]').value = cov.items.map((i) => `${i.name}${i.grade === 'critical' ? ',중요' : ''}${i.note ? `,${i.note.replace(/,/g, ' ')}` : ''}`).join('\n');
+    });
+    box.querySelector('[data-asset-cancel]')?.addEventListener('click', () => { box.querySelector('[data-asset-editor]').hidden = true; });
+    box.querySelector('[data-asset-save]').addEventListener('click', async () => {
+      const msg = box.querySelector('[data-asset-msg]');
+      try {
+        const res = await api.put('/api/agents/assets', { text: box.querySelector('[data-asset-text]').value });
+        toast(`수집 대상 ${fmtNum(res.total)}대를 저장했습니다${res.problems.length ? ` — 건너뛴 줄 ${res.problems.length}개` : ''}`);
+        loadAssets();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+    box.querySelector('[data-asset-clear]')?.addEventListener('click', async () => {
+      const ok = await confirmModal({ title: '수집 대상 목록 지우기', message: '목록을 지우면 설치되지 않은 시스템을 더는 찾지 않습니다. 지울까요?',
+        danger: true, confirmText: '지우기' });
+      if (!ok) return;
+      await api.send('DELETE', '/api/agents/assets');
+      loadAssets();
+    });
   }
 
   async function showQuarantine(id) {

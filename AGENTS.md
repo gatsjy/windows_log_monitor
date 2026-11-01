@@ -61,6 +61,7 @@ server/app/
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
   readiness.py       운영 준비도 점검표(B-75) — 각 화면·보고서의 원천을 모아 판정(collect → judge). 새 운영 신호를 만들면 여기에도 한 줄
+  assets.py          수집 대상 대조(B-55): 목록 읽기(이름·CSV·AD 내보내기)·짧은 이름으로 agents 와 맞춤 — 화면·보고서·준비도 공용
   backups.py         DB 백업·복구 시험 상태 (backup 서비스가 남긴 audit_log 로) — 로그 보관 화면·점검 보고서 공용
   oracle.py          Oracle 접속(TNS/SID/서비스/접속문자열)·조회 전용 쿼리·SQL 실행
   secrets.py         환경설정 비밀값 암호화 (WLM_SECRET_KEY)

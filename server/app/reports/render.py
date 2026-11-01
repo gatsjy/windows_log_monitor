@@ -222,6 +222,17 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
                    ("지연", _n(ag["stale"]), ""), ("연락 끊김", _n(ag["offline"]), "")])
     body += "<div style='margin-top:12px'><b style='font-size:13px'>연락이 끊긴 PC (오래된 것부터)</b>" + _table(
         ["PC", "마지막 수신", "마지막 IP"], [[_e(a["host"]), _e(_t(a["last_seen"])), _e(a["last_ip"] or "-")] for a in ag["silent"]]) + "</div>"
+    if ag.get("assets"):   # B-55 이전 보고서에는 없다
+        ls = ag["assets"]
+        body += (f"<div style='margin-top:12px'><b style='font-size:13px'>수집 대상 대조</b>"
+                 f"<p style='color:{MUTED};margin:4px 0'>목록의 {_n(ls['total'])}대 중 수집 중 {_n(ls['collecting'])}대 ({_e(ls['percent'])}%)"
+                 f" · 로그가 오지 않음 {_n(ls['missing_total'])}대 (중요 {_n(ls['critical_missing'])}대)</p>")
+        if ls["missing"]:
+            body += _table(["시스템", "등급", "상태", "마지막 수신"],
+                           [[_e(m["name"]), _e("중요" if m["grade"] == "critical" else "일반"),
+                             _e("한 번도 없음" if m["status"] == "never" else "7일 넘게 끊김"), _e(_t(m["last_seen"]) if m["last_seen"] else "-")]
+                            for m in ls["missing"]])
+        body += "</div>"
     if ag.get("silent_streams"):   # B-37 이전 보고서에는 없다
         body += ("<div style='margin-top:12px'><b style='font-size:13px'>늘 오던 로그가 끊긴 채널 (PC 는 보내는 중)</b>" + _table(
             ["PC", "소스·채널", "마지막 수신", "평소 하루"],
