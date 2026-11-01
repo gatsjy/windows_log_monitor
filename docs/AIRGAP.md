@@ -446,6 +446,7 @@ sudo docker compose -f docker-compose.yml start api
     잠금 때문에 만료 파일을 지우지 못하면 남긴 채 셉니다(`kept`).
 - **감사로그 위·변조 증명 (B-71, ADR-050):** api 가 매일 `archive/integrity-YYYY-MM-DD.json`(감사로그 마지막 번호·해시·시각)을 남기고 외부 저장소 복제가 함께 옮깁니다. 복제본·점검 보고서 메일에 남은 앵커가 'DB 밖 증거'이므로 복제를 켜 두는 것을 권합니다(가능하면 WORM). 앵커는 작아서(하루 1개, 수백 바이트) 만료로 지우지 않습니다.
   `sudo docker compose -f docker-compose.yml exec api python -m app.cli verify-chain` — 실패하면 종료 코드 1 과 문제 행 번호.
+  수집 로그는 시간마다 다이제스트를 남기고 매일 최근 24시간을 다시 계산합니다 — 더 길게: `... verify-chain --events 7d`(행마다 약 55µs).
   **복제본의 앵커로 대조**(서버의 앵커 파일까지 지워졌을 때): `sudo docker compose -f docker-compose.yml run --rm -v /mnt/wlm-replica/archive:/anchors:ro api python -m app.cli verify-chain --anchors /anchors`
   백업으로 복원하면 백업 뒤에 남긴 앵커는 '참고: DB 복원 전의 갈래라 대조하지 않음'으로 나옵니다(실패 아님 — 복원 기록이 감사로그에 남습니다).
 - `.env`(암호화 키)는 백업에 넣지 않습니다. **따로** 안전한 곳에 보관합니다 — 백업만 유출되어도 화면에서 넣은 비밀값을 풀 수 없게(ISMS 2.7.2).

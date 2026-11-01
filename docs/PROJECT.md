@@ -739,8 +739,11 @@ docker compose exec api python -m app.cli verify-chain                 # 감사�
   같은 트랜잭션의 `retention.purge_audit` 에 남깁니다.
 - **백업으로 되돌린 뒤:** 복원 기록(`backup.restore`) 앞의 백업 시점과 복원 사이에 남긴 앵커는 '버려진 갈래'로 따로 보입니다(실패 아님, 화면·CLI·보고서).
 - **알림:** 검증 실패·만료 삭제 멈춤은 빨간 줄, 이틀 넘게 검증·앵커가 없으면 노란 줄 — 로그 보관 화면, 점검 보고서 '점검 필요', 운영 준비도(`integrity.status`).
+- **수집 로그 다이제스트 (2단계):** 수신 시각으로 닫힌 한 시간마다 그 시간의 모든 로그를 해시해 감사로그(`integrity.events_digest`, 체인이 지킴)에 남깁니다.
+  매일 검증(최근 `WLM_EVENT_DIGEST_VERIFY_HOURS` 시간)·보관 파일을 만들 때(그 달 전체)·`verify-chain --events 7d` 가 다시 계산해, 로그가 고쳐지거나 지워지거나
+  끼워졌으면 몇 시의 몇 건인지 알려 줍니다(`app/eventdigest.py`).
 - **한계:** DB 슈퍼유저는 마지막으로 서버 밖에 나간 앵커 뒤를 통째로 다시 쓸 수 있고 이 서버의 앵커 파일도 지울 수 있습니다 — 그때의 근거는 복제본(WORM)·메일의
-  앵커입니다. 이벤트(접속기록) 다이제스트는 B-71 2단계.
+  앵커입니다. 다이제스트는 켠 다음 시간부터입니다.
 
 ## 10. 성능
 
@@ -780,6 +783,7 @@ HTTPS·에이전트 TLS (ADR-036, AIRGAP.md §7.5):
 | `WLM_ALERT_RETENTION_DAYS` | (로그와 같음) | 알림 이력·처리 기록·끝난 무음 |
 | `WLM_AUDIT_RETENTION_DAYS` | `1095` | 감사로그(이 시스템의 접속·권한 부여·변경·말소 기록). 법정 최소 3년 |
 | `WLM_REPORT_RETENTION_DAYS` | `1095` | 점검 보고서(점검 증적) |
+| `WLM_EVENT_DIGEST_VERIFY_HOURS` | `24` | 매일 검증에서 다시 계산할 수집 로그 시간 수 (위·변조 증명 2단계, 행마다 약 55µs, 0 = 끔 — 보관할 때 그 달 전체는 늘 봄) |
 | `WLM_REPLICA` | `off` | `on`: 매일 백업 뒤 백업·보관 파일을 `WLM_REPLICA_DIR`(NAS 마운트)에 복제 (B-17) |
 | `WLM_REPLICA_DIR` | `./replica` | 복제 대상 호스트 경로 (backup 서비스의 `/replica`) |
 | `WLM_REPLICA_BACKUP_DAYS` | `35` | 복제한 DB 백업을 남길 날 수 |

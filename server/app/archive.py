@@ -83,7 +83,12 @@ def _row_json(row: dict) -> str:
 
 
 async def archive_partition(partition: str, start: datetime, end: datetime) -> dict[str, Any]:
-    """파티션 → 압축 파일. 성공하면 메타데이터(dict) 반환. 파티션은 지우지 않는다 (호출하는 쪽에서)."""
+    """파티션 → 압축 파일. 성공하면 메타데이터(dict) 반환. 파티션은 지우지 않는다 (호출하는 쪽에서).
+    쓰면서 시간별 다이제스트(B-71 2단계)를 모아, 그 달에 남긴 다이제스트와 맞춰 본다 — 파티션을 지우기 전 그 달 전체를 볼 마지막 기회.
+    다르면 보관은 그대로 하되(파일 = 지금 DB) 감사로그 integrity.events_mismatch 로 남겨 화면·점검 보고서에 빨갛게 보인다."""
+    from . import eventdigest  # repository·partitions 와 순환 import 를 피해 여기서
+
+    acc = eventdigest.Hours()
     folder = archive_dir()
     folder.mkdir(parents=True, exist_ok=True)
     tmp = folder / f"{partition}.jsonl.gz.tmp"
@@ -97,6 +102,7 @@ async def archive_partition(partition: str, start: datetime, end: datetime) -> d
                 while batch := await cur.fetchmany(FETCH):
                     text = "\n".join(_row_json(r) for r in batch) + "\n"
                     await asyncio.to_thread(fh.write, text)
+                    await asyncio.to_thread(acc.add_many, batch)
                     rows += len(batch)
             expected = (await (await conn.execute(
                 sql.SQL("SELECT count(*) AS n FROM {}").format(sql.Identifier(partition)))).fetchone())["n"]
@@ -117,8 +123,14 @@ async def archive_partition(partition: str, start: datetime, end: datetime) -> d
         "sha256": digest, "bytes": final.stat().st_size, "created_at": datetime.now(UTC).isoformat(),
         "format": FORMAT, "file": final.name,
     }
+    want = await eventdigest.recorded(start, end)
+    problems = eventdigest.compare(acc, want)
+    meta["digest_hours"], meta["digest_problems"] = len(want), len(problems)
     meta_path(partition).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     log.warning("보관 파일 생성: %s (%s건, %s bytes)", final.name, rows, meta["bytes"])
+    if problems:
+        log.error("보관한 %s 의 로그가 다이제스트와 다름: %s", partition, "; ".join(problems[:3]))
+        await db.audit("system", eventdigest.MISMATCH_ACTION, partition, {"hours": len(want), "problems": problems[:20]})
     return meta
 
 

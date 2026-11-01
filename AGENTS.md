@@ -69,6 +69,7 @@ server/app/
   accesslog.py       개인정보가 보이는 조회의 접속기록 (같은 사람·행위·조건 10분 묶음, 기록 실패면 503 — ADR-042, B-38)
   archive.py         로그 보관 파일 만들기·검증·복원
   integrity.py       감사로그 해시 체인 검증(DB 함수와 따로 파이썬으로)·매일 DB 밖 앵커(archive/integrity-*.json) (ADR-050)
+  eventdigest.py     수집 로그 시간별 다이제스트(감사로그 체인에 기록)·다시 계산 — 매일 검증·보관 파일 만들 때 (B-71 2단계)
   cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원, 감사로그 verify-chain, 인증서 tls-init·tls-renew·tls-status — DB 없이)
   routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음)
 server/migrations/   번호순 SQL
@@ -249,6 +250,8 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 감사로그 만료 삭제는 번호 앞부분만, 지울 행이 체인과 맞을 때만(`repository.purge_audit(cutoff, days, integrity.purge_check())`). 기록은 같은 트랜잭션에 넣는다.
   - 마지막 검증·앵커는 `repository.latest_audit_by_id`(번호 순서)로 고른다 — 시각 순서면 미래 시각의 가짜 기록이 최신이 된다. 상태 판단은 `integrity.status` 한 곳(화면·보고서·준비도).
   - 전체 검증은 기동 중·수집 요청 안에서 하지 않는다(`run_maintenance(with_integrity=False)`).
+  - **`events` 의 행을 고치는 코드를 넣지 않는다**(파티션 DROP 만) — 수집 로그 다이제스트가 '고쳐짐'으로 잡는다. 칸을 더하면 `eventdigest.row_hash`·`archive.COLUMNS` 를 함께,
+    옛 다이제스트와 달라지지 않게(새 칸이 NULL 이면 예전과 같은 글이 되도록) 한다. 시험에서 수신 시각을 옮기면 같은 달 파티션 안에서.
   - 백업 복원 뒤 앵커는 `backup.restore` 기록(번호·시각)으로 '버려진 갈래'를 가린다 — backup.sh 의 복원 기록 이름·대상을 바꾸면 `integrity.verify` 도.
   - `verify` 는 보관 폴더의 앵커도 대조한다. 다른 DB 로 검증할 때는 `WLM_ARCHIVE_DIR` 를 빈 폴더로(개발 DB 의 앵커와 비교해 실패한다).
 - 개발 DB 의 관리자 비밀번호는 저장소에 없습니다. `python -m app.cli reset-password admin` 으로 임시 비밀번호를 받습니다.

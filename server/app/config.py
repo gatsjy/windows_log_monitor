@@ -56,6 +56,9 @@ class Settings:
     # 진료정보 등 민감정보를 처리하는 시스템의 접속기록을 모으는 사이트(병원) — 로그 보관 법정 최소를 2년으로 보고 경고한다 (제8조)
     sensitive_access_log: bool = _env("SENSITIVE_ACCESS_LOG", "off").lower() in ("1", "on", "true", "yes")
     report_retention_days: int = _int("REPORT_RETENTION_DAYS", 1095)
+    # 매일 검증에서 다시 계산할 수집 로그 시간 수 (B-71 2단계). 행마다 약 55µs(가져오기 + 해시) — 하루 천만 건이면 약 9분.
+    # 0 이면 매일 다시 계산하지 않는다(보관 파일을 만들 때 그 달 전체는 늘 본다)
+    event_digest_verify_hours: int = _int("EVENT_DIGEST_VERIFY_HOURS", 24)
     archive_dir: str = _env("ARCHIVE_DIR", "/app/archive")
     # DB 백업 일정 (backup 서비스가 실제로 돌린다, deploy/backup/backup.sh). 여기서는 화면 표시와 '오래됨' 판단에만 쓴다
     backup_time: str = _env("BACKUP_TIME", "02:30")

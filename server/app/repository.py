@@ -1456,6 +1456,24 @@ _AUDIT_CHAIN_COLUMNS = (
     " CASE WHEN isfinite(at) THEN at END AS at, actor, actor_ip, action, target, detail::text AS detail")
 
 
+async def events_for_digest(start: datetime, end: datetime, batch: int = 5000) -> AsyncIterator[list[dict[str, Any]]]:
+    """수신 시각 [start, end) 의 행을 번호 순으로 (B-71 2단계 다이제스트). 서버 쪽 커서 — 한 시간이 많아도 메모리에 다 올리지 않는다.
+    칸은 보관 파일과 같다(archive.COLUMNS)."""
+    async with await db.connect_autocommit() as conn, conn.transaction(), conn.cursor(name="events_digest") as cur:
+        await cur.execute(
+            "SELECT id, received_at, ts, host, source, category, channel, provider, event_id, level, username, src_ip, message, raw"
+            " FROM events WHERE received_at >= %s AND received_at < %s ORDER BY id", (start, end))
+        while rows := await cur.fetchmany(batch):
+            yield rows
+
+
+async def event_digest_records(since: datetime) -> list[dict[str, Any]]:
+    """남긴 시간별 다이제스트(감사로그 integrity.events_digest 의 detail) — 체인이 지키는 기록."""
+    rows = await db.fetch_all("SELECT detail FROM audit_log WHERE action = 'integrity.events_digest' AND at >= %s ORDER BY id",
+                              (since,))
+    return [r["detail"] for r in rows]
+
+
 EXPORT_ACTIONS = ("audit.export", "alerts.export")
 
 

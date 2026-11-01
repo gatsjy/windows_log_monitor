@@ -95,9 +95,14 @@ async def _run(args: argparse.Namespace) -> None:
                 raise SystemExit(f"무결성 문제 {len(bad)}건")
         elif args.command == "verify-chain":
             from . import integrity
+            from .filters import parse_duration
 
-            result = await integrity.record_verify(actor="cli", anchor_dirs=args.anchors)
-            print(f"감사로그 {result['rows']:,}행 (앵커 {result['anchors_checked']}개 대조, 보관기간 지난 앵커 {result['anchors_expired']}개)"
+            window = parse_duration(args.events)
+            if window is None:
+                raise SystemExit("--events 형식 오류 (예: 24h, 7d)")
+            result = await integrity.record_verify(actor="cli", anchor_dirs=args.anchors, events_window=window)
+            print(f"감사로그 {result['rows']:,}행 (앵커 {result['anchors_checked']}개 대조, 보관기간 지난 앵커 {result['anchors_expired']}개,"
+                  f" 수집 로그 {result['events_hours']}시간 다이제스트 대조)"
                   f" — 마지막 #{result['last_id']} {(result['last_hash'] or '')[:16]}…")
             for text in result["problems"]:
                 print(f"  문제: {text}")
@@ -140,6 +145,8 @@ def main() -> None:
     chain = sub.add_parser("verify-chain", help="감사로그 해시 체인·DB 밖 앵커 확인 (위·변조 증명, B-71)")
     chain.add_argument("--anchors", action="append", default=[],
                        help="앵커(integrity-*.json)를 더 읽을 폴더 (여러 번) — 외부 저장소 복제본의 archive 폴더 등")
+    chain.add_argument("--events", default="24h",
+                       help="수집 로그 시간별 다이제스트를 다시 계산할 기간 (기본 24h, 예: 7d — 행마다 약 55µs, B-71 2단계)")
     sub.add_parser("verify-archives", help="보관 파일 SHA-256 무결성 확인")
     restore = sub.add_parser("restore-archive", help="보관 파일을 DB 로 다시 불러오기 (조사용)")
     restore.add_argument("partition", help="예: events_2026_06")

@@ -720,7 +720,7 @@ function integrityCard(g) {
     ${v && !d.ok ? (d.problems || []).slice(1).map((t) => html`<div class="error-box" style="margin-bottom:8px">${t}</div>`) : ''}
     <dl class="kv" style="margin-bottom:10px">
       <dt>마지막 검증</dt><dd style="flex-wrap:wrap">${v ? html`${fmtTime(v.at)} — ${d.ok ? html`<span class="tag-good">정상</span>` : html`<span class="tag-bad">위·변조 의심</span>`}
-        <span class="muted">(감사로그 ${fmtNum(d.rows ?? 0)}행 · 앵커 ${fmtNum(d.anchors_checked ?? 0)}개 대조${d.anchors_expired ? ` · 보관기간 지난 앵커 ${fmtNum(d.anchors_expired)}개` : ''})</span>` : '아직 없음 (매일 자동)'}</dd>
+        <span class="muted">(감사로그 ${fmtNum(d.rows ?? 0)}행 · 앵커 ${fmtNum(d.anchors_checked ?? 0)}개 대조${d.anchors_expired ? ` · 보관기간 지난 앵커 ${fmtNum(d.anchors_expired)}개` : ''}${d.events_hours ? ` · 수집 로그 ${fmtNum(d.events_hours)}시간 다이제스트` : ''})</span>` : '아직 없음 (매일 자동)'}</dd>
       ${d.superseded?.length ? html`<dt>DB 복원</dt><dd style="flex-wrap:wrap"><span class="muted">백업으로 되돌리기 전에 남긴 앵커 ${fmtNum(d.superseded.length)}개는 버려진 갈래라 대조하지 않았습니다
         (복원 기록 #${d.superseded[0].restore_id} — 감사로그 '백업으로 DB 복원')</span></dd>` : ''}
       <dt>체인 머리</dt><dd class="mono" style="font-size:12.5px;overflow-wrap:anywhere">${g.head ? `#${g.head.last_id} · ${g.head.last_hash}` : '없음'}</dd>

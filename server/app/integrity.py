@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import db, repository
+from . import db, eventdigest, repository
 from .config import display_zone, settings
 
 log = logging.getLogger(__name__)
@@ -161,12 +161,14 @@ def _mark(r: dict[str, Any], now: datetime) -> dict[str, Any] | None:
 
 def _result(now: datetime, problems: list[str], **kw: Any) -> dict[str, Any]:
     base = {"ok": not problems, "checked_at": now, "rows": 0, "first_id": None, "last_id": None, "last_hash": None,
-            "problems": problems, "anchors_checked": 0, "anchors_expired": 0, "superseded": []}
+            "problems": problems, "anchors_checked": 0, "anchors_expired": 0, "superseded": [], "events_hours": 0}
     return base | kw
 
 
-async def verify(now: datetime | None = None, anchor_dirs: Iterable[Path | str] = ()) -> dict[str, Any]:
-    """체인 전체를 한 시점에서 맞춰 본다 → {ok, rows, first_id, last_id, last_hash, problems, anchors_checked, anchors_expired, superseded}."""
+async def verify(now: datetime | None = None, anchor_dirs: Iterable[Path | str] = (),
+                 events_window: timedelta | None = None) -> dict[str, Any]:
+    """체인 전체를 한 시점에서 맞춰 본다 → {ok, rows, first_id, last_id, last_hash, problems, anchors_checked, anchors_expired, superseded,
+    events_hours}. 끝에 수집 로그의 시간별 다이제스트(2단계)도 최근 events_window 만큼 다시 계산해 본다."""
     now = now or datetime.now(UTC)
     anchors = list_anchors(anchor_dirs)
     wanted = {a["audit_last_id"] for a in anchors if "error" not in a}
@@ -204,7 +206,10 @@ async def verify(now: datetime | None = None, anchor_dirs: Iterable[Path | str] 
                 m["last_hash"] == start["prev_hash"] and m["upto_id"] < start["id"] for m in marks):
             chain.problem(f"#{start['id']} 체인의 시작이 맞지 않습니다 — 앞쪽 행이 보관기간 만료가 아닌 방법으로 지워졌습니다")
     checked, expired, superseded = _check_anchors(anchors, seen, marks, restores, first, now, chain)
-    return _result(now, chain.problems, rows=chain.rows, first_id=first["id"] if first else None,
+    event_problems, event_hours = await eventdigest.check_recent(now, events_window)
+    for text in event_problems:
+        chain.problem(text)
+    return _result(now, chain.problems, rows=chain.rows, first_id=first["id"] if first else None, events_hours=event_hours,
                    last_id=last["id"] if last else None, last_hash=last["row_hash"] if last else None,
                    anchors_checked=checked, anchors_expired=expired, superseded=superseded)
 
@@ -288,6 +293,10 @@ async def daily(now: datetime | None = None) -> None:
     except Exception:
         log.exception("위·변조 증명 앵커 작업 실패")
     try:
+        await eventdigest.digest_closed_hours(now)     # 수집 로그 시간별 다이제스트 (2단계) — 매시간
+    except Exception:
+        log.exception("수집 로그 다이제스트 실패")
+    try:
         last = (await repository.latest_audit_by_id(["integrity.verify"])).get("integrity.verify")
         if last is None or not (now - VERIFY_EVERY < last["at"] <= now + FUTURE_SLACK):
             await record_verify(now, "system")
@@ -296,18 +305,18 @@ async def daily(now: datetime | None = None) -> None:
 
 
 async def record_verify(now: datetime | None = None, actor: str = "system", ip: str | None = None,
-                        anchor_dirs: Iterable[Path | str] = ()) -> dict[str, Any]:
+                        anchor_dirs: Iterable[Path | str] = (), events_window: timedelta | None = None) -> dict[str, Any]:
     """검증하고 감사로그(integrity.verify)에 남긴다. 검증이 예외로 멈춰도 실패로 남긴다 — 예전 '정상'이 그대로 보이지 않게."""
     now = now or datetime.now(UTC)
     try:
-        result = await verify(now, anchor_dirs)
+        result = await verify(now, anchor_dirs, events_window)
     except Exception as exc:
         log.exception("감사로그 위·변조 검증 중 오류")
         result = _result(now, [f"검증하지 못했습니다 — {type(exc).__name__}: {str(exc)[:200]}"])
     await db.audit(actor, "integrity.verify", "audit_log",
                    {"ok": result["ok"], "rows": result["rows"], "last_id": result["last_id"], "last_hash": result["last_hash"],
                     "problems": result["problems"][:5], "anchors_checked": result["anchors_checked"],
-                    "anchors_expired": result["anchors_expired"],
+                    "anchors_expired": result["anchors_expired"], "events_hours": result["events_hours"],
                     "superseded": [{"file": s["file"], "restore_id": s["restore_id"],
                                     "restore_at": s["restore_at"].isoformat() if s["restore_at"] else None}
                                    for s in result["superseded"]][:20]},
@@ -327,7 +336,7 @@ async def status(now: datetime | None = None) -> dict[str, Any]:
     """화면·점검 보고서·운영 준비도가 같이 쓰는 상태 — 머리, 마지막 검증·앵커, 그리고 판단(notices: level·text)."""
     now = now or datetime.now(UTC)
     head = await repository.audit_chain_head()
-    latest = await repository.latest_audit_by_id(["integrity.verify", "integrity.anchor", "integrity.anchor_failed",
+    latest = await repository.latest_audit_by_id(["integrity.verify", "integrity.anchor", "integrity.anchor_failed", eventdigest.MISMATCH_ACTION,
                                                   "retention.purge_audit_refused", MARK_ACTION])
     verify_row, anchor_row = latest.get("integrity.verify"), latest.get("integrity.anchor")
     failed, refused, purged = (latest.get("integrity.anchor_failed"), latest.get("retention.purge_audit_refused"),
@@ -341,6 +350,11 @@ async def status(now: datetime | None = None) -> dict[str, Any]:
     if refused and (purged is None or refused["id"] > purged["id"]):
         first = (refused["detail"].get("problems") or ["문제"])[0]
         notices.append({"level": "bad", "text": f"감사로그 만료 삭제를 멈췄습니다 (지울 행이 체인과 맞지 않음): {first}"})
+    mismatch = latest.get(eventdigest.MISMATCH_ACTION)
+    if mismatch and now - mismatch["at"] < RESTORE_NOTICE:
+        # 보관 파일을 만들 때 그 달의 로그가 다이제스트와 달랐다 — 파티션은 지워졌으므로 그 뒤 매일 검증에는 다시 나오지 않는다
+        first = (mismatch["detail"].get("problems") or ["문제"])[0]
+        notices.append({"level": "bad", "text": f"보관 파일로 옮긴 {mismatch['target']} 의 로그가 다이제스트와 다릅니다: {first}"})
     restored = [s for s in ((verify_row["detail"].get("superseded") or []) if verify_row else [])
                 if (at := _parse_at(s.get("restore_at"))) and now - at < RESTORE_NOTICE]
     if restored:
