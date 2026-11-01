@@ -100,6 +100,9 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 
 ### 3.2 정규화 규칙 (`server/app/normalizers/`)
 
+- **하트비트의 시각 (B-57):** 에이전트가 하트비트에 넣는 `date`(PC 시계)를 `Heartbeat.sent_at` 으로 읽어, 수집 트랜잭션이 `agents` 에 (받은 시각 − PC 시각)의 창 두 개(15분씩) 최솟값을 남긴다(마이그레이션 026).
+  지연은 0 이상이라 최솟값이 시계 차이에 가깝다. 판단(1분 경고·5분 위험·여러 PC 가 같은 쪽이면 서버 시계 의심)은 `app/clock.py` 한 곳 — 수집 PC 화면·점검 보고서·운영 준비도.
+
 공통 컬럼은 `ts`, `host`, `source`, `channel`, `provider`, `event_id`, `level`, `message`, `category`, `username`, `src_ip` 입니다. 원본은 `raw` 에 그대로 저장합니다.
 - 서버가 텍스트 줄을 해석한 값(IIS, MSSQL)은 원본 키를 건드리지 않고 `raw.iis.*`, `raw.mssql.*` 에 **덧붙입니다**.
 
@@ -222,7 +225,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/stats/top?field=&limit=` | 상위 값. field = 컬럼명 또는 `f.<경로>` |
 | `GET /api/stats/group?by=&distinct=&limit=` | 통계 표 (B-62): `by`(최대 3, 쉼표) 조합마다 건수·처음/마지막 발생 시각·`distinct`(최대 2) 서로 다른 값 수. 건수 많은 순 최대 1,000행(`truncated`). 사용자·IP·`f.` 가 들면 접속기록 `events.stats`. `format=csv&reason=` 는 사유 필수·`events.export` |
 | `GET /api/stats/summary` | PC 상태 수, 분당 수집량, 최근 24시간 알림 수(`alerts_24h`), 확인하지 않은 알림 수(`alerts_open`, 조회 범위 반영) |
-| `GET /api/agents?since=` | PC 목록 + 기간 내 이벤트/오류/경고 수 + 상태 + `last_transport`(마지막 하트비트의 전송 방식: `tls`·`plain`·`web`=화면 포트로 보낸 옛 묶음). `transport{tls, ingest_plain}`. `silent_streams` = 늘 오던 로그가 끊긴 (PC, 소스, 채널) (B-37, 조회 범위 반영) |
+| `GET /api/agents?since=` | PC 목록 + 기간 내 이벤트/오류/경고 수 + 상태 + `last_transport`(마지막 하트비트의 전송 방식: `tls`·`plain`·`web`=화면 포트로 보낸 옛 묶음). `transport{tls, ingest_plain}`. `silent_streams` = 늘 오던 로그가 끊긴 (PC, 소스, 채널) (B-37, 조회 범위 반영). 행마다 `clock_offset_ms`(서버 − PC 시계, 하트비트 15~30분 최솟값, 30분 넘게 하트비트가 없으면 null)·`clock_level`, `clock{known, off, bad, warn, server_suspect}`(서버 시계 의심은 조회 범위가 없는 사용자만, B-57) |
 | `GET /api/agents/problems?since=` | 수집 거절 장부·격리 레코드 목록 (관리자, B-40) |
 | `GET /api/agents/quarantine/{id}` | 격리 레코드 원본 (관리자, 접속기록 `events.quarantine.view`) |
 | `GET /api/agents/assets` | 수집 대상 대조 (관리자, B-55): `total`·`collecting`·`percent`·`missing`(중요·한 번도 없음 먼저)·`critical_missing`·`unexpected`(목록에 없는데 보내는 PC 수) |

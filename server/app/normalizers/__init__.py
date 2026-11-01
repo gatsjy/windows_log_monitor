@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from . import generic, iis, mssql, syslog, windows
-from .base import Event, Heartbeat, clean_ip, clean_text, clean_user, pick_host
+from .base import Event, Heartbeat, clean_ip, clean_text, clean_user, parse_time, pick_host
 from .categories import classify
 
 Normalizer = Callable[[dict, datetime], Event | None]
@@ -44,7 +44,7 @@ def normalize(record: dict, now: datetime, iis_ctx: iis.IisContext | None = None
     iis_ctx = 한 수집 요청의 IIS 열 순서 문맥 (routers/ingest 가 repository.iis_context 로 만든다, ADR-037)."""
     if record.get("type") == "heartbeat":
         meta = {k: v for k, v in record.items() if k not in ("type", "agent_host", "date")}
-        return Heartbeat(host=pick_host(record, "host", "hostname"), meta=meta)
+        return Heartbeat(host=pick_host(record, "host", "hostname"), meta=meta, sent_at=parse_time(record.get("date")))
 
     source = record.get("log_source")
     if source:

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import __version__, accesslog, db, live, repository, wincatalog
+from .. import __version__, accesslog, clock, db, live, repository, wincatalog
 from ..alerts.message import LEVEL_LABELS
 from ..alerts.visibility import count_by_status
 from ..auth import service as auth_service
@@ -413,11 +413,14 @@ async def list_agents(request: Request, since: str = "24h"):
     rows = await repository.agents(start, request.state.user.scopes)
     for row in rows:
         row["status"] = agent_status(row["silent_sec"])
+        row["clock_level"] = clock.level(row["clock_offset_ms"])   # 시계 차이 (B-57)
     # 늘 오던 채널이 끊긴 것 (B-37) — 이 사용자에게 보이는 PC 만
     silent = await repository.silent_streams(now, [r["host"] for r in rows]) if rows else []
     return {
         "items": rows,
         "silent_streams": [{**s, "quiet_limit_sec": int(s.pop("quiet_limit").total_seconds())} for s in silent],
+        # 서버 시계 의심은 모든 PC 를 봐야 하므로 조회 범위가 없는 사용자에게만 (범위 안 PC 몇 대로는 판단하지 않음)
+        "clock": clock.assess(rows) if request.state.user.scopes is None else {**clock.assess(rows), "server_suspect": None},
         "thresholds": {"online_sec": settings.heartbeat_online_sec, "stale_sec": settings.heartbeat_stale_sec},
         # 화면이 '평문으로 보내는 PC' 를 경고할지 (TLS 를 켠 서버에서만 의미가 있다, ADR-036)
         "transport": {"tls": settings.tls, "ingest_plain": settings.ingest_plain or not settings.tls},

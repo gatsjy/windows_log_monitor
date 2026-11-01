@@ -32,6 +32,7 @@ def _facts(**overrides):
         "offline_pcs": [], "silent_streams": 0, "coverage_gaps": [], "retention_warnings": [],
         "assets": {"total": 3, "collecting": 3, "missing_total": 0, "critical_missing": 0, "missing": []},
         "backup": {"problems": []}, "replica": True, "integrity": [], "weakened": [], "observing": [],
+        "clock": {"known": 3, "off": [], "bad": 0, "warn": 0, "server_suspect": None},
     }
     facts.update(overrides)
     return facts
@@ -80,6 +81,9 @@ def test_a_finished_install_is_all_green():
     ({"backup": {"problems": ["마지막 외부 저장소 복제가 40시간 전입니다"]}}, "replica", "bad", "40시간"),
     ({"weakened": [{"id": 7, "actor": "kim"}]}, "weakened", "warn", "#7 kim"),
     ({"observing": ["새 규칙"]}, "observing", "warn", "새 규칙"),
+    ({"clock": {"known": 9, "off": [{"host": "DC-01", "text": "PC 시계가 6분 늦음", "level": "bad"}], "bad": 1, "warn": 0,
+                "server_suspect": None}}, "clock", "bad", "DC-01 PC 시계가 6분 늦음"),
+    ({"clock": {"known": 0, "off": [], "bad": 0, "warn": 0, "server_suspect": None}}, "clock", "skip", "알려 준 PC 가 없"),
 ])
 def test_each_gap_is_called_out(overrides, key, status, text):
     items = {i.key: i for i in readiness.judge(_facts(**overrides))}
@@ -123,7 +127,8 @@ def test_api_is_admin_only_and_reports_a_fresh_install(client):
     # 새 설치: 개인 관리자 없음·받는 곳 없음·보고서 받는 곳 없음·복제 꺼짐 — 고칠 것이 보인다
     assert items["personal_admins"]["status"] == "warn" and items["targets"]["status"] == "bad"
     assert items["admin_password"]["status"] == "ok"   # 방금 바꿨다
-    assert data["summary"]["bad"] >= 1 and sum(data["summary"].values()) == len(data["items"])
+    # '해당 없음'(skip — 예: 시계를 알려 준 PC 가 아직 없음)은 요약 숫자에 세지 않는다
+    assert data["summary"]["bad"] >= 1 and sum(data["summary"].values()) == len([i for i in data["items"] if i["status"] != "skip"])
     viewer = client.post("/api/users", json={"username": "seeonly", "role": "viewer"}, headers=CSRF).json()
     from fastapi.testclient import TestClient
 

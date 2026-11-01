@@ -60,6 +60,7 @@ server/app/
   alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
+  clock.py           PC·서버 시계 차이 판단(B-57) — 하트비트 시각의 창 두 개 최솟값(repository.CLOCK_OFFSET_SQL)으로 1분·5분·서버 시계 의심
   readiness.py       운영 준비도 점검표(B-75) — 각 화면·보고서의 원천을 모아 판정(collect → judge). 새 운영 신호를 만들면 여기에도 한 줄
   assets.py          수집 대상 대조(B-55): 목록 읽기(이름·CSV·AD 내보내기)·짧은 이름으로 agents 와 맞춤 — 화면·보고서·준비도 공용
   backups.py         DB 백업·복구 시험 상태 (backup 서비스가 남긴 audit_log 로) — 로그 보관 화면·점검 보고서 공용

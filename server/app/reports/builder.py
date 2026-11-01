@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 
-from .. import archive, assets, backups, db, partitions, repository
+from .. import archive, assets, backups, clock, db, partitions, repository
 from ..alerts import coverage, health
 from ..alerts.builtin import ADMIN_RULE
 from ..alerts.engine import engine
@@ -184,7 +184,7 @@ async def _agents(now: datetime) -> dict[str, Any]:
               "missing": [{"name": m["name"], "grade": m["grade"], "status": m["status"], "last_seen": _iso(m["last_seen"])}
                           for m in cov["missing"][:15]]} if cov["total"] else None
     return {"total": len(rows), "online": online, "stale": stale, "offline": len(silent), "silent": silent[:20],
-            "assets": listed, "coverage_gaps": gaps[:10],
+            "assets": listed, "coverage_gaps": gaps[:10], "clock": clock.assess(rows),
             "silent_streams": [{"host": r["host"], "source": r["source"], "channel": r["channel"],
                                 "last_at": _iso(r["last_at"]), "per_day": round(r["n7"] / max(r["days"], 1))}
                                for r in streams[:30]],
@@ -322,6 +322,13 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
         out.append({"level": "warn", "text": f"로그가 오지 않는 중요 시스템 {listed['critical_missing']}대: {names} — 에이전트 설치·연결 확인"})
     if p["agents"]["offline"]:
         out.append({"level": "warn", "text": f"연락이 끊긴 PC {p['agents']['offline']:,}대"})
+    clk = p["agents"].get("clock")   # B-57 이전 보고서에는 없다
+    if clk and clk["server_suspect"]:
+        out.append({"level": "bad", "text": f"시계: {clk['server_suspect']['text']}"})
+    elif clk and clk["bad"]:
+        bad = [o for o in clk["off"] if o["level"] == "bad"]
+        out.append({"level": "warn", "text": f"시계가 5분 넘게 어긋난 PC {clk['bad']}대: "
+                                             f"{', '.join(f'{o['host']}({o['text']})' for o in bad[:3])} — 로그 시각·도메인 로그온에 영향"})
     if p["retention"]["archives_missing"]:
         out.append({"level": "bad", "text": f"보관 파일 {p['retention']['archives_missing']}개가 없습니다 (목록에는 있음)"})
     for warning in p["retention"].get("warnings") or []:

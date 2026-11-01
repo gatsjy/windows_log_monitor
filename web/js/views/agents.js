@@ -302,10 +302,18 @@ export async function mount(root, params) {
     }
   }
 
+  /** 서버 clock.describe 와 같은 문구 — 양수 = PC 시계가 늦음 (B-57) */
+  function clockText(ms) {
+    const sec = Math.round(Math.abs(ms) / 1000);
+    const amount = sec >= 3600 ? `${Math.floor(sec / 3600)}시간 ${Math.floor((sec % 3600) / 60)}분`
+      : sec >= 60 ? `${Math.floor(sec / 60)}분 ${sec % 60}초` : `${sec}초`;
+    return `PC 시계가 ${amount} ${ms > 0 ? '늦음' : '빠름'}`;
+  }
+
   async function load() {
     loadProblems();
     try {
-      const { items, thresholds, transport, silent_streams: silentStreams = [] } = await api.get('/api/agents', { since });
+      const { items, thresholds, transport, silent_streams: silentStreams = [], clock } = await api.get('/api/agents', { since });
       const count = (s) => items.filter((a) => a.status === s).length;
       root.querySelector('[data-summary]').innerHTML = html`${[
         ['전체', items.length, ''], ['온라인', count('online'), statusBadge('online')],
@@ -337,6 +345,11 @@ export async function mount(root, params) {
             <a href="#/events?since=7d&host=${encodeURIComponent(st.host)}${st.channel ? `&channel=${encodeURIComponent(st.channel)}` : ''}">${st.host} · ${st.channel || sourceLabel(st.source)}</a>
             <span class="muted">— 마지막 수신 ${fmtRelative(st.last_at)}, 평소 하루 ${fmtNum(Math.round(st.n7 / Math.max(st.days, 1)))}건</span></li>`)}
           ${silentStreams.length > 10 ? html`<li class="muted">… 외 ${fmtNum(silentStreams.length - 10)}개</li>` : ''}</ul></div>` : ''}
+        ${clock?.server_suspect ? html`<p class="hint-box" style="margin:12px 16px 0" data-clock>
+          <b class="tag-bad">서버 시계 확인</b> — ${clock.server_suspect.text}.</p>`
+          : clock?.off.length ? html`<p class="hint-box" style="margin:12px 16px 0" data-clock>
+          <b class="${clock.bad ? 'tag-bad' : ''}">시계가 1분 넘게 어긋난 PC ${fmtNum(clock.off.length)}대</b> — 로그 시각이 틀려 검색·알림 구간·사고 시간선이 어긋납니다(5분을 넘으면 도메인 로그온도 실패).
+          그 PC 의 시간 동기화(w32time·chrony)를 확인하세요: ${clock.off.slice(0, 5).map((o) => `${o.host} ${o.text}`).join(', ')}${clock.off.length > 5 ? ' …' : ''}</p>` : ''}
         ${web ? html`<p class="hint-box" style="margin:12px 16px 0" data-web>
           <b class="tag-bad">화면 포트(8080)로 보내는 PC ${fmtNum(web)}대</b> — 0.4 이전 설치 묶음입니다. TLS 를 켜면 끊기니 먼저 새 묶음으로 다시 설치하세요.</p>` : ''}
         ${admin ? html`<div class="toolbar" data-bulk style="padding:10px 16px;justify-content:space-between">
@@ -357,7 +370,8 @@ export async function mount(root, params) {
           <td class="nowrap num ink-2">${a.last_ip || '–'}</td>
           <td class="nowrap">${transportLabel(a.last_transport, transport?.tls)}</td>
           <td class="nowrap" title="${fmtTime(a.last_seen)}">${fmtRelative(a.last_seen)}</td>
-          <td class="nowrap ink-2">${a.last_heartbeat_at ? fmtRelative(a.last_heartbeat_at) : '–'}</td>
+          <td class="nowrap ink-2">${a.last_heartbeat_at ? fmtRelative(a.last_heartbeat_at) : '–'}${a.clock_level === 'warn' || a.clock_level === 'bad'
+            ? html`<div class="${a.clock_level === 'bad' ? 'tag-bad' : ''}" style="font-size:12px" title="하트비트의 PC 시각과 받은 시각의 차이 (최근 15~30분 최솟값)">${clockText(a.clock_offset_ms)}</div>` : ''}</td>
           <td class="r num">${fmtCompact(a.events)}</td>
           <td class="r num">${fmtNum(a.errors)}</td>
           <td class="r num">${fmtNum(a.warnings)}</td>

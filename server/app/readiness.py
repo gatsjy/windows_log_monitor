@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import db, partitions, repository, tlsutil
+from . import clock, db, partitions, repository, tlsutil
 from .config import settings
 
 TEST_LOOKBACK = timedelta(days=8)       # 받는 곳 시험 전송 — 매주 정기 시험(B-34) + 하루
@@ -62,6 +62,7 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "health": await health.current(now, fresh=True),
         "enabled_rules": len(enabled),
         "observing": [r.name for r in enabled if r.mode == "observe"],   # 관찰 모드 (B-52) — 기록만, 보내지 않음
+        "clock": clock.assess(agents),   # 시계 차이 (B-57)
         "unknown_targets": sorted({n for r in enabled for n in r.notify if n not in notifiers and n not in errors}),
         "broken_targets": {n: e for n, e in errors.items() if n in used},
         "used_targets": used, "fallback": fallback,
@@ -187,6 +188,17 @@ def judge(f: dict[str, Any]) -> list[Item]:
     else:
         status, detail = "ok", f"목록의 {ls['total']}대가 모두 로그를 보내고 있습니다"
     add(Item("assets", "수집", "수집 대상 대조", status, detail, "#/agents", "BACKLOG B-55, ISMS 2.9.4"))
+
+    # 시계 차이 (B-57) — 로그 시각이 틀리면 검색·알림 구간·사고 시간선이 어긋난다
+    clk = f.get("clock") or {"known": 0, "off": [], "bad": 0, "warn": 0, "server_suspect": None}
+    if clk["server_suspect"]:
+        add(Item("clock", "수집", "시계 (PC·서버)", "bad", clk["server_suspect"]["text"], "#/agents", "ISMS 2.9.6"))
+    elif not clk["known"]:
+        add(Item("clock", "수집", "시계 (PC·서버)", "skip", "시계를 알려 준 PC 가 없습니다 (최근 30분 하트비트)", "#/agents", "ISMS 2.9.6"))
+    else:
+        add(Item("clock", "수집", "시계 (PC·서버)", "bad" if clk["bad"] else "warn" if clk["warn"] else "ok",
+                 f"{len(clk['off'])}대가 1분 넘게 어긋남: {_names([f'{o['host']} {o['text']}' for o in clk['off']], 3)}"
+                 if clk["off"] else f"PC {clk['known']}대의 시계가 서버와 1분 안에서 맞습니다", "#/agents", "ISMS 2.9.6"))
 
     # ------------------------------------------------------------ 보관
     add(Item("retention", "보관", "법정 보관기간", "bad" if f["retention_warnings"] else "ok",

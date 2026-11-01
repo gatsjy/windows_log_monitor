@@ -61,6 +61,7 @@ class Event:
 class Heartbeat:
     host: str
     meta: dict[str, Any] = field(default_factory=dict)
+    sent_at: datetime | None = None   # PC 시계로 만든 시각 (Fluent Bit 의 date) — 시계 차이 (B-57)
 
 
 # ---------------------------------------------------------------- helpers

@@ -164,7 +164,7 @@
 | 레코드 누락·해석 품질 | Chainsaw `analyse gaps`(EventRecordID), Hayabusa 이벤트 ID 별 지표 | ❌ catalog 는 EventRecordID 를 '누락 확인에 사용'이라 설명하지만 확인 코드 없음 | B-56 |
 | 문제 레코드 격리 | dead letter queue(처리 못 한 레코드 보관함) 개념(Fluent Bit 4.0 에는 없음, ADR-039) | △ NUL 은 막음(aeb38bf). 정규화 예외·DB 데이터 오류는 여전히 요청 전체 실패 | B-40 |
 | 거절한 요청 기록 | (검토에서 도출. 참고: Graylog Sidecar·OpAMP 는 에이전트가 스스로 상태 보고) | ❌ 401·413 은 응답만, 서버에 남지 않음 | B-40 |
-| 에이전트 상태 신호 | Fluent Bit `fluentbit_metrics`(dropped_records_total), OpAMP ComponentHealth, Zabbix `fuzzytime` | ❌ 하트비트는 설정 버전 하나, 하트비트 발생 시각(`date`)은 버림 | B-57 |
+| 에이전트 상태 신호 | Fluent Bit `fluentbit_metrics`(dropped_records_total), OpAMP ComponentHealth, Zabbix `fuzzytime` | △ 하트비트 시각으로 PC 시계 차이·서버 시계 의심(`fuzzytime` 과 같은 목적). 채널 구독 실패·버퍼 유실 지표는 아직 | B-57 |
 | 설정 차이·중앙 관리 | Wazuh merged.mg 체크섬, Elastic Fleet 정책 revision, Graylog Sidecar ETag·검증 명령, OpAMP RemoteConfigStatus | △ 손으로 올리는 설정 버전 상수 하나 표시 | B-11 |
 | 상태 모델·기대 일정 | Elastic Fleet Offline/Inactive, Fleet(fleetd) 호스트별 기대 간격 | △ 전역 90초/900초. 퇴근 때 끈 PC 도 보고서의 '연락이 끊긴 PC' | B-11 |
 | 에이전트 신원 | Elastic Fleet 등록 토큰 → 에이전트별 키, osquery `enroll_secret` → `node_key` | ❌ 공용 수집 키, PC 이름은 레코드가 스스로 주장 | B-58 |
