@@ -15,11 +15,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import __version__, accesslog, db, live, repository
+from ..alerts.message import LEVEL_LABELS
 from ..alerts.visibility import count_by_status
 from ..auth import service as auth_service
 from ..auth.deps import client_ip, require_admin, require_user
 from ..auth.service import User
 from ..config import settings
+from ..csvexport import csv_response, export_reason
 from ..filters import (
     MAX_FIELD_FILTERS,
     EventFilter,
@@ -101,10 +103,20 @@ def agent_status(silent_sec: int) -> str:
 
 # ------------------------------------------------------------------ events
 
+EXPORT_MAX_ROWS = 10000   # 이벤트 CSV 한 번에 (넘으면 잘리고 X-WLM-Truncated — 기간을 나눠 받는다)
+EVENT_CSV_HEAD = ["발생 시각(UTC)", "수집 시각(UTC)", "PC", "소스", "분류", "채널", "공급자", "이벤트 ID", "수준", "사용자", "IP",
+                  "메시지(앞 400자)"]
+
+
 @router.get("/api/events")
-async def list_events(request: Request, limit: int = Query(100, ge=1, le=1000), cursor: str | None = None,
+async def list_events(request: Request, limit: int = Query(100, ge=1, le=EXPORT_MAX_ROWS), cursor: str | None = None,
+                      format: str = Query("json", pattern="^(json|csv)$"), reason: str | None = Query(None, max_length=200),
                       user: User = Depends(require_user)):
     f = _filter(request)
+    if format == "csv":
+        return await _events_csv(request, user, f, export_reason(reason))
+    if limit > 1000:
+        raise HTTPException(400, "limit 은 1000 이하 (CSV 는 10000)")
     position = _cursor(cursor) if cursor else None
     try:
         rows = await repository.list_events(f, limit + 1, position)
@@ -119,6 +131,24 @@ async def list_events(request: Request, limit: int = Query(100, ge=1, le=1000), 
     if cursor is None:   # 다음 페이지 요청은 같은 검색이라 생략
         await _audit_search(request, user, {"rows": len(rows)}, required=True)
     return {"items": rows, "next_cursor": next_cursor}
+
+
+async def _events_csv(request: Request, user: User, f, reason: str):
+    """이벤트 CSV (B-62): 개인정보가 든 파일이라 사유를 받아 접속기록(events.export)에 함께 — 기록 못 하면 내주지 않는다(ADR-042).
+    로그에서 온 값이 엑셀 수식으로 실행되지 않게 csv_response 로."""
+    rows = await repository.list_events(f, EXPORT_MAX_ROWS + 1)
+    truncated = len(rows) > EXPORT_MAX_ROWS
+    rows = rows[:EXPORT_MAX_ROWS]
+    await db.audit(user.username, "events.export", "events",
+                   {"query": accesslog.conditions(request, drop=("limit", "format", "reason")), "rows": len(rows),
+                    "truncated": truncated, "reason": reason}, actor_ip=client_ip(request), required=True)
+    return csv_response(EVENT_CSV_HEAD,
+                        ([r["ts"].isoformat(), r["received_at"].isoformat(), r["host"], r["source"], r["category"] or "",
+                          r["channel"] or "", r["provider"] or "", r["event_id"] if r["event_id"] is not None else "",
+                          LEVEL_LABELS.get(r["level"], r["level"]), r["username"] or "", r["src_ip"] or "", r["message"] or ""]
+                         for r in rows),
+                        f"events_{datetime.now(UTC):%Y%m%d_%H%M%S}.csv",
+                        headers={"X-WLM-Truncated": "1"} if truncated else None)
 
 
 def _cursor(text: str) -> tuple[datetime, int]:
@@ -253,6 +283,50 @@ async def _audit_stats(request: Request, field: str, rows: int) -> None:
     conditions = accesslog.conditions(request)
     await accesslog.record(request, request.state.user.username, "events.stats", field, {"query": conditions, "rows": rows},
                            key=conditions)
+
+
+GROUP_MAX_BY, GROUP_MAX_DISTINCT, GROUP_MAX_ROWS = 3, 2, 1000
+STATS_FIELD_LABELS = {"host": "PC", "user": "사용자", "ip": "IP", "event_id": "이벤트 ID", "category": "분류", "source": "소스",
+                      "channel": "채널", "provider": "공급자", "level": "수준"}
+
+
+def _fields(text: str, most: int, what: str) -> list[str]:
+    names = [_check_field(n.strip()) for n in text.split(",") if n.strip()]
+    if len(names) > most or len(set(names)) != len(names):
+        raise HTTPException(400, f"{what}는 서로 다른 필드 {most}개까지")
+    return names
+
+
+@router.get("/api/stats/group")
+async def stats_group(request: Request, by: str, distinct: str = "", limit: int = Query(200, ge=1, le=GROUP_MAX_ROWS),
+                      format: str = Query("json", pattern="^(json|csv)$"), reason: str | None = Query(None, max_length=200),
+                      user: User = Depends(require_user)):
+    """검색 '통계' 탭 (B-62): by(최대 3) 조합마다 건수·처음/마지막 발생 시각·distinct(최대 2)의 서로 다른 값 수.
+    '계정별 로그온한 PC 수와 처음/마지막', 'IP 별 실패 횟수와 시도한 계정 수' 같은 점검 질문을 표로. 건수 많은 순 limit 행(잘리면 truncated).
+    사용자·IP·원본 필드가 들면 접속기록(events.stats, 10분 묶음), CSV 는 사유 필수·events.export."""
+    keys, counts = _fields(by, GROUP_MAX_BY, "by"), _fields(distinct, GROUP_MAX_DISTINCT, "distinct")
+    if not keys:
+        raise HTTPException(400, "by 에 묶을 필드를 하나 이상 주세요 (예: user,host)")
+    why = export_reason(reason) if format == "csv" else None   # 사유가 없으면 쿼리를 돌리기 전에 거절
+    rows = await repository.group_stats(_filter(request), keys, counts, limit + 1)
+    truncated = len(rows) > limit
+    items = [{"keys": [r[f"k{i}"] for i in range(len(keys))], "n": r["n"], "first_ts": r["first_ts"], "last_ts": r["last_ts"],
+              "distinct": [r[f"d{i}"] for i in range(len(counts))]} for r in rows[:limit]]
+    conditions = accesslog.conditions(request, drop=("limit", "format", "reason"))
+    label = lambda name: STATS_FIELD_LABELS.get(name, name)
+    if format == "csv":
+        await db.audit(user.username, "events.export", "stats.group",
+                       {"query": conditions, "rows": len(items), "truncated": truncated, "reason": why},
+                       actor_ip=client_ip(request), required=True)
+        return csv_response([*map(label, keys), "건수", *(f"서로 다른 {label(c)} 수" for c in counts), "처음(UTC)", "마지막(UTC)"],
+                            ([*("" if k is None else k for k in i["keys"]), i["n"], *i["distinct"], i["first_ts"].isoformat(),
+                              i["last_ts"].isoformat()] for i in items),
+                            f"event_stats_{datetime.now(UTC):%Y%m%d_%H%M%S}.csv",
+                            headers={"X-WLM-Truncated": "1"} if truncated else None)
+    if any(k in PERSONAL_FIELDS or k.startswith("f.") for k in keys + counts):
+        await accesslog.record(request, user.username, "events.stats", ",".join(keys), {"query": conditions, "rows": len(items)},
+                               key=conditions)
+    return {"by": keys, "distinct": counts, "items": items, "truncated": truncated, "limit": limit}
 
 
 @router.get("/api/stats/top")

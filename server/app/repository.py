@@ -680,6 +680,25 @@ async def top(f: EventFilter, field: str, limit: int) -> list[dict]:
     return await db.fetch_all(query, [*expr_params, *params, limit])
 
 
+async def group_stats(f: EventFilter, by: list[str], distinct: list[str], limit: int) -> list[dict]:
+    """검색 '통계' 탭 (B-62): by 필드 조합(k0, k1, …)마다 건수·처음·마지막 발생 시각·distinct 필드의 서로 다른 값 수(d0, …).
+    건수가 많은 순으로 limit 행. 필드 식은 상위 값과 같다(_field_expr — f.<경로> 포함)."""
+    select, select_params = [], []
+    for i, field in enumerate(by):
+        expr, p = _field_expr(field)
+        select.append(sql.SQL("{} AS {}").format(expr, sql.Identifier(f"k{i}")))
+        select_params += p
+    select.append(sql.SQL("count(*) AS n, min(ts) AS first_ts, max(ts) AS last_ts"))
+    for i, field in enumerate(distinct):
+        expr, p = _field_expr(field)
+        select.append(sql.SQL("count(DISTINCT {}) AS {}").format(expr, sql.Identifier(f"d{i}")))
+        select_params += p
+    where, params = where_clause(f)
+    query = sql.SQL("SELECT {} FROM events WHERE {} GROUP BY {} ORDER BY n DESC LIMIT %s").format(
+        sql.SQL(", ").join(select), where, sql.SQL(", ").join(sql.Literal(i + 1) for i in range(len(by))))
+    return await db.fetch_all(query, [*select_params, *params, limit])
+
+
 async def agents(since: datetime, scopes=None) -> list[dict]:
     """수집 PC 목록. scopes(사용자 그룹 범위)가 있으면 범위 안의 이벤트만 세고,
     범위 안 이벤트가 있었거나 PC 이름 패턴에 맞는 PC 만 보여 준다."""
@@ -1492,7 +1511,7 @@ async def event_digest_records(since: datetime) -> list[dict[str, Any]]:
     return [r["detail"] for r in rows]
 
 
-EXPORT_ACTIONS = ("audit.export", "alerts.export")
+EXPORT_ACTIONS = ("audit.export", "alerts.export", "events.export")
 
 
 async def audit_exports(start: datetime, end: datetime) -> list[dict[str, Any]]:

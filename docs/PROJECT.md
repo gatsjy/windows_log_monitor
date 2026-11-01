@@ -210,12 +210,13 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `GET /api/events?limit=&cursor=` | 최신순 목록. `next_cursor` 로 다음 페이지 (keyset) |
+| `GET /api/events?limit=&cursor=` | 최신순 목록. `next_cursor` 로 다음 페이지 (keyset). `format=csv&reason=` 면 CSV(최대 1만 건, 넘으면 `X-WLM-Truncated`, 사유 필수·접속기록 `events.export`, B-62) |
 | `GET /api/events/{id}` | 단건 + raw |
 | `GET /api/events/{id}/context?direction=before\|after&same=host\|source&limit=&cursor=` | 앞뒤 로그 (B-61): 같은 PC(·소스)에서 바로 앞(가까운 것부터)·뒤. 같은 시각은 번호로 나눔, `next_cursor` 로 이어 보기, 조회 범위 적용, 접속기록 `events.context`(10분 묶음) |
 | `GET /api/stats/count?compare=true` | 건수 + 직전 같은 길이 기간 건수 |
 | `GET /api/stats/timeseries?group=&buckets=&interval=&tz_offset=` | 시간 구간별 건수. group 상위 6개 + `__other__` (level 은 전부) |
 | `GET /api/stats/top?field=&limit=` | 상위 값. field = 컬럼명 또는 `f.<경로>` |
+| `GET /api/stats/group?by=&distinct=&limit=` | 통계 표 (B-62): `by`(최대 3, 쉼표) 조합마다 건수·처음/마지막 발생 시각·`distinct`(최대 2) 서로 다른 값 수. 건수 많은 순 최대 1,000행(`truncated`). 사용자·IP·`f.` 가 들면 접속기록 `events.stats`. `format=csv&reason=` 는 사유 필수·`events.export` |
 | `GET /api/stats/summary` | PC 상태 수, 분당 수집량, 최근 24시간 알림 수(`alerts_24h`), 확인하지 않은 알림 수(`alerts_open`, 조회 범위 반영) |
 | `GET /api/agents?since=` | PC 목록 + 기간 내 이벤트/오류/경고 수 + 상태 + `last_transport`(마지막 하트비트의 전송 방식: `tls`·`plain`·`web`=화면 포트로 보낸 옛 묶음). `transport{tls, ingest_plain}`. `silent_streams` = 늘 오던 로그가 끊긴 (PC, 소스, 채널) (B-37, 조회 범위 반영) |
 | `GET /api/agents/problems?since=` | 수집 거절 장부·격리 레코드 목록 (관리자, B-40) |
@@ -303,6 +304,7 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
   - [?] 도움말(키 표·예문), 자동완성(키·수준·분류·PC·채널·소스, 이미 받아 둔 목록만), `/` 로 문장 칸으로 이동.
   - 옛 링크(`host=…&q=a|b&f.X=1`)는 들어올 때 문장으로 접습니다. 뜻이 똑같이 옮겨지지 않는 값(`level=7` 등)은 칩으로 남고 서버가 그대로 적용합니다.
   - 상세 패널: 검색 화면에서 열면 값마다 [이 값만]·[＋ 좁히기]·[－ 제외]로 지금 문장을 고칩니다.
+  - **목록 | 통계** 탭(B-62): 통계는 지금 조건의 로그를 칸 조합(사용자·PC·IP·이벤트 ID·분류·소스·채널·공급자·수준·`f.<경로>`, 최대 3)으로 묶어 건수·처음/마지막·서로 다른 값 수를 표로 — '계정별 로그온한 PC 수', 'IP 별 시도한 계정 수' 같은 점검 질문. 행을 누르면 그 조합으로 좁힌 목록(문장에 조건 추가). [CSV 내려받기]는 목록(최대 1만 건)이나 통계 표를 사유와 함께 받습니다.
   - 상세 패널의 **앞뒤 로그**(B-61): [보기]를 누르면 같은 PC(또는 같은 소스만)에서 이 로그 전후 10건씩, [더 앞]·[더 뒤]로 이어 보고 행을 누르면 그 로그의 상세로 갑니다. 기준 로그는 강조. 검색을 다시 짜지 않아도 됩니다.
 - **디자인 토큰:** `web/css/app.css` 의 `:root` 에 있습니다. 라이트/다크 모두 정의되어 있고 사이드바에서 전환합니다.
 - **차트 규칙 (`web/js/charts.js`):**

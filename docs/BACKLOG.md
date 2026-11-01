@@ -77,7 +77,7 @@
 | B-59 | Windows 수집 기준선 (감사 정책 적용·점검, XPath 프로필, SACL) | P2 | M | 비교 §5.3 | 대기 |
 | B-60 | PACS 영상 열람 접속기록 (IHE ATNA) | P2 | M | 비교 §5.6 | 대기 |
 | B-61 | 앞뒤 로그 보기 — 완료 | P2 | M | 비교 §5.4 | 완료 |
-| B-62 | 검색 '통계' 탭 (여러 필드 묶기·이벤트 CSV) | P2 | M | 비교 §5.4 | 대기 |
+| B-62 | 검색 '통계' 탭 (여러 필드 묶기·이벤트 CSV) — 완료 | P2 | M | 비교 §5.4 | 완료 |
 | B-63 | 로그온 세션 보기 | P2 | M | 비교 §5.4 | 대기 |
 | B-64 | 저장한 검색 (공유·보호·재사용) | P2 | M | 비교 §5.4 | 대기 |
 | B-65 | 검색 화면 편의 (값 자동완성·필드 패널·열·시간 막대) | P2 | M | 비교 §5.4 | 대기 |
@@ -596,6 +596,8 @@
 - **출처:** COMPARISON.md §5.4 / Kibana View surrounding documents, Graylog Show surrounding messages, Grafana Explore Show context.
 
 ### B-62 검색 '통계' 탭
+- **완료 (2026-11-01):** `GET /api/stats/group`(by 3·distinct 2·1,000행·잘림 표시·범위·시간 상한·접속기록), 이벤트·통계 CSV(사유 필수·`events.export` fail-closed·수식 주입 방지,
+  점검 보고서 '사유가 짧은 내려받기'에 포함), 검색 화면 '목록 | 통계' 탭(행 → 좁힌 목록).
 - **왜:** top(필드 하나, 건수만)과 timeseries 뿐이라 점검의 전형적인 질문('계정별 로그온한 PC 수와 처음/마지막 시각', 'IP 별 실패 횟수와 시도한 계정 수')을 표로 만들 수 없습니다. 이벤트 CSV 도 없습니다.
 - **구현 방향:** `GET /api/stats/group?by=…&metrics=count,distinct:…,min:ts,max:ts`(by 최대 3, 허용 목록, 1,000행 상한·잘림 표시, 범위·시간 상한·검색 자리·감사로그). 검색 화면 '목록 | 통계' 탭, 셀을 누르면 그 조합으로 좁힌 목록. CSV 는 `csvexport.csv_response`(수식 주입 방지)로 내보내고 ADR-042 방식(`export_reason` 사유 필수, `db.audit(required=True)`)을 따릅니다. 검색 문장 안 파이프 집계는 하지 않습니다(COMPARISON.md §6).
 - **완료 기준:** 범위·상한 시험, CSV 사유, 화면, PROJECT.md §4.

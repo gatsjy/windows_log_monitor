@@ -17,7 +17,7 @@ from .builder import integrity_bad_count
 
 INK, MUTED, LINE, WASH = "#0b0b0b", "#52514e", "#e4e4e1", "#f5f5f3"
 BAD, WARN, GOOD = SEVERITY_COLORS["critical"], SEVERITY_COLORS["warning"], "#2f8f3a"
-EXPORT_LABELS = {"audit.export": "감사로그", "alerts.export": "알림 이력"}
+EXPORT_LABELS = {"audit.export": "감사로그", "alerts.export": "알림 이력", "events.export": "로그·통계"}
 LEVEL_LABELS = {"critical": "심각", "error": "오류", "warning": "경고", "info": "정보", "verbose": "상세"}
 STATUS_LABELS = {"open": "처리 안 됨", "acked": "확인함", "resolved": "해결됨"}
 
