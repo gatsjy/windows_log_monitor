@@ -60,6 +60,9 @@ def _changes(before: str, after: str) -> list[tuple[str, bool]]:
     ("    severity: warning\n", "    resolve: auto\n    severity: warning\n", [("resolve", True)]),
     ("    silent_for: 10m\n", "    silent_for: 10m\n    resolve: manual\n", [("resolve", False)]),
     ("    silent_for: 10m\n", "    silent_for: 10m\n    resolve: auto\n", []),   # 끊김 규칙의 기본값을 적은 것뿐
+    # 관찰 모드 (B-52): 기록만 하고 보내지 않음 → 켜진 규칙을 관찰로 돌리면 약화, 관찰 끝(승격)은 아님
+    ("    sid: 1000002\n", "    sid: 1000002\n    mode: observe\n", [("observe", True)]),
+    ("    sid: 1000002\n", "    sid: 1000002\n    mode: active\n", []),   # 기본값을 적은 것뿐
     ("  interval_sec: 30\n", "  interval_sec: 300\n", [("interval", True)]),
     ("  interval_sec: 30\n", "  interval_sec: 10\n", [("interval", False)]),
 ])
@@ -72,6 +75,8 @@ def test_disable_remove_add_and_rename():
     disabled = BASE.replace("    sid: 1000002\n", "    sid: 1000002\n    enabled: false\n")
     assert _changes(BASE, disabled) == [("disabled", True)]
     assert _changes(disabled, BASE) == [("enabled", False)]
+    observed = BASE.replace("    sid: 1000002\n", "    sid: 1000002\n    mode: observe\n")
+    assert _changes(observed, BASE) == [("promoted", False)]
     removed = BASE[:BASE.index("  - name: 계정 잠금")] + BASE[BASE.index("  - name: 꺼진 규칙"):]
     assert _changes(BASE, removed) == [("removed", True)]
     assert _changes(removed, BASE) == [("added", False)]

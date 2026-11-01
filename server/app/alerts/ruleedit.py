@@ -21,7 +21,7 @@ import yaml
 
 # 파일에 쓰는 키 순서 (사람이 읽기 좋은 순서)
 FIELD_ORDER = (
-    "name", "sid", "group", "description", "kind", "enabled", "match", "group_by", "window", "threshold",
+    "name", "sid", "group", "description", "kind", "enabled", "mode", "match", "group_by", "window", "threshold",
     "distinct", "cooldown", "silent_for", "hosts", "channels", "resolve", "severity", "tags", "notify",
 )
 SID_START = 1000001  # Snort 의 로컬 규칙 번호대처럼 100만 번대부터
@@ -163,6 +163,25 @@ def delete(text: str, name: str) -> str:
     if e < len(lines) and not lines[e].strip():
         e += 1
     return "\n".join(lines[:s] + lines[e:])
+
+
+def set_mode(text: str, name: str, mode: str) -> str:
+    """관찰 모드(B-52) 켜기/끝내기도 mode 줄만 고친다 (active 가 기본이라 줄을 지운다)."""
+    lines = text.split("\n")
+    s, e, _ = _find(lines, name)
+    idx = next((i for i in range(s + 1, e) if re.match(r"^    mode:", lines[i])), None)
+    if mode == "active":
+        if idx is not None:
+            del lines[idx]
+        return "\n".join(lines)
+    if idx is not None:
+        lines[idx] = f"    mode: {mode}"
+        return "\n".join(lines)
+    at = s + 1
+    while at < e and re.match(r"^    (sid|group|description|kind|enabled):", lines[at]):
+        at += 1
+    lines.insert(at, f"    mode: {mode}")
+    return "\n".join(lines)
 
 
 def set_enabled(text: str, name: str, enabled: bool) -> str:

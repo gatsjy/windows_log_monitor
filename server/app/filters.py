@@ -286,6 +286,52 @@ class EventFilter:
                     return False
         return not any(v in message for v in self._msg_not_folded)   # NULL 메시지는 남김 ('' 에는 없음)
 
+    def explain(self, event: dict) -> list[dict[str, Any]]:
+        """규칙 시험기(B-52): matches 의 조건 하나하나를 {key, op, expected, actual, ok} 로 — '왜 안 걸렸나'.
+        모두 ok 이면 matches 가 참이다(케이스 표 전체로 시험, test_querylang.test_explain_agrees_with_matches).
+        matches 를 고치면 여기도 같이 고친다. op: scope·never·in·msg_any·eq·not_in·msg_not."""
+        out: list[dict[str, Any]] = []
+
+        def check(key: str, op: str, expected: list, actual: Any, ok: bool) -> None:
+            out.append({"key": key, "op": op, "expected": expected, "actual": actual, "ok": bool(ok)})
+
+        if self.scopes is not None:
+            check("scope", "scope", [{"categories": list(s.categories), "hosts": list(s.hosts)} for s in self.scopes],
+                  {"category": event.get("category"), "host": event.get("host")},
+                  scopes_allow(self.scopes, event.get("category"), event.get("host")))
+        if self.never:
+            check("never", "never", [], None, False)
+        for key, name in INCLUDE_FIELD.items():
+            values = getattr(self, name)
+            if values:
+                actual = event.get(EVENT_FIELD.get(key, key))
+                check(key, "in", list(values), actual, actual in values)
+        raw_message = event.get("message") or ""
+        message = fold(raw_message)
+        shown = raw_message if len(raw_message) <= 300 else raw_message[:300] + "…"
+        if self.q_terms:
+            check("q", "msg_any", self.q_terms, shown, any(fold(term) in message for term in self.q_terms))
+        for group, folded in zip(self.msg_all, self._msg_all_folded, strict=True):
+            check("msg", "msg_any", list(group), shown, any(v in message for v in folded))
+        for path, expected in self.fields:
+            current = raw_field(event.get("raw"), path)
+            text = None if current is None else raw_text(current)
+            check("f." + ".".join(path), "eq", [expected], text, text is not None and text == expected)
+        for path, values in self.field_any:
+            current = raw_field(event.get("raw"), path)
+            text = None if current is None else raw_text(current)
+            check("f." + ".".join(path), "in", list(values), text, text is not None and text in values)
+        for key, values in self.excludes.items():
+            if key.startswith("f."):
+                current = raw_field(event.get("raw"), key[2:].split("."))
+                actual = None if current is None else raw_text(current)
+            else:
+                actual = event.get(EVENT_FIELD.get(key, key))
+            check(key, "not_in", list(values), actual, actual is None or actual not in values)   # 값이 없으면 남김
+        if self.msg_not:
+            check("msg", "msg_not", list(self.msg_not), shown, not any(v in message for v in self._msg_not_folded))
+        return out
+
 
 def parse_query(text: str) -> EventFilter:
     """검색 문장만으로 필터 (BACKLOG B-01 의 이름). 틀리면 QueryError."""

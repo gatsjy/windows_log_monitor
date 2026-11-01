@@ -1,9 +1,11 @@
 // 오른쪽에서 열리는 상세 패널 + 이벤트 상세 보기.
 import * as api from './api.js';
+import { can } from './auth.js';
 import { eventDoc } from './catalog.js';
 import { jsonView } from './jsonview.js';
 import { categoryLabel, levelBadge, sourceLabel } from './levels.js';
 import { addTerm, aliasPath, formatTerm, parseTerms } from './querylang.js';
+import { runTest } from './ruletest.js';
 import { errorBox, fmtNum, fmtRelative, fmtTime, html, navigate } from './util.js';
 
 let current = null;
@@ -143,6 +145,27 @@ function contextLogs(body, ev) {
 // 계정 잠김 원인 (B-68): 같은 사용자의 로그온 실패(4625·4771·4776)를 접속지·PC 마다. 헬프데스크가 4740 → 4771 → 4625 를 손으로 따라가던 것
 const LOCKOUT_EVENTS = { 4625: '로그온 실패', 4771: 'Kerberos 사전 인증 실패', 4776: 'NTLM 확인 실패' };
 
+// 규칙 시험 (B-52): 규칙 목록은 고를 때 한 번만 불러온다 (상세를 열 때마다 알림 설정을 읽지 않게)
+function ruleTest(body, ev) {
+  const select = body.querySelector('[data-rt-rule]');
+  let loaded = false;
+  select.addEventListener('focus', async () => {
+    if (loaded) return;
+    loaded = true;
+    try {
+      const cfg = await api.get('/api/alerts/config');
+      const rules = cfg.rules.filter((r) => r.kind === 'count');
+      select.insertAdjacentHTML('beforeend', String(html`${rules.map((r) => html`<option value="${r.name}">${r.name}${r.enabled ? '' : ' (꺼짐)'}</option>`)}`));
+    } catch (err) {
+      body.querySelector('[data-rt-out]').innerHTML = errorBox(err);
+    }
+  });
+  body.querySelector('[data-rt-run]').addEventListener('click', () => {
+    if (!select.value) { select.focus(); return; }
+    runTest(body.querySelector('[data-rt-out]'), { name: select.value, event_id: ev.id });
+  });
+}
+
 async function lockoutCause(box, ev) {
   box.innerHTML = '<div class="skeleton"></div>';
   let res;
@@ -215,6 +238,11 @@ export async function openEvent(evOrId) {
         <button class="btn sm" type="button" data-ctx-open>보기</button></span>
     </div>
     <div data-ctx></div>` : ''}
+    ${ev.id != null && can('alerts.manage') ? html`<div class="section-title" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <span>규칙 시험 <span class="muted" style="font-weight:400">이 로그가 규칙 조건에 맞는지 조건마다</span></span>
+      <span class="toolbar"><select class="select" data-rt-rule aria-label="시험할 규칙"><option value="">규칙 고르기…</option></select>
+        <button class="btn sm" type="button" data-rt-run>시험</button></span></div>
+    <div data-rt-out></div>` : ''}
     <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
       <span>원본 데이터 (에이전트가 보낸 그대로)</span>
       <button class="btn sm" data-copy>JSON 복사</button>
@@ -237,6 +265,7 @@ export async function openEvent(evOrId) {
     bind(picked);
   });
   if (ev.id != null) contextLogs(body, ev);
+  if (body.querySelector('[data-rt-rule]')) ruleTest(body, ev);
   body.querySelector('[data-lockout]')?.addEventListener('click', () => lockoutCause(body.querySelector('[data-lockout-out]'), ev));
   body.querySelector('[data-copy]').addEventListener('click', async (e) => {
     try {

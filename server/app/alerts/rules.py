@@ -24,6 +24,8 @@ SILENT_KINDS = ("agent_silent", "stream_silent")   # 끊김 규칙: 다시 들�
 # PC 수신 끊김은 하트비트가 돌아오면 끝난 것이 분명해 auto 가 기본. 건수 규칙은 manual 이 기본 —
 # 사람이 검토하지 않은 보안 알림이 '해결됨'으로 보고서에 남지 않게 운영 규칙에만 auto 를 단다
 RESOLVE_MODES = ("manual", "auto")
+# 관찰 모드(B-52): 알림은 기록하되 보내지 않는다(무음과 같은 경로) — 새 규칙의 오탐을 보고 '켜기(승격)'. 탐지 약화로 친다
+RULE_MODES = ("active", "observe")
 # query = 검색 문장 (B-01). 다른 키와 AND
 # saved = 저장한 검색의 이름(B-64) — 엔진이 그 문장을 규칙 문장 앞에 붙인다(engine.rule_filter)
 MATCH_KEYS = {"host", "channel", "provider", "source", "category", "user", "ip", "level", "event_id", "q", "query", "saved"}
@@ -59,6 +61,7 @@ class Rule:
     distinct_field: str | None = None
     distinct_min: int = 0
     resolve: str = "manual"
+    mode: str = "active"
 
     def event_filter(self, exceptions: tuple[str, ...] | list[str] = (), saved: str | None = None) -> EventFilter:
         """exceptions: 규칙 예외(B-46)의 조건들(정본 표기) — 문장에 제외 항(-조건)으로 덧붙인다. 검색 문장의 제외 의미 그대로
@@ -134,6 +137,10 @@ def _check_rule(index: int, raw: Any) -> Rule:
         "tags": _str_list(raw.get("tags"), f"{where}.tags"),
         "sid": sid, "group": str(raw.get("group") or "기타").strip() or "기타",
     }
+    mode = raw.get("mode", "active")
+    if mode not in RULE_MODES:
+        raise ConfigError(f"{where}.mode 는 {', '.join(RULE_MODES)} 중 하나여야 합니다")
+    common["mode"] = mode
 
     resolve = raw.get("resolve", "auto" if kind in SILENT_KINDS else "manual")
     if resolve not in RESOLVE_MODES:

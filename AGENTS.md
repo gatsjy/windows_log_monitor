@@ -228,6 +228,8 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - **규칙 예외 (B-46, ADR-051):** 규칙의 결과를 세는 새 코드는 `rule.event_filter(await repository.active_rule_exceptions(rule.name, now))` 로 — 그냥 `event_filter()` 면
   예외가 빠져 화면과 엔진 결과가 달라진다(엔진·규칙 미리보기·알림 뒤 이벤트 수가 이렇게 한다). `rule_exceptions` 는 끝내기만(트리거).
   - 지금은 `await engine.rule_filter(rule, now)` 하나로 — 저장한 검색(`match.saved`, B-64·ADR-052)의 문장과 걸린 예외를 함께 합친다. 저장한 검색이 없으면 ValueError(그 규칙만 오류).
+  - **규칙 시험기 (B-52, ADR-053):** `EventFilter.explain` 은 `matches` 와 같은 뜻이어야 한다 — matches 를 고치면 explain 도(케이스 표 전체로 `test_explain_agrees_with_matches`).
+  - 관찰 모드(`mode: observe`)는 `engine.fire` 가 무음처럼 기록만 한다. 알림을 보내는 새 경로(해소 통지 등)는 `rule.mode == "observe"` 면 보내지 않는다.
   - 규칙이 쓰는 저장한 검색은 탐지 조건이다: 고치는 권한은 `alerts.manage`, 문장을 바꾸면 관리 작업 알림(`routers/searches.py`). 조회 범위 판단은 규칙 자체의 분류만 본다.
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - **알림 설정 판본 (ADR-043):** 설정을 적용하면 `engine.reload()` 가 `_pending` 을 두고 `await engine.record()` 가 판본(`alert_config_versions`, 추가만)·감사로그·약화 알림을 남긴다. 설정을 바꾸는 새 API 는 `routers/alerts._store` 를 거친다(쓰기 전 파일 직접 수정부터 기록 → `reload(force=True, source="ui", actor=…)`).

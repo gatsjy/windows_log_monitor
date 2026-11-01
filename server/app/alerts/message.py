@@ -70,6 +70,7 @@ class AlertMessage:
     started_at: datetime | None = None   # 해소 통지: 함께 자동 해결된 알림 중 가장 이른 발생 (문제가 얼마나 갔나)
     # 채널 끊김 (B-37 2단계): {host, source, channel, per_day} — 다시 들어왔는지 볼 때 어느 채널인지 (대상 이름은 사람이 읽는 문구)
     stream: dict[str, Any] | None = None
+    observe: bool = False   # 관찰 모드 규칙의 알림 (B-52) — 기록만, 보내지 않음
 
     # ------------------------------------------------------------ 직렬화
     def to_dict(self) -> dict[str, Any]:
@@ -79,6 +80,8 @@ class AlertMessage:
                 data.pop(key)
         if self.stream is None:
             data.pop("stream")
+        if not self.observe:
+            data.pop("observe")
         if not self.distinct_field:   # 건수 규칙의 본문(웹훅 json·저장된 payload)은 예전과 같게
             for key in ("distinct_field", "distinct_min", "distinct_count", "distinct_values"):
                 data.pop(key)

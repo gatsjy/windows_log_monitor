@@ -43,6 +43,10 @@ def _rule_changes(old: Rule, new: Rule) -> list[tuple[str, str, bool]]:
         out.append(("sid", f"규칙 번호 {old.sid or '없음'} → {new.sid or '없음'}", False))
     if old.enabled != new.enabled:
         out.append(("disabled", "끔", True) if not new.enabled else ("enabled", "켬", False))
+    if old.mode != new.mode:
+        # 관찰 모드는 알림을 기록만 하고 보내지 않는다 — 켜진 규칙을 관찰로 돌리면 끄는 것과 같다(B-52)
+        out.append(("observe", "관찰 모드로 (알림을 보내지 않음)", True) if new.mode == "observe"
+                   else ("promoted", "관찰 끝 — 알림을 보냄", False))
     if old.kind != new.kind:
         out.append(("kind", f"종류 {old.kind} → {new.kind}", True))
     if old.severity != new.severity:

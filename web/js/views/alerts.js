@@ -361,9 +361,10 @@ export async function mount(root, params, sub) {
     if (ui.group && !groups.some((g) => g.name === ui.group)) ui.group = '';
     const q = ui.q.trim().toLowerCase();
     const shown = config.rules.filter((r) => (!ui.group || r.group === ui.group)
-      && (ui.state === 'all' || (ui.state === 'on') === r.enabled)
+      && (ui.state === 'all' || (ui.state === 'observe' ? r.mode === 'observe' : (ui.state === 'on') === r.enabled))
       && (!q || [r.name, r.description, String(r.sid ?? ''), ...r.tags, matchText(r.match)].join(' ').toLowerCase().includes(q)));
     const allOn = config.rules.filter((r) => r.enabled).length;
+    const observing = shown.filter((r) => r.mode === 'observe');
 
     el.innerHTML = html`<div class="rules-layout">
       <section class="card rule-groups">
@@ -382,9 +383,10 @@ export async function mount(root, params, sub) {
       <section class="card rule-main">
         <div class="rule-toolbar">
           <input class="input" type="search" data-q value="${ui.q}" placeholder="이름·SID·태그·조건 검색" aria-label="규칙 검색">
-          <div class="seg" data-state>${[['all', '전체'], ['on', '사용'], ['off', '꺼짐']].map(([k, l]) => html`
+          <div class="seg" data-state>${[['all', '전체'], ['on', '사용'], ['observe', '관찰'], ['off', '꺼짐']].map(([k, l]) => html`
             <button type="button" data-v="${k}" class="${ui.state === k ? 'on' : ''}">${l}</button>`)}</div>
           <span style="flex:1"></span>
+          ${admin && observing.length ? html`<button class="btn" data-promote title="관찰 중인 규칙이 알림을 보내게 합니다">관찰 끝내기 (${observing.length})</button>` : ''}
           ${admin ? html`<button class="btn ghost" data-yaml title="config/alerts.yaml 을 직접 편집">YAML 편집</button>
             <button class="btn primary" data-new><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>규칙 추가</button>` : ''}
         </div>
@@ -397,7 +399,8 @@ export async function mount(root, params, sub) {
                 : html`<span class="muted">${r.enabled ? '사용' : '꺼짐'}</span>`}</td>
               <td class="nowrap mono muted">${r.sid ?? '–'}</td>
               <td class="rule-cell">
-                <div class="rule-title">${severityBadge(r.severity)}<b>${r.name}</b></div>
+                <div class="rule-title">${severityBadge(r.severity)}<b>${r.name}</b>${r.mode === 'observe'
+                  ? html` <span class="ast silenced" title="관찰 모드 — 알림을 기록만 하고 보내지 않습니다">관찰</span>` : ''}</div>
                 ${r.description ? html`<div class="rule-desc">${r.description}</div>` : ''}
                 ${r.tags.length ? html`<div class="rule-tags">${r.tags.map((t) => html`<span class="type-tag">${t}</span>`)}</div>` : ''}
                 <div data-run-error="${r.name}">${runError(r)}</div>
@@ -440,6 +443,24 @@ export async function mount(root, params, sub) {
     el.querySelector('[data-new]')?.addEventListener('click', () => openRuleEditor({
       config, onSaved: load, rule: null, defaults: { group: ui.group } }));
     el.querySelector('[data-yaml]')?.addEventListener('click', openYamlEditor);
+    el.querySelector('[data-promote]')?.addEventListener('click', async (e) => {
+      const names = observing.map((r) => r.name);
+      const ok = await confirmModal({
+        title: '관찰 끝내기',
+        message: `관찰 중인 규칙 ${names.length}개(${names.slice(0, 5).join(', ')}${names.length > 5 ? ' …' : ''})가 이제 알림을 보냅니다.`,
+        confirmText: '알림 보내기',
+      });
+      if (!ok) return;
+      e.target.disabled = true;
+      try {
+        await api.send('POST', '/api/alerts/rules/mode', { names, mode: 'active' });
+        toast(`규칙 ${names.length}개가 이제 알림을 보냅니다.`, { type: 'success' });
+        load();
+      } catch (err) {
+        e.target.disabled = false;
+        toast(err.message, { type: 'error' });
+      }
+    });
     el.querySelectorAll('tr[data-rule]').forEach((tr) => tr.addEventListener('click', (e) => {
       if (!admin || e.target.closest('[data-toggle]')) return;
       openRuleEditor({ config, onSaved: load, rule: config.rules.find((r) => r.name === tr.dataset.rule) });

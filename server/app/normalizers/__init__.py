@@ -59,6 +59,18 @@ def normalize(record: dict, now: datetime, iis_ctx: iis.IisContext | None = None
     return event
 
 
+def normalize_sample(record: dict, now: datetime, iis_ctx: iis.IisContext | None = None) -> Event | Heartbeat | None:
+    """규칙 시험기(B-52)의 붙여 넣은 원본: 수집과 같은 정규화이되 프로세스 상태를 남기지 않는다 —
+    MSSQL 머리줄 기억(_pending)에 시험한 'Error:' 줄이 남으면 그 PC·파일의 다음 실제 본문 줄이 시험한 번호로 저장된다.
+    동기 함수라 그 사이에 수집이 끼어들지 않는다(이벤트 루프 하나)."""
+    pending = dict(mssql._pending)
+    try:
+        return normalize_safely(record, now, iis_ctx)
+    finally:
+        mssql._pending.clear()
+        mssql._pending.update(pending)
+
+
 def normalize_safely(record: dict, now: datetime, iis_ctx: iis.IisContext | None = None) -> Event | Heartbeat | None:
     """정규화기에서 예외가 나도 그 레코드 하나만 일반 로그로 저장한다 (B-40). 예전에는 요청 전체가 500 이 되고 에이전트가 같은
     청크를 끝없이 다시 보내 그 PC 의 로그가 멈췄다. 원본은 그대로 두고 오류는 raw._ingest 에만 덧붙인다(원본 보존)."""
@@ -143,4 +155,5 @@ def derive_common(source: str | None, channel: str | None, provider: str | None,
 IisContext = iis.IisContext
 layout_keys = iis.layout_keys
 
-__all__ = ["Event", "Heartbeat", "IisContext", "derive_common", "layout_keys", "normalize", "normalize_safely"]
+__all__ = ["Event", "Heartbeat", "IisContext", "derive_common", "layout_keys", "normalize", "normalize_safely",
+           "normalize_sample"]

@@ -874,10 +874,19 @@ async def silent_agents(cutoff: datetime, hosts: tuple[str, ...]) -> list[dict]:
     return await db.fetch_all("SELECT host, last_seen FROM agents WHERE last_seen < %s", (cutoff,))
 
 
-async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict | None = None) -> int:
+OBSERVE_REASON = "관찰 모드 — 규칙을 켜기 전 시험 중이라 보내지 않음"
+
+
+async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict | None = None, observe: bool = False) -> int:
     """alerts 한 줄 + 알림 대상별 alert_deliveries 를 넣고 새 id 를 돌려준다.
-    무음(silence) 중이면 전송 상태를 처음부터 skipped(사유: 무음)로 둔다 — 발생 기록은 남기고 보내지만 않는다."""
-    status, reason = ("skipped", f"무음 #{silence['id']}: {silence['reason']}") if silence else ("pending", None)
+    무음(silence) 중이면 전송 상태를 처음부터 skipped(사유: 무음)로 둔다 — 발생 기록은 남기고 보내지만 않는다.
+    관찰 모드 규칙(B-52)도 같은 길 (사유: 관찰 모드)."""
+    if silence:
+        status, reason = "skipped", f"무음 #{silence['id']}: {silence['reason']}"
+    elif observe:
+        status, reason = "skipped", OBSERVE_REASON
+    else:
+        status, reason = "pending", None
     async with db.pool().connection() as conn:
         cur = await conn.execute(
             "INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, first_event_at, last_event_at,"
@@ -1154,6 +1163,7 @@ async def count_gave_up(since: datetime) -> int:
 _ALERT_COLUMNS = (
     "a.id, a.fired_at, a.rule, a.severity, a.group_key, a.event_count, a.first_event_at, a.last_event_at,"
     " a.status, a.acked_by, a.acked_at, a.resolved_by, a.resolved_at, a.auto_resolved, a.silence_id,"
+    " coalesce((a.payload->>'observe')::boolean, false) AS observed,"   # 관찰 모드 규칙의 알림 (B-52)
     " (SELECT count(*) FROM alert_notes n WHERE n.alert_id = a.id AND n.action = 'note') AS note_count,"
     " (SELECT COALESCE(json_agg(json_build_object('notifier', d.notifier, 'action', d.action, 'status', d.status,"
     "        'attempts', d.attempts, 'last_error', d.last_error, 'sent_at', d.sent_at,"

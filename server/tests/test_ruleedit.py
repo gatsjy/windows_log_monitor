@@ -47,6 +47,19 @@ def test_toggle_keeps_inline_comment_inside_block():
     assert on == TEXT
 
 
+def test_mode_line_only():
+    """관찰 모드 (B-52) — 켜기/끄기처럼 mode 줄만 고친다 (블록 안 주석 보존)."""
+    name = next(n for n, r in rules_of(TEXT).items() if r.kind == "count")
+    observed = ruleedit.set_mode(TEXT, name, "observe")
+    assert rules_of(observed)[name].mode == "observe" and observed.count("mode: observe") == 1
+    assert ruleedit.set_mode(observed, name, "observe") == observed
+    assert ruleedit.set_mode(observed, name, "active") == TEXT
+    off = ruleedit.set_enabled(observed, name, False)
+    assert rules_of(off)[name].enabled is False and rules_of(off)[name].mode == "observe"
+    with pytest.raises(ruleedit.EditError):
+        ruleedit.set_mode(TEXT, "없는 규칙", "observe")
+
+
 def test_append_and_delete_round_trip():
     rule = {"name": '새 규칙: "따옴표" #1', "sid": 1009999, "group": "기타",
             "match": {"event_id": "4625", "f.EventData.LogonType": "10", "q": "a|b"},

@@ -61,6 +61,7 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "mfa_required": settings.mfa_required, "secret_key": bool(settings.secret_key),
         "health": await health.current(now, fresh=True),
         "enabled_rules": len(enabled),
+        "observing": [r.name for r in enabled if r.mode == "observe"],   # 관찰 모드 (B-52) — 기록만, 보내지 않음
         "unknown_targets": sorted({n for r in enabled for n in r.notify if n not in notifiers and n not in errors}),
         "broken_targets": {n: e for n, e in errors.items() if n in used},
         "used_targets": used, "fallback": fallback,
@@ -206,6 +207,11 @@ def judge(f: dict[str, Any]) -> list[Item]:
     add(Item("audit_chain", "보관", "감사로그 위·변조 증명", worst,
              "; ".join(n["text"] for n in notices[:2]) or "매일 검증·앵커가 정상입니다",
              "#/settings/retention", "ADR-050, ISMS 2.9.4"))
+
+    observing = f.get("observing", [])
+    add(Item("observing", "알림", "관찰 모드 규칙", "warn" if observing else "ok",
+             f"{len(observing)}개가 알림을 기록만 하고 보내지 않습니다: {_names(observing)} — 오탐을 확인했으면 '관찰 끝내기'"
+             if observing else "모든 켜진 규칙이 알림을 보냅니다", "#/alerts/rules", "B-52"))
 
     # ------------------------------------------------------------ 변경 감시
     weak = f["weakened"]

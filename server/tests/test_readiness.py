@@ -31,7 +31,7 @@ def _facts(**overrides):
         "tls": {"enabled": True, "days_left": 400, "errors": []}, "plain_pcs": [], "ingest_plain": False,
         "offline_pcs": [], "silent_streams": 0, "coverage_gaps": [], "retention_warnings": [],
         "assets": {"total": 3, "collecting": 3, "missing_total": 0, "critical_missing": 0, "missing": []},
-        "backup": {"problems": []}, "replica": True, "integrity": [], "weakened": [],
+        "backup": {"problems": []}, "replica": True, "integrity": [], "weakened": [], "observing": [],
     }
     facts.update(overrides)
     return facts
@@ -79,6 +79,7 @@ def test_a_finished_install_is_all_green():
     ({"replica": False}, "replica", "warn", "이 서버 디스크에만"),
     ({"backup": {"problems": ["마지막 외부 저장소 복제가 40시간 전입니다"]}}, "replica", "bad", "40시간"),
     ({"weakened": [{"id": 7, "actor": "kim"}]}, "weakened", "warn", "#7 kim"),
+    ({"observing": ["새 규칙"]}, "observing", "warn", "새 규칙"),
 ])
 def test_each_gap_is_called_out(overrides, key, status, text):
     items = {i.key: i for i in readiness.judge(_facts(**overrides))}

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import os
@@ -37,6 +38,7 @@ from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
 from ..csvexport import csv_response, export_reason
 from ..filters import FilterError, parse_time, scopes_allow
+from ..normalizers import Event, layout_keys, normalize_sample
 from ..querylang import QueryError, format_term, parse_terms
 from .query import read_time_limit
 
@@ -148,6 +150,7 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
             "tags": list(r.tags), "sid": r.sid, "group": r.group,
             "distinct": {"field": r.distinct_field, "min": r.distinct_min} if r.distinct_field else None,
             "resolve": r.resolve, "channels": list(r.channels), "coverage": coverage.public(data.get(r.name)),
+            "mode": r.mode,
             # 마지막 평가 (ADR-045): 상태 칩·오류 줄
             "run": {**(run.as_dict() if run else {}), "state": rule_state, "label": RULE_LABELS[rule_state]},
         })
@@ -301,6 +304,8 @@ def _clean_rule(raw: dict[str, Any]) -> dict[str, Any]:
     resolve = text("resolve")
     if resolve and resolve != ("auto" if kind in SILENT_KINDS else "manual"):
         rule["resolve"] = resolve
+    if text("mode") == "observe" and kind not in SILENT_KINDS:   # 기본(active)은 적지 않는다
+        rule["mode"] = "observe"
     if kind == "agent_silent":
         rule["silent_for"] = _duration_text(raw.get("silent_for_sec", 600), "끊김 판정 시간")
         if str_list("hosts"):
@@ -407,6 +412,30 @@ async def toggle_rules(body: ToggleBody, request: Request, admin: User = Depends
     return {"ok": True, "count": len(body.names)}
 
 
+class ModeBody(BaseModel):
+    names: list[str] = Field(min_length=1, max_length=500)
+    mode: Literal["active", "observe"]
+
+
+@router.post("/api/alerts/rules/mode")
+async def set_rule_mode(body: ModeBody, request: Request, admin: User = Depends(require_permission("alerts.manage"))):
+    """관찰 모드로 돌리기 / 관찰 끝내기(승격) — 여러 규칙을 한 번에 (B-52). 판본·감사로그는 저장 공통 경로,
+    관찰로 돌리면 탐지 약화로 다른 관리자에게 알린다(configdiff)."""
+    _require_readable_file()
+    text = _current_text()
+    kinds = {r.name: r.kind for r in engine.config.rules}
+    if body.mode == "observe" and (silent := [n for n in body.names if kinds.get(n) in SILENT_KINDS]):
+        raise HTTPException(400, f"끊김 규칙은 관찰 모드를 쓰지 않습니다: {', '.join(silent)}")
+    try:
+        for name in body.names:
+            text = ruleedit.set_mode(text, name, body.mode)
+    except ruleedit.EditError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    await _validate(text)
+    await _store(text, admin, request, "alerts.rule.mode", {"rules": body.names, "mode": body.mode})
+    return {"ok": True, "count": len(body.names)}
+
+
 @router.post("/api/alerts/rules/preview", dependencies=[Depends(read_time_limit)])
 async def preview_rule(body: PreviewBody, admin: User = Depends(require_permission("alerts.manage"))):
     """최근 N시간 데이터에 이 규칙을 적용했다면: 맞는 이벤트 수, 알림 횟수(재알림 간격 반영, 근사), 대상별."""
@@ -447,6 +476,82 @@ async def preview_rule(body: PreviewBody, admin: User = Depends(require_permissi
         "kind": rule.kind, "hours": body.hours, "matched": matched, "distinct": rule.distinct_field,
         "fires": sum(g["fires"] for g in ranked), "targets": len(ranked),
         "groups": [{"key": g["key"], "fires": g["fires"], "max": g["max"]} for g in ranked[:10]],
+    }
+
+
+# ------------------------------------------------------------ 규칙 시험기 (B-52)
+SAMPLE_MAX_BYTES = 64 * 1024
+
+
+class RuleTestBody(BaseModel):
+    rule: dict[str, Any] | None = None                      # 편집 중인 규칙 (저장 전)
+    name: str | None = Field(default=None, max_length=200)  # 저장된 규칙
+    event_id: int | None = None                              # 저장된 이벤트
+    sample: dict[str, Any] | None = None                     # 에이전트가 보낸 원본 한 건 (붙여넣기)
+
+
+async def _test_event(body: RuleTestBody, user: User, request: Request, rule_name: str) -> dict[str, Any]:
+    """시험할 이벤트 — 저장된 것(조회 범위·접속기록) 또는 붙여 넣은 원본을 수집과 같은 정규화로."""
+    if (body.event_id is None) == (body.sample is None):
+        raise HTTPException(400, "이벤트 번호나 원본 중 하나를 주세요")
+    if body.event_id is not None:
+        row = await repository.get_event(body.event_id)
+        if row is None or not scopes_allow(user.scopes, row.get("category"), row.get("host")):
+            raise HTTPException(404, "이벤트를 찾을 수 없습니다")
+        # 실제 값(사용자·IP·원본)을 돌려주므로 상세 보기와 같은 접속기록 (ADR-042)
+        await db.audit(user.username, "events.view", str(body.event_id),
+                       {"host": row["host"], "event_id": row["event_id"], "username": row.get("username"),
+                        "src_ip": row.get("src_ip"), "category": row.get("category"), "rule_test": rule_name},
+                       actor_ip=client_ip(request), required=True)
+        return row
+    if len(json.dumps(body.sample, ensure_ascii=False).encode()) > SAMPLE_MAX_BYTES:
+        raise HTTPException(413, f"원본은 {SAMPLE_MAX_BYTES // 1024}KB 까지입니다")
+    now = datetime.now(UTC)
+    iis_ctx = await repository.iis_context(layout_keys([body.sample]))
+    item = normalize_sample(body.sample, now, iis_ctx)
+    if not isinstance(item, Event):
+        raise HTTPException(400, "로그 레코드가 아닙니다 (하트비트나 IIS 머리줄은 저장하지 않습니다)")
+    return item.to_live(now)
+
+
+def _exception_of(check: dict[str, Any], terms: list[tuple[str, Any]]) -> str | None:
+    """이 제외 항이 규칙 예외(B-46)에서 왔으면 그 조건 — 화면이 '예외 때문에 빠짐'으로 보인다."""
+    if check["op"] != "not_in":
+        return None
+    for text, term in terms:
+        key = "f." + ".".join(term.path) if term.key == "f" else term.key
+        if key == check["key"] and check["actual"] in term.values:
+            return text
+    return None
+
+
+@router.post("/api/alerts/rules/test", dependencies=[Depends(read_time_limit)])
+async def test_rule(body: RuleTestBody, request: Request, user: User = Depends(require_permission("alerts.manage"))):
+    """이 로그 하나가 규칙 조건에 맞는지, 조건마다 기대·실제·참거짓 (B-52). 건수·기간·묶음은 보지 않는다.
+    엔진과 같은 조건(저장한 검색·걸린 예외 포함)을 같은 매처로 — EventFilter.explain 은 케이스 표로 matches 와 같은 뜻."""
+    if body.name:
+        rule = next((r for r in engine.config.rules if r.name == body.name), None)
+        if rule is None:
+            raise HTTPException(404, "규칙을 찾을 수 없습니다")
+    elif body.rule:
+        rule = _check_one(_clean_rule({**body.rule, "name": body.rule.get("name") or "(시험)"}), need_notify=False)
+    else:
+        raise HTTPException(400, "규칙을 주세요")
+    if rule.kind != "count":
+        raise HTTPException(400, "끊김 규칙은 로그 하나로 시험할 수 없습니다")
+    now = datetime.now(UTC)
+    event = await _test_event(body, user, request, rule.name)
+    try:
+        f = await rule_filter(rule, now)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    exceptions = [(t, parse_terms(t)[0]) for t in await repository.active_rule_exceptions(rule.name, now)]
+    checks = [{**c, "exception": _exception_of(c, exceptions)} for c in f.explain(event)]
+    return {
+        "rule": rule.name, "matched": all(c["ok"] for c in checks), "checks": checks,
+        "event": {k: event.get(k) for k in ("id", "ts", "host", "source", "channel", "provider", "event_id", "level",
+                                            "category", "username", "src_ip")},
+        "ingest_error": ((event.get("raw") or {}).get("_ingest") or {}).get("error") if body.sample else None,
     }
 
 

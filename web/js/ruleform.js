@@ -5,6 +5,7 @@ import { GROUP_LABELS, matchText } from './alertdetail.js';
 import { closeDrawer, openDrawer } from './drawer.js';
 import { CATEGORY_LABELS, LEVELS, SEVERITIES, categoryLabel, levelIcon, severityBadge } from './levels.js';
 import { queryBox } from './querybox.js';
+import { runTest } from './ruletest.js';
 import { confirmModal, errorBox, fmtNum, html, toast } from './util.js';
 
 const UNITS = [['s', '초', 1], ['m', '분', 60], ['h', '시간', 3600], ['d', '일', 86400]];
@@ -52,6 +53,7 @@ export function signature(r) {
     parts.push(`cooldown:${r.cooldown_sec}`);
   }
   if (resolveOf(r) !== defaultResolve(r)) parts.push(`resolve:${resolveOf(r)}`);
+  if (r.mode === 'observe' && !SILENT.has(r.kind)) parts.push('mode:observe');
   if (r.notify.length) parts.push(`notify:${quote(r.notify.join(','))}`);
   r.tags.forEach((t) => parts.push(`reference:${t}`));
   if (r.group) parts.push(`classtype:${quote(r.group)}`);
@@ -73,9 +75,10 @@ export function sentence(r) {
   }
   const by = r.group_by === 'none' ? '전체를 합산해서' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}마다 따로 세어`;
   const distinct = r.distinct?.field ? `이고 ${distinctText(r.distinct)}` : '';
+  const observe = r.mode === 'observe' ? ' 지금은 관찰 모드 — 기록만 하고 보내지 않음.' : '';
   return `${matchText(r.match)} 로그가 ${fmtSec(r.window_sec)} 동안 ${fmtNum(r.threshold)}건 이상${distinct}이면, ${by} ${to} [${sev}] 알림. `
     + `같은 대상은 ${fmtSec(r.cooldown_sec)} 동안 다시 알리지 않음.`
-    + (resolveOf(r) === 'auto' ? ` ${fmtSec(r.window_sec)} 동안 기준 아래로 내려가면 자동으로 해결하고 해소 통지.` : '');
+    + (resolveOf(r) === 'auto' ? ` ${fmtSec(r.window_sec)} 동안 기준 아래로 내려가면 자동으로 해결하고 해소 통지.` : '') + observe;
 }
 function fmtSec(sec) {
   const { n, unit } = splitUnit(sec);
@@ -103,6 +106,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
     notify: [...(rule?.notify ?? (config.notifiers[0] ? [config.notifiers[0].name] : []))], tags: [...(rule?.tags ?? [])],
     distinct: rule?.distinct ? { ...rule.distinct } : null,
     resolve: rule?.resolve ?? '',
+    mode: rule?.mode ?? 'active',
   };
   const body = openDrawer({ title: isNew ? '새 알림 규칙' : '알림 규칙 수정', subtitle: isNew ? '규칙 번호(SID)는 저장할 때 자동으로 붙습니다' : `SID ${r.sid ?? '–'} · ${r.group || '기타'}` });
   body.innerHTML = '<div class="skeleton"></div>';
@@ -231,6 +235,11 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
 
       <section class="form-section">
         <h3>누구에게</h3>
+        ${SILENT.has(r.kind) ? '' : html`<div class="sentence-row"><select class="select" data-mode aria-label="알림 보내기">
+          <option value="active" ${r.mode !== 'observe' ? 'selected' : ''}>바로 보냄</option>
+          <option value="observe" ${r.mode === 'observe' ? 'selected' : ''}>관찰 — 알림을 기록만 하고 보내지 않음</option>
+        </select></div>
+        <p class="muted" style="font-size:12.5px;margin:6px 0 10px">새 규칙은 관찰로 며칠 두고 알림 이력('관찰' 표시)에서 오탐을 본 뒤 규칙 목록의 '관찰 끝내기'로 켜는 것을 권합니다. 관찰로 돌리는 것은 탐지 약화로 다른 관리자에게 알립니다.</p>`}
         ${config.notifiers.length ? html`<div class="check-list">${config.notifiers.map((n) => html`
           <label><input type="checkbox" data-notify="${n.name}" ${r.notify.includes(n.name) ? 'checked' : ''}>${n.name}
             <span class="muted" style="font-size:12px">${n.type === 'email' ? '메일' : n.type}</span></label>`)}</div>`
@@ -244,6 +253,16 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
         <button type="button" class="btn" data-preview>최근 24시간으로 시험</button>
         <div data-preview-out style="margin-top:10px"></div>
       </section>
+
+      ${SILENT.has(r.kind) ? '' : html`<section class="form-section">
+        <h3>로그 하나로 시험</h3>
+        <p class="muted" style="margin:0 0 8px;font-size:13px">이 로그가 조건에 맞는지 조건마다 보여 줍니다 — '왜 안 걸렸나'. 건수·기간은 보지 않습니다.</p>
+        <div class="toolbar" style="flex-wrap:wrap"><input class="input" data-test-id inputmode="numeric" placeholder="이벤트 번호" style="max-width:160px">
+          <button type="button" class="btn" data-test-run>시험</button></div>
+        <details style="margin-top:8px"><summary class="muted">원본 붙여넣기 (에이전트가 보낸 JSON 한 건 — 이벤트 상세의 'JSON 복사')</summary>
+          <textarea class="input" data-test-sample rows="6" style="width:100%;margin-top:6px;font-family:var(--mono, monospace)" placeholder='{"log_source": "winevtlog", "EventID": 4625, "Channel": "Security", ...}'></textarea></details>
+        <div data-test-out style="margin-top:10px"></div>
+      </section>`}
 
       <div data-msg></div>
       <div class="form-actions">
@@ -303,6 +322,20 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
       render();
     });
     body.querySelector('[data-resolve]').addEventListener('change', (e) => { r.resolve = e.target.value; refresh(); });
+    body.querySelector('[data-mode]')?.addEventListener('change', (e) => { r.mode = e.target.value; refresh(); });
+    body.querySelector('[data-test-run]')?.addEventListener('click', () => {
+      const out = body.querySelector('[data-test-out]');
+      const text = body.querySelector('[data-test-sample]').value.trim();
+      const id = Number(body.querySelector('[data-test-id]').value.trim());
+      let sample = null;
+      if (text) {
+        try { sample = JSON.parse(text); } catch { out.innerHTML = errorBox(new Error('원본이 JSON 이 아닙니다')); return; }
+      } else if (!Number.isInteger(id) || id <= 0) {
+        out.innerHTML = errorBox(new Error('이벤트 번호를 넣거나 원본을 붙여 넣으세요'));
+        return;
+      }
+      runTest(out, sample ? { rule: payload(), sample } : { rule: payload(), event_id: id });
+    });
     body.querySelector('[data-dmin]')?.addEventListener('input', (e) => {
       r.distinct.min = Math.max(2, Number(e.target.value) || 2);
       refresh();

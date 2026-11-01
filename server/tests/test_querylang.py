@@ -168,3 +168,28 @@ def test_raw_text_is_postgresql_text():
     assert [raw_text(v) for v in (1e-05, 2.5e-05, 1e21, 1000.0, 1000, -0.0, True, None, "그대로")] == \
         ["0.00001", "0.000025", "1000000000000000000000", "1000.0", "1000", "0.0", "true", "null", "그대로"]
     assert raw_text([1e-05, "x", {"a": None}]) == '[0.00001, "x", {"a": null}]'
+
+
+@pytest.mark.parametrize("case", CASES["match"], ids=[c["name"] for c in CASES["match"]])
+def test_explain_agrees_with_matches(case):
+    """규칙 시험기(B-52)의 조건별 풀이는 matches 와 같은 뜻 — 모든 조건이 참일 때만 맞는다(조회 범위·모순 포함)."""
+    from app.filters import Scope
+
+    base = _filter(case["params"])
+    for f in (base, replace(base, scopes=(Scope(categories=("security",)),)), replace(base, scopes=(Scope(hosts=("WEB-*",)),))):
+        for fx in CASES["fixtures"]:
+            checks = f.explain(fx)
+            assert all(c["ok"] for c in checks) == f.matches(fx), (case["name"], fx["id"], checks)
+            json.dumps(checks, ensure_ascii=False)   # 화면에 그대로 보낸다
+
+
+def test_explain_names_the_failing_condition():
+    f = _filter({"query": 'event_id:4625 -user:svc_backup f.EventData.LogonType:10 "잘못된 암호"'})
+    event = {"event_id": 4625, "username": "svc_backup", "message": "잘못된 암호입니다", "raw": {"EventData": {"LogonType": "3"}}}
+    by = {(c["key"], c["op"]): c for c in f.explain(event)}
+    assert by[("event_id", "in")]["ok"] and by[("msg", "msg_any")]["ok"]
+    assert by[("user", "not_in")] == {"key": "user", "op": "not_in", "expected": ["svc_backup"], "actual": "svc_backup", "ok": False}
+    assert by[("f.EventData.LogonType", "eq")] == {"key": "f.EventData.LogonType", "op": "eq", "expected": ["10"], "actual": "3",
+                                                    "ok": False}
+    assert f.explain({"event_id": 4625, "message": "잘못된 암호", "raw": {}})[1]["ok"]   # 사용자가 없으면 제외에 걸리지 않음
+    assert [c["key"] for c in _filter({"query": "event_id:4625 event_id:4624"}).explain({})][:1] == ["never"]

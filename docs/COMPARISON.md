@@ -128,7 +128,7 @@
 | 값 목록·자산 | Wazuh CDB 목록, Sentinel watchlist(퇴직자·중요 자산·내부 대역), Splunk ES asset & identity 우선순위 | ❌ 검색 문장의 인라인 OR(`ip:a,b`)뿐 | B-53, B-55 |
 | 계정 표기 통일 | Splunk ES identity(한 사람의 여러 계정), Sentinel Identity Correlation | ❌ `clean_user` 는 원문 그대로(`kim`, `HOSP\kim`, UPN 이 섞일 수 있음) | B-54 |
 | 기본 규칙 표본 시험 | SigmaHQ `regression_data`(규칙마다 표본·기대 건수), Hayabusa sample-evtx, wazuh-logtest | △ 템플릿 34개 중 실측 확인 11개(윈도 CI), 나머지 23개는 문서 기반 — 그중 기본 규칙이 기대는 것: 4698·4719·4740·4771·1102. `f.EventData` 이름은 정적 검사(`test_rule_fields.py`), 실측 모양 시험은 규칙 6개만 | B-45, B-28 |
-| 규칙 시험기·관찰 모드 | wazuh-logtest 단계별 출력, Hayabusa proven/noisy, SigmaHQ 패키지 단계 | △ 24시간 미리보기(예상 알림 수)만 | B-52 |
+| 규칙 시험기·관찰 모드 | wazuh-logtest 단계별 출력, Hayabusa proven/noisy, SigmaHQ 패키지 단계 | ○ 로그 하나로 조건별 시험(이벤트·원본 붙여넣기), 관찰 모드·일괄 승격 (팩 규칙 기본 관찰은 남음) | B-52 |
 | 기본 팩과 현장 수정 | Wazuh `ruleset/` 와 `local_rules.xml`+overwrite, Elastic 사전 규칙 3-way 비교 | △ 한 파일(`alerts.yaml`). 업그레이드 때 `alerts.yaml.new` 를 손으로 합침 | B-51 |
 | 탐지 내용 | SigmaHQ windows builtin(Kerberoasting·DCSync·4719 하위 범주·xp_cmdshell), Microsoft Appendix L, Hayabusa 의 Defender 등급 분할 | △ 규칙 23개. Kerberoasting·DCSync 같은 DC 공격·AD 객체 변경(5136) 탐지 없음, Defender 1116/1117 모두 critical, 4719 전체에 울림, Linux 는 SSH 하나 | B-48, B-49, B-50 |
 | Sigma 가져오기 | Sigma taxonomy·modifiers, pySigma 처리 파이프라인, Hayabusa 변환기의 4688/Sysmon 이중 규칙 | ❌ 계획만 | B-14 (P3) |

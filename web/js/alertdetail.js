@@ -25,7 +25,8 @@ export function statusChip(a) {
   const auto = a.status === 'resolved' && a.auto_resolved;   // 조건이 풀려 엔진이 해결 (B-35 2단계)
   const who = auto ? '조건이 풀려 자동으로' : a.status === 'resolved' ? a.resolved_by : a.status === 'acked' ? a.acked_by : '';
   return html`<span class="ast ${a.status}" title="${who ? `${who} · ${fmtTime(a.status === 'resolved' ? a.resolved_at : a.acked_at)}` : ''}">${ALERT_STATUS[a.status] ?? a.status}${auto ? ' (자동)' : ''}</span>${
-    a.silence_id ? html` <span class="ast silenced" title="무음 #${a.silence_id} — 보내지 않음">무음</span>` : ''}`;
+    a.silence_id ? html` <span class="ast silenced" title="무음 #${a.silence_id} — 보내지 않음">무음</span>` : ''}${
+    a.observed ? html` <span class="ast silenced" title="관찰 모드 규칙 — 기록만 하고 보내지 않음">관찰</span>` : ''}`;
 }
 
 /** 무음 범위 문구: "로그온 실패 · PC-01" / "모든 규칙 · 모든 대상" */

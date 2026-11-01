@@ -59,6 +59,7 @@ ACTION_LABELS = {
     "alerts.rule.save": "알림 규칙 저장",
     "alerts.rule.delete": "알림 규칙 삭제",
     "alerts.rule.toggle": "알림 규칙 켜기/끄기",
+    "alerts.rule.mode": "알림 규칙 관찰 모드/승격",
     "agents.package.download": "에이전트 설치 묶음 내려받기",
     "agent.delete": "수집 PC 삭제",
     "agent.assets.save": "수집 대상 목록 저장",

@@ -503,8 +503,8 @@ class AlertEngine:
                                                 f"이벤트 {n:,}건 — 기준 {rule.threshold:,}건 아래로 내려가 자동으로 해결")
 
     async def _resolve(self, rule: Rule, key: str, now: datetime, reason: str) -> None:
-        # 지금 무음이면 해소 통지도 보내지 않는다 — 점검 중에는 알림처럼 해소도 잡음이다
-        silenced = await repository.active_silence(rule.name, key, now, _key_host(rule, key)) is not None
+        # 지금 무음이면 해소 통지도 보내지 않는다 — 점검 중에는 알림처럼 해소도 잡음이다. 관찰 모드(B-52)도 마찬가지
+        silenced = rule.mode == "observe" or await repository.active_silence(rule.name, key, now, _key_host(rule, key)) is not None
         changed, queued = await repository.auto_resolve(rule.name, key, reason, notify=() if silenced else rule.notify,
                                                         at=now, notify_since=now - RECOVERY_NOTICE_MAX_AGE)
         if changed:
@@ -569,14 +569,23 @@ class AlertEngine:
         host = (message.stream or {}).get("host")
         silence = (None if message.kind == "config"
                    else await repository.active_silence(message.rule, message.group_key, message.fired_at, host))
-        alert_id = await repository.insert_alert(message.to_dict(), notify, silence)
+        # 관찰 모드(B-52): 무음처럼 기록만 한다. 시험 발송은 받는 곳을 시험하는 것이라 보낸다
+        message.observe = not message.test and self.observing(message.rule)
+        alert_id = await repository.insert_alert(message.to_dict(), notify, silence, observe=message.observe)
         message.alert_id = alert_id
         if silence:
             log.info("알림 발생 #%s %s — 무음 #%s 중이라 보내지 않음", alert_id, message.title(), silence["id"])
             return alert_id
+        if message.observe:
+            log.info("알림 발생 #%s %s — 관찰 모드라 보내지 않음", alert_id, message.title())
+            return alert_id
         log.warning("알림 발생 #%s %s", alert_id, message.title())
         dispatcher.wake()
         return alert_id
+
+    def observing(self, rule_name: str) -> bool:
+        """관찰 모드 규칙인가 (B-52). 내장 알림(설정 변경·관리 작업·감시)은 규칙이 아니라 늘 보낸다."""
+        return any(r.name == rule_name and r.mode == "observe" for r in self.config.rules)
 
     async def send_test(self, name: str) -> None:
         """알림 대상 연결 확인 (대기열을 거치지 않는다). 실패하면 NotifierError 등."""

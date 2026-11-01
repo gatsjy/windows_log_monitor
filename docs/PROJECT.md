@@ -255,6 +255,8 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `PUT /api/alerts/rules` | 규칙 한 개 추가·수정 (`{original?, rule}`), 그 규칙 블록만 바꿈 — `alerts.manage` |
 | `DELETE /api/alerts/rules/{이름}` · `POST /api/alerts/rules/enabled` | 삭제 · 켜기/끄기 (`{names, enabled}`, 묶음 단위 가능) — `alerts.manage` |
 | `POST /api/alerts/rules/preview` | 최근 N시간 데이터로 규칙 미리보기 (맞는 로그·예상 알림·대상별) — `alerts.manage` |
+| `POST /api/alerts/rules/test` | 규칙 시험기 (B-52): `{name \| rule, event_id \| sample}` — 로그 하나가 규칙 조건(저장한 검색·걸린 예외 포함)에 맞는지 조건마다 `{key, op, expected, actual, ok, exception}`. `sample` 은 에이전트가 보낸 원본 한 건(64KB 까지, 수집과 같은 정규화, 저장하지 않음), `event_id` 는 조회 범위·접속기록 `events.view`(`rule_test`). 건수 규칙만 — `alerts.manage` |
+| `POST /api/alerts/rules/mode` | `{names, mode: active\|observe}` 관찰 모드로 돌리기·관찰 끝내기(승격). 관찰로 돌리는 것은 탐지 약화(판본·관리자 알림). 감사로그 `alerts.rule.mode` — `alerts.manage` |
 | `GET /api/agents/package?os=&server=&port=&iis=&mssql=&name=` | 에이전트 설치 묶음 zip (설정·API 키·Fluent Bit 포함, TLS 면 `ca.crt`·인증서 이름 `name`·CA 지문, 포트 6977 — 확인할 수 없는 CA·만료·없는 이름은 409/422) — `agents.deploy`, 감사로그 |
 | `GET /api/agents/package/info` | 내려받기 창 정보 (기본 서버 주소·포트, 들어갈 설치 파일, `tls`: 인증서 이름·만료 D-n·CA 지문·문제) |
 | `GET/POST /api/user-groups`, `PUT/DELETE /api/user-groups/{id}` | 사용자 그룹 (관리자) |
@@ -427,6 +429,7 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 | `tags` | `[]` | 분류 태그. 기본 규칙은 `MITRE T1110`, `ISMS 2.11.3` 처럼 공격 기법·ISMS 항목을 적습니다. 메시지와 화면에 표시 |
 | `silent_for`, `hosts` | `10m`, 전체 | (`agent_silent`) 끊김 판정 시간, 대상 PC 목록 |
 | `hosts`, `channels` | 전체, 전체 | (`stream_silent`, B-37 2단계) 대상 PC, 볼 채널(채널이 없는 로그는 소스 이름). 끊김 판단은 수집 PC 화면과 같음 — 기간 키 없음. 대상 이름은 'PC · 채널' |
+| `mode` | `active` | `observe` = 관찰 모드(B-52): 알림을 기록만 하고 보내지 않음(전송 상태 '건너뜀 — 관찰 모드', 알림 이력에 '관찰'). 새 규칙의 오탐을 본 뒤 '관찰 끝내기'로 승격. 해소 통지도 보내지 않음. 건수 규칙만. 관찰로 바꾸면 탐지 약화로 알림(ADR-043), 운영 준비도 '관찰 모드 규칙' |
 | `resolve` | `count` 는 `manual`, `agent_silent`·`stream_silent` 는 `auto` | `auto` 면 조건이 풀릴 때(집계 기간의 건수가 기준 아래 / PC 가 다시 들어옴) '해결됨(자동)'으로 바꾸고 그 알림을 받은 곳에 해소 통지. 건수 규칙은 마지막 알림 뒤 max(집계 기간, 5분)이 지나야 보고, PC 마다 세는 규칙은 그 PC 가 살아 있어야 함(꺼진 PC 는 회복이 아님). 사람이 다시 연 알림은 자동으로 해결하지 않음. `distinct` 규칙은 불가. 한 번 나는 이벤트·보안 규칙은 `manual` (B-35 2단계, ADR-029 보완) |
 
 **기본 규칙 팩 (24개):** 시스템 심각 오류, 서비스 비정상 종료, 응용 프로그램 오류 다발, 서버 응답 없음, 늘 오던 로그 끊김,
@@ -518,6 +521,9 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
   추가 전 '미리 보기'로 최근 24시간에 빠지는 건수를 보고, 추가하면 관리 작업 알림으로 다른 관리자에게도 알립니다. 알림 상세의 [예외로…]는 묶음 기준 값으로 조건을 채워 엽니다.
   규칙 미리보기·알림 뒤 이어진 이벤트 수도 예외를 반영합니다. 점검 보고서에 걸린 예외 수와 검토일 지남('점검 필요')·7일 안 만료·만료 없음 표.
   API: `GET /api/alerts/exceptions` · `POST /api/alerts/exceptions/preview` · `POST /api/alerts/exceptions` `{rule, term, reason, expires_at?, review_at?}` · `POST /api/alerts/exceptions/{id}/end`
+- **규칙 시험기·관찰 모드 (B-52, ADR-053):** 편집 패널 '로그 하나로 시험'(이벤트 번호 또는 원본 JSON 붙여넣기)과 이벤트 상세 '규칙 시험'(규칙 고르기)이
+  조건마다 기대·이 로그의 값·맞음/아님을 표로 보입니다 — 경로 오타·제외 조건·값 형식 때문에 안 걸린 것을 바로 압니다. 규칙 예외 때문에 빠지면 그 예외를 적습니다. 건수·기간은 '미리보기'가 봅니다.
+  편집 패널의 '알림 보내기: 관찰'은 알림을 기록만 하고 보내지 않습니다. 규칙 목록 '관찰' 필터·'관찰 끝내기'(보이는 관찰 규칙을 한 번에 승격).
 - **저장한 검색을 쓰는 규칙 (B-64, ADR-052):** 규칙 편집기의 '저장한 검색'을 고르면 `match.saved` — 점검에 쓰는 검색과 알림 조건을 한 곳에서 고칩니다.
   그 검색은 알림 규칙을 고칠 수 있는 사람(`alerts.manage`)만 고치고, 문장을 바꾸면 관리 작업 알림이 갑니다. 쓰는 동안은 이름 바꾸기·지우기를 막습니다.
   조회 범위 판단은 규칙 자체의 분류(`match.category`·`query` 의 `category:`)만 보므로, 범위가 정해진 사용자에게 보이려면 규칙에도 분류를 적습니다.
