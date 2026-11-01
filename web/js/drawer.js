@@ -84,6 +84,62 @@ function searchBy(params) {
   navigate('events', params);
 }
 
+// 앞뒤 로그 (B-61): 같은 PC(·소스)에서 이 로그 바로 앞·뒤. 누를 때만 불러온다 — 사용자·IP 가 보이는 조회라 접속기록에 남고(서버),
+// 상세를 열 때마다 이웃까지 읽지 않게. 행을 누르면 그 로그의 상세로
+const CONTEXT_PAGE = 10;
+
+function contextLogs(body, ev) {
+  const box = body.querySelector('[data-ctx]');
+  const state = { same: 'host', before: [], after: [], more: { before: null, after: null }, open: false };
+  const seg = body.querySelector('[data-ctx-same]');
+
+  async function page(direction, cursor) {
+    return api.get(`/api/events/${ev.id}/context`, { direction, same: state.same, limit: CONTEXT_PAGE, cursor });
+  }
+  async function load() {
+    box.innerHTML = '<div class="skeleton"></div>';
+    try {
+      const [before, after] = await Promise.all([page('before'), page('after')]);
+      Object.assign(state, { before: before.items, after: after.items, open: true,
+        more: { before: before.next_cursor, after: after.next_cursor } });
+      render();
+    } catch (err) {
+      box.innerHTML = errorBox(err);
+    }
+  }
+  async function more(direction) {
+    try {
+      const res = await page(direction, state.more[direction]);
+      state[direction] = [...state[direction], ...res.items];
+      state.more[direction] = res.next_cursor;
+      render();
+    } catch (err) {
+      box.insertAdjacentHTML('beforeend', errorBox(err));
+    }
+  }
+  function render() {
+    const rows = [...[...state.before].reverse(), { ...ev, base: true }, ...state.after];
+    const edge = (direction, label, none) => (state.more[direction]
+      ? html`<button class="btn sm" type="button" data-ctx-more="${direction}">${label}</button>`
+      : html`<span class="muted" style="font-size:12.5px">${none}</span>`);
+    box.innerHTML = html`<div style="margin:4px 0 6px">${edge('before', `더 앞 ${CONTEXT_PAGE}건`, '이 앞에는 로그가 없습니다')}</div>
+      <div class="table-wrap"><table class="table ctx-table"><tbody>${rows.map((r) => html`<tr class="${r.base ? 'ctx-base' : ''}"
+          ${r.base ? '' : html`data-ctx-id="${r.id}" title="이 로그 상세 보기"`}>
+        <td class="nowrap num">${fmtTime(r.ts)}</td><td>${levelBadge(r.level)}</td>
+        <td class="nowrap ink-2">${sourceLabel(r.source)}${r.event_id != null ? ` · ${r.event_id}` : ''}</td>
+        <td class="ctx-msg">${(r.message || '').slice(0, 160)}</td></tr>`)}</tbody></table></div>
+      <div style="margin:6px 0 4px">${edge('after', `더 뒤 ${CONTEXT_PAGE}건`, '이 뒤에는 로그가 없습니다')}</div>`;
+    box.querySelectorAll('[data-ctx-more]').forEach((b) => b.addEventListener('click', () => more(b.dataset.ctxMore)));
+    box.querySelectorAll('[data-ctx-id]').forEach((tr) => tr.addEventListener('click', () => openEvent(Number(tr.dataset.ctxId))));
+  }
+  body.querySelector('[data-ctx-open]').addEventListener('click', load);
+  seg.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+    state.same = b.dataset.v;
+    seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    if (state.open) load();
+  }));
+}
+
 /** 이벤트 하나의 상세. ev 에 raw 가 있으면(실시간 화면) 그대로, 아니면 id 로 조회 */
 export async function openEvent(evOrId) {
   const body = openDrawer({ title: '이벤트 상세' });
@@ -123,6 +179,12 @@ export async function openEvent(evOrId) {
     </dl>
     <div class="section-title">메시지</div>
     <pre class="message-box">${ev.message || '(메시지 없음)'}</pre>
+    ${ev.id != null ? html`<div class="section-title" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <span>앞뒤 로그 <span class="muted" style="font-weight:400">같은 PC 에서 이 로그 전후</span></span>
+      <span class="toolbar"><span class="seg" data-ctx-same><button data-v="host" class="on">같은 PC</button><button data-v="source">같은 소스만</button></span>
+        <button class="btn sm" type="button" data-ctx-open>보기</button></span>
+    </div>
+    <div data-ctx></div>` : ''}
     <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
       <span>원본 데이터 (에이전트가 보낸 그대로)</span>
       <button class="btn sm" data-copy>JSON 복사</button>
@@ -144,6 +206,7 @@ export async function openEvent(evOrId) {
     picked.innerHTML = html`<div class="picked-bar"><code>${aliasPath(path)} = ${value}</code>${actions(filter)}</div>`;
     bind(picked);
   });
+  if (ev.id != null) contextLogs(body, ev);
   body.querySelector('[data-copy]').addEventListener('click', async (e) => {
     try {
       await navigator.clipboard.writeText(JSON.stringify(ev.raw, null, 2));

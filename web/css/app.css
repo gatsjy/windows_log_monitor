@@ -232,6 +232,12 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; letter-spacing: 
 .empty { padding: 32px 12px; text-align: center; color: var(--muted); font-size: 13.5px; }
 .error-box { padding: 12px 14px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--critical) 9%, transparent); color: var(--bad-ink); font-size: 13.5px; }
 .warn-box { padding: 12px 14px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--ink); font-size: 13.5px; }
+.ctx-table td { padding-top: 6px; padding-bottom: 6px; font-size: 12.5px; vertical-align: top; }
+.ctx-table tr[data-ctx-id] { cursor: pointer; }
+.ctx-table tr[data-ctx-id]:hover td { background: var(--accent-wash); }
+.ctx-table tr.ctx-base td { background: var(--accent-wash); font-weight: 600; }
+.ctx-table tr.ctx-base td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.ctx-table .ctx-msg { overflow-wrap: anywhere; }
 .skeleton { height: 120px; border-radius: var(--radius-sm); background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 

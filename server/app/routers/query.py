@@ -8,6 +8,7 @@ import math
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -104,13 +105,7 @@ def agent_status(silent_sec: int) -> str:
 async def list_events(request: Request, limit: int = Query(100, ge=1, le=1000), cursor: str | None = None,
                       user: User = Depends(require_user)):
     f = _filter(request)
-    position = None
-    if cursor:
-        try:
-            ts_text, id_text = cursor.rsplit("|", 1)
-            position = (datetime.fromisoformat(ts_text), int(id_text))
-        except ValueError as exc:
-            raise HTTPException(400, "cursor 형식 오류") from exc
+    position = _cursor(cursor) if cursor else None
     try:
         rows = await repository.list_events(f, limit + 1, position)
     except db.QueryTimeout as exc:
@@ -124,6 +119,15 @@ async def list_events(request: Request, limit: int = Query(100, ge=1, le=1000), 
     if cursor is None:   # 다음 페이지 요청은 같은 검색이라 생략
         await _audit_search(request, user, {"rows": len(rows)}, required=True)
     return {"items": rows, "next_cursor": next_cursor}
+
+
+def _cursor(text: str) -> tuple[datetime, int]:
+    """'발생 시각(ISO)|번호' — 목록 다음 쪽·앞뒤 로그의 이어 보기."""
+    try:
+        ts_text, id_text = text.rsplit("|", 1)
+        return datetime.fromisoformat(ts_text), int(id_text)
+    except ValueError as exc:
+        raise HTTPException(400, "cursor 형식 오류") from exc
 
 
 async def _audit_search(request: Request, user: User, outcome: dict, required: bool = False) -> None:
@@ -149,6 +153,26 @@ async def get_event(event_id: int, request: Request, user: User = Depends(requir
                     "src_ip": row.get("src_ip"), "category": row.get("category")},
                    actor_ip=client_ip(request), required=True)
     return row
+
+
+@router.get("/api/events/{event_id}/context")
+async def event_context(event_id: int, request: Request, direction: Literal["before", "after"] = "after",
+                        same: Literal["host", "source"] = "host", limit: int = Query(20, ge=1, le=200),
+                        cursor: str | None = None, user: User = Depends(require_user)):
+    """앞뒤 로그 (B-61): 이 로그와 같은 PC(same=source 면 같은 소스까지)에서 바로 앞·뒤 limit 건. cursor 로 더 앞·더 뒤.
+    조회 범위가 붙고(밖의 행은 빠진다), 사용자·IP 가 보이므로 접속기록에 — 같은 로그의 앞뒤를 넘겨 보는 것은 10분에 한 번."""
+    base = await repository.get_event(event_id)
+    if base is None or not scopes_allow(user.scopes, base.get("category"), base.get("host")):
+        raise HTTPException(404, "이벤트를 찾을 수 없습니다")
+    position = _cursor(cursor) if cursor else (base["ts"], base["id"])
+    rows = await repository.event_context(base["host"], base["source"] if same == "source" else None, user.scopes,
+                                          position, direction, limit + 1)
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    await accesslog.record(request, user.username, "events.context", str(event_id),
+                           {"host": base["host"], "same": same, "direction": direction, "rows": len(rows)}, key={"same": same})
+    return {"items": rows, "direction": direction,
+            "next_cursor": f"{rows[-1]['ts'].isoformat()}|{rows[-1]['id']}" if has_more else None}
 
 
 # ------------------------------------------------------------------- stats

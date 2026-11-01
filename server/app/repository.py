@@ -606,6 +606,24 @@ async def list_events(f: EventFilter, limit: int, cursor: tuple[datetime, int] |
     return await db.fetch_all(query, [*params, limit])
 
 
+async def event_context(host: str, source: str | None, scopes: Any, position: tuple[datetime, int], direction: str,
+                        limit: int) -> list[dict]:
+    """앞뒤 로그 (B-61): 같은 PC(·소스)에서 position(ts, id) 바로 앞(before, 가까운 것부터)·뒤(after)의 행. 조회 범위도 붙인다.
+    PC 는 글자 그대로 같은 것만 — 검색의 host 조건은 *·쉼표를 패턴으로 읽는다(로그에서 온 PC 이름에 들어 있을 수 있다).
+    같은 시각 여러 건은 번호로 나눈다((ts, id) 비교 — 목록 화면의 다음 쪽과 같은 방식)."""
+    where, params = where_clause(EventFilter(scopes=scopes))
+    conds, params = [where, sql.SQL("host = %s")], [*params, host]
+    if source is not None:
+        conds.append(sql.SQL("source = %s"))
+        params.append(source)
+    before = direction == "before"
+    conds.append(sql.SQL("(ts, id) < (%s, %s)" if before else "(ts, id) > (%s, %s)"))
+    order = sql.SQL("ts DESC, id DESC" if before else "ts, id")
+    query = sql.SQL("SELECT {} FROM events WHERE {} ORDER BY {} LIMIT %s").format(
+        _LIST_COLUMNS, sql.SQL(" AND ").join(conds), order)
+    return await db.fetch_all(query, [*params, *position, limit])
+
+
 async def get_event(event_id: int) -> dict | None:
     return await db.fetch_one("SELECT * FROM events WHERE id = %s LIMIT 1", (event_id,))
 
