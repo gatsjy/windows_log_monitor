@@ -122,6 +122,31 @@ def needs_history(old: AlertConfig | None, new: AlertConfig) -> set[str]:
     return {rule_key(r) for r in new.rules if r.enabled and not (rule_key(r) in before and before[rule_key(r)].enabled)}
 
 
+def _route_changes(old: AlertConfig, new: AlertConfig) -> list[dict]:
+    """받는 곳 경로 (B-26): 경로를 빼거나·받는 곳을 빼거나·규칙의 받는 곳을 갈아 끼우게(replace) 바꾸거나·조건을 바꾸면 약해질 수 있다.
+    경로는 위에서부터 멈추므로 순서도 뜻이다 — 같지 않으면 약해짐으로 보고 사람이 확인하게 한다(넓힌 것만 아니라고 단정하기 어렵다)."""
+    if old.routes == new.routes:
+        return []
+    before = {r.name: r for r in old.routes}
+    after = {r.name: r for r in new.routes}
+    out = []
+    for name, r in before.items():
+        q = after.get(name)
+        if q is None:
+            out.append(("route_removed", f"경로 '{name}' 삭제", True))
+        elif q != r:
+            out.append(("route", f"경로 '{name}' 변경", True))
+    order = [r.name for r in new.routes]
+    for name, r in after.items():
+        if name not in before:
+            # 새 경로가 받는 곳을 갈아 끼우거나, 멈춰서(continue 아님) 뒤에 있던 기존 경로를 가릴 수 있으면 약해질 수 있다
+            shadows = not r.continue_ and any(n in before for n in order[order.index(name) + 1:])
+            out.append(("route_added", f"경로 '{name}' 추가", r.replace or shadows))
+    if not out and [r.name for r in old.routes] != [r.name for r in new.routes]:
+        out.append(("route_order", "경로 순서 변경", True))
+    return [{"rule": None, "sid": None, "key": None, "change": c, "weakens": w, "text": t} for c, t, w in out]
+
+
 def _escalation_changes(old: AlertConfig, new: AlertConfig) -> list[dict]:
     """에스컬레이션 정책 (B-43): 단계를 빼거나·늦추거나·받는 곳을 빼거나·대상(심각도·규칙)을 좁히면 약해진다 — 새벽 알림이 아침까지 묻힌다."""
     out = []
@@ -166,6 +191,7 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
                         "text": f"알림 기능 문제를 받는 곳 {', '.join(old.fallback_notify) or '(점검 보고서 받는 곳)'} → "
                                 f"{', '.join(new.fallback_notify) or '(점검 보고서 받는 곳)'}"})
     changes += _escalation_changes(old, new)
+    changes += _route_changes(old, new)
     before = {rule_key(r): r for r in old.rules}
     after = {rule_key(r): r for r in new.rules}
     # 같은 이름인데 열쇠가 바뀐 것(sid 없는 규칙을 화면에서 고치면 번호가 붙는다)은 삭제+추가가 아니라 같은 규칙

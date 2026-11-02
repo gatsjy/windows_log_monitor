@@ -207,6 +207,10 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
         "silences_active": sum(silence_visible(user, r) for r in await repository.active_silence_refs(datetime.now(UTC))),
         "rules": rules,
         "notifiers": notifiers,
+        # 받는 곳 경로 (B-26) — 규칙 관리 탭에 요약 (고치는 것은 YAML 편집)
+        "routes": [{"name": r.name, "notify": list(r.notify), "groups": list(r.groups), "tags": list(r.tags),
+                    "severities": list(r.severities), "rules": list(r.rules), "hosts": list(r.hosts),
+                    "continue": r.continue_, "replace": r.replace} for r in engine.config.routes],
         # 에스컬레이션 정책 (B-43) — 규칙 관리 탭에 요약 (고치는 것은 YAML 편집)
         "escalations": [{"name": p.name, "severities": list(p.severities), "rules": list(p.rules),
                          "steps": [{"after_sec": int(s.after.total_seconds()), "unless": s.unless, "notify": list(s.notify)}
@@ -225,7 +229,8 @@ async def _validate(text: str) -> AlertConfig:
     known = await targets.target_names()
     unknown = sorted({n for r in config.rules for n in r.notify if n not in known}
                      | {n for n in config.fallback_notify if n not in known}
-                     | {n for p in config.escalations for s in p.steps for n in s.notify if n not in known})
+                     | {n for p in config.escalations for s in p.steps for n in s.notify if n not in known}
+                     | {n for r in config.routes for n in r.notify if n not in known})
     if unknown:
         raise HTTPException(422, f"없는 알림 대상: {', '.join(unknown)} — 환경설정에서 수신 그룹·외부 연동을 먼저 만드세요")
     wanted = {r.match["saved"] for r in config.rules if r.match.get("saved")}

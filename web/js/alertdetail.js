@@ -189,6 +189,7 @@ export async function openAlert(id, { onChange } = {}) {
       ${builtin ? (configLines.length ? html`<div class="hint-box" style="margin-bottom:14px;white-space:pre-line">${configLines.join('\n')}</div>` : '')
         : p.description ? html`<div class="hint-box" style="margin-bottom:14px">${p.description}</div>` : ''}
       ${p.tags?.length ? html`<div style="margin:-6px 0 12px">${p.tags.map((t) => html`<span class="type-tag" style="margin-right:4px">${t}</span>`)}</div>` : ''}
+      ${p.routes?.length ? html`<div class="muted" style="margin:-6px 0 12px;font-size:12.5px">받는 곳 경로: ${p.routes.join(' → ')}</div>` : ''}
       <dl class="kv">
         <dt>발생 시각</dt><dd>${fmtTime(alert.fired_at)} <span class="muted">(${fmtRelative(alert.fired_at)})</span></dd>
         ${alert.first_event_at ? html`<dt>이벤트 시각</dt><dd>${fmtTime(alert.first_event_at)} ~ ${fmtTime(alert.last_event_at, { date: false })}</dd>` : ''}

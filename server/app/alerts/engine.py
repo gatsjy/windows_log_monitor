@@ -497,7 +497,7 @@ class AlertEngine:
                 previous_fired_at=last["fired_at"] if last is not None else None,
                 since_previous=since_previous, recurred=recurred,
             )
-            fired.append(await self.fire(message, rule.notify))
+            fired.append(await self.fire_rule(rule, message))
         if rule.resolve == "auto":
             await self._resolve_quiet(rule, base, now)
         return fired
@@ -527,7 +527,8 @@ class AlertEngine:
     async def _resolve(self, rule: Rule, key: str, now: datetime, reason: str) -> None:
         # 지금 무음이면 해소 통지도 보내지 않는다 — 점검 중에는 알림처럼 해소도 잡음이다. 관찰 모드(B-52)도 마찬가지
         silenced = rule.mode == "observe" or await repository.active_silence(rule.name, key, now, _key_host(rule, key)) is not None
-        changed, queued = await repository.auto_resolve(rule.name, key, reason, notify=() if silenced else rule.notify,
+        changed, queued = await repository.auto_resolve(rule.name, key, reason,
+                                                        notify=() if silenced else self.config.targets_for(rule, key)[0],
                                                         at=now, notify_since=now - RECOVERY_NOTICE_MAX_AGE)
         if changed:
             log.info("알림 자동 해결 %s · %s: %s (해소 통지 %d곳)", rule.name, key, changed, queued)
@@ -553,7 +554,7 @@ class AlertEngine:
                 window_sec=int(rule.silent_for.total_seconds()), fired_at=now,
                 last_event_at=row["last_seen"], link=f"{settings.public_url}/#/agents", tags=list(rule.tags),
             )
-            fired.append(await self.fire(message, rule.notify))
+            fired.append(await self.fire_rule(rule, message))
         return fired
 
     async def _evaluate_stream_silent(self, rule: Rule, now: datetime) -> list[int]:
@@ -581,7 +582,7 @@ class AlertEngine:
                 stream={"host": row["host"], "source": row["source"], "channel": row["channel"],
                         "per_day": round(row["n7"] / max(row["days"], 1))},
             )
-            fired.append(await self.fire(message, rule.notify))
+            fired.append(await self.fire_rule(rule, message))
         return fired
 
     # ------------------------------------------------------------ 전송
@@ -631,6 +632,11 @@ class AlertEngine:
             log.warning("에스컬레이션 %d건을 대기열에 넣었습니다", queued)
             dispatcher.wake()
         return queued
+
+    async def fire_rule(self, rule: Rule, message: AlertMessage) -> int:
+        """규칙의 알림 — 받는 곳은 규칙의 notify 에 경로(routes, B-26)를 적용해서. 거친 경로 이름은 payload 에(증적)."""
+        notify, message.routes = self.config.targets_for(rule, message.group_key)
+        return await self.fire(message, notify)
 
     def observing(self, rule_name: str) -> bool:
         """관찰 모드 규칙인가 (B-52). 내장 알림(설정 변경·관리 작업·감시)은 규칙이 아니라 늘 보낸다."""

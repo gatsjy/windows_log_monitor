@@ -86,6 +86,7 @@ class AlertMessage:
     stream: dict[str, Any] | None = None
     observe: bool = False   # 관찰 모드 규칙의 알림 (B-52) — 기록만, 보내지 않음
     escalation: str = ""    # 에스컬레이션으로 다시 보내는 알림 (B-43) — 문구(escalation_text). 저장되는 payload 에는 없음(전송 때만)
+    routes: list[str] = field(default_factory=list)   # 받는 곳을 정한 경로 이름 (B-26) — 증적, 경로가 없으면 빈 목록
 
     # ------------------------------------------------------------ 직렬화
     def to_dict(self) -> dict[str, Any]:
@@ -99,6 +100,8 @@ class AlertMessage:
             data.pop("observe")
         if not self.escalation:
             data.pop("escalation")
+        if not self.routes:
+            data.pop("routes")
         if not self.distinct_field:   # 건수 규칙의 본문(웹훅 json·저장된 payload)은 예전과 같게
             for key in ("distinct_field", "distinct_min", "distinct_count", "distinct_values"):
                 data.pop(key)

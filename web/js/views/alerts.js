@@ -462,6 +462,13 @@ export async function mount(root, params, sub) {
           ${admin ? html`<button class="btn ghost" data-yaml title="config/alerts.yaml 을 직접 편집">YAML 편집</button>
             <button class="btn primary" data-new><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>규칙 추가</button>` : ''}
         </div>
+        ${config.routes?.length ? html`<div class="hint-box" style="margin:0 0 10px">
+          <b>받는 곳 경로</b> — 규칙의 받는 곳에 더하거나(또는 갈아 끼우거나) 위에서부터 맞는 것을 적용합니다 (YAML 편집의 <code>routes</code>).
+          <ul style="margin:4px 0 0;padding-left:18px">${config.routes.map((r) => html`<li><b>${r.name}</b>
+            <span class="muted">${[r.groups.length ? `묶음 ${r.groups.join(', ')}` : '', r.tags.length ? `태그 ${r.tags.join(', ')}` : '',
+              r.severities.length ? r.severities.map((s) => SEVERITIES[s]?.label ?? s).join('·') : '', r.rules.length ? `규칙 ${r.rules.join(', ')}` : '',
+              r.hosts.length ? `PC ${r.hosts.join(', ')}` : ''].filter(Boolean).join(' · ') || '모든 알림'}</span>
+            → ${r.replace ? '대신 ' : '더함 '}${r.notify.join(', ')}${r.continue ? ' (다음 경로도 봄)' : ''}</li>`)}</ul></div>` : ''}
         ${config.escalations?.length ? html`<div class="hint-box" style="margin:0 0 10px">
           <b>에스컬레이션</b> — 확인(또는 해결)되지 않은 알림을 기한이 지나면 다른 받는 곳에 다시 알립니다 (YAML 편집의 <code>escalations</code>).
           <ul style="margin:4px 0 0;padding-left:18px">${config.escalations.map((p) => html`<li><b>${p.name}</b>

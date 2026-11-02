@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -105,12 +106,55 @@ class Escalation:
 
 
 @dataclass(frozen=True)
+class Route:
+    """받는 곳 경로 (B-26): 규칙마다 notify 를 고치지 않고 '보안 태그 규칙은 보안팀에게도'를 한 번에. 위에서부터 맞는 것을 적용,
+    continue 가 아니면 거기서 멈춘다. replace 면 규칙의 notify 대신, 아니면 더한다. 모든 조건이 비면 모든 알림."""
+
+    name: str
+    notify: tuple[str, ...]
+    groups: tuple[str, ...] = ()       # 규칙 묶음(group)
+    tags: tuple[str, ...] = ()         # 규칙 태그 중 하나라도
+    severities: tuple[str, ...] = ()
+    rules: tuple[str, ...] = ()        # 규칙 이름
+    hosts: tuple[str, ...] = ()        # 대상 PC 이름 패턴('MED-*', 대소문자 무시) — PC 로 묶는 규칙만 맞을 수 있다
+    continue_: bool = False
+    replace: bool = False
+
+    def matches(self, rule: Rule, host: str | None) -> bool:
+        if self.groups and rule.group not in self.groups:
+            return False
+        if self.tags and not set(self.tags) & set(rule.tags):
+            return False
+        if self.severities and rule.severity not in self.severities:
+            return False
+        if self.rules and rule.name not in self.rules:
+            return False
+        if self.hosts:
+            return host is not None and any(fnmatch.fnmatchcase(host.casefold(), p.casefold()) for p in self.hosts)
+        return True
+
+
+@dataclass(frozen=True)
 class AlertConfig:
     interval_sec: int = 30
     rules: tuple[Rule, ...] = ()
     # 알림 기능 자체의 문제(엔진 멈춤·전송 실패·규칙 동작 안 함)를 받을 곳 (ADR-045). 비우면 점검 보고서 받는 곳
     fallback_notify: tuple[str, ...] = ()
     escalations: tuple[Escalation, ...] = ()
+    routes: tuple[Route, ...] = ()
+
+    def targets_for(self, rule: Rule, key: str | None = None) -> tuple[tuple[str, ...], list[str]]:
+        """이 규칙·대상의 알림을 받을 곳과 거친 경로 이름 (B-26). 경로가 없으면 규칙의 notify 그대로(예전과 같음)."""
+        notify, used = list(rule.notify), []
+        host = _route_host(rule, key)
+        for route in self.routes:
+            if not route.matches(rule, host):
+                continue
+            used.append(route.name)
+            notify = list(route.notify) if route.replace else notify + [n for n in route.notify if n not in notify]
+            if not route.continue_:
+                break
+        return tuple(notify), used
 
     def used_targets(self) -> dict[str, list[str]]:
         """알림 대상 이름 → 그 대상을 쓰는 규칙 이름들 (대상 삭제·이름 변경 막을 때 사용)."""
@@ -120,6 +164,9 @@ class AlertConfig:
                 used.setdefault(name, []).append(rule.name)
         for name in self.fallback_notify:
             used.setdefault(name, []).append("(대체 경로)")
+        for route in self.routes:
+            for name in route.notify:
+                used.setdefault(name, []).append(f"(경로 {route.name})")
         for policy in self.escalations:
             for step in policy.steps:
                 for name in step.notify:
@@ -250,6 +297,53 @@ def _distinct(value: Any, group_by: str, window: timedelta, where: str) -> tuple
     return field_name, minimum
 
 
+def _route_host(rule: Rule, key: str | None) -> str | None:
+    """경로의 hosts 를 견줄 PC 이름 — PC 로 묶는 규칙·끊김 규칙만 대상 이름이 PC 다(채널 끊김은 'PC · 채널')."""
+    if not key:
+        return None
+    if rule.kind == "stream_silent":
+        return key.rsplit(" · ", 1)[0]
+    return key if rule.kind == "agent_silent" or rule.group_by == "host" else None
+
+
+def _check_routes(raw: Any, rule_names: set[str]) -> tuple[Route, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ConfigError("routes 는 목록이어야 합니다")
+    out, names = [], set()
+    for i, r in enumerate(raw):
+        where = f"routes[{i}]"
+        if not isinstance(r, dict) or not str(r.get("name") or "").strip():
+            raise ConfigError(f"{where}: name 이 필요합니다")
+        name = str(r["name"]).strip()
+        if name in names:
+            raise ConfigError(f"{where}: 이름이 중복됩니다 ({name})")
+        names.add(name)
+        match = r.get("match") or {}
+        if not isinstance(match, dict):
+            raise ConfigError(f"{where}.match 는 객체여야 합니다")
+        if bad := sorted(set(match) - {"group", "tags", "severity", "rules", "hosts"}):
+            raise ConfigError(f"{where}.match: 알 수 없는 조건 {bad} (사용 가능: group, tags, severity, rules, hosts)")
+        severities = _str_list(match.get("severity"), f"{where}.match.severity")
+        if bad := [s for s in severities if s not in SEVERITIES]:
+            raise ConfigError(f"{where}.match.severity: {bad}")
+        rules = _str_list(match.get("rules"), f"{where}.match.rules")
+        if missing := [n for n in rules if n not in rule_names]:
+            raise ConfigError(f"{where}.match.rules: 없는 규칙 {missing}")
+        notify = _str_list(r.get("notify"), f"{where}.notify")
+        if not notify:
+            raise ConfigError(f"{where}.notify: 받는 곳이 필요합니다")
+        for flag in ("continue", "replace"):
+            if flag in r and not isinstance(r[flag], bool):
+                raise ConfigError(f"{where}.{flag} 는 true/false")
+        out.append(Route(name=name, notify=notify, groups=_str_list(match.get("group"), f"{where}.match.group"),
+                         tags=tuple(" ".join(t.split()) for t in _str_list(match.get("tags"), f"{where}.match.tags")),
+                         severities=severities, rules=rules, hosts=_str_list(match.get("hosts"), f"{where}.match.hosts"),
+                         continue_=bool(r.get("continue", False)), replace=bool(r.get("replace", False))))
+    return tuple(out)
+
+
 def _check_escalations(raw: Any, rule_names: set[str]) -> tuple[Escalation, ...]:
     if raw is None:
         return ()
@@ -325,7 +419,9 @@ def parse(doc: Any) -> AlertConfig:
     if dup_sids:
         raise ConfigError(f"규칙 번호(sid)가 중복됩니다: {sorted(dup_sids)}")
     escalations = _check_escalations(doc.get("escalations"), set(names))
-    return AlertConfig(interval_sec=interval, rules=tuple(rules), fallback_notify=fallback, escalations=escalations)
+    routes = _check_routes(doc.get("routes"), set(names))
+    return AlertConfig(interval_sec=interval, rules=tuple(rules), fallback_notify=fallback, escalations=escalations,
+                       routes=routes)
 
 
 def parse_text(text: str) -> AlertConfig:
