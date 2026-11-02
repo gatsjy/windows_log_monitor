@@ -51,7 +51,7 @@ server/app/
   config.py          환경변수(WLM_*) 설정
   db.py              연결 풀, 마이그레이션 실행기, audit()
   partitions.py      events 월별 파티션 생성 / 보관기간 만료 삭제
-  repository.py      ★ 이벤트 저장·조회 SQL 전부
+  repository.py      ★ 이벤트 저장·조회 SQL 전부 (식 색인을 쓰는 쿼리는 그 식을 글자 그대로 — 예: LOGON_ID_SQL, 마이그레이션 028)
   filters.py         검색 조건 파싱 + 실시간 매칭 (백엔드 무관)
   querylang.py       ★ 검색 문장 파서·정규형 (표준 라이브러리만, web/js/querylang.js 와 한 줄씩 같은 알고리즘, ADR-033)
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도

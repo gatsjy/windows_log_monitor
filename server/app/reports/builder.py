@@ -194,7 +194,9 @@ async def _agents(now: datetime) -> dict[str, Any]:
               "missing": [{"name": m["name"], "grade": m["grade"], "status": m["status"], "last_seen": _iso(m["last_seen"])}
                           for m in cov["missing"][:15]]} if cov["total"] else None
     return {"total": len(rows), "online": online, "stale": stale, "offline": len(silent), "silent": silent[:20],
-            "assets": listed, "coverage_gaps": gaps[:10], "clock": clock.assess(rows),
+            "assets": listed, "coverage_gaps": gaps[:10],
+            # 시계 (B-57) — 보고서는 고칠 수 없게 남으므로 많이 어긋난 20대까지만(수는 bad·warn 에 모두)
+            "clock": {**(c := clock.assess(rows)), "off": c["off"][:20]},
             "silent_streams": [{"host": r["host"], "source": r["source"], "channel": r["channel"],
                                 "last_at": _iso(r["last_at"]), "per_day": round(r["n7"] / max(r["days"], 1))}
                                for r in streams[:30]],

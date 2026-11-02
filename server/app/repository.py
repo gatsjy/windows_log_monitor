@@ -230,15 +230,21 @@ def _stream_counts(events: list[Event]) -> tuple[list[str], list[str], list[str]
     return [k[0] for k, _ in rows], [k[1] for k, _ in rows], [k[2] for k, _ in rows], [n for _, n in rows]
 
 
-# 수신이 heartbeat_stale_sec 넘게 끊겼다가 다시 오면 '다시 켜진 시각'을 새로 (B-37 2단계, silent_streams 가 쓴다).
-# SET 의 오른쪽은 고치기 전 값을 본다 — last_seen 을 같은 문장에서 now() 로 바꿔도 이전 수신과 비교된다
-# 비어 있으면(올리기 전부터 있던 PC) 끊긴 적을 보기 전까지 비워 둔다 — 올린 직후 모든 PC 의 판단이 미뤄지지 않게
+# 시계 차이 (B-57): 하트비트의 (받은 시각 − PC 시각) 창 두 개 최솟값 — 마이그레이션 026
 CLOCK_WINDOW_MIN = 15
 _CLOCK_NEW_WINDOW = (f"(a.clock_window_at IS NULL OR a.clock_cur_ms IS NULL"
                      f" OR a.clock_window_at < now() - interval '{CLOCK_WINDOW_MIN} minutes')")
-# 시계 차이 추정 (B-57) = 두 창의 최솟값. 하트비트가 끊긴 지 오래면(창 두 개보다 오래) 모른다
-CLOCK_OFFSET_SQL = (f"CASE WHEN a.last_heartbeat_at >= now() - interval '{2 * CLOCK_WINDOW_MIN} minutes'"
+# 시계 차이 추정 (B-57) = 두 창의 최솟값. 시각이 든 하트비트가 끊긴 지 오래면(창 두 개보다 오래) 모른다 — 시각 없는 하트비트도
+# last_heartbeat_at 은 새로 하므로 그것으로 보면 옛 값이 지금 값처럼 보였다(검토)
+CLOCK_OFFSET_SQL = (f"CASE WHEN a.clock_window_at >= now() - interval '{2 * CLOCK_WINDOW_MIN} minutes'"
                     " THEN LEAST(a.clock_cur_ms, a.clock_prev_ms) END")
+# 새 창으로 넘길 때 앞 창의 최솟값을 이어 쓰는 것은 앞 창이 방금 끝났을 때만 — PC 가 꺼졌다 켜지면(그 사이 시계를 고쳤을 수 있음)
+# 몇 시간 전 값이 다시 15분 동안 보였다(검토에서 재현)
+_CLOCK_CARRY = f"CASE WHEN a.clock_window_at >= now() - interval '{2 * CLOCK_WINDOW_MIN} minutes' THEN a.clock_cur_ms END"
+
+# 수신이 heartbeat_stale_sec 넘게 끊겼다가 다시 오면 '다시 켜진 시각'을 새로 (B-37 2단계, silent_streams 가 쓴다).
+# SET 의 오른쪽은 고치기 전 값을 본다 — last_seen 을 같은 문장에서 now() 로 바꿔도 이전 수신과 비교된다
+# 비어 있으면(올리기 전부터 있던 PC) 끊긴 적을 보기 전까지 비워 둔다 — 올린 직후 모든 PC 의 판단이 미뤄지지 않게
 _UP_SINCE = (f"up_since = CASE WHEN a.last_seen < now() - interval '{int(settings.heartbeat_stale_sec)} seconds'"
              " THEN now() ELSE a.up_since END")
 
@@ -321,7 +327,7 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
                 " last_ip = COALESCE(EXCLUDED.last_ip, a.last_ip), meta = EXCLUDED.meta,"
                 " last_transport = COALESCE(EXCLUDED.last_transport, a.last_transport),"
                 f" clock_prev_ms = CASE WHEN EXCLUDED.hb_lag_ms IS NULL THEN a.clock_prev_ms WHEN {_CLOCK_NEW_WINDOW}"
-                "   THEN a.clock_cur_ms ELSE a.clock_prev_ms END,"
+                f"   THEN {_CLOCK_CARRY} ELSE a.clock_prev_ms END,"
                 f" clock_cur_ms = CASE WHEN EXCLUDED.hb_lag_ms IS NULL THEN a.clock_cur_ms WHEN {_CLOCK_NEW_WINDOW}"
                 "   THEN EXCLUDED.hb_lag_ms ELSE LEAST(a.clock_cur_ms, EXCLUDED.hb_lag_ms) END,"
                 f" clock_window_at = CASE WHEN EXCLUDED.hb_lag_ms IS NULL THEN a.clock_window_at WHEN {_CLOCK_NEW_WINDOW}"
@@ -719,6 +725,9 @@ async def group_stats(f: EventFilter, by: list[str], distinct: list[str], limit:
 
 
 SESSION_LOGON, SESSION_ENDS = 4624, (4634, 4647)   # 로그온 → 로그오프·사용자가 시작한 로그오프
+# 짝짓기 열 — 마이그레이션 028 의 부분 색인과 글자까지 같아야 색인을 쓴다(매개변수로 넘기면 플래너가 식을 맞추지 못한다).
+# _raw_clause(["EventData", "TargetLogonId"]) 와 같은 뜻(별칭: 보낸 값 → 서버가 붙인 값). {t} = 표 별칭
+LOGON_ID_SQL = ("COALESCE({t}.raw #>> '{{EventData,TargetLogonId}}', {t}.raw #>> '{{winevtlog,EventData,TargetLogonId}}')")
 
 
 async def logon_sessions(f: EventFilter, max_hours: int, limit: int) -> list[dict]:
@@ -726,25 +735,27 @@ async def logon_sessions(f: EventFilter, max_hours: int, limit: int) -> list[dic
     Logon ID 는 재부팅 뒤 다시 쓰일 수 있다 — 끝은 max_hours 안, 그 사이 같은 PC·같은 ID 의 새 로그온이 있으면 그 앞까지만.
     ID 는 이름 경로(EventData.TargetLogonId — 보낸 값, 없으면 서버가 붙인 값, ADR-038)로 읽는다. 끝이 없으면 end_* 가 NULL."""
     where, params = where_clause(f)
-    logon_id, id_params = _raw_clause("{raw}", ["EventData", "TargetLogonId"])
     logon_type, type_params = _raw_clause("{raw}", ["EventData", "LogonType"])
+    ends = ", ".join(str(e) for e in SESSION_ENDS)
+    # 같은 초의 경계: 그 사이 새 로그온은 (시각, 번호)로 로그온보다 뒤이고 끝 후보와 같은 초까지 — 같은 초면 그 끝이 누구 것인지
+    # 모르므로 앞 로그온의 끝으로 삼지 않는다(검토에서 재현: 같은 초의 재사용 ID 로 앞 세션이 뒤 세션의 로그오프를 가져감)
     query = sql.SQL(
         "SELECT l.id, l.host, l.ts, l.username, l.src_ip, l.logon_id, l.logon_type,"
         "       e.id AS end_id, e.ts AS end_ts, e.event_id AS end_event"
-        "  FROM (SELECT id, host, ts, username, src_ip, {lid} AS logon_id, {ltype} AS logon_type"
+        "  FROM (SELECT id, host, ts, username, src_ip, {lid_l} AS logon_id, {ltype} AS logon_type"
         "          FROM events WHERE {where} ORDER BY ts DESC, id DESC LIMIT %s) l"
         "  LEFT JOIN LATERAL ("
         "       SELECT e.id, e.ts, e.event_id FROM events e"
-        "        WHERE e.host = l.host AND e.event_id = ANY(%s) AND e.ts >= l.ts AND e.ts <= l.ts + make_interval(hours => %s)"
-        "          AND {lid} = l.logon_id"
-        "          AND NOT EXISTS (SELECT 1 FROM events n WHERE n.host = l.host AND n.event_id = %s AND n.ts > l.ts"
-        "                            AND n.ts < e.ts AND {lid} = l.logon_id)"
+        f"        WHERE e.event_id IN ({ends}) AND e.host = l.host AND {{lid_e}} = l.logon_id"
+        "          AND e.ts >= l.ts AND e.ts <= l.ts + make_interval(hours => %s)"
+        f"          AND NOT EXISTS (SELECT 1 FROM events n WHERE n.event_id = {SESSION_LOGON} AND n.host = l.host"
+        "                            AND {lid_n} = l.logon_id"
+        "                            AND (n.ts, n.id) > (l.ts, l.id) AND n.ts <= e.ts)"
         "        ORDER BY e.ts, e.id LIMIT 1) e ON l.logon_id IS NOT NULL"
         " ORDER BY l.ts DESC, l.id DESC"
-    ).format(lid=logon_id, ltype=logon_type, where=where)
-    # {lid} 가 세 번 — 첫째는 바깥(로그온), 둘째는 끝 후보(e), 셋째는 그 사이 새 로그온(n). 이름 없는 raw 는 가장 안쪽 표의 것
-    return await db.fetch_all(query, [*id_params, *type_params, *params, limit,
-                                      list(SESSION_ENDS), max_hours, *id_params, SESSION_LOGON, *id_params])
+    ).format(ltype=logon_type, where=where, lid_l=sql.SQL(LOGON_ID_SQL.format(t="events")),
+             lid_e=sql.SQL(LOGON_ID_SQL.format(t="e")), lid_n=sql.SQL(LOGON_ID_SQL.format(t="n")))
+    return await db.fetch_all(query, [*type_params, *params, limit, max_hours])
 
 
 async def agents(since: datetime, scopes=None) -> list[dict]:

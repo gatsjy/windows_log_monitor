@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import math
 import os
@@ -539,7 +538,8 @@ async def _test_event(body: RuleTestBody, user: User, request: Request, rule_nam
         return row
     # 짝 없는 서로게이트는 수집처럼 U+FFFD 로 — 그대로면 크기 재기(UTF-8)부터 500 이었다(검토). 표본은 작아 늘 훑는다
     body.sample = _fix_surrogates(body.sample)
-    if len(json.dumps(body.sample, ensure_ascii=False).encode()) > SAMPLE_MAX_BYTES:
+    # 크기는 받은 본문 길이로 — json.dumps 로 다시 재면 깊게 겹친 표본에서 RecursionError(500)였다(검토)
+    if len(await request.body()) > SAMPLE_MAX_BYTES + 4096:
         raise HTTPException(413, f"원본은 {SAMPLE_MAX_BYTES // 1024}KB 까지입니다")
     now = datetime.now(UTC)
     iis_ctx = await repository.iis_context(layout_keys([body.sample]))

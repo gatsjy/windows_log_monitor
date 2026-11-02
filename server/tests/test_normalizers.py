@@ -554,3 +554,20 @@ def test_live_raw_has_the_stored_value_without_nul():
     assert live == json.loads(_json(raw))
     assert live["글자"] == "\\u0000 그대로"            # 글자 그대로의 역슬래시-u0000 은 NUL 이 아니다
     assert raw["Event\x00Data"]["TargetUserName"] == "kim\x00"   # 원본 객체는 그대로 (저장은 따로)
+
+
+def test_live_raw_of_deeply_nested_record():
+    """깊게 겹친 레코드도 실시간 모양을 만든다 — 재귀하면 RecursionError 로 수집 응답이 500 (저장 뒤라 에이전트가 다시 보냄, 검토에서 재현)."""
+    from datetime import UTC, datetime
+
+    from app.normalizers.base import Event, without_nul
+
+    deep: dict = {"v": "끝\x00"}
+    for _ in range(5000):
+        deep = {"a": [deep]}
+    live = Event(ts=datetime.now(UTC), host="PC", source="generic", level=4, message="m", raw=deep).to_live(datetime.now(UTC))
+    node = live["raw"]
+    for _ in range(5000):
+        node = node["a"][0]
+    assert node == {"v": "끝"}
+    assert without_nul({"k\x00": 1, "k": 2}) == {"k": 2}      # 키가 겹치면 뒤의 것 — json 저장(_json)과 같다

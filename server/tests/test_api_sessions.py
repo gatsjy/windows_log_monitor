@@ -63,6 +63,10 @@ def client():
         _logon("PC-1", m(40), "0x4"), _logoff("PC-1", m(55), "0x4", event_id=4647),        # 사용자가 시작한 로그오프
         _logon("PC-2", m(0), "0x5"), _logoff("PC-1", m(10), "0x5"),                        # 다른 PC 의 같은 ID 는 짝 아님
         _logon("PC-2", m(1), "0x6"), _logoff("PC-2", m(60 * 30), "0x6"),                   # 30시간 뒤
+        # 같은 초 경계 (검토에서 재현): 같은 ID 의 새 로그온과 로그오프가 같은 초 → 앞 로그온의 끝이 아니다
+        _logon("PC-3", m(0), "0x7"), _logon("PC-3", m(10), "0x7"), _logoff("PC-3", m(10), "0x7"),
+        # 같은 초에 같은 ID 로 두 번 로그온 → 앞 것은 끝을 모른다, 뒤 것이 로그오프를 가진다
+        _logon("PC-4", m(0), "0x8", user="a"), _logon("PC-4", m(0), "0x8", user="b"), _logoff("PC-4", m(5), "0x8"),
     ]
     with TestClient(app) as c:
         initial = os.environ["WLM_ADMIN_INITIAL_PASSWORD"]
@@ -98,11 +102,18 @@ def test_reused_logon_id_ends_at_the_next_logon(client):
     assert second["duration_sec"] == 300
 
 
+def test_same_second_boundaries(client):
+    pc3 = sorted((r for r in _sessions(client, query="host:PC-3")["items"]), key=lambda r: r["ts"])
+    assert [r["end_ts"] is not None for r in pc3] == [False, True] and pc3[1]["duration_sec"] == 0
+    pc4 = {r["username"]: r for r in _sessions(client, query="host:PC-4")["items"]}
+    assert pc4["a"]["end_ts"] is None and pc4["b"]["duration_sec"] == 300
+
+
 def test_max_hours_and_conditions(client):
     assert _by_id(_sessions(client))["0x6"]["end_ts"] is None
     assert _by_id(_sessions(client, max_hours=48))["0x6"]["duration_sec"] == 30 * 3600 - 60
     assert {r["host"] for r in _sessions(client, query="host:PC-2")["items"]} == {"PC-2"}
-    assert {r["username"] for r in _sessions(client, query="-user:kim")["items"]} == {"lee"}
+    assert {r["username"] for r in _sessions(client, query="-user:kim host:PC-1")["items"]} == {"lee"}
     assert _sessions(client, query="event_id:4625")["items"] == []     # 다른 이벤트 ID 조건과는 겹치지 않음
     body = _sessions(client, limit=2)
     assert len(body["items"]) == 2 and body["truncated"] is True

@@ -196,6 +196,14 @@ Windows 에이전트는 `net.keepalive: off` 라 보낼 때마다 새로 연결�
 - 수집 로그 다이제스트(2단계, 벤치 DB 의 가장 많은 한 시간 30,037행): 1.54초 = 행마다 51µs — 가져오기(psycopg 의 jsonb 해석 포함) 35µs, raw JSON 15µs, 해시 6µs.
   매시간 그 시간 분량 + 매일 검증 하루 분량(`WLM_EVENT_DIGEST_VERIFY_HOURS`). 하루 천만 건이면 매일 검증 약 9분 — 가져오기는 천 행씩(이벤트 루프 약 35ms씩), 해시는 스레드.
 
+### 2.8 로그온 세션 짝짓기 (B-63, 마이그레이션 028) — 2026-11-02
+- 로그온(4624)마다 같은 PC·같은 TargetLogonId 의 로그오프를 LATERAL 로 찾는다. 색인이 없으면 로그오프가 없는 로그온마다 그 PC 의
+  `max_hours` 안 4634/4647 을 모두 읽어 원본 경로를 꺼냈다 — 네트워크 로그온이 많은 파일 서버·DC 에서 30초 상한(503)에 걸렸다(적대적 검토에서 재현).
+- 부분 식 색인 `events_logon_id_idx (host, COALESCE(EventData.TargetLogonId 보낸 값, 서버가 붙인 값), ts) WHERE event_id IN (4624, 4634, 4647)`.
+  쿼리는 `repository.LOGON_ID_SQL` 로 같은 식을 **글자 그대로** 쓴다(매개변수로 넘기면 플래너가 식 색인을 맞추지 못한다), 이벤트 ID 도 상수(부분 색인 조건 증명).
+- 개발 DB(12만 건)의 EXPLAIN: 채워진 월 파티션마다 `Index Scan using events_<월>_host_coalesce_ts_idx` (빈 미래 파티션은 Seq Scan — 0행).
+  세 이벤트만 담는 색인이라 작고, 수집 쓰기 부담은 그 세 이벤트에만. 업그레이드 때 만들면서 events 를 한 번 훑는다(첫 기동이 그만큼 늦음).
+
 ## 3. 해석
 
 - **로그 검색(목록·조건·메시지 부분일치):**

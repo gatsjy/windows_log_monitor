@@ -80,8 +80,8 @@ def test_pc_ahead_and_unknown(client):
     assert item["clock_offset_ms"] < -390_000 and item["clock_level"] == "bad"
     _beat(client, "PC-C")                 # 옛 에이전트처럼 date 가 없으면 모름
     assert _offset(client, "PC-C") is None
-    sql("UPDATE agents SET last_heartbeat_at = now() - interval '31 minutes' WHERE host = 'PC-B'")
-    assert _offset(client, "PC-B") is None   # 하트비트가 오래 끊기면 모른다(옛 값을 보이지 않음)
+    sql("UPDATE agents SET clock_window_at = now() - interval '31 minutes' WHERE host = 'PC-B'")
+    assert _offset(client, "PC-B") is None   # 시각이 든 하트비트가 오래 끊기면 모른다(옛 값을 보이지 않음)
 
 
 def test_server_clock_suspected(client):
@@ -93,3 +93,16 @@ def test_server_clock_suspected(client):
 
     items = {i.key: i for i in readiness.judge(client.portal.call(readiness.collect))}
     assert items["clock"].status == "bad" and "서버" in items["clock"].detail
+
+
+def test_gap_does_not_carry_an_old_window(client):
+    """PC 가 꺼졌다 켜지면(그 사이 시계를 고쳤을 수 있다) 몇 시간 전 창의 값을 이어 쓰지 않는다 (검토에서 재현)."""
+    _beat(client, "PC-G", 300)
+    sql("UPDATE agents SET clock_window_at = now() - interval '3 hours', last_heartbeat_at = now() - interval '3 hours'"
+        " WHERE host = 'PC-G'")
+    _beat(client, "PC-G", 1)
+    assert abs(_offset(client, "PC-G")) < 3_000
+    # 시각 없는 하트비트만 오면 last_heartbeat_at 은 새로워도 시계는 모른다
+    sql("UPDATE agents SET clock_window_at = now() - interval '40 minutes' WHERE host = 'PC-G'")
+    _beat(client, "PC-G")
+    assert _offset(client, "PC-G") is None

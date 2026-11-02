@@ -66,16 +66,36 @@ class Heartbeat:
 
 # ---------------------------------------------------------------- helpers
 
+def _no_nul(text: str) -> str:
+    return text.replace("\x00", "") if "\x00" in text else text
+
+
 def without_nul(value: Any) -> Any:
     """문자열·키의 NUL 을 뺀 사본 — jsonb 는 NUL 을 받지 못해 저장할 때 빠진다(repository._json). 실시간으로 보내는 원본도
-    같게 해야 화면의 실시간 매처(web/js/querylang.js)가 검색(SQL)과 같은 값을 본다(ADR-033 남는 차이, B-23)."""
+    같게 해야 화면의 실시간 매처(web/js/querylang.js)가 검색(SQL)과 같은 값을 본다(ADR-033 남는 차이, B-23).
+    재귀하지 않는다 — 깊게 겹친 레코드 하나가 RecursionError 로 수집 응답을 500 으로 만들었다(저장은 끝난 뒤라 에이전트가 다시 보냄,
+    검토에서 재현). 수집의 _fix_surrogates 와 같은 방식."""
     if isinstance(value, str):
-        return value.replace("\x00", "") if "\x00" in value else value
-    if isinstance(value, dict):
-        return {without_nul(k) if isinstance(k, str) else k: without_nul(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [without_nul(v) for v in value]
-    return value
+        return _no_nul(value)
+    if not isinstance(value, (dict, list)):
+        return value
+    root: dict | list = {} if isinstance(value, dict) else []
+    stack: list[tuple[Any, Any]] = [(value, root)]
+    while stack:
+        src, dst = stack.pop()
+        for key, item in (src.items() if isinstance(src, dict) else enumerate(src)):
+            if isinstance(item, str):
+                copy: Any = _no_nul(item)
+            elif isinstance(item, (dict, list)):
+                copy = {} if isinstance(item, dict) else []
+                stack.append((item, copy))
+            else:
+                copy = item
+            if isinstance(dst, dict):
+                dst[_no_nul(key) if isinstance(key, str) else key] = copy
+            else:
+                dst.append(copy)
+    return root
 
 
 _TIME_FORMATS = (
