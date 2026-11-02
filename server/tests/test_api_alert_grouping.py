@@ -26,8 +26,11 @@ class _Receiver(BaseHTTPRequestHandler):
     received: ClassVar[list[tuple[str, dict]]] = []
 
     def do_POST(self):  # http.server 가 부르는 이름
-        _Receiver.received.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
-        self.send_response(503 if self.path == "/down" else 200)
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        _Receiver.received.append((self.path, body))
+        # /picky: 본문에 POISON 이 든 통만 거절하는 받는 쪽 (DLP 프록시·메일 554 처럼 알림 하나의 내용 때문에)
+        picky = self.path == "/picky" and "POISON" in json.dumps(body, ensure_ascii=False)
+        self.send_response(503 if self.path == "/down" else 400 if picky else 200)
         self.end_headers()
         self.wfile.write(b"x")
 
@@ -67,7 +70,8 @@ def client():
             initial = os.environ["WLM_ADMIN_INITIAL_PASSWORD"]
             c.post("/api/auth/login", json={"username": "admin", "password": initial}, headers=CSRF)
             c.post("/api/auth/password", json={"current_password": initial, "new_password": "Root#Changed2026"}, headers=CSRF)
-            for name, path, fmt in (("묶음", "ok", "text"), ("기계", "machine", "json"), ("고장", "down", "text")):
+            for name, path, fmt in (("묶음", "ok", "text"), ("기계", "machine", "json"), ("고장", "down", "text"),
+                                    ("까다로움", "picky", "text")):
                 r = c.post("/api/settings/channels", json={"name": name, "type": "webhook", "config": {"format": fmt},
                                                            "url": f"http://127.0.0.1:{server.server_port}/{path}"}, headers=CSRF)
                 assert r.status_code == 200, r.text
@@ -84,14 +88,14 @@ def _clean():
     yield
 
 
-def fire(client, rule, keys, notify=("묶음",), severity="error"):
+def fire(client, rule, keys, notify=("묶음",), severity="error", kind="count", description="시험"):
     from app import repository
     from app.alerts.message import AlertMessage
 
     ids = []
     for key in keys:
-        m = AlertMessage(rule=rule, severity=severity, kind="count", group_by="host", group_key=key, event_count=3, threshold=1,
-                         window_sec=600, fired_at=datetime.now(UTC), description="시험")
+        m = AlertMessage(rule=rule, severity=severity, kind=kind, group_by="host", group_key=key, event_count=3, threshold=1,
+                         window_sec=600, fired_at=datetime.now(UTC), description=description.format(key=key))
         ids.append(client.portal.call(repository.insert_alert, m.to_dict(), notify))
     return ids
 
@@ -191,3 +195,29 @@ def test_grouping_off_sends_each_alert(client):
         assert sorted(b["text"].split(" · ")[1].split("\n")[0] for b in posts()) == ["PC-A", "PC-B"]
     finally:
         _config(client)
+
+
+def test_one_rejected_alert_does_not_sink_the_group(client):
+    """받는 쪽이 알림 하나의 내용 때문에 묶음을 거절하면 반씩 나눠 다시 보낸다 — 거절된 알림만 시도를 쓴다
+    (검토에서 재현: 예전에는 넷 모두 다섯 번 실패해 gave_up)."""
+    ids = fire(client, "거절 시험", ["PC-1", "PC-2", "POISON-3", "PC-4"], notify=("까다로움",))
+    passed("거절 시험", 31)
+    drain(client)
+    rows = dict(sql("SELECT a.group_key, d.status || ':' || d.attempts || ':' || coalesce(d.batch_size::text, '-')"
+                    " FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id WHERE d.alert_id = ANY(%s)", (ids,)))
+    assert rows == {"PC-1": "sent:1:2", "PC-2": "sent:1:2", "POISON-3": "failed:1:-", "PC-4": "sent:1:1"}   # 보낸 것도 시도 한 번
+    sent = [b["text"] for b in posts("/picky") if "POISON" not in b["text"]]
+    assert len(sent) == 2 and "· 2대 (PC-1, PC-2)" in sent[0]
+
+
+def test_builtin_alerts_are_never_grouped(client):
+    """내장 알림(설정 변경·관리 작업·감시)은 알림마다 내용(무엇이 바뀌었나)이 본문이라 묶지 않고 기다리지도 않는다 (검토에서 재현)."""
+    from app.alerts.builtin import ADMIN_RULE, CONFIG_RULE
+
+    fire(client, CONFIG_RULE, ["화면 · admin", "화면 · boss"], severity="warning", kind="config",
+         description="탐지를 약하게 하는 변경\n- {key} 이(가) 규칙 끔")
+    fire(client, ADMIN_RULE, ["관리 작업 · admin"], severity="warning", kind="config", description="관리 권한 부여\n- 관리자 계정 x")
+    drain(client)
+    texts = [b["text"] for b in posts()]
+    assert len(texts) == 3 and all("묶어" not in t for t in texts)
+    assert any("화면 · boss" in t for t in texts) and any("관리 작업 알림" in t for t in texts)

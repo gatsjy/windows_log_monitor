@@ -166,6 +166,20 @@ def _routed_loss(old: AlertConfig, old_rule: Rule, new: AlertConfig, new_rule: R
     return list(lost)
 
 
+def _routed_change(old: AlertConfig, base: tuple[Rule, int], new: AlertConfig, new_rule: Rule, hosts: tuple[str | None, ...],
+                   key: str, how: str) -> list[dict]:
+    """다시 켜거나 다시 추가한 규칙: 마지막으로 켜져 있던 모양(base)과 비교해 경로로 받던 곳이 빠졌나 — 끄고 → 태그를 빼고 → 켜는
+    우회로 팀 하나를 조용히 뺐다(검토에서 재현). 경로는 바로 앞 판본(old)의 것으로 본다(그 판본의 경로는 기록에서 다시 읽지 않음)."""
+    if not (old.routes or new.routes):
+        return []
+    removed = set(base[0].notify) - set(new_rule.notify)
+    lost = [n for n in _routed_loss(old, base[0], new, new_rule, hosts) if n not in removed]
+    if not lost:
+        return []
+    return [_change(base[0], key, "route_targets", f"{how} — 판본 #{base[1]}에서 켜져 있던 때와 비교: 경로로 받던 곳이 빠짐: "
+                    f"{', '.join(lost)}", True, new_rule.name)]
+
+
 def _escalation_changes(old: AlertConfig, new: AlertConfig) -> list[dict]:
     """에스컬레이션 정책 (B-43): 단계를 빼거나·늦추거나·받는 곳을 빼거나·대상(심각도·규칙)을 좁히면 약해진다 — 새벽 알림이 아침까지 묻힌다."""
     out = []
@@ -238,6 +252,7 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
             changes += [_change(rule, key, change, f"다시 켬 — 판본 #{base[1]}에서 켜져 있던 때와 비교: {text}", weakens,
                                 new_rule.name)
                         for change, text, weakens in _rule_changes(base[0], new_rule) if change not in ("enabled", "disabled")]
+            changes += _routed_change(old, base, new, new_rule, hosts, key, "다시 켬")
             continue
         # 꺼진 채로 고친 것은 지금의 탐지를 약하게 하지 않는다 (켤 때 마지막으로 켜져 있던 모양과 비교한다)
         gate = rule.enabled or new_rule.enabled
@@ -256,6 +271,7 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
         if base := (last_enabled.get(key) if rule.enabled else None):
             changes += [_change(rule, key, change, f"다시 추가 — 판본 #{base[1]}에서 켜져 있던 때와 비교: {text}", weakens)
                         for change, text, weakens in _rule_changes(base[0], rule) if change not in ("enabled", "disabled")]
+            changes += _routed_change(old, base, new, rule, hosts, key, "다시 추가")
     return changes
 
 

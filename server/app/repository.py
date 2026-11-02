@@ -1149,22 +1149,23 @@ async def claim_delivery(notifier: str, now: datetime) -> dict[str, Any] | None:
         + _CLAIM_RETURNING, (notifier, now))
 
 
-async def claim_group(notifier: str, now: datetime, limit: int) -> list[dict[str, Any]]:
+async def claim_group(notifier: str, now: datetime, limit: int, solo_rules: Sequence[str] = ()) -> list[dict[str, Any]]:
     """묶음 전송 (B-41): 차례인 한 행(claim_delivery 와 같은 순서)과 같은 규칙·종류(action)의 다른 대기 행을 함께 잡는다.
     함께 잡는 행 = 차례가 됐거나, 아직 한 번도 보내지 않은 pending(모으는 중·간격을 기다리는 중). 재시도를 기다리는 failed 는
-    제 차례에만 — 실패 간격을 건너뛰지 않게. 첫 행이 늘 들어가도록 따로 더한다(상한에 밀리지 않게)."""
+    제 차례에만 — 실패 간격을 건너뛰지 않게. 첫 행이 늘 들어가도록 따로 더한다(상한에 밀리지 않게).
+    solo_rules(내장 알림)는 묶지 않는다 — 알림마다 내용(무엇이 바뀌었나)이 본문이다(검토에서 재현: 묶으면 변경 줄이 빠졌다)."""
     rows = await db.fetch_all(
         "WITH first AS (SELECT d.alert_id, d.notifier, d.action, a.rule FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id"
         f" WHERE d.notifier = %s AND {_DUE}{_CLAIM_ORDER} LIMIT 1 FOR UPDATE OF d SKIP LOCKED),"
         " mates AS (SELECT d.alert_id, d.notifier, d.action FROM first f JOIN alert_deliveries d"
         "   ON d.notifier = f.notifier AND d.action = f.action JOIN alerts a ON a.id = d.alert_id AND a.rule = f.rule"
         "   WHERE d.status IN ('pending', 'failed') AND d.claimed_at IS NULL"
-        "   AND (d.next_attempt_at <= %s OR (d.status = 'pending' AND d.attempts = 0))"
+        "   AND (d.next_attempt_at <= %s OR (d.status = 'pending' AND d.attempts = 0)) AND NOT (f.rule = ANY(%s::text[]))"
         "   ORDER BY d.alert_id LIMIT %s FOR UPDATE OF d SKIP LOCKED),"
         " pick AS (SELECT alert_id, notifier, action FROM first UNION SELECT alert_id, notifier, action FROM mates)"
         " UPDATE alert_deliveries d SET claimed_at = clock_timestamp() FROM pick, alerts a"
         " WHERE d.alert_id = pick.alert_id AND d.notifier = pick.notifier AND d.action = pick.action AND a.id = d.alert_id"
-        + _CLAIM_RETURNING, (notifier, now, now, max(limit - 1, 1)))
+        + _CLAIM_RETURNING, (notifier, now, now, list(solo_rules), max(limit - 1, 1)))
     return sorted(rows, key=lambda r: r["alert_id"])
 
 

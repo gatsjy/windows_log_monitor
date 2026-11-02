@@ -147,3 +147,18 @@ def test_reordering_routes_while_adding_one_weakens():
                "  - name: C\n    notify: [감사팀]\n    continue: true\n")
     got = _changes(two, swapped)
     assert ("route_order", True) in got and ("route_targets", True) in got
+
+
+def test_reenable_after_dropping_a_routed_tag_weakens():
+    """끄고 → 태그를 빼고 → 켜면 다시 켬 비교가 경로를 보지 않아 보안팀이 조용히 빠졌다 (검토에서 재현). 다시 추가도 같다."""
+    on = _cfg()
+    off = parse_text(RULES.replace("    severity: warning\n", "    severity: warning\n    enabled: false\n", 1) + ROUTES)
+    edited = parse_text(RULES.replace("    severity: warning\n", "    severity: warning\n    enabled: false\n", 1)
+                        .replace("tags: [MITRE T1110, ISMS 2.11.3]", "tags: [ISMS 2.11.3]") + ROUTES)
+    back = parse_text(RULES.replace("tags: [MITRE T1110, ISMS 2.11.3]", "tags: [ISMS 2.11.3]") + ROUTES)
+    key = configdiff.rule_key(_rule(on, "로그온 실패 급증"))
+    assert [c["change"] for c in configdiff.diff(on, off)] == ["disabled"]
+    assert not any(c["weakens"] for c in configdiff.diff(off, edited))      # 꺼진 채로 고친 것은 지금 약하게 하지 않는다
+    changes = configdiff.diff(edited, back, {key: (_rule(on, "로그온 실패 급증"), 1)})
+    assert ("route_targets", True) in [(c["change"], c["weakens"]) for c in changes]
+    assert any("보안팀" in c["text"] and "다시 켬" in c["text"] for c in changes)
