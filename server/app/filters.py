@@ -236,7 +236,7 @@ class EventFilter:
     def _msg_not_folded(self) -> list[str]:
         return [fold(v) for v in self.msg_not]
 
-    def matches(self, event: dict) -> bool:
+    def matches(self, event: dict, folded: str | None = None) -> bool:
         """실시간 스트림용: 정규화된 이벤트(dict) 하나가 조건에 맞는지 (시간 조건은 무시).
         repository.where_clause 와 같은 뜻이어야 한다 (NULL·대소문자·원본 값 글자 표현) — querylang_cases.json 으로 함께 시험."""
         if not scopes_allow(self.scopes, event.get("category"), event.get("host")):
@@ -261,7 +261,8 @@ class EventFilter:
             return False
         if self.event_ids and event.get("event_id") not in self.event_ids:
             return False
-        message = fold(event.get("message") or "")     # NULL 메시지 → '' → 포함 조건에 안 맞음 (ILIKE on NULL)
+        # NULL 메시지 → '' → 포함 조건에 안 맞음 (ILIKE on NULL). folded = 미리 접은 메시지 (보관 등급이 등급마다 다시 접지 않게)
+        message = folded if folded is not None else fold(event.get("message") or "") if (self.q_terms or self.msg_all or self.msg_not) else ""
         if self.q_terms and not any(fold(term) in message for term in self.q_terms):
             return False
         for group in self._msg_all_folded:

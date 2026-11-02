@@ -23,13 +23,32 @@ import yaml
 
 from .config import settings
 from .filters import EventFilter, parse_query
-from .querylang import QueryError
+from .querylang import QueryError, fold
 
 log = logging.getLogger(__name__)
 
 TIER_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")   # 파일 이름에 들어간다 (backup.sh 도 이 모양만 받는다)
 MAX_TIERS = 10
 MIN_KEEP_DAYS, MAX_KEEP_DAYS = 1, 3650
+TIER_KEYS = {"id", "name", "query", "keep_days"}
+
+
+class _UniqueKeys(yaml.SafeLoader):
+    """같은 키가 두 번이면 오류 — safe_load 는 뒤의 값을 조용히 쓴다. 기본 파일의 예시 주석을 풀고 'tiers: []' 를 남기면 등급이 0개가 되어
+    접속기록이 기본 기간에 지워졌다(검토에서 재현)."""
+
+
+def _mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict:
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(None, None, f"같은 키가 두 번 있습니다: {key}", key_node.start_mark)
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+
+_UniqueKeys.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
 
 
 @dataclass(frozen=True)
@@ -39,6 +58,10 @@ class Tier:
     query: str
     keep_days: int
     filter: EventFilter
+
+    @property
+    def uses_message(self) -> bool:
+        return bool(self.filter.q_terms or self.filter.msg_all or self.filter.msg_not)
 
     def summary(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "query": self.query, "keep_days": self.keep_days}
@@ -61,11 +84,13 @@ class Config:
 def parse(text: str) -> Config:
     """YAML → 등급. 틀리면 Config(error=…) — 어느 줄이 왜 틀렸는지."""
     try:
-        doc = yaml.safe_load(text) or {}
-    except yaml.YAMLError as exc:
-        return Config(error=f"YAML 문법 오류: {exc}", exists=True)
+        doc = yaml.load(text, Loader=_UniqueKeys) or {}   # SafeLoader 를 이어받은 것 (같은 키만 더 막음)
+    except (yaml.YAMLError, ValueError, TypeError, RecursionError) as exc:   # 2026-02-30 같은 날짜 값·깊은 중첩도 (서버 기동이 멈췄다)
+        return Config(error=f"YAML 오류: {exc}", exists=True)
     if not isinstance(doc, dict) or not isinstance(doc.get("tiers") or [], list):
         return Config(error="tiers: 목록이 필요합니다", exists=True)
+    if extra := sorted(str(k) for k in doc if k != "tiers"):
+        return Config(error=f"알 수 없는 키: {', '.join(extra)} (tiers 만 씁니다)", exists=True)
     raw = doc.get("tiers") or []
     if len(raw) > MAX_TIERS:
         return Config(error=f"등급은 {MAX_TIERS}개까지", exists=True)
@@ -74,6 +99,8 @@ def parse(text: str) -> Config:
         where = f"tiers[{i}]"
         if not isinstance(t, dict):
             return Config(error=f"{where}: id·name·query·keep_days 를 가진 항목이어야 합니다", exists=True)
+        if extra := sorted(str(k) for k in t if k not in TIER_KEYS):
+            return Config(error=f"{where}: 알 수 없는 키 {', '.join(extra)} (id·name·query·keep_days 만)", exists=True)
         tid, query, keep = t.get("id"), t.get("query"), t.get("keep_days")
         if not isinstance(tid, str) or not TIER_ID_RE.match(tid):
             return Config(error=f"{where}.id 는 영문 소문자로 시작하는 32자 이내(소문자·숫자·-) — 보관 파일 이름에 들어갑니다", exists=True)
@@ -88,6 +115,8 @@ def parse(text: str) -> Config:
             flt = parse_query(query)
         except QueryError as exc:
             return Config(error=f"{where}.query: {exc}", exists=True)
+        if flt.never:
+            return Config(error=f"{where}.query: 어떤 로그에도 맞을 수 없는 문장입니다 (같은 키에 서로 다른 값)", exists=True)
         name = t.get("name")
         tiers.append(Tier(tid, name.strip() if isinstance(name, str) and name.strip() else tid, query.strip(), keep, flt))
     return Config(tuple(tiers), exists=True)
@@ -97,11 +126,11 @@ def load() -> Config:
     """파일이 없으면 등급 없음(지금까지와 같음). 읽을 때마다 새로 — 한 시간에 한 번 정리할 때만 부른다."""
     path = Path(settings.retention_config)
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")   # BOM 붙은 UTF-8 도
     except FileNotFoundError:
         return Config()
-    except OSError as exc:
-        return Config(error=f"{path.name} 을(를) 읽을 수 없습니다: {exc}", exists=True)
+    except (OSError, UnicodeError) as exc:   # 한글 메모장 ANSI(CP949)로 저장하면 UnicodeDecodeError 로 서버 기동이 멈췄다
+        return Config(error=f"{path.name} 을(를) 읽을 수 없습니다 (UTF-8 로 저장하세요): {exc}", exists=True)
     config = parse(text)
     if config.error:
         log.error("보관 등급 설정 오류 (%s) — 보관 파일 만들기·삭제를 멈춥니다: %s", path, config.error)
@@ -109,10 +138,11 @@ def load() -> Config:
 
 
 def classify(tiers: tuple[Tier, ...], event: dict[str, Any]) -> Tier | None:
-    """맞는 등급 중 가장 긴 것 (같으면 앞의 것). 없으면 None = 기본."""
+    """맞는 등급 중 가장 긴 것 (같으면 앞의 것). 없으면 None = 기본. 메시지 접기는 한 번만 — 등급마다 접으면 한 달 보관이 몇 시간 늘었다."""
     best = None
+    folded = fold(event.get("message") or "") if any(t.uses_message for t in tiers) else None
     for t in tiers:
-        if (best is None or t.keep_days > best.keep_days) and t.filter.matches(event):
+        if (best is None or t.keep_days > best.keep_days) and t.filter.matches(event, folded):
             best = t
     return best
 
@@ -129,9 +159,18 @@ def expires_at(meta: dict[str, Any], config: Config) -> datetime:
     return datetime.fromisoformat(meta["to"]) + timedelta(days=keep_days(meta, config))
 
 
+def sensitive_tier(config: Config) -> Tier | None:
+    """민감정보 처리 시스템의 접속기록(2년)을 맡는 등급 — 있으면 WLM_RETENTION_DAYS 가 2년보다 짧아도 법정 미달로 보지 않는다."""
+    from .partitions import LEGAL_SENSITIVE_LOG_DAYS
+
+    return next((t for t in config.tiers if t.keep_days >= LEGAL_SENSITIVE_LOG_DAYS), None)
+
+
 def notes(config: Config) -> list[str]:
     """화면 안내 — 판정이 아니라 사이트가 확인할 것 (어떤 로그가 접속기록인지는 사이트가 정한다)."""
     out = []
+    if settings.sensitive_access_log and settings.retention_days < 730 and (t := sensitive_tier(config)):
+        out.append(f"민감정보 처리 시스템의 접속기록은 등급 '{t.name}'({t.keep_days}일)이 맡습니다 — 그 시스템의 로그가 이 등급 문장에 모두 맞는지 확인하세요")
     for t in config.tiers:
         if t.keep_days < settings.db_retention_days:
             out.append(f"등급 '{t.name}' {t.keep_days}일 — DB 보관기간({settings.db_retention_days}일)보다 짧아 보관 파일을 만들지 않고 "

@@ -10,15 +10,13 @@
 # - 어떤 로그가 '접속기록'(법정 1년, 민감정보 처리 시스템 2년)인지는 사이트가 정합니다. 짧은 등급에 접속기록이 들어가지 않게 하세요.
 # - 이 파일이 틀리면 고칠 때까지 보관 파일 만들기·삭제를 멈춥니다(로그는 DB 에 그대로) — 환경설정 > 로그 보관 화면에 이유가 보입니다.
 #
-# 예:
-# tiers:
-#   - id: emr-access
-#     name: 진료정보 시스템 접속기록
-#     query: 'host:EMR-DB-01,EMR-WAS-01 category:security'
-#     keep_days: 730
-#   - id: web
-#     name: 웹 요청(IIS)
-#     query: 'source:iis'
-#     keep_days: 180
-
-tiers: []
+# 예 — 아래 줄마다 '# '(샵과 빈칸 하나)만 지우면 됩니다. tiers: 는 이미 있으니 다시 쓰지 마세요(같은 키가 두 번이면 오류):
+tiers:
+  # - id: emr-access
+  #   name: 진료정보 시스템 접속기록
+  #   query: 'host:EMR-DB-01,EMR-WAS-01 category:security'
+  #   keep_days: 730
+  # - id: web
+  #   name: 웹 요청(IIS)
+  #   query: 'source:iis'
+  #   keep_days: 180

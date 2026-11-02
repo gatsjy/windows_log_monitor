@@ -185,7 +185,8 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - 백업은 api 가 아니라 `backup` 서비스(postgres 이미지, busybox sh)가 한다. 결과는 `audit_log` 의 `backup.*` 로만 api 에 전달된다. `backup.sh` 를 고치면 `selftest` 로 확인한다.
   - busybox `date` 는 `-d '+1 month'`·`'-N days'` 를 모른다(GNU 만). 날짜 계산은 `YYYY-MM-DD` 와 초(`date +%s`) 산술로 — 자체 시험에서 그 값으로 만든 파일 이름이 비지 않는지도 본다.
   - 외부 저장소 복제(B-17)는 새 파일만 복사하고 덮어쓰지 않는다. 지우는 규칙(만료)을 바꾸면 '원본이 사라져도 복제본은 남는다' 시험을 지킨다.
-  - 보관 등급 파일(`events_YYYY_MM.<등급>.*`, B-70)의 복제본은 날짜로 계산하지 않고 api 의 `retention.delete_archive` 기록(대상 = 본문 파일 이름)이 있을 때만 지운다 — 파기 기록의 대상 이름을 바꾸면 `archive_expired` 도.
+  - 보관 등급 파일(`events_YYYY_MM.<등급>.*`, B-70)의 복제본은 날짜로 계산하지 않고 api 의 `retention.delete_archive` 기록(대상 = 본문 파일 이름) 또는 지운 표시 `<이름>.destroyed.json` 이 있을 때만 지운다 — 파기 기록의 대상 이름을 바꾸면 `archive_expired` 도.
+  - 보관 파일: 기본 메타가 그 달의 **완료 표시**다(`archive.is_archived`) — 등급 파일만 있는 달·기본 파일이 먼저 만료된 달도 `file: null` 메타로 남긴다. 표시를 지우거나 '기본 파일이 있어야 보관됨'으로 되돌리면 복원한 달을 지금 설정으로 다시 보관해 등급 파일을 덮어쓴다(검토에서 재현).
 - 점검 보고서(`reports`)는 트리거로 내용 수정·삭제·TRUNCATE 를 막는다(확인은 한 번, 전송 결과만 나중에 채움, 보관기간 정리만 `SET LOCAL wlm.report_purge`). 보고서 HTML 에는 로그에서 온 값이 들어가므로 `render.py` 에서 반드시 `escape` 한다(화면은 같은 출처 iframe).
 - 테스트에서는 `WLM_REPORT_SCHEDULER=off`(conftest)라 정기 실행이 돌지 않는다. 정기 실행 시험은 `scheduler.tick(now)` 을 직접 부른다.
 - 표시 시간대는 `config.display_zone()` 으로 얻는다(`ZoneInfo(settings.display_tz)` 를 직접 부르지 않는다 — 이름이 틀리면 UTC 로).

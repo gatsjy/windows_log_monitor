@@ -86,8 +86,56 @@ def test_shipped_config_and_its_example_are_valid():
     text = path.read_text(encoding="utf-8")
     shipped = retention.parse(text)
     assert shipped.error is None and shipped.tiers == ()
-    after = text.split("# 예:\n", 1)[1].split("\n\n", 1)[0]
-    example = "\n".join(line[2:] for line in after.splitlines())
+    example = "\n".join(line.replace("  # ", "  ", 1) if line.startswith("  # ") else line for line in text.splitlines())
     config = retention.parse(example)
     assert config.error is None and [t.id for t in config.tiers] == ["emr-access", "web"]
     assert retention.classify(config.tiers, {"host": "EMR-WAS-01", "category": "security", "source": "iis"}).id == "emr-access"
+
+
+@pytest.mark.parametrize(("text", "needle"), [
+    ("tiers: []\ntiers:\n  - id: a\n    query: 'host:x'\n    keep_days: 30", "두 번"),      # 예시 주석을 풀고 'tiers: []' 를 남김
+    ("tiers:\n  - id: a\n    query: 'host:x'\n    keep_days: 30\n    keep_days: 9", "두 번"),
+    ("tier: []", "알 수 없는 키"),
+    ("tiers:\n  - id: a\n    query: 'host:x'\n    keep: 30\n    keep_days: 9", "알 수 없는 키 keep"),
+    ("tiers:\n  - id: a\n    query: 'host:x host:y'\n    keep_days: 30", "맞을 수 없는"),
+    ("tiers:\n  - id: a\n    name: 2026-02-30\n    query: 'host:x'\n    keep_days: 30", "YAML"),       # 없는 날짜 → ValueError
+    ("tiers: " + "[" * 2000 + "]" * 2000, "YAML"),
+])
+def test_parse_rejects_silent_mistakes(text, needle):
+    config = retention.parse(text)
+    assert config.error and needle in config.error, config.error
+
+
+def test_load_survives_a_non_utf8_file(tmp_path, monkeypatch):
+    """한글 메모장 ANSI(CP949)로 저장하면 UnicodeDecodeError 로 서버 기동·정리가 멈췄다(검토에서 재현) — 설정 오류로."""
+    from dataclasses import replace
+
+    path = tmp_path / "retention.yaml"
+    path.write_bytes("# 한글 주석\ntiers: []\n".encode("cp949"))
+    monkeypatch.setattr(retention, "settings", replace(retention.settings, retention_config=str(path)))
+    assert "UTF-8" in retention.load().error
+    path.write_bytes("\ufefftiers: []\n".encode())
+    assert retention.load().error is None
+
+
+def test_sensitive_tier_satisfies_the_two_year_rule(monkeypatch):
+    """민감정보 시스템의 접속기록만 730일 등급으로 두는 것이 권장 방법 — 그런 등급이 있으면 2년 미달 경고를 내지 않는다(준비도가 영영 '나쁨'이었다)."""
+    from dataclasses import replace
+
+    from app import partitions
+
+    sensitive = replace(partitions.settings, sensitive_access_log=True, retention_days=365)
+    monkeypatch.setattr(partitions, "settings", sensitive)
+    monkeypatch.setattr(retention, "settings", sensitive)
+    monkeypatch.setattr(retention, "load", lambda: retention.parse(GOOD))
+    assert not [w for w in partitions.retention_warnings() if "2년" in w]
+    assert any("진료정보 시스템 접속기록" in n for n in retention.notes(retention.parse(GOOD)))
+    monkeypatch.setattr(retention, "load", lambda: retention.parse(GOOD.replace("730", "400")))
+    assert [w for w in partitions.retention_warnings() if "2년" in w]
+
+
+def test_classify_folds_the_message_once_with_the_same_result():
+    tiers = retention.parse(GOOD + "\n  - id: msg\n    query: '\"로그온 실패\"'\n    keep_days: 400\n").tiers
+    event = {"host": "PC-01", "source": "winevtlog", "message": "계정 로그온 실패 (0xC000006A)"}
+    assert retention.classify(tiers, event).id == "msg"
+    assert retention.classify(tiers, {**event, "message": None}) is None

@@ -112,7 +112,7 @@ async def drop_expired(conn, now: datetime | None = None) -> list[str]:
         if part["to"] > db_cutoff or (part["hold_until"] and part["hold_until"] > now):
             continue
         name = part["name"]
-        archived = archive.data_path(name).exists() and archive.meta_path(name).exists()
+        archived = archive.is_archived(name)   # 완료 표시 — 복원한 달은 보존 기간 뒤 다시 보관하지 않고 지운다(그 파일은 그대로)
         if archiving_enabled(config) and part["to"] > total_cutoff and not archived:
             try:
                 meta = await archive.archive_partition(name, part["from"], part["to"], config)
@@ -151,7 +151,9 @@ LEGAL_MIN_AUDIT_DAYS = 1095       # 제5조: 권한 부여·변경·말소 내�
 def retention_warnings() -> list[str]:
     """보관기간이 법정 최소보다 짧은 설정. 어떤 로그가 '접속기록'인지는 사이트가 판단하므로 2년 기준은 안내만 한다."""
     out = []
-    if settings.sensitive_access_log and settings.retention_days < LEGAL_SENSITIVE_LOG_DAYS:
+    config = retention.load()
+    # 민감정보 처리 시스템의 접속기록만 2년 등급으로 두는 것이 B-70 의 권장 방법 — 그런 등급이 있으면 2년 미달로 보지 않는다(화면 안내로 확인)
+    if settings.sensitive_access_log and settings.retention_days < LEGAL_SENSITIVE_LOG_DAYS and not retention.sensitive_tier(config):
         out.append(f"로그 보관 {settings.retention_days}일 — 민감정보(진료정보) 처리 시스템의 접속기록 법정 최소 2년(730일)보다 "
                    "짧습니다 (WLM_RETENTION_DAYS, WLM_SENSITIVE_ACCESS_LOG=on)")
     elif settings.retention_days < LEGAL_MIN_LOG_DAYS:
@@ -161,7 +163,6 @@ def retention_warnings() -> list[str]:
                    "짧습니다 (WLM_AUDIT_RETENTION_DAYS)")
     if settings.report_retention_days < LEGAL_MIN_LOG_DAYS:
         out.append(f"점검 보고서 보관 {settings.report_retention_days}일 — 점검 증적을 1년 이상 남기세요 (WLM_REPORT_RETENTION_DAYS)")
-    config = retention.load()
     if config.error:
         out.append(f"보관 등급 설정(config/retention.yaml) 오류 — 고칠 때까지 보관 파일 만들기·삭제를 멈춥니다(로그는 DB 에 그대로): {config.error}")
     return out

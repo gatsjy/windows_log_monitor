@@ -117,9 +117,10 @@ def test_archive_splits_by_tier(client):
     assert {t["tier"]: t["rows"] for t in base["tiers"]} == {"access": 2, "web": 1}
     web = _meta(f"{r}.web.meta.json")
     assert (web["tier"], web["keep_days"], web["query"], web["tier_name"]) == ("web", 200, "source:iis", "웹 요청")
-    # 기본 365일이 지난 달: 등급(730일) 파일만 — 기본 파일은 만들자마자 지워질 것이라 만들지 않는다
+    # 기본 365일이 지난 달: 등급(730일) 파일만 — 기본 파일은 만들자마자 지워질 것이라 만들지 않고 메타는 완료 표시로(file 없음)
     o = NAMES["old"]
-    assert [p.name for p in _mine() if p.name.startswith(o)] == [f"{o}.access.jsonl.gz", f"{o}.access.meta.json"]
+    assert [p.name for p in _mine() if p.name.startswith(o)] == [f"{o}.access.jsonl.gz", f"{o}.access.meta.json", f"{o}.meta.json"]
+    assert _meta(f"{o}.meta.json")["file"] is None and _meta(f"{o}.meta.json")["skipped"] == {"default": 1}
     assert _rows(f"{o}.access.jsonl.gz") == [("EMR-01", "winevtlog")]
     # 가장 긴 등급도 지난 달은 파일 없이 지움 (예전과 같음)
     assert not [p for p in _mine() if p.name.startswith(NAMES["ancient"])]
@@ -153,6 +154,26 @@ def test_expired_tier_file_is_deleted_with_its_tier_in_the_record(client):
     assert not (ARCHIVE / f"{r}.web.jsonl.gz").exists() and (ARCHIVE / f"{r}.access.jsonl.gz").exists()
     [(detail,)] = sql("SELECT detail FROM audit_log WHERE action = 'retention.delete_archive' AND target = %s", (f"{r}.web.jsonl.gz",))
     assert (detail["tier"], detail["retention_days"], detail["rows"]) == ("web", 200, 1)
+    # DB 를 백업으로 되돌려 이 기록이 사라져도 외부 복제본이 지워지게 — 지운 표시 파일 (backup.sh)
+    assert json.loads((ARCHIVE / f"{r}.web.destroyed.json").read_text(encoding="utf-8"))["file"] == f"{r}.web.jsonl.gz"
+
+
+def test_destroy_record_comes_first(client, monkeypatch):
+    """파기 기록을 남기지 못하면 지우지 않는다 — 기록 없이 지우면 증적도 없고 외부 복제본도 안 지워졌다(검토에서 재현)."""
+    from app import archive, db, retention
+
+    r = NAMES["recent"]
+    meta = _meta(f"{r}.meta.json")
+    (ARCHIVE / f"{r}.meta.json").write_text(json.dumps({**meta, "to": (datetime.now(UTC) - timedelta(days=400)).isoformat()}), encoding="utf-8")
+
+    async def broken(*args, **kwargs):
+        raise db.AuditError("DB 끊김")
+
+    monkeypatch.setattr(db, "audit", broken)
+    assert client.portal.call(archive.delete_expired, datetime.now(UTC), retention.load()) == []
+    assert (ARCHIVE / f"{r}.jsonl.gz").exists()
+    monkeypatch.undo()
+    (ARCHIVE / f"{r}.meta.json").write_text(json.dumps(meta), encoding="utf-8")
 
 
 def test_restore_brings_back_every_file_of_the_month(client):
@@ -162,6 +183,40 @@ def test_restore_brings_back_every_file_of_the_month(client):
     assert sql(f"SELECT host FROM {o}") == [("EMR-01",)]
     [(detail,)] = sql("SELECT detail FROM audit_log WHERE action = 'retention.restore_archive' AND target = %s", (o,))
     assert [f["file"] for f in detail["files"]] == [f"{o}.access.jsonl.gz"]   # 기본 파일이 없는 달도 등급 파일로
+
+
+def test_restored_month_is_not_archived_again(client):
+    """기본 파일 없이 등급 파일만 있는 달을 복원했다가 보존 기간이 끝나면 지금 설정으로 다시 보관해 등급 파일을 덮어썼다 — 등급 문장을 좁혔으면
+    행이 사라지고 기간을 줄였으면 약속한 기간보다 일찍 지워졌다(검토에서 재현). 이제 완료 표시가 있으면 다시 보관하지 않고 지우기만 한다."""
+    o = NAMES["old"]   # 앞 시험에서 복원해 둔 달 (hold 1일)
+    before = (ARCHIVE / f"{o}.access.jsonl.gz").read_bytes(), _meta(f"{o}.access.meta.json")
+    CONFIG.write_text(TIERS.replace("'host:EMR-01'", "'host:EMR-02'").replace("730", "400"), encoding="utf-8")
+    try:
+        sql("UPDATE partition_holds SET hold_until = now() - interval '1 minute' WHERE name = %s", (o,))
+        assert client.post("/api/settings/retention/rotate", headers=CSRF).status_code == 200
+        parts = {r[0] for r in sql("SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid")}
+        assert o not in parts                                               # 지웠다
+        assert (ARCHIVE / f"{o}.access.jsonl.gz").read_bytes() == before[0]  # 파일은 그대로 (행·기간 그대로)
+        assert _meta(f"{o}.access.meta.json") == before[1]
+        assert not sql("SELECT 1 FROM audit_log WHERE action = 'integrity.events_mismatch' AND target = %s", (o,))
+    finally:
+        CONFIG.write_text(TIERS, encoding="utf-8")
+
+
+def test_default_meta_stays_as_marker_while_tier_files_remain(client):
+    """기본 파일이 먼저 만료돼도 그 달의 등급 파일이 남아 있으면 기본 메타는 완료 표시로 남는다 — 마지막 등급 파일을 지울 때 함께 지운다."""
+    from app import archive, retention
+
+    r = NAMES["recent"]
+    now = datetime.now(UTC)
+    client.portal.call(archive.delete_expired, now + timedelta(days=400), retention.load())   # 기본 365일만 지남 (access 730일은 남음)
+    marker = _meta(f"{r}.meta.json")
+    assert marker["file"] is None and marker["expired_default"]["rows"] == 1 and not (ARCHIVE / f"{r}.jsonl.gz").exists()
+    assert archive.is_archived(r) and (ARCHIVE / f"{r}.access.jsonl.gz").exists()
+    assert r not in {a["partition"] for a in archive.list_archives() if a["tier"] is None}   # 화면·검증에는 파일만
+    client.portal.call(archive.delete_expired, now + timedelta(days=800), retention.load())
+    left = [p.name for p in _mine() if p.name.startswith(r)]
+    assert left == [f"{r}.access.destroyed.json", f"{r}.web.destroyed.json"]   # 지운 표시만 남는다 (완료 표시도 함께 지움)
 
 
 def test_bad_config_stops_archiving_and_deleting(client):

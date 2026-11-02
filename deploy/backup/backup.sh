@@ -435,7 +435,9 @@ replicate_dir() {  # 원본 폴더, 복제 폴더, 파일 무늬...
   done
 }
 
-archive_destroyed() {  # api 가 그 보관 파일을 지운 기록(retention.delete_archive)이 있나 — 값은 psql 변수로
+archive_destroyed() {  # api 가 그 보관 파일을 지웠나 — 지운 표시 파일(<이름>.destroyed.json) 또는 감사로그 retention.delete_archive
+  # 표시 파일은 DB 를 백업으로 되돌려도 남는다(감사로그의 파기 기록은 백업 시점으로 돌아가 복제본이 영영 남았다 — 검토에서 재현)
+  [ -f "$ARCHIVE_DIR/${1%.jsonl.gz}.destroyed.json" ] && return 0
   _c=$(printf '%s\n' "SELECT count(*) FROM audit_log WHERE action = 'retention.delete_archive' AND target = :'target';" \
     | psql_q -d "$PGDATABASE" -v target="$1" 2>/dev/null) || return 1
   [ "${_c:-0}" -gt 0 ]
@@ -669,6 +671,15 @@ SQL
   check "$([ -e "$REPLICA_DIR/archive/$tier.jsonl.gz" ] || [ -e "$REPLICA_DIR/archive/$tier.meta.json" ] && echo y || echo n)" n \
     "api 가 파기한 등급 파일은 복제본도 지움 (본문·메타)"
   check "$(archive_expired "events_2000_01.x'y.jsonl.gz" && echo y || echo n)" y "이름은 psql 변수로 넘김"
+  # 감사로그가 없어도(DB 를 백업으로 되돌림) api 가 남긴 지운 표시 파일이 있으면 복제본을 지운다
+  tier2=$old.web
+  echo "$tier2" > "$REPLICA_DIR/archive/$tier2.jsonl.gz"; echo '{}' > "$REPLICA_DIR/archive/$tier2.meta.json"
+  do_replicate >/dev/null
+  check "$([ -e "$REPLICA_DIR/archive/$tier2.jsonl.gz" ] && echo y || echo n)" y "기록도 표시도 없으면 남김"
+  echo '{}' > "$ARCHIVE_DIR/$tier2.destroyed.json"
+  do_replicate >/dev/null
+  check "$([ -e "$REPLICA_DIR/archive/$tier2.jsonl.gz" ] || [ -e "$REPLICA_DIR/archive/$tier2.meta.json" ] && echo y || echo n)" n \
+    "지운 표시 파일이 있으면 감사로그 없이도 복제본을 지움"
   touch -d '2000-01-01 00:00:00' "$REPLICA_DIR/backups/wlm-20000101-000000.dump" "$REPLICA_DIR/backups/before-restore-old.dump"
   do_replicate >/dev/null
   check "$(ls "$REPLICA_DIR"/backups/wlm-20000101-000000.dump 2>/dev/null | wc -l | tr -d ' ')|$(ls "$REPLICA_DIR"/backups/before-restore-old.dump | wc -l | tr -d ' ')" \

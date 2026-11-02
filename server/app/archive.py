@@ -4,8 +4,10 @@
   events_2026_06.jsonl.gz        한 줄에 이벤트 하나 (JSON). 컬럼 전부 + 원본(raw) — 보관 등급에 맞지 않은 로그 (기본)
   events_2026_06.meta.json       {partition, from, to, rows, sha256, bytes, created_at, format, tiers, skipped}
   events_2026_06.<등급>.jsonl.gz  보관 등급(B-70, app/retention.py)에 맞은 로그 — 메타에 tier·keep_days·query
-기본 메타는 늘 맨 나중에 쓴다(0건이어도) — '이 달은 보관을 마쳤다'는 표시라 등급 파일만 있고 기본 메타가 없으면 다시 만든다.
-기본 기간(WLM_RETENTION_DAYS)이 이미 지난 달(더 긴 등급 때문에 보관하는 달)은 기본 파일을 만들지 않는다 — 만들자마자 지워질 것이라.
+기본 메타는 늘 맨 나중에 쓴다 — '이 달은 보관을 마쳤다'는 표시(is_archived). 기본 기간(WLM_RETENTION_DAYS)이 이미 지난 달(더 긴 등급
+때문에 보관하는 달)은 기본 파일 없이 메타만(file 없음 = 표시), 기본 파일이 먼저 만료돼도 그 달의 등급 파일이 남아 있는 동안은 메타를 표시로 남긴다.
+표시가 없으면 다시 만든다(만들다 멈춘 달). 표시 없이 지나간 달을 복원했다가 보존 기간이 끝나면 지금 설정으로 다시 보관해 등급 파일을 덮어써
+행이 사라지고 약속한 기간이 줄었다(검토에서 재현).
 형식 v2 부터 공통 필드(category·username·src_ip, 마이그레이션 007)도 넣는다. v1 파일에는 없었다 — 복원한 달에서
 user:/ip:/분류 검색이 0건이 되고 분류로 범위를 정한 사용자에게 보이지 않았다. v1 을 복원할 때는 원본에서 다시 구한다
 (normalizers.derive_common, 정규화와 같은 값).
@@ -65,16 +67,33 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def list_archives(config: retention.Config | None = None) -> list[dict[str, Any]]:
-    """보관 파일(메타)마다: 메타 + exists·tier·keep_days·expires_at (만료는 지금 등급 설정까지 보고)."""
+def _read_meta(path: Path) -> dict[str, Any] | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def is_archived(partition: str) -> bool:
+    """이 달의 보관을 마쳤나 — 기본 메타(완료 표시)가 있고, 기본 파일이 있다고 적혀 있으면 그 파일도 있다."""
+    meta = _read_meta(meta_path(partition))
+    return meta is not None and (meta.get("file") is None or data_path(partition).exists())
+
+
+def list_archives(config: retention.Config | None = None, markers: bool = False) -> list[dict[str, Any]]:
+    """보관 파일(메타)마다: 메타 + exists·tier·keep_days·expires_at (만료는 지금 등급 설정까지 보고).
+    markers: 파일 없는 완료 표시(기본 파일 없이 등급 파일만 있는 달)도 — 화면·검증·복원에는 넣지 않는다."""
     config = config or retention.Config()
     items = []
     for meta in sorted(archive_dir().glob("events_*.meta.json")):
-        try:
-            data = json.loads(meta.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        data = _read_meta(meta)
+        if data is None:
             continue
         data["tier"] = data.get("tier")
+        if "file" in data and data["file"] is None:
+            if markers:
+                items.append({**data, "marker": True})
+            continue
         data["file"] = data.get("file") or data_path(data["partition"], data["tier"]).name
         data["exists"] = (archive_dir() / data["file"]).exists()
         data["keep_days"] = retention.keep_days(data, config)
@@ -173,8 +192,12 @@ async def archive_partition(partition: str, start: datetime, end: datetime,
         g.sha256 = await asyncio.to_thread(sha256_file, g.final)
         if key is None:
             continue
+        keep = g.tier.keep_days
+        if (old := _read_meta(meta_path(partition, key))) is not None:
+            # 만들다 멈춘 달을 다시 만들 때 — 앞서 약속한 기간보다 줄이지 않는다
+            keep = max(keep, int(old.get("keep_days") or 0))
         tier_meta = {**base, "rows": g.rows, "sha256": g.sha256, "bytes": g.final.stat().st_size, "file": g.final.name,
-                     "tier": key, "tier_name": g.tier.name, "keep_days": g.tier.keep_days, "query": g.tier.query}
+                     "tier": key, "tier_name": g.tier.name, "keep_days": keep, "query": g.tier.query}
         meta_path(partition, key).write_text(json.dumps(tier_meta, ensure_ascii=False, indent=2), encoding="utf-8")
         tiers.append({k: tier_meta[k] for k in ("tier", "file", "rows", "sha256", "keep_days")})
         log.warning("보관 파일 생성: %s (%s건, 등급 %s %s일)", g.final.name, g.rows, key, g.tier.keep_days)
@@ -185,8 +208,7 @@ async def archive_partition(partition: str, start: datetime, end: datetime,
     want = await eventdigest.recorded(start, end)
     problems = eventdigest.compare(acc, want)
     meta["digest_hours"], meta["digest_problems"] = len(want), len(problems)
-    if default:
-        meta_path(partition).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    meta_path(partition).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")   # 완료 표시 (기본 파일이 없어도)
     log.warning("보관: %s (기본 %s건, 등급 파일 %s개, 기간이 끝나 쓰지 않음 %s건)", partition, meta["rows"], len(tiers),
                 sum(skipped.values()))
     if problems:
@@ -263,20 +285,52 @@ def _add_windows_names(row: dict) -> None:
         row["raw"] = {**raw, windows.SOURCE: {"EventData": derived}}
 
 
+def tombstone_path(file: str) -> Path:
+    """지운 등급 파일의 표시 — 외부 복제본은 이것(또는 감사로그)이 있을 때만 지운다. DB 를 백업으로 되돌리면 감사로그의 파기 기록은 사라지지만
+    이 파일은 남는다(검토에서 재현: 복제본이 영영 '만료 전에 사라진 원본'으로 남음). 작아서 지우지 않는다."""
+    return archive_dir() / file.replace(".jsonl.gz", ".destroyed.json")
+
+
 async def delete_expired(now: datetime, config: retention.Config) -> list[str]:
-    """보관기간이 지난 보관 파일 삭제 (파기 기록을 audit_log 에 — 외부 복제본은 이 기록을 보고 지운다, backup.sh).
-    기본 파일은 WLM_RETENTION_DAYS, 등급 파일은 만들 때 기간과 지금 설정 중 긴 쪽(retention.keep_days)."""
+    """보관기간이 지난 보관 파일 삭제. 파기 기록(감사로그)을 **먼저** 남기고(남기지 못하면 지우지 않고 다음 주기에) 지운다 — 기록 없이 지우면
+    외부 복제본이 지워지지 않고 증적도 없다. 기본 파일은 WLM_RETENTION_DAYS, 등급 파일은 만들 때 기간과 지금 설정 중 긴 쪽(retention.keep_days).
+    기본 파일이 지워져도 그 달의 등급 파일이 남아 있으면 기본 메타는 완료 표시로 남긴다(복원했다가 다시 보관하지 않게)."""
     if config.error:
         return []
     deleted = []
-    for meta in list_archives(config):
-        if datetime.fromisoformat(meta["expires_at"]) > now:
+    metas = list_archives(config, markers=True)
+    for meta in metas:
+        if meta.get("marker") or datetime.fromisoformat(meta["expires_at"]) > now:
             continue
-        data_path(meta["partition"], meta["tier"]).unlink(missing_ok=True)
-        meta_path(meta["partition"], meta["tier"]).unlink(missing_ok=True)
+        try:
+            await db.audit("system", "retention.delete_archive", meta["file"],
+                           {"rows": meta["rows"], "sha256": meta["sha256"], "retention_days": meta["keep_days"],
+                            **({"tier": meta["tier"], "tier_name": meta.get("tier_name")} if meta["tier"] else {})}, required=True)
+        except Exception:
+            log.exception("파기 기록을 남기지 못해 %s 을(를) 지우지 않습니다 (다음 주기에 다시)", meta["file"])
+            continue
+        partition, tier = meta["partition"], meta["tier"]
+        if tier:
+            tombstone_path(meta["file"]).write_text(json.dumps(
+                {"file": meta["file"], "sha256": meta["sha256"], "tier": tier, "keep_days": meta["keep_days"],
+                 "destroyed_at": now.isoformat()}, ensure_ascii=False), encoding="utf-8")
+        data_path(partition, tier).unlink(missing_ok=True)
+        meta["deleted"] = True
         deleted.append(meta["file"])
         log.warning("보관기간 만료 보관 파일 삭제: %s", meta["file"])
-        await db.audit("system", "retention.delete_archive", meta["file"],
-                       {"rows": meta["rows"], "sha256": meta["sha256"], "retention_days": meta["keep_days"],
-                        **({"tier": meta["tier"], "tier_name": meta.get("tier_name")} if meta["tier"] else {})})
+        if tier:
+            meta_path(partition, tier).unlink(missing_ok=True)
+    # 기본 메타(완료 표시): 그 달의 등급 파일이 남아 있는 동안은 남긴다
+    left = {m["partition"] for m in metas if m["tier"] and not m.get("deleted")}
+    for meta in metas:
+        if meta["tier"] or not (meta.get("marker") or meta.get("deleted")):
+            continue
+        if meta["partition"] in left:
+            if meta.get("deleted"):
+                raw = _read_meta(meta_path(meta["partition"])) or {}
+                meta_path(meta["partition"]).write_text(json.dumps(
+                    {**raw, "file": None, "expired_default": {k: raw.get(k) for k in ("rows", "sha256", "bytes", "file")}},
+                    ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            meta_path(meta["partition"]).unlink(missing_ok=True)
     return deleted
