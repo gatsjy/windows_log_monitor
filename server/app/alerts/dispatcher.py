@@ -42,6 +42,7 @@ HOUSEKEEPING_SEC = 60
 RELEASE_ERROR = "서버가 보내는 도중 멈춰 다시 보냅니다 (같은 알림을 두 번 받을 수 있음)"
 EXPIRE_ERROR = "하루가 지나 보내지 않았습니다"
 DOWN_NOTE = " (같은 곳으로 방금 보낸 알림이 실패해 이번에는 시도하지 않음)"
+SPLIT_NOTE = " (묶음을 받는 쪽이 거절해 하나씩 다시 보냅니다)"
 GROUP_MAX = 500   # 묶음 한 통에 담는 알림 상한 (B-41) — 넘는 것은 다음 묶음 간격에 '추가 n건'으로
 
 
@@ -227,7 +228,7 @@ class Dispatcher:
         if not jobs:
             return True
         try:
-            if grouping and jobs[0]["rule"] not in BUILTIN_RULES:   # 내장 알림은 묶지 않으니 모으지도 않는다
+            if grouping and jobs[0]["rule"] not in BUILTIN_RULES and not jobs[0]["solo"]:   # 묶지 않는 행은 모으지도 않는다
                 hold = await _group_hold(name, jobs, config, now)
                 if hold is not None:
                     await repository.hold_deliveries(jobs, hold)
@@ -257,8 +258,10 @@ class Dispatcher:
 
     async def _send_batch(self, name: str, notifier: Notifier, jobs: list[dict[str, Any]]) -> datetime | None:
         """잡은 행들을 한 통으로. 받는 곳 자체가 안 되면(시간 초과·target_down) 다시 볼 시각을 돌려준다 — 그 줄을 멈춘다.
-        묶음을 받는 쪽이 알림 하나 때문에 거절하면(4xx·SMTP 554 — 본문의 어떤 값) 반씩 나눠 바로 다시 보낸다: 거절된 알림만
-        시도를 쓰고 나머지는 보낸다(검토에서 재현: 거절된 알림 하나로 묶음 전체가 다섯 번 실패해 버려졌다)."""
+        묶음을 받는 쪽이 알림 하나 때문에 거절하면(본문 문제 — 400·SMTP 554) 그 행들을 하나씩 다시 보낼 차례로 돌린다(시도로 세지
+        않음): 거절된 알림만 혼자 시도를 쓰고 나머지는 보낸다. 이 자리에서 나눠 다시 보내면 한 줄이 전송 자리를 오래 쥐고 오래된
+        잡힘 정리가 보내는 중인 행을 풀었다(검토에서 재현). 받는 쪽 전체가 거절하는 경우(401·403·404·410·SMTP 발신 거절)는
+        받는 곳 문제(target_down)라 묶음째 미룬다."""
         try:
             await asyncio.wait_for(notifier.send(_message(jobs)), timeout=SEND_TIMEOUT_SEC)
         except asyncio.CancelledError:
@@ -266,14 +269,11 @@ class Dispatcher:
         except Exception as exc:  # noqa: BLE001 - 어떤 실패든 기록하고 재시도 대상으로
             timed_out = isinstance(exc, TimeoutError)
             down = timed_out or getattr(exc, "target_down", False)
-            if len(jobs) > 1 and not down:
-                half = len(jobs) // 2
-                retry_at = await self._send_batch(name, notifier, jobs[:half])
-                if retry_at is not None:   # 나누어 보내는 사이 받는 곳이 멈췄다 — 남은 반은 시도로 세지 않고 그때까지
-                    await repository.hold_deliveries(jobs[half:], retry_at)
-                    return retry_at
-                return await self._send_batch(name, notifier, jobs[half:])
             error = "전송 시간 초과" if timed_out else str(exc)[:1000]
+            if len(jobs) > 1 and not down:
+                await repository.split_deliveries(jobs, error[:900] + SPLIT_NOTE)
+                log.warning("알림 %s → %s 묶음 거절 — 하나씩 다시 보냅니다: %s", _ids(jobs), name, error)
+                return None
             now = datetime.now(UTC)
             # 묶음은 함께 다시 보내도록 같은 때로 (첫 행의 실패 간격), 다섯 번째 실패한 행만 gave_up
             retry_at = now + RETRY_BACKOFF[min(jobs[0]["attempts"], 3)]

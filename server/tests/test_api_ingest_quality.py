@@ -59,14 +59,14 @@ def test_quality_columns_report_and_readiness(client):
     r = client.post("/api/ingest", json=records, headers=KEY)
     assert r.status_code == 200 and r.json()["accepted"] == len(records)
 
-    q = client.portal.call(repository.ingest_quality, now - timedelta(hours=1), now)
+    q = client.portal.call(repository.ingest_quality, now - timedelta(days=1), now + timedelta(days=1))
     t = q["total"]
     assert (t["template_mismatch"], t["unparsed"], t["late_n"], t["future_n"], t["parse_errors"]) == (2, 1, 150, 1, 0)
     by = {r["host"]: r for r in q["rows"]}
     assert set(by) == {"DC-Q", "PC-LATE", "PC-FUTURE", "WEB-Q"} and by["PC-LATE"]["max_lag_sec"] >= 3 * 3600 - 60
     assert by["WEB-Q"]["source"] == "iis" and by["WEB-Q"]["unparsed"] == 1
 
-    payload = client.portal.call(builder.build, "daily", now - timedelta(hours=1), now + timedelta(minutes=1))
+    payload = client.portal.call(builder.build, "daily", now - timedelta(days=1), now + timedelta(days=1))
     texts = [a["text"] for a in payload["attention"]]
     assert any(x.startswith("필드 수가 템플릿과 다른 Windows 이벤트 2건 — DC-Q") for x in texts)
     assert any("원문 그대로 둔 IIS 줄 1건" in x for x in texts) and any("5분 넘게 미래인 로그 1건 — PC-FUTURE" in x for x in texts)
@@ -77,3 +77,21 @@ def test_quality_columns_report_and_readiness(client):
 
     items = {i.key: i for i in readiness.judge(client.portal.call(readiness.collect, now))}
     assert items["ingest_quality"].status == "warn" and "DC-Q" in items["ingest_quality"].detail
+
+
+def test_each_day_belongs_to_one_daily_report(client):
+    """날(UTC)은 하루 보고서 하나에만 — 경계를 둘 다 넣어 한국 시간 하루 보고서가 이틀을 세고 같은 문제가 이틀 연속 나왔다 (검토에서 재현)."""
+    from zoneinfo import ZoneInfo
+
+    from app import repository
+
+    with psycopg.connect(os.environ["WLM_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("INSERT INTO agent_streams (host, source, channel, day, n, first_at, last_at, parse_errors)"
+                     " VALUES ('DAY-PC', 'syslog', '', '2026-03-10', 10, now(), now(), 5)")
+    seoul = ZoneInfo("Asia/Seoul")
+    totals = []
+    for day in (9, 10, 11):
+        start = datetime(2026, 3, day, tzinfo=seoul)
+        q = client.portal.call(repository.ingest_quality, start, start + timedelta(days=1))
+        totals.append(sum(r["parse_errors"] for r in q["rows"] if r["host"] == "DAY-PC"))
+    assert totals == [0, 5, 0]

@@ -198,16 +198,26 @@ def test_grouping_off_sends_each_alert(client):
 
 
 def test_one_rejected_alert_does_not_sink_the_group(client):
-    """받는 쪽이 알림 하나의 내용 때문에 묶음을 거절하면 반씩 나눠 다시 보낸다 — 거절된 알림만 시도를 쓴다
-    (검토에서 재현: 예전에는 넷 모두 다섯 번 실패해 gave_up)."""
+    """받는 쪽이 알림 하나의 내용 때문에 묶음을 거절하면 그 행들을 하나씩 다시 보낸다 — 거절된 알림만 시도를 쓰고, 묶음의 거절은
+    시도로 세지 않는다 (검토에서 재현: 예전에는 넷 모두 다섯 번 실패해 gave_up, 그다음 고침은 그 자리에서 반씩 나눠 전송 자리를 오래 쥠)."""
     ids = fire(client, "거절 시험", ["PC-1", "PC-2", "POISON-3", "PC-4"], notify=("까다로움",))
     passed("거절 시험", 31)
     drain(client)
-    rows = dict(sql("SELECT a.group_key, d.status || ':' || d.attempts || ':' || coalesce(d.batch_size::text, '-')"
+    rows = dict(sql("SELECT a.group_key, d.status || ':' || d.attempts || ':' || coalesce(d.batch_size::text, '-') || ':' || d.solo"
                     " FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id WHERE d.alert_id = ANY(%s)", (ids,)))
-    assert rows == {"PC-1": "sent:1:2", "PC-2": "sent:1:2", "POISON-3": "failed:1:-", "PC-4": "sent:1:1"}   # 보낸 것도 시도 한 번
-    sent = [b["text"] for b in posts("/picky") if "POISON" not in b["text"]]
-    assert len(sent) == 2 and "· 2대 (PC-1, PC-2)" in sent[0]
+    assert rows == {"PC-1": "sent:1:1:true", "PC-2": "sent:1:1:true", "POISON-3": "failed:1:-:true", "PC-4": "sent:1:1:true"}
+    texts = [b["text"] for b in posts("/picky")]
+    assert len(texts) == 5 and texts[0].startswith("[오류] 거절 시험 · 4대")   # 묶음 한 번 + 하나씩 넷
+    assert sorted(t.split(" · ")[1].split("\n")[0] for t in texts[1:]) == ["PC-1", "PC-2", "PC-4", "POISON-3"]
+    # 다시 보낼 차례가 와도 다시 묶지 않는다 — 거절된 알림은 혼자
+    sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE alert_id = ANY(%s) AND status = 'failed'", (ids,))
+    fire(client, "거절 시험", ["PC-5"], notify=("까다로움",))
+    passed("거절 시험", 400)
+    _Receiver.received.clear()
+    drain(client)
+    assert all("POISON" not in t or t.count("·") <= 3 for t in (b["text"] for b in posts("/picky")))
+    assert sql("SELECT d.attempts FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id WHERE a.group_key = 'POISON-3'"
+               " AND d.alert_id = ANY(%s)", (ids,)) == [(2,)]
 
 
 def test_builtin_alerts_are_never_grouped(client):

@@ -29,6 +29,28 @@ def test_windows_template_mismatch_is_flagged():
     assert normalize(with_map, NOW).flags == frozenset()
 
 
+def test_older_versions_are_not_template_mismatches():
+    """옛 버전은 앞부분이 같다(named 가 뒤 이름만 버린다) — 표시하지 않는다. 실측 버전의 길이가 다르거나 처음 보는 새 버전이 다르면 표시
+    (검토에서 재현: Server 2016·2019 의 4697 v0·Server 2012 R2 의 4624 v1 이 매일 '템플릿 불일치'로 남았다)."""
+    from app.normalizers.win_templates import SECURITY, mismatch
+
+    assert not mismatch(SECURITY, 4697, ["x"] * 9, 0) and not mismatch(SECURITY, 4624, ["x"] * 21, 1)
+    assert mismatch(SECURITY, 4697, ["x"] * 9, 1)          # 실측 버전인데 길이가 다르다
+    assert mismatch(SECURITY, 4624, ["x"] * 29, 4)         # 처음 보는 새 버전 — 중간에 끼었을 수 있다
+    assert not mismatch(SECURITY, 4624, ["x"] * 28, 3)     # VERSIONED 와 같다
+    assert mismatch(SECURITY, 4740, ["x"] * 30, 0) and not mismatch(SECURITY, 4740, ["x"] * 2, 0)   # 실측 안 한 템플릿은 많을 때만
+
+
+def test_verified_versions_match_the_real_records():
+    """VERIFIED 는 윈도 CI 실측 레코드의 버전과 같아야 한다 (기본 이름 = 그 버전, 4624 는 v3 이 VERSIONED)."""
+    from app.normalizers import win_templates as wt
+
+    for r in map(json.loads, FIXTURE.read_text(encoding="utf-8").splitlines()):
+        key, v = (r.get("ProviderName") or "", r.get("EventID") or 0), int(r.get("Version") or 0)
+        if key in wt.TEMPLATES and (*key, v) not in wt.VERSIONED:
+            assert wt.VERIFIED.get(key) == v, key
+
+
 def test_unparsed_iis_and_parse_errors_are_flagged(monkeypatch):
     line = {"log": "garbage line that is not w3c", "file": "W3SVC9\\u_ex1.log", "agent_host": "WEB-Q", "log_source": "iis"}
     assert normalize(line, NOW).flags == {"unparsed"}

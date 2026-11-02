@@ -138,7 +138,9 @@ class EmailNotifier(Notifier):
         except (OSError, smtplib.SMTPException) as exc:
             # 접속·인증 실패는 같은 메일 서버로 가는 알림 모두 같은 결과(받는 곳 장애). 본문·받는 사람 거절(554 등)은
             # 그 메일 하나의 문제 — 받는 곳 장애로 보면 다른 알림까지 미뤄진다(검토에서 재현)
-            per_message = isinstance(exc, (smtplib.SMTPDataError, smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused))
+            # 발신자 거절(530 인증 필요·550 중계 거부)·받는 사람 모두 거절은 이 그룹으로 가는 모든 메일이 같다 — 받는 곳 문제(검토 보완:
+            # 알림 하나의 문제로 보면 묶음을 하나씩 다시 보내 같은 거절을 수백 번 받았다)
+            per_message = isinstance(exc, smtplib.SMTPDataError)
             raise NotifierError(f"메일 전송 실패 ({self.smtp.host}:{self.smtp.port}): {exc}",
                                 target_down=not per_message) from exc
 
@@ -171,6 +173,9 @@ _LOOPBACK = ("127.0.0.1", "localhost", "::1")
 # 클라우드 메신저 호스트는 고른 형식(json·text 포함)과 상관없이 https 만 — 주소 자체에 토큰이 있다
 _HTTPS_HOSTS = tuple(h for f in FORMATS.values() if f.https_only for h in f.hosts)
 _BAD_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f]")
+
+
+RECEIVER_GONE = frozenset({401, 403, 404, 410, 429})   # 웹훅 응답 중 받는 곳 자체의 문제 (429 = 보내는 속도 제한)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -247,8 +252,10 @@ class WebhookNotifier(Notifier):
             # 넉넉히 읽어 가린 '뒤에' 자른다 — 먼저 자르면 경계에 걸친 토큰 앞부분이 가려지지 않고 남는다
             detail = self.redact(exc.read(4096).decode("utf-8", "replace"))[:300]
             moved = " — 다른 주소로 넘기려 합니다. 넘어간 뒤의 최종 주소를 넣으세요" if 300 <= exc.code < 400 else ""
+            # 401·403·404·410 = 주소·토큰이 지워졌거나 막힘(Slack no_service·invalid_token·channel_is_archived) — 어떤 알림도 받지
+            # 않으므로 받는 곳 문제. 400·413·422 처럼 본문 때문이면 그 알림 하나의 문제
             raise NotifierError(f"웹훅 응답 {exc.code}{moved}: {detail}",
-                                target_down=exc.code >= 500 or exc.code == 429) from exc
+                                target_down=exc.code >= 500 or exc.code in RECEIVER_GONE) from exc
         except (urllib.error.URLError, OSError) as exc:
             reason = self.redact(str(getattr(exc, "reason", exc)))
             raise NotifierError(f"웹훅 연결 실패 ({self.target()}): {reason}", target_down=True) from exc

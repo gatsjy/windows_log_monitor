@@ -84,6 +84,14 @@ TEMPLATES: dict[tuple[str, int], tuple[str, ...]] = {
 }
 
 
+# TEMPLATES 가 맞는 이벤트 버전 — 윈도 CI 실측 레코드(tests/fixtures/winevtlog/agent-fb4.0.14.jsonl)로 확인한 것만(test_win_templates 가 대조).
+# 4624 의 기본 이름은 v2(문서), v3 은 VERSIONED
+VERIFIED: dict[tuple[str, int], int] = {
+    ("Microsoft-Windows-PowerShell", 4104): 1, (SECURITY, 4624): 2, (SECURITY, 4625): 0, (SECURITY, 4688): 2,
+    (SECURITY, 4697): 1, (SECURITY, 4720): 0, (SECURITY, 4726): 0, (SECURITY, 4732): 0, (SECURITY, 4733): 0,
+    (SECURITY, 4738): 0, ("Service Control Manager", 7045): 0,
+}
+
 _4624_V3 = list(TEMPLATES[(SECURITY, 4624)])
 _4624_V3.insert(_4624_V3.index("RestrictedAdminMode") + 1, "RemoteCredentialGuard")
 VERSIONED: dict[tuple[str, int, int], tuple[str, ...]] = {
@@ -99,10 +107,22 @@ def _version(value) -> int:
 
 
 def mismatch(provider: str | None, event_id: int | None, inserts, version=None) -> bool:
-    """알려진 이벤트인데 StringInserts 수가 템플릿과 다르다 — 이벤트 버전이 바뀌어 이름이 어긋날 수 있다 (수집 품질, B-56)."""
-    key = (provider or "", event_id or 0)
-    names = VERSIONED.get((*key, _version(version))) or TEMPLATES.get(key)
-    return names is not None and isinstance(inserts, list) and len(inserts) != len(names)
+    """이름이 어긋났을 수 있는 이벤트 (수집 품질, B-56): 실측한 버전·VERSIONED 버전인데 필드 수가 다르거나, 처음 보는 **새** 버전인데
+    필드 수가 다르다(4624 v3 처럼 중간에 끼었을 수 있다). 옛 버전은 앞부분이 같아 named 가 뒤 이름만 버린다 — 표시하지 않는다
+    (검토에서 재현: Server 2016·2019 의 4697 v0 가 매일 '템플릿 불일치'로 남았다). 실측하지 않은 템플릿은 필드가 더 많을 때만."""
+    if not isinstance(inserts, list):
+        return False
+    key, v = (provider or "", event_id or 0), _version(version)
+    if (names := VERSIONED.get((*key, v))) is not None:
+        return len(inserts) != len(names)
+    if (names := TEMPLATES.get(key)) is None:
+        return False
+    known = [k[2] for k in VERSIONED if k[:2] == key] + ([VERIFIED[key]] if key in VERIFIED else [])
+    if not known:
+        return len(inserts) > len(names)
+    if v == VERIFIED.get(key) or v < 0 or v > max(known):
+        return len(inserts) != len(names)
+    return False
 
 
 def named(provider: str | None, event_id: int | None, inserts: list, version=None) -> dict | None:

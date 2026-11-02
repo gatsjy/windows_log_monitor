@@ -490,8 +490,10 @@ QUALITY_COLUMNS = ("parse_errors", "unparsed", "template_mismatch", "late_n", "f
 async def ingest_quality(start: datetime, end: datetime, limit: int = 20) -> dict[str, Any]:
     """수집 품질 (B-56): 기간의 날들에 (PC, 소스, 채널)마다 문제 칸 합 — 문제가 있는 줄만 많은 순으로 limit, 그리고 전체 합.
     날 단위라 기간 경계의 날은 통째로 센다(점검 보고서는 하루·한 주 단위)."""
-    where = "day >= %s AND day <= %s"
-    params = ((start.astimezone(UTC)).date(), (end.astimezone(UTC)).date())
+    # 날(UTC)마다 정오가 기간 안인 날만 — 날 하나가 하루 보고서 하나에만 들어간다. 경계를 둘 다 넣으면 한국 시간 하루 보고서가
+    # UTC 이틀(48시간)을 세어 같은 문제가 이틀 연속 '점검 필요'에 나왔다(검토에서 재현). 시간대 차이(한국 9시간)만큼 어긋난다
+    where = "day + interval '12 hours' >= %s AND day + interval '12 hours' < %s"
+    params = (start, end)
     total = await db.fetch_one(f"SELECT COALESCE(sum(n), 0) AS n, {', '.join(f'COALESCE(sum({c}), 0) AS {c}' for c in QUALITY_COLUMNS)}"
                                f" FROM agent_streams WHERE {where}", params)
     rows = await db.fetch_all(
@@ -1201,7 +1203,7 @@ _CLAIM_ORDER = (
     # 같은 알림이면 알림(trigger)을 해소(resolve)보다 먼저
     " d.next_attempt_at, d.alert_id, d.action DESC")
 _CLAIM_RETURNING = (
-    " RETURNING d.alert_id, d.notifier, d.action, d.attempts, d.claimed_at, d.queued_at, a.rule, a.severity, a.payload,"
+    " RETURNING d.alert_id, d.notifier, d.action, d.attempts, d.claimed_at, d.queued_at, d.solo, a.rule, a.severity, a.payload,"
     " a.status AS alert_status, a.resolved_at, a.auto_resolved,"
     # 해소 통지만 (B-35 2단계, dispatcher._stale): 같은 대상에 더 새 알림이 있나(있으면 지난 해소가 새 사고를 닫는다 — 같은
     # dedup_key), 이 곳으로 이번 문제의 알림이 실제로 전해졌나(같이 자동 해결된 알림들 = 같은 resolved_at), 문제의 시작
@@ -1230,18 +1232,33 @@ async def claim_group(notifier: str, now: datetime, limit: int, solo_rules: Sequ
     제 차례에만 — 실패 간격을 건너뛰지 않게. 첫 행이 늘 들어가도록 따로 더한다(상한에 밀리지 않게).
     solo_rules(내장 알림)는 묶지 않는다 — 알림마다 내용(무엇이 바뀌었나)이 본문이다(검토에서 재현: 묶으면 변경 줄이 빠졌다)."""
     rows = await db.fetch_all(
-        "WITH first AS (SELECT d.alert_id, d.notifier, d.action, a.rule FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id"
+        "WITH first AS (SELECT d.alert_id, d.notifier, d.action, d.solo, a.rule FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id"
         f" WHERE d.notifier = %s AND {_DUE}{_CLAIM_ORDER} LIMIT 1 FOR UPDATE OF d SKIP LOCKED),"
         " mates AS (SELECT d.alert_id, d.notifier, d.action FROM first f JOIN alert_deliveries d"
         "   ON d.notifier = f.notifier AND d.action = f.action JOIN alerts a ON a.id = d.alert_id AND a.rule = f.rule"
         "   WHERE d.status IN ('pending', 'failed') AND d.claimed_at IS NULL"
         "   AND (d.next_attempt_at <= %s OR (d.status = 'pending' AND d.attempts = 0)) AND NOT (f.rule = ANY(%s::text[]))"
+        # 하나씩 다시 보내기로 한 행(solo — 묶음이 거절됨)은 다시 묶지 않는다
+        "   AND NOT f.solo AND NOT d.solo"
         "   ORDER BY d.alert_id LIMIT %s FOR UPDATE OF d SKIP LOCKED),"
         " pick AS (SELECT alert_id, notifier, action FROM first UNION SELECT alert_id, notifier, action FROM mates)"
         " UPDATE alert_deliveries d SET claimed_at = clock_timestamp() FROM pick, alerts a"
         " WHERE d.alert_id = pick.alert_id AND d.notifier = pick.notifier AND d.action = pick.action AND a.id = d.alert_id"
         + _CLAIM_RETURNING, (notifier, now, now, list(solo_rules), max(limit - 1, 1)))
     return sorted(rows, key=lambda r: r["alert_id"])
+
+
+async def split_deliveries(jobs: list[dict[str, Any]], error: str) -> int:
+    """묶음을 받는 쪽이 알림 하나의 내용 때문에 거절했을 때 (B-41 검토 보완): 그 행들을 하나씩 다시 보낼 차례로 — 시도로 세지 않고
+    (solo, 지금 바로). 거절된 알림만 혼자 보낼 때 시도를 쓴다. 잡은 그대로인 행만 (finish_delivery 와 같은 조건)."""
+    rows = await db.fetch_all(
+        "UPDATE alert_deliveries d SET solo = true, claimed_at = NULL, next_attempt_at = now(), last_error = %s, updated_at = now()"
+        " FROM unnest(%s::bigint[], %s::text[], %s::text[], %s::timestamptz[]) AS j(alert_id, notifier, action, claimed_at)"
+        " WHERE d.alert_id = j.alert_id AND d.notifier = j.notifier AND d.action = j.action AND d.claimed_at = j.claimed_at"
+        " RETURNING d.alert_id",
+        (_printable(error, 1000), [j["alert_id"] for j in jobs], [j["notifier"] for j in jobs],
+         [j.get("action", "trigger") for j in jobs], [j["claimed_at"] for j in jobs]))
+    return len(rows)
 
 
 async def last_group_sent(notifier: str, rule: str, action: str, since: datetime) -> datetime | None:

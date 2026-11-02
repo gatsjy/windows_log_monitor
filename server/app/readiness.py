@@ -91,7 +91,8 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "ingest_plain": settings.ingest_plain,
         "offline_pcs": sorted(a["host"] for a in agents if a["silent_sec"] > settings.heartbeat_stale_sec),
         "silent_streams": len(await repository.silent_streams(now)),
-        "ingest_quality": await repository.ingest_quality(now - timedelta(days=1), now),   # 수집 품질 (B-56) — 어제·오늘
+        # 수집 품질 (B-56) — 어제·오늘 (날마다 정오가 기간 안인 날을 센다)
+        "ingest_quality": await repository.ingest_quality(now - timedelta(days=1, hours=12), now + timedelta(hours=12)),
         "assets": {k: v for k, v in (await assets.coverage(now)).items() if k != "items"},
         "coverage_gaps": coverage.gaps(rules, await coverage.current(rules, now)),
         "retention_warnings": partitions.retention_warnings(),

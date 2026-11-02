@@ -26,7 +26,12 @@ def _http_error(code):
     (_http_error(500), True),
     (_http_error(429), True),     # 보내는 속도 제한 — 그 곳에 더 보내도 같다
     (_http_error(400), False),    # 이 알림의 본문 문제
-    (_http_error(404), False),
+    (_http_error(422), False),
+    # 주소·토큰이 지워졌거나 막힘 — 어떤 알림도 받지 않는다 (B-41 검토: 알림 하나의 문제로 보면 묶음을 하나씩 다시 보내 같은 거절을 수백 번)
+    (_http_error(404), True),
+    (_http_error(403), True),
+    (_http_error(401), True),
+    (_http_error(410), True),
     (urllib.error.URLError("connection refused"), True),
     (OSError("timed out"), True),
 ])
@@ -71,6 +76,12 @@ def test_email(monkeypatch):
     with pytest.raises(NotifierError) as caught:
         mail._send(None)
     assert caught.value.target_down is False
+    # 발신자 거절(530 인증·550 중계)·받는 사람 모두 거절은 이 그룹의 모든 메일이 같다 — 받는 곳 문제
+    for refusal in (smtplib.SMTPSenderRefused(530, b"auth required", "x@y"), smtplib.SMTPRecipientsRefused({"a@x": (550, b"no")})):
+        monkeypatch.setattr(Rejecting, "send_message", lambda self, mail, e=refusal: (_ for _ in ()).throw(e))
+        with pytest.raises(NotifierError) as caught:
+            mail._send(None)
+        assert caught.value.target_down is True
     # 받는 사람·메일 서버가 없는 것도 그 곳의 모든 알림이 같다
     for notifier in (EmailNotifier("빈 그룹", [], SmtpConfig(host="smtp.local")), EmailNotifier("당직", ["a@x"], SmtpConfig(host=""))):
         with pytest.raises(NotifierError) as caught:
