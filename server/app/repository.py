@@ -1079,6 +1079,28 @@ async def due_notifiers(now: datetime) -> list[str]:
     return [r["notifier"] for r in rows]
 
 
+async def escalation_candidates(since: datetime, builtin: list[str]) -> list[dict]:
+    """에스컬레이션을 볼 알림 (B-43): since 이후 발생, 해결 안 됨, 무음·관찰 모드가 아니고 내장 알림(설정 변경·관리 작업·감시)도 아님.
+    알림이 무음 중에 났으면 보내지 않았으므로 다시 알릴 것도 없다(점검 중 잡음)."""
+    return await db.fetch_all(
+        "SELECT id, rule, severity, group_key, fired_at, status FROM alerts WHERE fired_at >= %s AND status <> 'resolved'"
+        " AND silence_id IS NULL AND NOT coalesce((payload->>'observe')::boolean, false) AND NOT (rule = ANY(%s))"
+        " ORDER BY id", (since, builtin))
+
+
+async def queue_escalation(alert_id: int, notify: tuple[str, ...], action: str, note: str) -> list[str]:
+    """에스컬레이션 한 단계 (B-43): 받는 곳마다 대기열에 한 줄(같은 단계는 기본 키로 한 번만)과 처리 기록 한 줄. 새로 넣은 받는 곳."""
+    async with db.pool().connection() as conn, conn.transaction():
+        cur = await conn.execute(
+            "INSERT INTO alert_deliveries (alert_id, notifier, status, action) SELECT %s, unnest(%s::text[]), 'pending', %s"
+            " ON CONFLICT DO NOTHING RETURNING notifier", (alert_id, list(notify), action))
+        added = sorted(r["notifier"] for r in await cur.fetchall())
+        if added:
+            await conn.execute("INSERT INTO alert_notes (alert_id, author, action, text) VALUES (%s, 'system', 'escalate', %s)",
+                               (alert_id, f"{note} → {', '.join(added)} 에 다시 알림"))
+    return added
+
+
 async def claim_delivery(notifier: str, now: datetime) -> dict[str, Any] | None:
     """한 행을 잡는다 — 덜 실패한 것·심각한 것·오래 기다린 것부터. 다른 쪽이 잡고 있는 행은 건너뛴다(SKIP LOCKED)."""
     return await db.fetch_one(

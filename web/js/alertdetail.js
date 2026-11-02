@@ -18,7 +18,9 @@ const DELIVERY = {
 
 // 처리 상태 (server: alerts.status) — 확인은 알림을 볼 수 있으면 누구나, 해결·다시 열기·무음은 alerts.handle
 export const ALERT_STATUS = { open: '처리 안 됨', acked: '확인함', resolved: '해결됨' };
-const NOTE_ACTIONS = { note: '메모', ack: '확인', resolve: '해결', reopen: '다시 열기', auto_resolve: '자동 해결' };
+const NOTE_ACTIONS = { note: '메모', ack: '확인', resolve: '해결', reopen: '다시 열기', auto_resolve: '자동 해결', escalate: '다시 알림' };
+// 에스컬레이션 (B-43): 전송 행의 action 'escalate:<초>:<acked|resolved>'
+const isEscalation = (d) => (d.action || '').startsWith('escalate:');
 // 종료 분류 (B-44) — 해결할 때 필수. auto 는 엔진의 자동 해소 (server: alerts/message.RESOLUTION_LABELS)
 export const RESOLUTIONS = {
   tp_malicious: ['정탐 — 의심 행위', '정탐'], tp_expected: ['정탐 — 예상된 관리 작업', '정탐(예상)'],
@@ -68,8 +70,8 @@ export function deliveryChips(deliveries = []) {
   return html`${deliveries.map((d) => {
     const [mark, label] = d.claimed_at ? ['↗', '보내는 중'] : DELIVERY[d.status] ?? ['?', d.status];
     const next = d.status === 'failed' && d.next_attempt_at ? ` · 다음 시도 ${fmtTime(d.next_attempt_at, { date: false })}` : '';
-    const what = d.action === 'resolve' ? '해소 통지 ' : '';   // 자동 해결 뒤 같은 곳에 보낸 해소 통지 (B-35 2단계)
-    return html`<span class="dlv ${d.status}" title="${what}${label}${next}${d.last_error ? `: ${d.last_error}` : ''}">${mark} ${d.notifier}${d.action === 'resolve' ? ' · 해소' : ''}</span>`;
+    const what = d.action === 'resolve' ? '해소 통지 ' : isEscalation(d) ? '다시 알림(에스컬레이션) ' : '';   // 해소 통지 (B-35 2단계)
+    return html`<span class="dlv ${d.status}" title="${what}${label}${next}${d.last_error ? `: ${d.last_error}` : ''}">${mark} ${d.notifier}${d.action === 'resolve' ? ' · 해소' : isEscalation(d) ? ' · 다시' : ''}</span>`;
   })}`;
 }
 
@@ -220,7 +222,8 @@ export async function openAlert(id, { onChange } = {}) {
       <div class="table-wrap"><table class="table">
         <thead><tr><th>알림 대상</th><th>상태</th><th class="r">시도</th><th>전송 시각</th><th>마지막 오류</th></tr></thead>
         <tbody>${alert.deliveries.map((d) => html`<tr>
-          <td class="nowrap"><b>${d.notifier}</b>${d.action === 'resolve' ? html` <span class="muted">해소 통지</span>` : ''}</td>
+          <td class="nowrap"><b>${d.notifier}</b>${d.action === 'resolve' ? html` <span class="muted">해소 통지</span>`
+            : isEscalation(d) ? html` <span class="muted">다시 알림 (${fmtDuration(Number(d.action.split(':')[1]))} ${d.action.endsWith(':acked') ? '미확인' : '미해결'})</span>` : ''}</td>
           <td class="nowrap">${deliveryChips([d])}</td>
           <td class="r num">${d.attempts}</td>
           <td class="nowrap muted">${d.sent_at ? fmtTime(d.sent_at) : '–'}</td>

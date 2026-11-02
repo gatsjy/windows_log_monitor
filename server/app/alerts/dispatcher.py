@@ -23,7 +23,7 @@ from typing import Any
 from .. import db, repository
 from ..config import settings
 from . import targets
-from .message import AlertMessage
+from .message import AlertMessage, escalation_from_action
 from .notifiers import SEVERITY_LABELS, Notifier, NotifierError
 
 log = logging.getLogger(__name__)
@@ -229,6 +229,7 @@ class Dispatcher:
             if job.get("action") == "resolve":
                 message.event_action, message.resolved_at = "resolve", job["resolved_at"]
                 message.started_at = job.get("started_at")
+            message.escalation = escalation_from_action(job.get("action") or "") or ""   # B-43: 다시 알림 머리말
             try:
                 await asyncio.wait_for(notifier.send(message), timeout=SEND_TIMEOUT_SEC)
             except asyncio.CancelledError:
@@ -292,6 +293,12 @@ def _stale(job: dict[str, Any], notifier: Notifier) -> str | None:
         if not job.get("delivered"):
             return "이 곳으로 알림이 전해지지 않아 해소 통지도 보내지 않습니다"
         return notifier.accepts_resolve()
+    if (job.get("action") or "").startswith("escalate:"):
+        # 에스컬레이션 (B-43): 넣을 때가 아니라 보낼 때 본다 — 그 사이 누가 확인·해결했으면 다시 알릴 까닭이 없다
+        if job.get("alert_status") == "resolved":
+            return "다시 알리기 전에 해결됨"
+        if job["action"].endswith(":acked") and job.get("alert_status") == "acked":
+            return "다시 알리기 전에 확인됨"
     if job.get("auto_resolved"):
         return "보내기 전에 조건이 풀려 자동으로 해결됨"
     return None

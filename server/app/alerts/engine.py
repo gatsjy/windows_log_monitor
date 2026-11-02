@@ -27,9 +27,9 @@ from .. import db, repository
 from ..config import settings
 from ..filters import EventFilter
 from . import configdiff
-from .builtin import CONFIG_RULE
+from .builtin import BUILTIN_RULES, CONFIG_RULE
 from .dispatcher import dispatcher
-from .message import AlertMessage, _window_text, local, search_link
+from .message import AlertMessage, _window_text, escalation_text, local, search_link
 from .rules import AlertConfig, ConfigError, Rule, parse_text
 
 log = logging.getLogger(__name__)
@@ -126,6 +126,9 @@ def _link_params(rule: Rule, key: str, since: datetime, saved: str | None = None
     if rule.group_by != "none" and key:
         params[rule.group_by] = key
     return params
+
+
+ESCALATE_LATE_MAX = timedelta(hours=6)
 
 
 class AlertEngine:
@@ -395,6 +398,10 @@ class AlertEngine:
                         # 꺼진 동안은 '본 구간'을 이어 가지 않는다 — 다시 켰을 때 꺼져 있던 시간을 평가 공백으로 잘못 알렸다
                         self.runs[rule.name].last_query_at = self.runs[rule.name].last_gap = None
                 self.current_rule = None
+                try:
+                    await self._escalate(now)
+                except Exception:   # 에스컬레이션이 실패해도 탐지는 계속한다 (다음 주기에 다시 본다 — 같은 단계는 한 번만 들어간다)
+                    log.exception("에스컬레이션 확인 실패")
                 names = {r.name for r in self.config.rules}
                 self.runs = {name: run for name, run in self.runs.items() if name in names}
                 self.last_run_at = now
@@ -597,6 +604,33 @@ class AlertEngine:
         log.warning("알림 발생 #%s %s", alert_id, message.title())
         dispatcher.wake()
         return alert_id
+
+    async def _escalate(self, now: datetime) -> int:
+        """확인(또는 해결)되지 않은 알림을 기한이 지나면 다른 받는 곳에 다시 알린다 (B-43, ADR-055). 넣기만 하고 보내는 것은 전송기 —
+        보낼 차례에 확인·해결됐으면 건너뛴다(dispatcher._stale). 기한이 지난 지 ESCALATE_LATE_MAX 넘은 단계는 넣지 않는다:
+        정책을 새로 켜거나 서버가 오래 멈췄다 돌아왔을 때 며칠 묵은 알림이 한꺼번에 '다시 알림'으로 쏟아지지 않게."""
+        policies = self.config.escalations
+        if not policies:
+            return 0
+        horizon = max(step.after for p in policies for step in p.steps)
+        rows = await repository.escalation_candidates(now - horizon - ESCALATE_LATE_MAX, sorted(BUILTIN_RULES))
+        queued = 0
+        for row in rows:
+            for policy in policies:
+                if not policy.matches(row["rule"], row["severity"]):
+                    continue
+                for step in policy.steps:
+                    due = row["fired_at"] + step.after
+                    if not now - ESCALATE_LATE_MAX < due <= now:
+                        continue
+                    if row["status"] == "resolved" or (step.unless == "acked" and row["status"] != "open"):
+                        continue
+                    note = f"{escalation_text(int(step.after.total_seconds()), step.unless)} ({policy.name})"
+                    queued += len(await repository.queue_escalation(row["id"], step.notify, step.action, note))
+        if queued:
+            log.warning("에스컬레이션 %d건을 대기열에 넣었습니다", queued)
+            dispatcher.wake()
+        return queued
 
     def observing(self, rule_name: str) -> bool:
         """관찰 모드 규칙인가 (B-52). 내장 알림(설정 변경·관리 작업·감시)은 규칙이 아니라 늘 보낸다."""

@@ -74,12 +74,43 @@ class Rule:
         return EventFilter.from_params(match, default_since=None)
 
 
+ESCALATE_UNLESS = ("acked", "resolved")   # 이 상태가 되면 그 단계는 보내지 않는다
+ESCALATE_MAX_AFTER = timedelta(days=7)
+ESCALATE_MAX_STEPS = 5
+
+
+@dataclass(frozen=True)
+class EscalationStep:
+    after: timedelta                 # 알림 발생 뒤 이만큼 지나도
+    unless: str                      # acked(확인 안 됨) / resolved(해결 안 됨) 이면
+    notify: tuple[str, ...]          # 이 받는 곳에 다시 알린다
+
+    @property
+    def action(self) -> str:
+        """alert_deliveries.action — 단계마다 한 번만 넣는 키 (마이그레이션 029)."""
+        return f"escalate:{int(self.after.total_seconds())}:{self.unless}"
+
+
+@dataclass(frozen=True)
+class Escalation:
+    """확인 안 된 알림 에스컬레이션 (B-43, ADR-055): 새벽 3시의 심각 알림이 아침까지 읽히지 않는 것을 막는다."""
+
+    name: str
+    steps: tuple[EscalationStep, ...]
+    severities: tuple[str, ...] = ()   # 비우면 모든 심각도
+    rules: tuple[str, ...] = ()        # 비우면 모든 규칙
+
+    def matches(self, rule: str, severity: str) -> bool:
+        return (not self.severities or severity in self.severities) and (not self.rules or rule in self.rules)
+
+
 @dataclass(frozen=True)
 class AlertConfig:
     interval_sec: int = 30
     rules: tuple[Rule, ...] = ()
     # 알림 기능 자체의 문제(엔진 멈춤·전송 실패·규칙 동작 안 함)를 받을 곳 (ADR-045). 비우면 점검 보고서 받는 곳
     fallback_notify: tuple[str, ...] = ()
+    escalations: tuple[Escalation, ...] = ()
 
     def used_targets(self) -> dict[str, list[str]]:
         """알림 대상 이름 → 그 대상을 쓰는 규칙 이름들 (대상 삭제·이름 변경 막을 때 사용)."""
@@ -89,6 +120,11 @@ class AlertConfig:
                 used.setdefault(name, []).append(rule.name)
         for name in self.fallback_notify:
             used.setdefault(name, []).append("(대체 경로)")
+        for policy in self.escalations:
+            for step in policy.steps:
+                for name in step.notify:
+                    if f"(에스컬레이션 {policy.name})" not in used.setdefault(name, []):
+                        used[name].append(f"(에스컬레이션 {policy.name})")
         return used
 
 
@@ -213,6 +249,51 @@ def _distinct(value: Any, group_by: str, window: timedelta, where: str) -> tuple
     return field_name, minimum
 
 
+def _check_escalations(raw: Any, rule_names: set[str]) -> tuple[Escalation, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ConfigError("escalations 는 목록이어야 합니다")
+    out, names = [], set()
+    for i, p in enumerate(raw):
+        where = f"escalations[{i}]"
+        if not isinstance(p, dict) or not str(p.get("name") or "").strip():
+            raise ConfigError(f"{where}: name 이 필요합니다")
+        name = str(p["name"]).strip()
+        if name in names:
+            raise ConfigError(f"{where}: 이름이 중복됩니다 ({name})")
+        names.add(name)
+        severities = _str_list(p.get("severity"), f"{where}.severity")
+        if bad := [s for s in severities if s not in SEVERITIES]:
+            raise ConfigError(f"{where}.severity: {bad} (사용 가능: {', '.join(SEVERITIES)})")
+        rules = _str_list(p.get("rules"), f"{where}.rules")
+        if missing := [r for r in rules if r not in rule_names]:
+            raise ConfigError(f"{where}.rules: 없는 규칙 {missing}")
+        raw_steps = p.get("steps")
+        if not isinstance(raw_steps, list) or not 1 <= len(raw_steps) <= ESCALATE_MAX_STEPS:
+            raise ConfigError(f"{where}.steps: 단계 1~{ESCALATE_MAX_STEPS}개가 필요합니다")
+        steps = []
+        for j, s in enumerate(raw_steps):
+            sw = f"{where}.steps[{j}]"
+            if not isinstance(s, dict):
+                raise ConfigError(f"{sw}: 객체여야 합니다")
+            after = _duration(s.get("after"), f"{sw}.after")
+            if after > ESCALATE_MAX_AFTER:
+                raise ConfigError(f"{sw}.after: 7일 이하")
+            unless = str(s.get("unless") or "acked")
+            if unless not in ESCALATE_UNLESS:
+                raise ConfigError(f"{sw}.unless 는 acked(확인되면 멈춤)·resolved(해결되면 멈춤) 중 하나")
+            notify = _str_list(s.get("notify"), f"{sw}.notify")
+            if not notify:
+                raise ConfigError(f"{sw}.notify: 받는 곳이 필요합니다")
+            steps.append(EscalationStep(after=after, unless=unless, notify=notify))
+        keys = [s.action for s in steps]
+        if len(set(keys)) != len(keys):
+            raise ConfigError(f"{where}.steps: 같은 시간·조건의 단계가 겹칩니다")
+        out.append(Escalation(name=name, steps=tuple(steps), severities=severities, rules=rules))
+    return tuple(out)
+
+
 def parse(doc: Any) -> AlertConfig:
     """YAML 을 읽은 dict → AlertConfig. 문제가 있으면 ConfigError."""
     if doc is None:
@@ -242,7 +323,8 @@ def parse(doc: Any) -> AlertConfig:
     dup_sids = {s for s in sids if sids.count(s) > 1}
     if dup_sids:
         raise ConfigError(f"규칙 번호(sid)가 중복됩니다: {sorted(dup_sids)}")
-    return AlertConfig(interval_sec=interval, rules=tuple(rules), fallback_notify=fallback)
+    escalations = _check_escalations(doc.get("escalations"), set(names))
+    return AlertConfig(interval_sec=interval, rules=tuple(rules), fallback_notify=fallback, escalations=escalations)
 
 
 def parse_text(text: str) -> AlertConfig:

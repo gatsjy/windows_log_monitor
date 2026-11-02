@@ -33,6 +33,17 @@ def _window_text(seconds: int) -> str:
     return f"{seconds}초"
 
 
+def escalation_text(seconds: int, unless: str) -> str:
+    """에스컬레이션 문구 (B-43): '15분 동안 아무도 확인하지 않음'·'1시간 동안 해결되지 않음' — 제목 머리말·처리 기록에 같이."""
+    return f"{_window_text(seconds)} 동안 {'아무도 확인하지 않음' if unless == 'acked' else '해결되지 않음'}"
+
+
+def escalation_from_action(action: str) -> str | None:
+    """alert_deliveries.action 'escalate:<초>:<acked|resolved>' → 문구. 에스컬레이션이 아니면 None."""
+    parts = action.split(":") if action.startswith("escalate:") else []
+    return escalation_text(int(parts[1]), parts[2]) if len(parts) == 3 and parts[1].isdigit() else None
+
+
 # 서로 다른 값 수 규칙의 필드 이름 (화면 web/js/ruleform.js GROUP_LABELS 와 같은 말)
 DISTINCT_LABELS = {"user": "사용자", "ip": "IP", "host": "PC", "event_id": "이벤트 ID", "category": "분류",
                    "channel": "채널", "provider": "공급자", "source": "소스", "level": "수준"}
@@ -74,6 +85,7 @@ class AlertMessage:
     # 채널 끊김 (B-37 2단계): {host, source, channel, per_day} — 다시 들어왔는지 볼 때 어느 채널인지 (대상 이름은 사람이 읽는 문구)
     stream: dict[str, Any] | None = None
     observe: bool = False   # 관찰 모드 규칙의 알림 (B-52) — 기록만, 보내지 않음
+    escalation: str = ""    # 에스컬레이션으로 다시 보내는 알림 (B-43) — 문구(escalation_text). 저장되는 payload 에는 없음(전송 때만)
 
     # ------------------------------------------------------------ 직렬화
     def to_dict(self) -> dict[str, Any]:
@@ -85,6 +97,8 @@ class AlertMessage:
             data.pop("stream")
         if not self.observe:
             data.pop("observe")
+        if not self.escalation:
+            data.pop("escalation")
         if not self.distinct_field:   # 건수 규칙의 본문(웹훅 json·저장된 payload)은 예전과 같게
             for key in ("distinct_field", "distinct_min", "distinct_count", "distinct_values"):
                 data.pop(key)
@@ -126,10 +140,17 @@ class AlertMessage:
 
     def title(self) -> str:
         target = f" · {self.group_key}" if self.group_key else ""
-        prefix = "[테스트] " if self.test else "[해소] " if self.resolved else ""
+        prefix = ("[테스트] " if self.test else "[해소] " if self.resolved
+                  else f"[다시 알림 — {self.escalation}] " if self.escalation else "")
         return f"{prefix}[{self.severity_label}] {self.rule}{target}"
 
     def summary(self) -> str:
+        text = self._summary()
+        if self.escalation and not self.resolved and not self.test:   # 에스컬레이션 (B-43): 왜 다시 오는지 먼저
+            return f"{self.escalation} — 담당자가 확인하세요. {text}"
+        return text
+
+    def _summary(self) -> str:
         if self.test:
             return "알림 대상 연결 확인용 테스트 메시지입니다."
         if self.resolved:

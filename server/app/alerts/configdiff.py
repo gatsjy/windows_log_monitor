@@ -122,6 +122,31 @@ def needs_history(old: AlertConfig | None, new: AlertConfig) -> set[str]:
     return {rule_key(r) for r in new.rules if r.enabled and not (rule_key(r) in before and before[rule_key(r)].enabled)}
 
 
+def _escalation_changes(old: AlertConfig, new: AlertConfig) -> list[dict]:
+    """에스컬레이션 정책 (B-43): 단계를 빼거나·늦추거나·받는 곳을 빼거나·대상(심각도·규칙)을 좁히면 약해진다 — 새벽 알림이 아침까지 묻힌다."""
+    out = []
+    before = {p.name: p for p in old.escalations}
+    after = {p.name: p for p in new.escalations}
+    for name, p in before.items():
+        q = after.get(name)
+        if q is None:
+            out.append(("escalation_removed", f"에스컬레이션 '{name}' 삭제", True))
+            continue
+        if q == p:
+            continue
+        old_steps = {(s.unless, i): s for i, s in enumerate(p.steps)}
+        weaker = len(q.steps) < len(p.steps) or any(
+            (s2 := q.steps[i] if i < len(q.steps) else None) is None or s2.after > s.after or set(s.notify) - set(s2.notify)
+            for (_, i), s in old_steps.items())
+        narrower = (bool(q.severities) and (not p.severities or bool(set(p.severities) - set(q.severities)))) or \
+                   (bool(q.rules) and (not p.rules or bool(set(p.rules) - set(q.rules))))
+        out.append(("escalation", f"에스컬레이션 '{name}' 변경", weaker or narrower))
+    for name in after:
+        if name not in before:
+            out.append(("escalation_added", f"에스컬레이션 '{name}' 추가", False))
+    return [{"rule": None, "sid": None, "key": None, "change": c, "weakens": w, "text": t} for c, t, w in out]
+
+
 def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tuple[Rule, int]] | None = None) -> list[dict]:
     """직전 판본(old) → 새 판본(new) 차이. old 가 None 이면 비교할 수 없다는 한 줄(약해짐으로 봄).
     last_enabled = 규칙 키 → (그 규칙이 마지막으로 켜져 있던 모양, 판본 번호). needs_history 의 키만 엔진이 찾아 준다."""
@@ -139,6 +164,7 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
         changes.append({"rule": None, "sid": None, "key": None, "change": "fallback", "weakens": bool(gone),
                         "text": f"알림 기능 문제를 받는 곳 {', '.join(old.fallback_notify) or '(점검 보고서 받는 곳)'} → "
                                 f"{', '.join(new.fallback_notify) or '(점검 보고서 받는 곳)'}"})
+    changes += _escalation_changes(old, new)
     before = {rule_key(r): r for r in old.rules}
     after = {rule_key(r): r for r in new.rules}
     # 같은 이름인데 열쇠가 바뀐 것(sid 없는 규칙을 화면에서 고치면 번호가 붙는다)은 삭제+추가가 아니라 같은 규칙

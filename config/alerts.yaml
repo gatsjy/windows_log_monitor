@@ -14,6 +14,19 @@ settings:
   # 메일이 멈춘 것을 메일로는 알 수 없으니 메신저 웹훅을 하나 넣어 두는 것이 좋습니다. 예) fallback_notify: [당직메신저]
   # fallback_notify: []
 
+# 에스컬레이션 (B-43): 기한이 지나도 확인(또는 해결)되지 않은 알림을 다른 받는 곳에 다시 알립니다 — 새벽 3시의 심각 알림이
+# 아침까지 읽히지 않는 것을 막습니다. 보낼 차례에 누가 확인·해결했으면 건너뜁니다. 무음·관찰 모드 알림은 다시 알리지 않습니다.
+#   unless: acked(기본, 확인되면 멈춤) | resolved(해결되면 멈춤) · severity/rules 를 비우면 모든 알림 · after 는 7일까지
+# escalations:
+#   - name: 심각 알림 미확인
+#     severity: [critical]
+#     steps:
+#       - after: 15m
+#         notify: [당직메신저]
+#       - after: 1h
+#         unless: resolved
+#         notify: [보안팀]
+
 # sid: 규칙 번호 (Snort 처럼 고유 번호, 화면에서 만들면 자동 부여) · group: 규칙 묶음 (화면 왼쪽 목록)
 # kind: count (기본)      — window 동안 '수신된' 이벤트 중 match 에 맞는 것이 threshold 건 이상이면 알림
 #        agent_silent      — PC 에서 silent_for 동안 아무것도(하트비트 포함) 안 들어오면 알림
