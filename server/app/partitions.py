@@ -2,7 +2,7 @@
 
 - 이번 달 ~ N개월 뒤 파티션을 미리 만든다 (WLM_PARTITION_MONTHS_AHEAD).
 - DB 보관기간(WLM_DB_RETENTION_DAYS)이 지난 파티션은 압축 파일로 옮긴 뒤 DROP (app/archive.py).
-- 전체 보관기간(WLM_RETENTION_DAYS)이 지난 보관 파일은 삭제.
+- 전체 보관기간(WLM_RETENTION_DAYS, 보관 등급이 있으면 등급마다 — app/retention.py)이 지난 보관 파일은 삭제.
   모든 이동·삭제는 audit_log 에 남긴다 (ISMS: 로그 보관·파기 기록).
 """
 
@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 from psycopg import errors, sql
 
-from . import db
+from . import db, retention
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -53,8 +53,20 @@ async def ensure_partitions(conn, now: datetime | None = None) -> None:
             log.warning("파티션 %s 만들기를 미룸: events 잠금을 얻지 못함 (백업 중일 수 있음) — 다음 주기에 다시 시도", name)
 
 
-def archiving_enabled() -> bool:
-    return 0 < settings.db_retention_days < settings.retention_days
+def archiving_enabled(config: retention.Config | None = None) -> bool:
+    """DB 보관기간 뒤에 보관 파일로 둘 기간이 있나 — 등급 중 하나라도 DB 보다 길면."""
+    config = config or retention.load()
+    return 0 < settings.db_retention_days < config.max_keep_days()
+
+
+async def _config_error(config: retention.Config, now: datetime) -> None:
+    """보관 등급 설정이 틀리면 보관·삭제를 멈춘다(로그는 DB 에 그대로). 감사로그는 하루 한 번 — 시간마다 돈다."""
+    from . import repository
+
+    last = (await repository.latest_audit_by_id(["retention.archive_failed"])).get("retention.archive_failed")
+    if last is None or last["target"] != "retention.yaml" or now - last["at"] >= timedelta(hours=23):
+        await db.audit("system", "retention.archive_failed", "retention.yaml",
+                       {"error": f"보관 등급 설정 오류 — 보관 파일 만들기·삭제를 멈췄습니다: {config.error}"[:500]})
 
 
 async def list_partitions(conn) -> list[dict]:
@@ -87,24 +99,30 @@ async def drop_expired(conn, now: datetime | None = None) -> list[str]:
     from . import archive  # 순환 import 방지
 
     now = now or datetime.now(UTC)
-    total_cutoff = now - timedelta(days=settings.retention_days)
-    db_cutoff = now - timedelta(days=min(settings.db_retention_days or settings.retention_days,
-                                         settings.retention_days))
+    config = retention.load()
+    if config.error:
+        # 틀린 설정으로 접속기록을 짧은 등급에 넣거나 일찍 지우지 않게 — 고칠 때까지 DB 에 둔다 (화면·준비도가 알린다)
+        await _config_error(config, now)
+        return []
+    longest = config.max_keep_days()   # 보관 파일이 가장 오래 남는 기간 (등급이 없으면 WLM_RETENTION_DAYS)
+    total_cutoff = now - timedelta(days=longest)
+    db_cutoff = now - timedelta(days=min(settings.db_retention_days or longest, longest))
     dropped = []
     for part in await list_partitions(conn):
         if part["to"] > db_cutoff or (part["hold_until"] and part["hold_until"] > now):
             continue
         name = part["name"]
         archived = archive.data_path(name).exists() and archive.meta_path(name).exists()
-        if archiving_enabled() and part["to"] > total_cutoff and not archived:
+        if archiving_enabled(config) and part["to"] > total_cutoff and not archived:
             try:
-                meta = await archive.archive_partition(name, part["from"], part["to"])
+                meta = await archive.archive_partition(name, part["from"], part["to"], config)
             except Exception as exc:
                 log.exception("보관 파일 만들기 실패: %s", name)
                 await db.audit("system", "retention.archive_failed", name, {"error": str(exc)[:500]})
                 continue
-            await db.audit("system", "retention.archive_partition", meta["file"],
-                           {k: meta[k] for k in ("partition", "rows", "sha256", "bytes", "from", "to")})
+            await db.audit("system", "retention.archive_partition", meta["file"] or name,   # 기본 파일 없이 등급 파일만인 달
+                           {**{k: meta[k] for k in ("partition", "rows", "sha256", "bytes", "from", "to")},
+                            **({"tiers": meta["tiers"], "skipped": meta["skipped"]} if meta["tiers"] or meta["skipped"] else {})})
             archived = True
         try:
             await conn.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(name)))
@@ -116,11 +134,11 @@ async def drop_expired(conn, now: datetime | None = None) -> list[str]:
         log.warning("DB 보관기간 만료 파티션 삭제: %s (약 %s건, 보관 파일 %s)", name, part["rows_estimate"],
                     "있음" if archived else "없음")
         await db.audit("system", "retention.drop_partition", name, {
-            "db_retention_days": settings.db_retention_days, "retention_days": settings.retention_days,
+            "db_retention_days": settings.db_retention_days, "retention_days": longest,
             "rows_estimate": part["rows_estimate"], "partition_end": part["to"].isoformat(), "archived": archived,
         })
-    if archiving_enabled():
-        await archive.delete_expired(total_cutoff)
+    if archiving_enabled(config):
+        await archive.delete_expired(now, config)
     return dropped
 
 
@@ -143,6 +161,9 @@ def retention_warnings() -> list[str]:
                    "짧습니다 (WLM_AUDIT_RETENTION_DAYS)")
     if settings.report_retention_days < LEGAL_MIN_LOG_DAYS:
         out.append(f"점검 보고서 보관 {settings.report_retention_days}일 — 점검 증적을 1년 이상 남기세요 (WLM_REPORT_RETENTION_DAYS)")
+    config = retention.load()
+    if config.error:
+        out.append(f"보관 등급 설정(config/retention.yaml) 오류 — 고칠 때까지 보관 파일 만들기·삭제를 멈춥니다(로그는 DB 에 그대로): {config.error}")
     return out
 
 

@@ -71,7 +71,8 @@ server/app/
   csvexport.py       CSV 내려받기 공용 (BOM, 엑셀 수식 주입 방지, 사유·짧은 사유 판단) — 감사로그·알림 이력
   wincatalog.py      Windows 이벤트 한 줄 요약·코드 풀이 (사전 app/catalog/windows.json — 요약 틀은 EventData 이름, B-68)
   accesslog.py       개인정보가 보이는 조회의 접속기록 (같은 사람·행위·조건 10분 묶음, 기록 실패면 503 — ADR-042, B-38)
-  archive.py         로그 보관 파일 만들기·검증·복원
+  archive.py         로그 보관 파일 만들기·검증·복원 (보관 등급마다 파일 — events_YYYY_MM.<등급>.jsonl.gz)
+  retention.py       이벤트 보관 등급(B-70): config/retention.yaml 해석·등급 고르기(겹치면 긴 쪽)·파일마다 만료(만들 때 기간보다 줄지 않음)
   integrity.py       감사로그 해시 체인 검증(DB 함수와 따로 파이썬으로)·매일 DB 밖 앵커(archive/integrity-*.json) (ADR-050)
   eventdigest.py     수집 로그 시간별 다이제스트(감사로그 체인에 기록)·다시 계산 — 매일 검증·보관 파일 만들 때 (B-71 2단계)
   cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원, 감사로그 verify-chain, 인증서 tls-init·tls-renew·tls-status — DB 없이)
@@ -97,6 +98,7 @@ web/js/
   catalog.js         필드·이벤트 ID 한글 설명 사전
 config/dashboards/   대시보드 정의 JSON (UI 편집기로 저장하면 이 파일이 바뀜 — 편집기는 If-Match(ETag)로, 그 사이 바뀌었으면 409)
 config/alerts.yaml   알림 규칙·알림 대상 (UI '규칙 편집'으로 저장하면 이 파일이 바뀜, 자동 반영)
+config/retention.yaml 이벤트 보관 등급 (B-70, ADR-061 — 틀리면 보관·삭제를 멈춤, test_retention_tiers 가 기본 파일·예시 검사)
 config/playbooks/    조사 플레이북 <규칙 번호>.yaml (B-66, app/alerts/playbook.py — 자리표시자는 format_value 로 감싼다, test_playbook 이 기본 파일 검사)
 agent/windows|linux/ 에이전트 설정 + 설치 스크립트
 collector/           syslog 수신기 설정
@@ -183,6 +185,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - 백업은 api 가 아니라 `backup` 서비스(postgres 이미지, busybox sh)가 한다. 결과는 `audit_log` 의 `backup.*` 로만 api 에 전달된다. `backup.sh` 를 고치면 `selftest` 로 확인한다.
   - busybox `date` 는 `-d '+1 month'`·`'-N days'` 를 모른다(GNU 만). 날짜 계산은 `YYYY-MM-DD` 와 초(`date +%s`) 산술로 — 자체 시험에서 그 값으로 만든 파일 이름이 비지 않는지도 본다.
   - 외부 저장소 복제(B-17)는 새 파일만 복사하고 덮어쓰지 않는다. 지우는 규칙(만료)을 바꾸면 '원본이 사라져도 복제본은 남는다' 시험을 지킨다.
+  - 보관 등급 파일(`events_YYYY_MM.<등급>.*`, B-70)의 복제본은 날짜로 계산하지 않고 api 의 `retention.delete_archive` 기록(대상 = 본문 파일 이름)이 있을 때만 지운다 — 파기 기록의 대상 이름을 바꾸면 `archive_expired` 도.
 - 점검 보고서(`reports`)는 트리거로 내용 수정·삭제·TRUNCATE 를 막는다(확인은 한 번, 전송 결과만 나중에 채움, 보관기간 정리만 `SET LOCAL wlm.report_purge`). 보고서 HTML 에는 로그에서 온 값이 들어가므로 `render.py` 에서 반드시 `escape` 한다(화면은 같은 출처 iframe).
 - 테스트에서는 `WLM_REPORT_SCHEDULER=off`(conftest)라 정기 실행이 돌지 않는다. 정기 실행 시험은 `scheduler.tick(now)` 을 직접 부른다.
 - 표시 시간대는 `config.display_zone()` 으로 얻는다(`ZoneInfo(settings.display_tz)` 를 직접 부르지 않는다 — 이름이 틀리면 UTC 로).

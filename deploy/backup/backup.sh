@@ -435,7 +435,24 @@ replicate_dir() {  # 원본 폴더, 복제 폴더, 파일 무늬...
   done
 }
 
+archive_destroyed() {  # api 가 그 보관 파일을 지운 기록(retention.delete_archive)이 있나 — 값은 psql 변수로
+  _c=$(printf '%s\n' "SELECT count(*) FROM audit_log WHERE action = 'retention.delete_archive' AND target = :'target';" \
+    | psql_q -d "$PGDATABASE" -v target="$1" 2>/dev/null) || return 1
+  [ "${_c:-0}" -gt 0 ]
+}
+
 archive_expired() {  # events_YYYY_MM.* 의 달이 끝난 지 보관기간이 지났나 (api 의 만료 판단과 같게)
+  # 보관 등급 파일(events_YYYY_MM.<등급>.*, B-70)은 등급마다 기간이 다르고 설정으로 늘어난다 — 여기서 계산하지 않고 api 가
+  # 지운 기록이 있을 때만 만료로 본다 (DB 를 못 읽으면 만료 아님 = 남김)
+  _n=$(basename "$1")
+  _rest=${_n#events_[0-9][0-9][0-9][0-9]_[0-9][0-9].}
+  [ "$_rest" != "$_n" ] || return 1
+  case $_rest in
+    jsonl.gz|meta.json) ;;
+    *.jsonl.gz) archive_destroyed "$_n"; return ;;
+    *.meta.json) archive_destroyed "${_n%.meta.json}.jsonl.gz"; return ;;
+    *) return 1 ;;
+  esac
   # busybox date 는 '+1 month'·'-N days' 를 모른다 → 다음 달 1일을 직접 만들고 초로 뺀다
   _y=$(basename "$1" | sed -n 's/^events_\([0-9]\{4\}\)_[0-9]\{2\}\..*/\1/p')
   _m=$(basename "$1" | sed -n 's/^events_[0-9]\{4\}_\([0-9]\{2\}\)\..*/\1/p')
@@ -637,6 +654,21 @@ SQL
   do_replicate >/dev/null
   check "$([ -e "$REPLICA_DIR/archive/$new.jsonl.gz" ] && echo y || echo n)" y "만료 전에 원본이 사라져도 복제본은 지우지 않음"
   check "$(sql "SELECT detail->>'missing_locally' FROM audit_log WHERE action = 'backup.replicate' ORDER BY id DESC LIMIT 1")" 1 "사라진 원본을 셈"
+  # 보관 등급 파일 (B-70): 기간은 api 가 정한다 — 오래된 달이어도 날짜로 지우지 않고, api 의 파기 기록이 있을 때만 복제본을 지운다
+  tier=$old.access
+  echo "$tier" > "$ARCHIVE_DIR/$tier.jsonl.gz"; echo '{}' > "$ARCHIVE_DIR/$tier.meta.json"
+  do_replicate >/dev/null
+  check "$([ -e "$REPLICA_DIR/archive/$tier.jsonl.gz" ] && [ -e "$REPLICA_DIR/archive/$tier.meta.json" ] && echo y || echo n)" y \
+    "오래된 달의 등급 파일도 복제 (기간은 api 가 정함)"
+  rm -f "$ARCHIVE_DIR/$tier.jsonl.gz" "$ARCHIVE_DIR/$tier.meta.json"
+  do_replicate >/dev/null
+  check "$([ -e "$REPLICA_DIR/archive/$tier.jsonl.gz" ] && echo y || echo n)" y "파기 기록 없이 사라진 등급 파일의 복제본은 남김"
+  audit retention.delete_archive "$tier.jsonl.gz" '{"tier": "access"}'
+  audit retention.delete_archive "events_2000_01.x'y.jsonl.gz" '{}'   # 따옴표가 든 이름도 SQL 로 해석되지 않는다
+  do_replicate >/dev/null
+  check "$([ -e "$REPLICA_DIR/archive/$tier.jsonl.gz" ] || [ -e "$REPLICA_DIR/archive/$tier.meta.json" ] && echo y || echo n)" n \
+    "api 가 파기한 등급 파일은 복제본도 지움 (본문·메타)"
+  check "$(archive_expired "events_2000_01.x'y.jsonl.gz" && echo y || echo n)" y "이름은 psql 변수로 넘김"
   touch -d '2000-01-01 00:00:00' "$REPLICA_DIR/backups/wlm-20000101-000000.dump" "$REPLICA_DIR/backups/before-restore-old.dump"
   do_replicate >/dev/null
   check "$(ls "$REPLICA_DIR"/backups/wlm-20000101-000000.dump 2>/dev/null | wc -l | tr -d ' ')|$(ls "$REPLICA_DIR"/backups/before-restore-old.dump | wc -l | tr -d ' ')" \

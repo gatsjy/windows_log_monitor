@@ -83,7 +83,9 @@ def test_status_and_verify(client):
                                 "archive_dir": str(ARCHIVE), "alert_retention_days": 365, "audit_retention_days": 1095,
                                 "report_retention_days": 1095, "warnings": [],
                                 "legal": {"log_days": 365, "sensitive_log_days": 730, "audit_days": 1095,
-                                          "sensitive": False}}
+                                          "sensitive": False},
+                                "tiers": [], "tier_error": None, "tier_notes": [], "tier_file": os.environ["WLM_RETENTION_CONFIG"],
+                                "max_keep_days": 365}
     assert [a["partition"] for a in status["archives"]] == [OLD_NAME]
     result = client.post("/api/settings/retention/verify", headers=CSRF).json()["items"]
     assert result[0]["ok"]

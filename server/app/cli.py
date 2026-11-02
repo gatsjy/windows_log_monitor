@@ -31,7 +31,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import archive, db, partitions, tlsutil
+from . import archive, db, partitions, retention, tlsutil
 from .auth import service
 from .config import settings
 
@@ -75,19 +75,25 @@ async def _run(args: argparse.Namespace) -> None:
             await db.audit("cli", "user.delete", row["username"], {"reason": args.reason})
             print(f"{row['username']} 삭제 (세션·그룹 소속도 함께 삭제, 감사 로그 기록은 유지)")
         elif args.command == "retention-status":
+            tiers = retention.load()
             print(f"정책: DB {settings.db_retention_days}일 → 보관 파일 → 전체 {settings.retention_days}일 후 삭제"
-                  f" (파일 보관 {'사용' if partitions.archiving_enabled() else '안 함'})")
+                  f" (파일 보관 {'사용' if partitions.archiving_enabled(tiers) else '안 함'})")
+            if tiers.error:
+                print(f"  보관 등급 설정 오류 — 보관·삭제를 멈춤: {tiers.error}")
+            for t in tiers.tiers:
+                print(f"  등급 {t.id} ({t.name}) {t.keep_days}일: {t.query}")
             async with await db.connect_autocommit() as conn:
                 for p in await partitions.list_partitions(conn):
                     hold = f"  보존 연장 ~{p['hold_until']:%Y-%m-%d}" if p["hold_until"] else ""
                     print(f"  DB   {p['name']}  약 {p['rows_estimate']:>12,}건  {p['bytes'] / 1e6:>10,.1f} MB{hold}")
-            for a in archive.list_archives():
-                print(f"  파일 {a['file']}  {a['rows']:>12,}건  {a['bytes'] / 1e6:>10,.1f} MB  sha256 {a['sha256'][:16]}…")
+            for a in archive.list_archives(tiers):
+                print(f"  파일 {a['file']}  {a['rows']:>12,}건  {a['bytes'] / 1e6:>10,.1f} MB  sha256 {a['sha256'][:16]}…"
+                      f"  ~{a['expires_at'][:10]}")
         elif args.command == "verify-archives":
             # 화면의 확인(routers/settings.retention_verify)과 같은 형식: bad = 문제 파일 이름 목록 (점검 보고서가 읽는다)
             bad = []
             for a in archive.list_archives():
-                result = archive.verify(a["partition"])
+                result = archive.verify(a["partition"], a["tier"])
                 if not result["ok"]:
                     bad.append(a["file"])
                 print(f"  {'정상' if result['ok'] else '문제'}  {a['file']}  {result['problem'] or ''}")

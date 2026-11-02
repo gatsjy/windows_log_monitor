@@ -769,7 +769,7 @@ docker compose exec api python -m app.cli verify-chain                 # 감사�
 | 수신 그룹 | 이름(규칙의 notify), 설명, 구성원, **받을 최소 수준**, 사용 중인 규칙 |
 | 외부 연동 | 웹훅(주소·보내는 형식 json/text/Slack/Teams/두레이/잔디·헤더, 주소로 형식 자동 선택, 예시 미리보기), Oracle DB(아래). 받을 최소 수준, 사용 여부, 테스트 |
 | 메일 서버 | SMTP 호스트·포트·보안(STARTTLS/SSL/없음)·계정·비밀번호·보내는 사람, 테스트 메일. 비워 두면 `.env` 의 `WLM_SMTP_*` |
-| 로그 보관 | **DB 백업·복구 시험 상태**(마지막 백업·복구 시험, 경고), 로테이션 정책, DB 월 파티션·보관 파일 현황, 지금 실행, 무결성 확인, 다시 불러오기 (§9, §13) |
+| 로그 보관 | **DB 백업·복구 시험 상태**(마지막 백업·복구 시험, 경고), 로테이션 정책, **보관 등급**(등급·검색 문장·기간, 설정 오류), DB 월 파티션·보관 파일 현황(등급·만료), 지금 실행, 무결성 확인, 다시 불러오기 (§9, §13) |
 | 보안 연결 (B-31) | 읽기 전용: 화면 http/https, 수집 포트(TLS·평문), 인증서 이름·만료 D-n·CA 지문·에이전트가 믿는가·HSTS, 문제, 최근 7일 평문으로 보내는 PC. **CA 인증서 내려받기**(인증서만, 감사로그 `settings.tls.ca_download`). API `GET /api/settings/tls`·`GET /api/settings/tls/ca.crt` |
 
 ### 8.1 Oracle 연동
@@ -819,6 +819,7 @@ docker compose exec api python -m app.cli verify-chain                 # 감사�
           ▼
         보관 파일 archive/events_YYYY_MM.jsonl.gz   WLM_RETENTION_DAYS (기본 365일)까지
         + events_YYYY_MM.meta.json (행 수, SHA-256) + audit_log 에 같은 해시
+        + 보관 등급 파일 events_YYYY_MM.<등급>.jsonl.gz   등급의 keep_days 까지 (config/retention.yaml, B-70)
           │ 기간 지난 파일
           ▼
         삭제 (audit_log: retention.delete_archive)
@@ -840,7 +841,13 @@ docker compose exec api python -m app.cli verify-chain                 # 감사�
   - 해시를 확인한 뒤 같은 월 파티션을 만들어 복원합니다. 이후 이벤트 검색에서 그대로 조회할 수 있습니다.
   - `hold_days` 동안은 자동 정리에서 빠지고, 기간이 지나면 다시 지워집니다(파일은 그대로).
   - 해시가 맞지 않으면 복원을 거부합니다.
-- **파일 보관 끄기:** `WLM_DB_RETENTION_DAYS >= WLM_RETENTION_DAYS` 로 두면 파일 보관 없이 DB 에서 바로 삭제합니다.
+- **파일 보관 끄기:** `WLM_DB_RETENTION_DAYS >= WLM_RETENTION_DAYS`(등급이 있으면 가장 긴 등급) 로 두면 파일 보관 없이 DB 에서 바로 삭제합니다.
+- **보관 등급 (B-70, ADR-061):** `config/retention.yaml` 의 `tiers`(id·name·검색 문장 `query`·`keep_days`)로 고른 로그만 보관 파일 기간을 따로 정합니다
+  (예: 진료정보 시스템 접속기록 730일, IIS 180일). 보관 파일을 만들 때 로그마다 등급을 골라 등급 파일로 나눕니다 — 여러 등급에 맞으면 긴 쪽, 안 맞으면 기본.
+  - 만료 = 그 달 끝 + max(만들 때 기간, 지금 설정) — 늘리면 기존 파일도 늘고, 줄여도 만들 때 기간보다 일찍 지우지 않습니다. 파기 기록(`retention.delete_archive`)에 등급·기간.
+  - DB 는 월 파티션째 지우므로 DB 보관기간보다 짧은 등급은 보관 파일을 만들지 않을 뿐입니다(화면 안내). 다시 불러오기는 그 달의 기본·등급 파일을 모두.
+  - 외부 복제본의 등급 파일은 api 의 파기 기록이 있을 때만 지웁니다(backup.sh). 설정이 틀리면 고칠 때까지 보관·삭제를 멈춥니다(로그는 DB 에, 경고).
+  - 화면 '로그 보관'은 등급 표·파일마다 등급·만료를 보여 줍니다(편집은 파일). CLI `retention-status` 도 등급을 보여 줍니다.
 - **기록 종류별 보관기간 (ADR-040):** 알림 이력·처리 기록은 `WLM_ALERT_RETENTION_DAYS`(비우면 로그와 같음), 감사로그는 `WLM_AUDIT_RETENTION_DAYS`(기본 1095일 — 권한 부여·변경·말소 기록 3년), 점검 보고서는 `WLM_REPORT_RETENTION_DAYS`(기본 1095일) 동안 DB 에 둡니다.
   - 법정 최소(접속기록 1년, 권한 기록 3년)보다 짧게 정하면 기동 로그 경고, 로그 보관 화면의 빨간 줄, 점검 보고서 '점검 필요'로 알립니다. 진료정보(민감정보) 처리 시스템의 접속기록이면 `WLM_SENSITIVE_ACCESS_LOG=on` 으로 두면 경고 기준이 2년(730일)이 됩니다 — 보관기간 자체는 `WLM_RETENTION_DAYS` 로 정합니다.
   - 예전 형식(v1) 보관 파일을 복원하면 공통 필드와 함께 Windows 이벤트의 EventData 이름(ADR-038)도 다시 붙여, 복원한 달에서도 `f.EventData.*` 조건이 맞습니다.
@@ -902,7 +909,8 @@ HTTPS·에이전트 TLS (ADR-036, AIRGAP.md §7.5):
 | 변수 | 기본값 | 뜻 |
 |---|---|---|
 | `WLM_DB_RETENTION_DAYS` | `90` | DB 에서 바로 검색되는 기간. 지나면 압축 보관 파일로 |
-| `WLM_RETENTION_DAYS` | `365` | 로그 전체 보관기간(보관 파일 포함). 접속기록 법정 최소 1년, 진료정보 처리 시스템이면 730 |
+| `WLM_RETENTION_DAYS` | `365` | 로그 전체 보관기간(보관 파일 포함). 접속기록 법정 최소 1년, 진료정보 처리 시스템이면 730 (그 시스템의 로그만 길게 두려면 보관 등급) |
+| `WLM_RETENTION_CONFIG` | `/app/config/retention.yaml` | 이벤트 보관 등급 파일 (B-70) — 없으면 등급 없음 |
 | `WLM_ALERT_RETENTION_DAYS` | (로그와 같음) | 알림 이력·처리 기록·끝난 무음 |
 | `WLM_AUDIT_RETENTION_DAYS` | `1095` | 감사로그(이 시스템의 접속·권한 부여·변경·말소 기록). 법정 최소 3년 |
 | `WLM_REPORT_RETENTION_DAYS` | `1095` | 점검 보고서(점검 증적) |

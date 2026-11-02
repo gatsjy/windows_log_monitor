@@ -683,7 +683,7 @@ function backupCard(b) {
 
 /** 기록 종류별 보관기간과 법정 최소 (ADR-040) — 짧게 설정했으면 빨간 줄 */
 function retentionKinds(p) {
-  if (!p.audit_retention_days) return '';   // 옛 서버
+  if (!p.audit_retention_days) return '';   // 옛 서버 (보관 등급 설정 오류는 경고 목록에도 있지만 아래 '로그 보관 등급' 에 한 번만 보인다)
   const L = p.legal;
   const rows = [
     ['로그 (접속기록)', p.retention_days, L.log_days, 'WLM_RETENTION_DAYS', `1년 이상 · 진료정보(민감정보) 처리 시스템은 ${L.sensitive_log_days / 365}년`],
@@ -693,7 +693,7 @@ function retentionKinds(p) {
   ];
   return html`
     <div class="section-title">기록 종류별 보관기간</div>
-    ${p.warnings.map((t) => html`<div class="error-box" style="margin-bottom:8px">${t}</div>`)}
+    ${p.warnings.filter((t) => !p.tier_error || !t.includes(p.tier_error)).map((t) => html`<div class="error-box" style="margin-bottom:8px">${t}</div>`)}
     <div class="table-wrap"><table class="table">
       <thead><tr><th>기록</th><th class="r">보관</th><th class="r">법정 최소</th><th>설정</th><th>기준</th></tr></thead>
       <tbody>${rows.map(([label, days, min, env, note]) => html`<tr>
@@ -703,7 +703,29 @@ function retentionKinds(p) {
         <td><code>${env}</code></td>
         <td class="muted">${note}</td></tr>`)}</tbody></table></div>
     ${!L.sensitive && p.retention_days < L.sensitive_log_days ? html`<p class="muted" style="font-size:12.5px;margin:8px 0 0">진료정보 등 민감정보를 처리하는
-      시스템의 접속기록이면 <code>WLM_SENSITIVE_ACCESS_LOG=on</code> 으로 표시하고 <code>WLM_RETENTION_DAYS</code> 를 ${fmtNum(L.sensitive_log_days)} 이상으로 두세요 (개인정보의 안전성 확보조치 기준 제8조).</p>` : ''}`;
+      시스템의 접속기록이면 <code>WLM_SENSITIVE_ACCESS_LOG=on</code> 으로 표시하고 <code>WLM_RETENTION_DAYS</code> 를 ${fmtNum(L.sensitive_log_days)} 이상으로 두거나,
+      그 시스템의 로그만 보관 등급으로 길게 두세요 (개인정보의 안전성 확보조치 기준 제8조).</p>` : ''}
+    ${retentionTiers(p)}`;
+}
+
+/** 이벤트 보관 등급 (B-70): config/retention.yaml — 화면은 조회만 */
+function retentionTiers(p) {
+  if (!('tiers' in p)) return '';   // 옛 서버
+  return html`
+    <div class="section-title">로그 보관 등급</div>
+    ${p.tier_error ? html`<div class="error-box" style="margin-bottom:8px">설정 오류 — 고칠 때까지 보관 파일 만들기·삭제를 멈춥니다(로그는 DB 에 그대로): ${p.tier_error}</div>` : ''}
+    ${p.tiers.length ? html`<div class="table-wrap"><table class="table">
+      <thead><tr><th>등급</th><th>고르는 검색 문장</th><th class="r">보관</th></tr></thead>
+      <tbody>${p.tiers.map((t) => html`<tr>
+        <td>${t.name} <span class="muted mono" style="font-size:11.5px">${t.id}</span></td>
+        <td><code>${t.query}</code></td>
+        <td class="r num">${fmtNum(t.keep_days)}일</td></tr>`)}
+        <tr><td class="muted">기본 (어느 등급에도 맞지 않는 로그)</td><td class="muted">–</td><td class="r num">${fmtNum(p.retention_days)}일</td></tr>
+      </tbody></table></div>
+      ${p.tier_notes.map((t) => html`<div class="warn-box" style="margin-top:8px">${t}</div>`)}`
+    : html`<p class="muted" style="font-size:12.5px;margin:0">등급 없음 — 모든 로그를 ${fmtNum(p.retention_days)}일 둡니다.</p>`}
+    <p class="muted" style="font-size:12.5px;margin:8px 0 0">고른 로그의 보관 파일 기간만 따로 정합니다 — 한 로그가 여러 등급에 맞으면 긴 쪽.
+      설정 파일: <code>${p.tier_file}</code> (보관 파일을 만들 때 나눕니다. 기간을 늘리면 이미 만든 파일도 늘고, 줄여도 만들 때 기간보다 일찍 지우지 않습니다)</p>`;
 }
 
 /** 감사로그 위·변조 증명 (B-71): 해시 체인의 마지막 검증, 체인 머리, DB 밖 앵커 */
@@ -789,9 +811,9 @@ async function retention(body) {
       <div class="rotation">
         <div><b>DB</b><span>최근 ${p.db_retention_days}일</span><small>화면에서 바로 검색</small></div>
         <span class="arrow">→</span>
-        <div><b>보관 파일</b><span>${p.archiving ? `~ ${p.retention_days}일` : '사용 안 함'}</span><small>압축(.jsonl.gz) + SHA-256</small></div>
+        <div><b>보관 파일</b><span>${p.archiving ? `~ ${p.retention_days}일${p.max_keep_days > p.retention_days ? ` (등급 최대 ${p.max_keep_days}일)` : ''}` : '사용 안 함'}</span><small>압축(.jsonl.gz) + SHA-256</small></div>
         <span class="arrow">→</span>
-        <div><b>삭제</b><span>${p.retention_days}일 후</span><small>삭제 기록은 감사 로그</small></div>
+        <div><b>삭제</b><span>${p.retention_days}일 후${p.max_keep_days > p.retention_days ? ' (등급은 등급 기간)' : ''}</span><small>삭제 기록은 감사 로그</small></div>
       </div>
       <p class="muted" style="font-size:12.5px;margin:10px 0 0">월 단위로 1시간마다 자동 실행됩니다. 기간은 서버 <code>.env</code> 의
         <code>WLM_DB_RETENTION_DAYS</code>, <code>WLM_RETENTION_DAYS</code> 로 정합니다. 보관 파일 위치: <code>${p.archive_dir}</code> (백업 대상)</p>
@@ -812,13 +834,16 @@ async function retention(body) {
           </tr>`)}</tbody></table></div></div></section>
       <section class="card" style="grid-column: span 6"><div class="card-head"><h2 class="card-title">보관 파일</h2></div>
         <div class="card-body flush">${s.archives.length ? html`<div class="table-wrap"><table class="table">
-          <thead><tr><th>파일</th><th class="r">건수</th><th class="r">크기</th><th>SHA-256</th><th></th></tr></thead>
-          <tbody>${s.archives.map((a) => html`<tr>
+          <thead><tr><th>파일</th><th>등급</th><th class="r">건수</th><th class="r">크기</th><th>만료</th><th>SHA-256</th><th></th></tr></thead>
+          <tbody>${s.archives.map((a, i) => html`<tr>
             <td class="nowrap mono" style="font-size:12.5px" title="${day(a.from)} ~ ${day(a.to)} · 생성 ${fmtTime(a.created_at)}">${a.file}${a.exists ? '' : html` <span class="tag-bad">파일 없음</span>`}</td>
+            <td class="nowrap">${a.tier ? html`${a.tier_name || a.tier}` : html`<span class="muted">기본</span>`}</td>
             <td class="r num">${fmtNum(a.rows)}</td>
             <td class="r num">${mb(a.bytes)}</td>
+            <td class="nowrap num" title="${fmtNum(a.keep_days)}일">${a.expires_at ? day(a.expires_at) : '–'}</td>
             <td class="mono muted" style="font-size:11.5px" title="${a.sha256}">${a.sha256.slice(0, 12)}…</td>
-            <td class="nowrap r"><button class="btn sm" data-restore="${a.partition}">다시 불러오기</button></td>
+            <td class="nowrap r">${s.archives.findIndex((b) => b.partition === a.partition) === i
+              ? html`<button class="btn sm" data-restore="${a.partition}" title="그 달의 보관 파일(등급 파일 포함)을 모두">다시 불러오기</button>` : ''}</td>
           </tr>`)}</tbody></table></div>` : html`<div class="empty">아직 보관 파일이 없습니다 (DB 보관기간이 지난 달이 생기면 자동으로 만들어집니다)</div>`}</div></section>
     </div>`;
   const msg = body.querySelector('[data-msg]');

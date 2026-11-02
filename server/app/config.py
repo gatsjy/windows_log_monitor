@@ -101,6 +101,8 @@ class Settings:
 
     # ---- 알림 (Phase 2) ----
     alerts_file: str = _env("ALERTS_FILE", "/app/config/alerts.yaml")
+    # 이벤트 보관 등급 (B-70) — 없으면 등급 없이 WLM_RETENTION_DAYS 하나
+    retention_config: str = _env("RETENTION_CONFIG", "/app/config/retention.yaml")
     # 알림 본문의 '검색 화면 열기' 링크에 쓰는 주소 (사용자가 브라우저로 접속하는 주소)
     public_url: str = _env("PUBLIC_URL", "http://localhost:8080").rstrip("/")
     # 알림 메시지에 시각을 표시할 시간대

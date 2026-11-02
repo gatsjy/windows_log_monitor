@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import archive, backups, db, oracle, partitions, secrets
+from .. import archive, backups, db, oracle, partitions, retention, secrets
 from ..alerts import adminwatch, targets
 from ..alerts.engine import engine
 from ..alerts.message import AlertMessage, search_link
@@ -524,11 +524,15 @@ async def retention_status():
     """로그 로테이션 정책과 현재 DB 파티션·보관 파일·DB 백업 (설정 값은 .env, 화면은 조회만)."""
     async with await db.connect_autocommit() as conn:
         parts = await partitions.list_partitions(conn)
+    tiers = retention.load()
     return {
         "backup": await backups.backup_status(),
         "policy": {
             "db_retention_days": settings.db_retention_days, "retention_days": settings.retention_days,
-            "archiving": partitions.archiving_enabled(), "archive_dir": settings.archive_dir,
+            "archiving": partitions.archiving_enabled(tiers), "archive_dir": settings.archive_dir,
+            # 보관 등급 (B-70): 설정 파일은 config/retention.yaml — 화면은 조회만
+            "tiers": [t.summary() for t in tiers.tiers], "tier_error": tiers.error, "tier_notes": retention.notes(tiers),
+            "tier_file": settings.retention_config, "max_keep_days": tiers.max_keep_days(),
             "alert_retention_days": settings.alert_retention_days, "audit_retention_days": settings.audit_retention_days,
             "report_retention_days": settings.report_retention_days,
             "warnings": partitions.retention_warnings(),
@@ -537,7 +541,7 @@ async def retention_status():
                       "audit_days": partitions.LEGAL_MIN_AUDIT_DAYS, "sensitive": settings.sensitive_access_log},
         },
         "partitions": parts,
-        "archives": archive.list_archives(),
+        "archives": archive.list_archives(tiers),
     }
 
 
@@ -569,7 +573,7 @@ async def retention_restore(body: RestoreBody, admin: User = Depends(require_per
 
 @router.post("/api/settings/retention/verify")
 async def retention_verify(request: Request, admin: User = Depends(require_permission("settings.manage"))):
-    results = [await asyncio.to_thread(archive.verify, a["partition"]) for a in archive.list_archives()]
+    results = [await asyncio.to_thread(archive.verify, a["partition"], a["tier"]) for a in archive.list_archives()]
     bad = [r["file"] for r in results if not r["ok"]]
     await db.audit(admin.username, "retention.verify_archives", None, {"files": len(results), "bad": bad},
                    actor_ip=client_ip(request))
