@@ -254,6 +254,15 @@ async def purge_iis_layouts(now: datetime | None = None) -> None:
         log.info("오래된 IIS 열 순서 %s건 삭제 (폴더마다 최신 1건은 남김)", deleted)
 
 
+async def purge_new_terms() -> None:
+    """지운·꺼 둔 처음 보는 값 규칙(B-47)의 상태와 본 값 — 7일 손대지 않았으면 지운다(다시 켜면 처음부터 다시 배움, ISMS.md)."""
+    from . import repository
+
+    deleted = await repository.purge_new_terms_states(datetime.now(UTC) - timedelta(days=7))
+    if deleted:
+        log.info("쓰지 않는 처음 보는 값 상태 %s개를 지웠습니다", deleted)
+
+
 async def purge_sessions() -> None:
     from .auth import service
 
@@ -415,6 +424,7 @@ async def run_maintenance(with_integrity: bool = True) -> None:
             await purge_reports()
             await purge_iis_layouts()
             await purge_sessions()
+            await purge_new_terms()
             await purge_ingest_problems()
             await purge_agent_streams()
             if with_integrity:

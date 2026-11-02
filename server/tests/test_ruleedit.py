@@ -51,7 +51,7 @@ def test_mode_line_only():
     """관찰 모드 (B-52) — 켜기/끄기처럼 mode 줄만 고친다 (블록 안 주석 보존)."""
     name = next(n for n, r in rules_of(TEXT).items() if r.kind == "count")
     observed = ruleedit.set_mode(TEXT, name, "observe")
-    assert rules_of(observed)[name].mode == "observe" and observed.count("mode: observe") == 1
+    assert rules_of(observed)[name].mode == "observe" and observed.count("mode: observe") == TEXT.count("mode: observe") + 1
     assert ruleedit.set_mode(observed, name, "observe") == observed
     assert ruleedit.set_mode(observed, name, "active") == TEXT
     off = ruleedit.set_enabled(observed, name, False)

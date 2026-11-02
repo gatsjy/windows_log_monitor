@@ -89,6 +89,20 @@ def _rule_changes(old: Rule, new: Rule) -> list[tuple[str, str, bool]]:
         return out
     if old.match != new.match:
         out.append(("match", f"조건 {_match_text(old)} → {_match_text(new)}", True))
+    if old.kind == new.kind == "new_terms":
+        # 처음 보는 값 (B-47): 필드를 바꾸면 처음부터 다시 배운다(그동안 알림 없음), 기간·배우는 기간을 늘리면 덜 새로워진다,
+        # 상한·한꺼번에 기준을 줄이면 놓치거나 묶여 하나하나 보지 못한다
+        if old.terms_fields != new.terms_fields:
+            out.append(("fields", f"볼 값 {', '.join(old.terms_fields)} → {', '.join(new.terms_fields)} (다시 배움)", True))
+        for attr, label, weaker_if_more in (("history", "다시 새로 볼 기간", True), ("learn", "배우는 기간", True)):
+            before, after = getattr(old, attr), getattr(new, attr)
+            if before != after:
+                out.append((attr, f"{label} {_dur(before)} → {_dur(after)}", (after > before) == weaker_if_more))
+        for attr, label in (("max_terms", "값 조합 상한"), ("burst", "한 번에 하나씩 알릴 수")):
+            before, after = getattr(old, attr), getattr(new, attr)
+            if before != after:
+                out.append((attr, f"{label} {before:,} → {after:,}", after < before))
+        return out
     if old.threshold != new.threshold:
         out.append(("threshold", f"건수 기준 {old.threshold:,} → {new.threshold:,}", new.threshold > old.threshold))
     if old.window != new.window:

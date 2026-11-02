@@ -106,6 +106,8 @@ class AlertMessage:
     routes: list[str] = field(default_factory=list)   # 받는 곳을 정한 경로 이름 (B-26) — 증적, 경로가 없으면 빈 목록
     # 묶음 알림 (B-41): 같은 규칙의 알림 여럿을 한 통으로 — [{id, group_key, event_count, fired_at}]. 전송 때만 만든다(저장 안 함)
     grouped: list[dict[str, Any]] = field(default_factory=list)
+    # 처음 보는 값 (B-47): {fields, values, host, first_ts, prev_last_seen, history_days} 또는 몰려온 묶음 {fields, count, items:[{values, first_ts}]}
+    terms: dict[str, Any] | None = None
 
     # ------------------------------------------------------------ 직렬화
     def to_dict(self) -> dict[str, Any]:
@@ -123,6 +125,8 @@ class AlertMessage:
             data.pop("routes")
         if not self.grouped:
             data.pop("grouped")
+        if self.terms is None:
+            data.pop("terms")
         if not self.distinct_field:   # 건수 규칙의 본문(웹훅 json·저장된 payload)은 예전과 같게
             for key in ("distinct_field", "distinct_min", "distinct_count", "distinct_values"):
                 data.pop(key)
@@ -241,6 +245,8 @@ class AlertMessage:
             usual = f"평소 하루 {per_day:,}건, " if per_day else ""
             return (f"{self.group_key} 로그가 {_window_text(self.window_sec)} 넘게 들어오지 않습니다 — PC 는 살아 있습니다 "
                     f"({usual}마지막 수신 {local(self.last_event_at)}). 감사 정책·에이전트 설정을 확인하세요")
+        if self.kind == "new_terms" and self.terms:
+            return self._terms_summary()
         target = f"{self.group_key} 에서 " if self.group_key else ""
         if self.distinct_field:
             label = DISTINCT_LABELS.get(self.distinct_field, self.distinct_field.removeprefix("f."))
@@ -248,6 +254,22 @@ class AlertMessage:
                     f"(기준 {self.distinct_min:,}개 이상) · 이벤트 {self.event_count:,}건")
         return (f"{target}최근 {_window_text(self.window_sec)} 동안 조건에 맞는 이벤트 {self.event_count:,}건 "
                 f"(기준 {self.threshold:,}건 이상)")
+
+    def _terms_summary(self) -> str:
+        """처음 보는 값 (B-47) — 어떤 필드의 어떤 값 조합을 언제 처음 봤는지."""
+        t = self.terms or {}
+        labels = [DISTINCT_LABELS.get(f, f.removeprefix("f.")) for f in t.get("fields", [])]
+        days = t.get("history_days") or 0
+        if "items" in t:   # 한 주기에 몰려온 새 조합 — 하나로 (burst)
+            first = [" · ".join(f"{label} {v}" for label, v in zip(labels, item["values"], strict=False)) for item in t["items"][:5]]
+            return (f"처음 보는 값 조합 {t.get('count', len(t['items'])):,}개가 한꺼번에 들어왔습니다 (최근 {days}일 동안 없던 값) — "
+                    + ", ".join(first) + (" 외" if t.get("count", 0) > 5 else "") + ". 네트워크·계정 변경이 아니면 확인하세요")
+        pairs = " · ".join(f"{label} {v}" for label, v in zip(labels, t.get("values", []), strict=False))
+        again = ""
+        if t.get("prev_last_seen"):
+            again = f" — 마지막으로 본 지 {_days_since(t['prev_last_seen'], self.fired_at)}일 만에 다시"
+        where = f" ({t['host']})" if t.get("host") else ""
+        return f"처음 보는 값: {pairs}{where} — 최근 {days}일 동안 없던 조합입니다{again}"
 
     def _group_summary(self) -> str:
         n, unit = len(self.grouped), self.group_unit
@@ -260,6 +282,8 @@ class AlertMessage:
                     "감사 정책·에이전트 설정을 확인하세요")
         if self.kind in ("config", "system"):
             return f"같은 알림 {n}건을 묶어 보냅니다 — 내용은 알림 화면에서 확인하세요"
+        if self.kind == "new_terms":
+            return f"처음 보는 값 알림 {n}건을 묶어 보냅니다 — 값 조합은 아래와 알림 화면에서 확인하세요"
         basis = (f"서로 다른 {DISTINCT_LABELS.get(self.distinct_field, self.distinct_field)} {self.distinct_min:,}개 이상"
                  if self.distinct_field else f"기준 {self.threshold:,}건 이상")
         return (f"같은 규칙의 알림 {n}건을 묶어 보냅니다 — {n}{unit}에서 최근 {_window_text(self.window_sec)} 동안 조건에 맞는 "
@@ -431,3 +455,8 @@ def alerts_link(rule: str) -> str:
 
 def search_link(params: dict[str, str]) -> str:
     return f"{settings.public_url}/#/events?{urlencode(params)}"
+
+
+def _days_since(when: Any, now: datetime) -> int:
+    then = _dt(when)
+    return max(0, (now - then).days) if then else 0

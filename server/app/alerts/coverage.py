@@ -41,7 +41,7 @@ class Need:
 
 def need(rule: Rule) -> Need | None:
     """규칙이 필요로 하는 데이터. 건수 규칙이 아니거나 소스·채널·이벤트 ID 를 정하지 않았으면 None (판단하지 않음)."""
-    if rule.kind != "count":
+    if rule.kind not in ("count", "new_terms"):   # 처음 보는 값 규칙도 그 데이터가 와야 본다 (B-47)
         return None
     f = rule.event_filter()
     if f.never or not (f.sources or f.channels or f.event_ids):

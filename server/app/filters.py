@@ -153,6 +153,7 @@ class EventFilter:
     never: bool = False                                         # 포함 조건 교집합이 비면 결과 없음
     # 내부용(URL 파라미터 아님): 서버 수신 시각 하한. 알림 규칙이 '최근 N분 동안 들어온' 이벤트를 셀 때 사용
     received_since: datetime | None = None
+    received_before: datetime | None = None   # 내부용: 서버 수신 시각 상한 (처음 보는 값 규칙이 받은 시각 구간을 나눠 훑을 때, B-47)
     # 내부용: 로그인한 사용자의 조회 범위 (사용자 그룹). None 이면 제한 없음
     scopes: tuple[Scope, ...] | None = None
 

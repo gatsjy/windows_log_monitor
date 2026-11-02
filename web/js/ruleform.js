@@ -16,6 +16,10 @@ const TRACK = { host: 'by_host', ip: 'by_src', user: 'by_user', category: 'by_ca
 const DISTINCT = [['user', '사용자'], ['host', 'PC'], ['ip', '출발지 IP'], ['event_id', '이벤트 ID']];
 export const distinctText = (d) => (d?.field ? `서로 다른 ${GROUP_LABELS[d.field] ?? d.field.replace(/^f\./, '')} ${fmtNum(d.min)}개 이상` : '');
 const SEV_ORDER = ['critical', 'error', 'warning', 'info'];
+// 처음 보는 값 (B-47): 볼 값. 계정은 표기 통일(account) — 공격자가 정하는 이름(4625·IIS·sshd)이면 사용자(그대로)를 권한다
+const TERM_FIELDS = [['account', '계정(표기 통일)'], ['user', '사용자(그대로)'], ['ip', '출발지 IP'], ['host', 'PC'], ['event_id', '이벤트 ID'],
+  ['channel', '채널'], ['provider', '공급자']];
+const termLabel = (k) => TERM_FIELDS.find(([x]) => x === k)?.[1] ?? k.replace(/^f\./, '원본 ');
 const MATCH_FIELDS = ['category', 'level', 'event_id', 'host', 'user', 'ip', 'source', 'channel', 'provider', 'q', 'query', 'saved'];
 
 function splitUnit(sec) {
@@ -41,6 +45,9 @@ export function signature(r) {
   } else if (r.kind === 'agent_silent') {
     parts.push(`heartbeat:silent ${r.silent_for_sec}s`);
     parts.push(`hosts:${r.hosts.length ? r.hosts.join(',') : 'any'}`);
+  } else if (r.kind === 'new_terms') {
+    Object.entries(r.match).forEach(([k, v]) => { if (v) parts.push(k.startsWith('f.') ? `field:${k.slice(2)}=${quote(v)}` : `${k}:${quote(v)}`); });
+    parts.push(`new_terms:track ${r.terms.join('+') || '?'}, history ${r.history_sec}s, learn ${r.learn_sec}s`);
   } else {
     Object.entries(r.match).forEach(([k, v]) => {
       if (!v) return;
@@ -72,6 +79,12 @@ export function sentence(r) {
   if (r.kind === 'stream_silent') {
     return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'}에서 늘 오던 ${r.channels.length ? r.channels.join(', ') : '채널'} 로그가 평소보다 오래 끊기면`
       + ` (PC 는 살아 있는데) ${to} [${sev}] 알림.` + (resolveOf(r) === 'auto' ? ' 다시 들어오면 자동으로 해결하고 해소 통지.' : '');
+  }
+  if (r.kind === 'new_terms') {
+    const what = r.terms.length ? r.terms.map(termLabel).join(' + ') : '(볼 값 없음)';
+    return `${matchText(r.match)} 로그에서 ${what} 조합이 최근 ${fmtSec(r.history_sec)} 동안 처음 보이면 ${to} [${sev}] 알림. `
+      + `처음 ${fmtSec(r.learn_sec)}은 배우기만 합니다(지난 로그가 있으면 거슬러 배움). 한 번에 ${fmtNum(r.burst)}개 넘게 새로 보이면 한 통으로, `
+      + `값 조합은 ${fmtNum(r.max_terms)}개까지 둡니다.` + (r.mode === 'observe' ? ' 지금은 관찰 모드 — 기록만 하고 보내지 않음.' : '');
   }
   const by = r.group_by === 'none' ? '전체를 합산해서' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}마다 따로 세어`;
   const distinct = r.distinct?.field ? `이고 ${distinctText(r.distinct)}` : '';
@@ -107,6 +120,9 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
     distinct: rule?.distinct ? { ...rule.distinct } : null,
     resolve: rule?.resolve ?? '',
     mode: rule?.mode ?? 'active',
+    // 처음 보는 값 (B-47) — 'fields' 는 아래 원본 필드 조건이 쓰는 이름이라 terms 로
+    terms: [...(rule?.fields?.length ? rule.fields : ['account', 'ip'])], history_sec: rule?.history_sec ?? 30 * 86400,
+    learn_sec: rule?.learn_sec ?? 14 * 86400, max_terms: rule?.max_terms ?? 50000, burst: rule?.burst ?? 20,
   };
   // 로그 하나로 시험 (B-52): 조건을 바꾸면 폼을 다시 그리므로 입력·결과를 여기 둔다 — 바꾼 조건으로 같은 로그를 다시 시험하게
   const test = { id: '', sample: '', open: false, out: '' };
@@ -161,6 +177,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
           <button type="button" data-v="count" class="${r.kind === 'count' ? 'on' : ''}">로그 건수</button>
           <button type="button" data-v="agent_silent" class="${r.kind === 'agent_silent' ? 'on' : ''}">PC 수신 끊김</button>
           <button type="button" data-v="stream_silent" class="${r.kind === 'stream_silent' ? 'on' : ''}">채널 끊김</button>
+          <button type="button" data-v="new_terms" class="${r.kind === 'new_terms' ? 'on' : ''}">처음 보는 값</button>
         </div>
       </section>
 
@@ -210,7 +227,19 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
           그 밖의 조건: ${['source', 'channel', 'provider'].filter((k) => r.match[k]).map((k) => `${k}=${r.match[k]}`).join(', ')}</p>` : ''}
       </section>
 
-      <section class="form-section">
+      ${r.kind === 'new_terms' ? html`<section class="form-section">
+        <h3>어떤 값이 처음이면</h3>
+        <div class="field"><span>볼 값 (1~3개 — 이 조합이 처음이면 알림)</span><div class="chips">${TERM_FIELDS.map(([k, l]) => html`
+          <button type="button" class="chip ${r.terms.includes(k) ? 'on' : ''}" data-term="${k}">${l}</button>`)}
+          ${r.terms.filter((k) => k.startsWith('f.')).map((k) => html`<button type="button" class="chip on" data-term="${k}">${termLabel(k)} ✕</button>`)}</div>
+          <div class="sentence-row" style="margin-top:6px"><input class="input" data-term-path list="field-paths" placeholder="원본 필드 (예: EventData.ServiceName)" style="max-width:280px">
+            <button type="button" class="btn sm" data-term-add>+ 원본 필드</button></div></div>
+        ${r.terms.includes('account') && /\b(4625|4771|18456)\b/.test(`${r.match.event_id ?? ''} ${r.match.query ?? ''}`) ? html`<p class="hint-box">로그온 실패의 계정은 공격자가 정합니다 — 표기 통일(계정)은 다른 표기로 비켜 가거나 값을 넘치게 할 수 있어 '사용자(그대로)'를 권합니다.</p>` : ''}
+        <div class="sentence-row"><span>최근</span>${unitInput('history_sec', r.history_sec)}<span>동안 안 보였으면 새 값 (다시 보이면 또 알림)</span></div>
+        <div class="sentence-row"><span>처음</span>${unitInput('learn_sec', r.learn_sec)}<span>은 배우기만 (지난 로그로 거슬러 배움)</span></div>
+        <div class="sentence-row"><span>한 번에</span><input class="input num" type="number" min="1" max="100" data-k="burst" value="${r.burst}" style="width:80px">
+          <span>개 넘게 새로 보이면 한 통으로 · 값 조합은</span><input class="input num" type="number" min="100" max="500000" data-k="max_terms" value="${r.max_terms}" style="width:110px"><span>개까지</span></div>
+      </section>` : html`<section class="form-section">
         <h3>얼마나 자주면</h3>
         <div class="sentence-row">${unitInput('window_sec', r.window_sec)}<span>동안</span>
           <input class="input num" type="number" min="1" data-k="threshold" value="${r.threshold}" style="width:90px"><span>건 이상이면 알림</span></div>
@@ -222,13 +251,13 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
           ${r.distinct?.field ? html`<input class="input num" type="number" min="2" data-dmin value="${r.distinct.min}" style="width:80px"><span>개 이상일 때만</span>`
             : html`<span class="muted" style="font-size:12.5px">예) 한 IP 에서 서로 다른 계정 10개 = 패스워드 스프레이</span>`}</div>
         <div class="sentence-row"><span>같은 대상은</span>${unitInput('cooldown_sec', r.cooldown_sec)}<span>동안 다시 알리지 않음</span></div>
-      </section>`}
+      </section>`}`}
 
       <section class="form-section">
         <h3>끝나면</h3>
         <div class="sentence-row"><select class="select" data-resolve aria-label="해결 방식">
           <option value="manual" ${resolveOf(r) === 'manual' ? 'selected' : ''}>담당자가 확인하고 해결</option>
-          <option value="auto" ${resolveOf(r) === 'auto' ? 'selected' : ''} ${r.kind === 'count' && r.distinct?.field ? 'disabled' : ''}>${SILENT.has(r.kind) ? '다시 들어오면' : '조건이 풀리면'} 자동으로 해결하고 해소 통지</option>
+          <option value="auto" ${resolveOf(r) === 'auto' ? 'selected' : ''} ${(r.kind === 'count' && r.distinct?.field) || r.kind === 'new_terms' ? 'disabled' : ''}>${SILENT.has(r.kind) ? '다시 들어오면' : '조건이 풀리면'} 자동으로 해결하고 해소 통지</option>
         </select></div>
         <p class="muted" style="font-size:12.5px;margin:6px 0 0">${SILENT.has(r.kind) ? '다시 들어오면 끝난 것이 분명합니다. 알림을 받은 곳에만 해소 통지를 보냅니다.'
           : r.distinct?.field ? '서로 다른 값 수 규칙은 보안 규칙이라 담당자가 해결합니다.'
@@ -315,7 +344,8 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
   function bind() {
     body.querySelectorAll('[data-k]').forEach((el) => el.addEventListener('input', () => {
       const k = el.dataset.k;
-      r[k] = k === 'threshold' ? Math.max(1, Number(el.value) || 1) : k === 'sid' ? (el.value.trim() ? Number(el.value) : null) : el.value;
+      r[k] = ['threshold', 'burst', 'max_terms'].includes(k) ? Math.max(1, Number(el.value) || 1)
+        : k === 'sid' ? (el.value.trim() ? Number(el.value) : null) : el.value;
       if (k === 'group_by') render(); else refresh();
     }));
     body.querySelector('[data-dfield]')?.addEventListener('change', (e) => {
@@ -358,7 +388,20 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
       body.querySelectorAll('[data-sev] button').forEach((x) => x.classList.toggle('on', x === b));
       refresh();
     }));
-    body.querySelectorAll('[data-kind] button').forEach((b) => b.addEventListener('click', () => { r.kind = b.dataset.v; render(); }));
+    body.querySelectorAll('[data-kind] button').forEach((b) => b.addEventListener('click', () => {
+      r.kind = b.dataset.v;
+      if (r.kind === 'new_terms' && r.resolve === 'auto') r.resolve = '';   // 처음 보는 값은 사람이 해결
+      render();
+    }));
+    body.querySelectorAll('[data-term]').forEach((b) => b.addEventListener('click', () => {
+      const k = b.dataset.term;
+      r.terms = r.terms.includes(k) ? r.terms.filter((x) => x !== k) : r.terms.length < 3 ? [...r.terms, k] : r.terms;
+      render();
+    }));
+    body.querySelector('[data-term-add]')?.addEventListener('click', () => {
+      const path = body.querySelector('[data-term-path]').value.trim().replace(/^f\./, '');
+      if (path && r.terms.length < 3 && !r.terms.includes(`f.${path}`)) { r.terms = [...r.terms, `f.${path}`]; render(); }
+    });
     body.querySelector('[data-enabled]').addEventListener('click', (e) => {
       r.enabled = !r.enabled;
       e.currentTarget.classList.toggle('on', r.enabled);
@@ -398,8 +441,8 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
   }
 
   function payload() {
-    const { fields, ...rest } = view();
-    return rest;
+    const { fields, terms, ...rest } = view();
+    return r.kind === 'new_terms' ? { ...rest, fields: terms } : rest;
   }
 
   async function preview() {
@@ -411,6 +454,21 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
         out.innerHTML = p.silent.length
           ? html`<div class="hint-box">지금 기준으로 <b>${p.silent.length}개</b> 채널이 끊김 상태입니다: ${p.silent.slice(0, 20).map((s) => `${s.host} ${s.channel}`).join(', ')}</div>`
           : html`<div class="hint-box">지금 끊김 상태인 채널이 없습니다.</div>`;
+        return;
+      }
+      if (p.kind === 'new_terms') {
+        out.innerHTML = html`
+          <div class="preview-stats">
+            <div><b class="num">${fmtNum(p.new)}</b><span>최근 ${p.hours}시간에 처음 보인 조합</span></div>
+            <div><b class="num">${fmtNum(p.total)}</b><span>앞 ${p.lookback_days}일 포함 조합 수 (상한 ${fmtNum(p.max_terms)})</span></div>
+          </div>
+          ${p.items.length ? html`<div class="table-wrap"><table class="table no-stack">
+            <thead><tr>${p.fields.map((k) => html`<th>${termLabel(k)}</th>`)}<th>처음</th><th class="r">건수</th></tr></thead>
+            <tbody>${p.items.map((i) => html`<tr>${i.values.map((v) => html`<td>${v}</td>`)}<td class="nowrap">${String(i.first).slice(5, 16).replace('T', ' ')}</td><td class="r num">${fmtNum(i.n)}</td></tr>`)}</tbody>
+          </table></div>` : ''}
+          ${p.new > p.burst ? html`<p class="hint-box" style="margin-top:8px">하루 ${fmtNum(p.new)}개는 많습니다 — 한 번에 ${fmtNum(p.burst)}개가 넘으면 한 통으로 묶입니다. 조건을 좁히거나 값을 줄여 보세요.</p>` : ''}
+          ${p.total > p.max_terms * 0.8 ? html`<p class="hint-box" style="margin-top:8px">조합이 상한에 가깝습니다 — 상한을 넘으면 새 값을 두지 못하고 규칙 오류로 알립니다.</p>` : ''}
+          <p class="muted" style="font-size:12.5px;margin:8px 0 0">앞 ${p.lookback_days}일로 배웠다고 치고 센 근사치입니다. 실제로는 처음 ${fmtSec(r.learn_sec)} 동안 배우기만 합니다.</p>`;
         return;
       }
       if (p.kind === 'agent_silent') {

@@ -445,6 +445,10 @@ class AlertEngine:
 
     # ------------------------------------------------------------ 평가
     async def evaluate(self, rule: Rule, now: datetime, run: RuleRun | None = None) -> list[int]:
+        if rule.kind == "new_terms":
+            from . import newterms  # 처음 보는 값 (B-47) — 그 모듈이 엔진의 도우미를 쓴다
+
+            return await newterms.evaluate(self, rule, now, run)
         if rule.kind == "agent_silent":
             return await self._evaluate_silent(rule, now)
         if rule.kind == "stream_silent":
@@ -588,15 +592,18 @@ class AlertEngine:
         return fired
 
     # ------------------------------------------------------------ 전송
-    async def fire(self, message: AlertMessage, notify: tuple[str, ...]) -> int:
-        """알림을 기록하고 전송기를 깨운다 — 보내는 것은 전송기(dispatcher)다. 여기서는 네트워크를 쓰지 않는다 (ADR-045)."""
+    async def fire(self, message: AlertMessage, notify: tuple[str, ...], claim: dict | None = None) -> int | None:
+        """알림을 기록하고 전송기를 깨운다 — 보내는 것은 전송기(dispatcher)다. 여기서는 네트워크를 쓰지 않는다 (ADR-045).
+        claim: 처음 보는 값(B-47)의 조합 — 다른 쪽이 이미 알렸으면 None."""
         # 설정 변경 알림은 무음으로 막지 않는다 — '모든 규칙' 무음을 건 뒤 규칙을 끄면 아무도 모르게 된다
-        host = (message.stream or {}).get("host")
+        host = (message.stream or {}).get("host") or (message.terms or {}).get("host")
         silence = (None if message.kind == "config"
                    else await repository.active_silence(message.rule, message.group_key, message.fired_at, host))
         # 관찰 모드(B-52): 무음처럼 기록만 한다. 시험 발송은 받는 곳을 시험하는 것이라 보낸다
         message.observe = not message.test and self.observing(message.rule)
-        alert_id = await repository.insert_alert(message.to_dict(), notify, silence, observe=message.observe)
+        alert_id = await repository.insert_alert(message.to_dict(), notify, silence, observe=message.observe, claim=claim)
+        if alert_id is None:
+            return None
         message.alert_id = alert_id
         if silence:
             log.info("알림 발생 #%s %s — 무음 #%s 중이라 보내지 않음", alert_id, message.title(), silence["id"])
@@ -666,10 +673,10 @@ class AlertEngine:
             dispatcher.wake()
         return reopened
 
-    async def fire_rule(self, rule: Rule, message: AlertMessage) -> int:
+    async def fire_rule(self, rule: Rule, message: AlertMessage, claim: dict | None = None) -> int | None:
         """규칙의 알림 — 받는 곳은 규칙의 notify 에 경로(routes, B-26)를 적용해서. 거친 경로 이름은 payload 에(증적)."""
-        notify, message.routes = self.config.targets_for(rule, message.group_key)
-        return await self.fire(message, notify)
+        notify, message.routes = self.config.targets_for(rule, message.group_key, host=(message.terms or {}).get("host"))
+        return await self.fire(message, notify, claim)
 
     def observing(self, rule_name: str) -> bool:
         """관찰 모드 규칙인가 (B-52). 내장 알림(설정 변경·관리 작업·감시)은 규칙이 아니라 늘 보낸다."""
@@ -716,6 +723,7 @@ class RuleRun:
     last_query_at: datetime | None = None   # 마지막으로 본 수신 구간의 끝
     query_at: datetime | None = None        # 이번 평가의 쿼리를 낸 시각
     last_gap: dict[str, Any] | None = None  # 평가가 늦어 보지 못한 구간 {from, to, sec, at}
+    terms: dict[str, Any] | None = None     # 처음 보는 값 규칙(B-47): 둔 조합 수·상한·배우는 중·밀림
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

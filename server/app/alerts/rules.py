@@ -19,7 +19,7 @@ from ..repository import COLUMN_EXPR
 from .builtin import BUILTIN_RULES
 
 SEVERITIES = ("critical", "error", "warning", "info")
-RULE_KINDS = ("count", "agent_silent", "stream_silent")
+RULE_KINDS = ("count", "agent_silent", "stream_silent", "new_terms")
 SILENT_KINDS = ("agent_silent", "stream_silent")   # 끊김 규칙: 다시 들어오면 끝난 것이 분명해 자동 해결이 기본
 # 해결 방식 (B-35 2단계): manual = 사람이 해결, auto = 조건이 풀리면 엔진이 해결하고 해소 통지.
 # PC 수신 끊김은 하트비트가 돌아오면 끝난 것이 분명해 auto 가 기본. 건수 규칙은 manual 이 기본 —
@@ -63,6 +63,12 @@ class Rule:
     distinct_min: int = 0
     resolve: str = "manual"
     mode: str = "active"
+    # 처음 보는 값 (B-47, ADR-063): fields 의 값 조합이 history 동안 안 보였으면 알린다. 처음 learn 동안은 배우기만
+    terms_fields: tuple[str, ...] = ()
+    history: timedelta = timedelta(days=30)
+    learn: timedelta = timedelta(days=14)
+    max_terms: int = 50000
+    burst: int = 20
 
     def event_filter(self, exceptions: tuple[str, ...] | list[str] = (), saved: str | None = None) -> EventFilter:
         """exceptions: 규칙 예외(B-46)의 조건들(정본 표기) — 문장에 제외 항(-조건)으로 덧붙인다. 검색 문장의 제외 의미 그대로
@@ -176,10 +182,11 @@ class AlertConfig:
             return 0, min(CRITICAL_GROUP_INTERVAL, self.group_interval_sec)
         return self.group_wait_sec, self.group_interval_sec
 
-    def targets_for(self, rule: Rule, key: str | None = None) -> tuple[tuple[str, ...], list[str]]:
-        """이 규칙·대상의 알림을 받을 곳과 거친 경로 이름 (B-26). 경로가 없으면 규칙의 notify 그대로(예전과 같음)."""
+    def targets_for(self, rule: Rule, key: str | None = None, host: str | None = None) -> tuple[tuple[str, ...], list[str]]:
+        """이 규칙·대상의 알림을 받을 곳과 거친 경로 이름 (B-26). 경로가 없으면 규칙의 notify 그대로(예전과 같음).
+        host: 대상 이름이 PC 가 아닌 알림(처음 보는 값, B-47)의 PC."""
         notify, used = list(rule.notify), []
-        host = _route_host(rule, key)
+        host = host or _route_host(rule, key)
         for route in self.routes:
             if not route.matches(rule, host):
                 continue
@@ -302,6 +309,8 @@ def _check_rule(index: int, raw: Any) -> Rule:
     match = raw.get("match") or {}
     if not isinstance(match, dict):
         raise ConfigError(f"{where}.match 는 객체여야 합니다")
+    if kind == "new_terms" and not match:
+        raise ConfigError(f"{where}.match: 처음 보는 값 규칙은 조건이 필요합니다 (모든 로그의 값이면 상한을 금방 넘는다)")
     # 검색 문장은 쉼표가 문법이라 YAML 목록을 이어 붙이면 뜻이 바뀐다 → 문자열만 받는다
     if "query" in match and (isinstance(match["query"], bool) or not isinstance(match["query"], (str, int))):
         raise ConfigError(f"{where}.match.query 는 문자열이어야 합니다")
@@ -316,6 +325,8 @@ def _check_rule(index: int, raw: Any) -> Rule:
     if checked.excludes.get("account"):
         raise ConfigError(f"{where}.match: {ACCOUNT_EXCLUDE_ERROR}")
 
+    if kind == "new_terms":
+        return _new_terms(raw, common, match, checked, where)
     group_by = str(raw.get("group_by", "host"))
     if group_by != "none" and group_by not in COLUMN_EXPR and not group_by.startswith("f."):
         raise ConfigError(f"{where}.group_by 는 none, {', '.join(COLUMN_EXPR)}, f.<경로> 중 하나")
@@ -332,6 +343,40 @@ def _check_rule(index: int, raw: Any) -> Rule:
         raise ConfigError(f"{where}.resolve: 서로 다른 값 수(distinct) 규칙은 자동 해결할 수 없습니다")
     return Rule(**common, match=match, window=window, threshold=threshold, group_by=group_by, cooldown=cooldown,
                 categories=tuple(checked.categories), distinct_field=distinct_field, distinct_min=distinct_min)
+
+
+NEW_TERMS_HISTORY = (timedelta(days=1), timedelta(days=180))
+NEW_TERMS_MAX = (100, 500000)
+NEW_TERMS_BURST = (1, 100)
+NEW_TERMS_DEFAULTS = {"history": "30d", "learn": "14d", "max_terms": 50000, "burst": 20}
+
+
+def _new_terms(raw: dict, common: dict, match: dict[str, str], checked: EventFilter, where: str) -> Rule:
+    """처음 보는 값 규칙 (B-47, ADR-063). 건수·묶음·재알림 간격은 없다 — 값 조합마다 한 번(history 동안 다시 안 보이면 또)."""
+    if bad := [k for k in ("window", "threshold", "group_by", "distinct", "cooldown") if k in raw]:
+        raise ConfigError(f"{where}: 처음 보는 값 규칙에는 {', '.join(bad)} 를 쓰지 않습니다 (값 조합마다 한 번 알림)")
+    if common["resolve"] == "auto":
+        raise ConfigError(f"{where}.resolve: 처음 보는 값 규칙은 사람이 해결합니다")
+    fields = _str_list(raw.get("fields"), f"{where}.fields")
+    if not 1 <= len(fields) <= 3 or len(set(fields)) != len(fields):
+        raise ConfigError(f"{where}.fields 는 서로 다른 필드 1~3개 (예: [account, ip])")
+    for name in fields:
+        if name not in COLUMN_EXPR and not (name.startswith("f.") and any(name[2:].split("."))):
+            raise ConfigError(f"{where}.fields: {name} — {', '.join(COLUMN_EXPR)}, f.<경로> 중 하나")
+    history = _duration(raw.get("history", NEW_TERMS_DEFAULTS["history"]), f"{where}.history")
+    if not NEW_TERMS_HISTORY[0] <= history <= NEW_TERMS_HISTORY[1]:
+        raise ConfigError(f"{where}.history 는 1d~180d")
+    learn = _duration(raw.get("learn", NEW_TERMS_DEFAULTS["learn"]), f"{where}.learn")
+    if not timedelta(days=1) <= learn <= history:
+        raise ConfigError(f"{where}.learn 은 1d 이상, history 이하")
+    numbers = {}
+    for key, (low, high) in (("max_terms", NEW_TERMS_MAX), ("burst", NEW_TERMS_BURST)):
+        value = raw.get(key, NEW_TERMS_DEFAULTS[key])
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ConfigError(f"{where}.{key} 는 {low}~{high} 의 정수")
+        numbers[key] = value
+    return Rule(**common, match=match, group_by="none", categories=tuple(checked.categories), terms_fields=fields,
+                history=history, learn=learn, **numbers)
 
 
 DISTINCT_MAX_WINDOW = timedelta(days=1)   # count(DISTINCT) 는 구간이 길수록 비싸다 — 엔진이 30초마다 다시 센다

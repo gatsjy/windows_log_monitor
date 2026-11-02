@@ -57,7 +57,7 @@ server/app/
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
-  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
+  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · newterms(처음 보는 값: 받은 시각 구간 훑기·배우기·조합마다 한 번, B-47) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF) · review(권한 검토 스냅샷·결재, B-72)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
   clock.py           PC·서버 시계 차이 판단(B-57) — 하트비트 시각의 창 두 개 최솟값(repository.CLOCK_OFFSET_SQL)으로 1분·5분·서버 시계 의심
@@ -173,6 +173,11 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - `user:` 는 정확히(그대로). SQL 은 `(username IS NOT NULL AND wlm_user_key(username) = ANY(열쇠) AND username = ANY(표기))` — 계정 색인 하나로 둘 다 찾는다(예전 `events_user_ts_idx` 는 다 붙으면 `partitions.build_account_indexes` 가 지움). `username IS NOT NULL` 을 빼면 부분 색인을 못 쓴다.
   - 알림 규칙·규칙이 쓰는 저장한 검색·예외에서 `-account:` 는 거부(`rules.ACCOUNT_EXCLUDE_ERROR`) — 공격자가 정하는 이름으로 비켜 갈 수 있다. 사용자 이름에서 나온 새 필드는 `routers/query.PERSONAL_FIELDS` 에(접속기록).
   - 월 파티션 색인은 서버가 뒤에서(`account_index_loop`, 시험에서는 `WLM_PARTITION_INDEX_BUILD=off` — `build_account_indexes` 를 직접 부른다). 파티션마다 식 통계(`account_statistics`)도 — 부분 색인 통계는 플래너가 쓰지 않는다.
+- **처음 보는 값 (B-47, ADR-063):** 엔진이 `received_at` 구간을 `new_terms_state.cursor_at` 부터 이어서 훑는다(`repository.scan_new_terms` 한 문장 — 모으기·맞추기·쓰기·상태). 수집 경로(`_write`)에 넣지 않는다.
+  - 조합의 열쇠 `wlm_terms_hash`(마이그레이션 039)는 **고치지 않는다**(바꾸면 모든 조합이 새 값). 값은 `_field_expr` — 검색·묶음과 같은 식.
+  - 알림은 `engine.fire_rule(rule, message, claim=…)` — `insert_alert` 가 같은 트랜잭션에서 pending → alerted·aggregated 로 바꾸지 못하면 알림을 넣지 않는다. 다른 경로로 '처음 보는 값' 알림을 넣지 않는다.
+  - `learn_until` 은 앞으로만 늘린다(조건 바뀜·오래 멈춤). 거슬러 배우는 동안은 알리지 않는다. 상한을 넘으면 지우지 말고 `CappedError`(규칙 오류).
+  - 시험은 `engine.evaluate` 를 직접 부르고 받은 시각을 앞당긴 로그를 넣는다(`test_api_new_terms.logon`) — 며칠 전 로그는 지난달 파티션이 필요하다(픽스처가 만든다).
 - 알림 규칙이 감시하는 분류는 `Rule.categories`(match.category + match.query 의 `category:`)입니다. 조회 범위 판단(`alerts/visibility.py`)은 이것만 봅니다.
 - **새 API 의 권한:** 관리자만이면 `require_admin`, 그룹으로 위임할 수 있는 기능이면 `require_permission("권한")`(auth/groups.py PERMISSIONS 에 추가). 화면은 `auth.can("권한")` 으로 버튼을 숨긴다.
 - **이벤트를 돌려주는 새 API 는 반드시 `routers/query._filter(request)` 로 필터를 만든다.** 그래야 사용자 그룹의 조회 범위(`scopes`)가 붙는다. 단건 조회는 `filters.scopes_allow` 로 확인.

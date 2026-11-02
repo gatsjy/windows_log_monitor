@@ -103,6 +103,9 @@ def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
     if f.received_since:
         clauses.append(sql.SQL("received_at >= %s"))
         params.append(f.received_since)
+    if f.received_before:
+        clauses.append(sql.SQL("received_at < %s"))
+        params.append(f.received_before)
     for column, values in (("host", f.hosts), ("channel", f.channels), ("provider", f.providers),
                            ("source", f.sources), ("category", f.categories), ("username", f.users),
                            ("src_ip", f.ips)):
@@ -1014,10 +1017,13 @@ async def silent_agents(cutoff: datetime, hosts: tuple[str, ...]) -> list[dict]:
 OBSERVE_REASON = "관찰 모드 — 규칙을 켜기 전 시험 중이라 보내지 않음"
 
 
-async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict | None = None, observe: bool = False) -> int:
+async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict | None = None, observe: bool = False,
+                       claim: dict | None = None) -> int | None:
     """alerts 한 줄 + 알림 대상별 alert_deliveries 를 넣고 새 id 를 돌려준다.
     무음(silence) 중이면 전송 상태를 처음부터 skipped(사유: 무음)로 둔다 — 발생 기록은 남기고 보내지만 않는다.
-    관찰 모드 규칙(B-52)도 같은 길 (사유: 관찰 모드)."""
+    관찰 모드 규칙(B-52)도 같은 길 (사유: 관찰 모드).
+    claim = 처음 보는 값(B-47) {ns, hashes|None, state}: 같은 트랜잭션에서 그 조합들을 pending → state 로 — 이미 다른 쪽이 가져갔으면
+    알림을 넣지 않고 None (서버가 멈췄다 다시 떠도·두 서버가 떠도 조합마다 알림 한 번)."""
     if silence:
         status, reason = "skipped", f"무음 #{silence['id']}: {silence['reason']}"
     elif observe:
@@ -1025,6 +1031,14 @@ async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict 
     else:
         status, reason = "pending", None
     async with db.pool().connection() as conn:
+        if claim is not None:
+            cur = await conn.execute(
+                "UPDATE seen_terms SET state = %s WHERE ns = %s AND state = 'pending'"
+                + (" AND term_hash = ANY(%s)" if claim.get("hashes") is not None else "") + " RETURNING term_hash",
+                (claim["state"], claim["ns"], *([claim["hashes"]] if claim.get("hashes") is not None else [])))
+            claimed = [r["term_hash"] for r in await cur.fetchall()]
+            if not claimed:
+                return None
         cur = await conn.execute(
             "INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, first_event_at, last_event_at,"
             " payload, silence_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING id",
@@ -1039,7 +1053,142 @@ async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict 
                 # 겹친 받는 곳은 한 줄로 — 기본 키에 걸리면 알림 행까지 되돌려져 매 주기 같은 실패를 했다(검토)
                 [(alert_id, name, status, reason) for name in dict.fromkeys(notifiers)],
             )
+        if claim is not None:
+            await conn.execute("UPDATE seen_terms SET alert_id = %s WHERE ns = %s AND term_hash = ANY(%s)",
+                               (alert_id, claim["ns"], claimed))
     return alert_id
+
+
+# ---------------------------------------------------------------- 처음 보는 값 (B-47, ADR-063)
+
+async def new_terms_state(rule_key: str, fields: list[str]) -> dict[str, Any] | None:
+    return await db.fetch_one("SELECT * FROM new_terms_state WHERE rule_key = %s AND fields = %s::text[]", (rule_key, fields))
+
+
+async def create_new_terms_state(rule_key: str, fields: list[str], filter_sig: str, cursor_at: datetime, learn_until: datetime,
+                                 backfill_from: datetime | None, backfill_to: datetime | None, reason: str) -> dict[str, Any]:
+    row = await db.fetch_one(
+        "INSERT INTO new_terms_state (rule_key, fields, filter_sig, cursor_at, learn_until, backfill_from, backfill_to, relearn_reason)"
+        " VALUES (%s, %s::text[], %s, %s, %s, %s, %s, %s) ON CONFLICT (rule_key, fields) DO NOTHING RETURNING *",
+        (rule_key, fields, filter_sig, cursor_at, learn_until, backfill_from, backfill_to, reason))
+    return row or await new_terms_state(rule_key, fields)
+
+
+NEW_TERMS_STATE_COLUMNS = frozenset({"filter_sig", "cursor_at", "learn_until", "backfill_from", "backfill_to", "chunk_sec",
+                                     "relearn_reason", "overflow_n"})
+
+
+async def update_new_terms_state(ns: int, **values: Any) -> None:
+    if bad := set(values) - NEW_TERMS_STATE_COLUMNS:
+        raise ValueError(f"알 수 없는 칸: {bad}")
+    sets = sql.SQL(", ").join(sql.SQL("{} = %s").format(sql.Identifier(k)) for k in values)
+    await db.fetch_all(sql.SQL("UPDATE new_terms_state SET {}, updated_at = now() WHERE id = %s RETURNING id").format(sets),
+                       [*values.values(), ns])
+
+
+async def oldest_received() -> datetime | None:
+    row = await db.fetch_one("SELECT min(received_at) AS at FROM events")
+    return row["at"] if row else None
+
+
+async def scan_new_terms(ns: int, f: EventFilter, fields: list[str], start: datetime, end: datetime, *, history: timedelta,
+                         learning: bool, learn_until: datetime, room: int, cursor: datetime | None) -> dict[str, int]:
+    """받은 시각 [start, end) 의 로그에서 fields 값 조합을 모아 seen_terms 에 한 문장으로 (B-47, ADR-063).
+    - 처음 본 조합(또는 history 넘게 안 보였던 조합)은 learning 이거나 learn_until 전이면 learned, 아니면 pending(알릴 것)
+    - 더 먼저 본 것을 찾으면(거슬러 배우기) 첫 시각을 당기고 pending 이었으면 learned 로
+    - 한 시간 안에 이미 본 조합은 쓰지 않는다(평소에는 거의 쓰기가 없게, agent_events 와 같은 방법)
+    - 새 조합은 room 개까지만 — 넘는 것은 overflow_n 으로 세고 두지 않는다(상한, 지우지 않음)
+    상태(terms_n·overflow_n·cursor_at)도 같은 문장에서 — 멈췄다 다시 떠도 같은 구간을 두 번 세지 않는다.
+    값은 열 이름처럼 _field_expr(account 는 wlm_user_key, f.<경로>는 원본 글자) — 값이 없는(NULL·빈) 조합은 세지 않는다."""
+    exprs = [_field_expr(x) for x in fields]
+    where, where_params = where_clause(replace(f, received_since=start, received_before=end))
+    term = sql.SQL("ARRAY[{}]::text[]").format(sql.SQL(", ").join(e for e, _ in exprs))
+    nonempty = sql.SQL(" AND ").join(sql.SQL("{} <> ''").format(e) for e, _ in exprs)
+    expr_params = [p for _, ps in exprs for p in ps]
+    query = sql.SQL("""
+WITH t AS (
+  SELECT {term} AS term, min(received_at) AS frx, max(received_at) AS lrx, min(ts) AS fts, min(id) AS fid, min(host) AS fhost
+  FROM events WHERE {where} AND {nonempty} GROUP BY 1
+), d AS (
+  SELECT t.*, x.th, s.term_hash IS NULL AS fresh, s.first_seen AS s_first, s.last_seen AS s_last, s.prev_last_seen AS s_prev,
+         s.first_ts AS s_fts, s.first_event_id AS s_fid, s.first_host AS s_fhost, s.state AS s_state, s.alert_id AS s_alert,
+         (s.term_hash IS NOT NULL AND s.last_seen < t.frx - %s) AS expired
+  FROM t CROSS JOIN LATERAL (SELECT wlm_terms_hash(t.term) AS th) x
+  LEFT JOIN seen_terms s ON s.ns = %s AND s.term_hash = x.th
+), r AS (
+  SELECT d.*, (fresh OR expired) AS renew, (NOT fresh AND NOT expired AND frx < s_first) AS earlier,
+         CASE WHEN fresh THEN row_number() OVER (PARTITION BY fresh ORDER BY frx, th) END AS rn,
+         CASE WHEN %s OR frx < %s THEN 'learned' ELSE 'pending' END AS new_state
+  FROM d WHERE fresh OR expired OR s_last < lrx - interval '1 hour' OR frx < s_first
+), w AS (
+  SELECT r.*, (fresh AND rn > %s) AS over FROM r
+), ins AS (
+  INSERT INTO seen_terms AS s (ns, term_hash, term, first_seen, last_seen, first_ts, first_event_id, first_host, prev_last_seen,
+                               state, alert_id)
+  SELECT %s, th, ARRAY(SELECT left(v, 256) FROM unnest(term) v),
+         CASE WHEN renew THEN frx ELSE least(s_first, frx) END,
+         CASE WHEN fresh THEN lrx ELSE greatest(s_last, lrx) END,
+         CASE WHEN renew OR earlier THEN fts ELSE s_fts END,
+         CASE WHEN renew OR earlier THEN fid ELSE s_fid END,
+         CASE WHEN renew OR earlier THEN fhost ELSE s_fhost END,
+         CASE WHEN expired THEN s_last ELSE s_prev END,
+         CASE WHEN renew THEN new_state WHEN earlier AND s_state = 'pending' THEN 'learned' ELSE s_state END,
+         CASE WHEN renew THEN NULL ELSE s_alert END
+  FROM w WHERE NOT over
+  ON CONFLICT (ns, term_hash) DO UPDATE SET first_seen = EXCLUDED.first_seen, last_seen = EXCLUDED.last_seen,
+    first_ts = EXCLUDED.first_ts, first_event_id = EXCLUDED.first_event_id, first_host = EXCLUDED.first_host,
+    prev_last_seen = EXCLUDED.prev_last_seen, state = EXCLUDED.state, alert_id = EXCLUDED.alert_id
+  RETURNING (xmax = 0) AS inserted
+), st AS (
+  UPDATE new_terms_state SET terms_n = terms_n + (SELECT count(*) FROM ins WHERE inserted),
+    overflow_n = overflow_n + (SELECT count(*) FROM w WHERE over), cursor_at = COALESCE(%s, cursor_at), updated_at = now()
+  WHERE id = %s RETURNING terms_n, overflow_n
+)
+SELECT (SELECT count(*) FROM ins) AS written, (SELECT count(*) FROM ins WHERE inserted) AS inserted,
+       (SELECT terms_n FROM st) AS terms_n, (SELECT overflow_n FROM st) AS overflow_n
+""").format(term=term, where=where, nonempty=nonempty)
+    params = [*expr_params, *where_params, *expr_params, history, ns, learning, learn_until, room, ns, cursor, ns]
+    return await db.fetch_one(query, params)
+
+
+async def new_terms_preview(f: EventFilter, fields: list[str], new_since: datetime, limit: int) -> dict[str, Any]:
+    """미리 보기 (B-47): f 의 받은 시각 구간에서 값 조합마다 처음 받은 시각 — new_since 뒤에 처음 보인 것이 '처음 보는 값'(근사:
+    구간 앞부분이 배운 것). 조합 수(상한 가늠)·처음 보인 것 앞의 limit 개."""
+    exprs = [_field_expr(x) for x in fields]
+    where, where_params = where_clause(f)
+    term = sql.SQL("ARRAY[{}]::text[]").format(sql.SQL(", ").join(e for e, _ in exprs))
+    nonempty = sql.SQL(" AND ").join(sql.SQL("{} <> ''").format(e) for e, _ in exprs)
+    expr_params = [p for _, ps in exprs for p in ps]
+    query = sql.SQL("""
+WITH t AS (SELECT {term} AS term, min(received_at) AS first, count(*) AS n FROM events WHERE {where} AND {nonempty} GROUP BY 1)
+SELECT (SELECT count(*) FROM t) AS total, (SELECT count(*) FROM t WHERE first >= %s) AS new,
+       (SELECT coalesce(json_agg(x ORDER BY x.first), '[]') FROM (SELECT term AS values, first, n FROM t WHERE first >= %s
+        ORDER BY first LIMIT %s) x) AS items""").format(term=term, where=where, nonempty=nonempty)
+    return await db.fetch_one(query, [*expr_params, *where_params, *expr_params, new_since, new_since, limit])
+
+
+async def pending_terms(ns: int, limit: int) -> list[dict[str, Any]]:
+    return await db.fetch_all(
+        "SELECT term_hash, term, first_seen, first_ts, first_event_id, first_host, prev_last_seen FROM seen_terms"
+        " WHERE ns = %s AND state = 'pending' ORDER BY first_seen, term_hash LIMIT %s", (ns, limit))
+
+
+async def count_pending_terms(ns: int) -> int:
+    return (await db.fetch_one("SELECT count(*) AS n FROM seen_terms WHERE ns = %s AND state = 'pending'", (ns,)))["n"]
+
+
+async def purge_seen_terms(ns: int, cutoff: datetime) -> int:
+    """history 넘게 안 보인 조합 — 다시 보면 새 값이니 둘 필요가 없다(알릴 차례인 것은 남김). 둔 수를 다시 센다."""
+    rows = await db.fetch_all("DELETE FROM seen_terms WHERE ns = %s AND last_seen < %s AND state <> 'pending' RETURNING ns",
+                              (ns, cutoff))
+    await db.fetch_all("UPDATE new_terms_state SET terms_n = (SELECT count(*) FROM seen_terms WHERE ns = %s) WHERE id = %s RETURNING id",
+                       (ns, ns))
+    return len(rows)
+
+
+async def purge_new_terms_states(cutoff: datetime) -> int:
+    """지운·꺼 둔 규칙의 상태 — cutoff 뒤로 손대지 않았으면 본 값과 함께 지운다 (다시 켜면 처음부터 다시 배움)."""
+    return len(await db.fetch_all("DELETE FROM new_terms_state WHERE updated_at < %s RETURNING id", (cutoff,)))
 
 
 # ---------------------------------------------------------------- 자동 해결·해소 통지 (B-35 2단계, alerts/engine.py)
@@ -2003,7 +2152,7 @@ EXPORT_ACTIONS = ("audit.export", "alerts.export", "events.export", "compliance.
 
 # 개인정보가 보이는 조회의 접속기록 (accesslog.record) — 대량 조회 점검(B-72 3단계)이 사람마다 센다
 PERSONAL_VIEW_ACTIONS = ("events.search", "events.view", "events.live", "events.context", "events.lockout", "events.stats",
-                         "events.sessions", "events.quarantine.view", "alerts.playbook", "audit.list", "report.view", "report.print",
+                         "events.sessions", "events.quarantine.view", "alerts.playbook", "alerts.preview", "audit.list", "report.view", "report.print",
                          "inspection.view")
 
 

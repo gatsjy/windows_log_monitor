@@ -79,7 +79,7 @@ export function deliveryChips(deliveries = []) {
 
 export const GROUP_LABELS = {
   host: 'PC', channel: '채널', provider: '공급자', source: '소스', event_id: '이벤트 ID', level: '수준',
-  category: '분류', user: '사용자', ip: '출발지 IP', none: '',
+  category: '분류', user: '사용자', account: '계정', ip: '출발지 IP', none: '',
 };
 
 export function matchText(match = {}) {
@@ -111,9 +111,34 @@ export function ruleSummary(r) {
   if (r.kind === 'stream_silent') {
     return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'} · ${r.channels.length ? r.channels.join(', ') : '모든 채널'} · 늘 오던 채널이 끊김`;
   }
+  if (r.kind === 'new_terms') {
+    const what = r.fields.map((k) => GROUP_LABELS[k] ?? k.replace(/^f\./, '')).join(' + ');
+    return `${matchText(r.match)} · 처음 보는 ${what} (최근 ${fmtDuration(r.history_sec)} 동안 없던 값) · 배우는 기간 ${fmtDuration(r.learn_sec)}`;
+  }
   const group = r.group_by === 'none' ? '전체 합산' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}별`;
   const distinct = r.distinct?.field ? ` · 서로 다른 ${GROUP_LABELS[r.distinct.field] ?? r.distinct.field.replace(/^f\./, '')} ${fmtNum(r.distinct.min)}개 이상` : '';
   return `${matchText(r.match)} · ${fmtDuration(r.window_sec)} 동안 ${fmtNum(r.threshold)}건 이상${distinct} · ${group} · 재알림 ${fmtDuration(r.cooldown_sec)}`;
+}
+
+const termName = (k) => GROUP_LABELS[k] ?? k.replace(/^f\./, '');
+
+/** 처음 보는 값 알림(B-47)의 한 줄 — 하나면 그 값, 몰려왔으면 몇 개 */
+function termsText(t) {
+  const days = t.history_days ? `최근 ${fmtNum(t.history_days)}일 동안` : '이전에';
+  if (t.items) return `${days} 없던 ${(t.fields ?? []).map(termName).join(' + ')} ${fmtNum(t.count)}개가 한 주기에 몰려와 한 통으로 묶었습니다 — 서브넷·계정 일괄 변경인지 확인하세요.`;
+  const again = t.prev_last_seen ? ` (마지막으로 본 때 ${fmtTime(t.prev_last_seen)} — 오랜만에 다시 보임)` : '';
+  return `${days} 보지 못한 ${(t.fields ?? []).map(termName).join(' + ')} 조합이 나타났습니다${again}.`;
+}
+
+function termsBlock(t) {
+  const fields = t.fields ?? [];
+  if (t.items) {
+    return html`<div class="table-wrap" style="margin:-6px 0 14px"><table class="table no-stack"><thead><tr>${fields.map((k) => html`<th>${termName(k)}</th>`)}<th>처음 본 시각</th></tr></thead>
+      <tbody>${t.items.map((i) => html`<tr>${i.values.map((v) => html`<td>${v}</td>`)}<td class="nowrap">${i.first_ts ? fmtTime(i.first_ts) : '–'}</td></tr>`)}</tbody></table></div>
+      ${t.count > t.items.length ? html`<p class="muted" style="margin:-8px 0 14px;font-size:12.5px">… 외 ${fmtNum(t.count - t.items.length)}개 (이벤트 검색에서 확인)</p>` : ''}`;
+  }
+  return html`<dl class="kv" style="margin:-6px 0 14px">${fields.map((k, i) => html`<dt>${termName(k)}</dt><dd><b>${t.values?.[i] ?? ''}</b></dd>`)}
+    ${t.first_ts ? html`<dt>처음 본 시각</dt><dd>${fmtTime(t.first_ts)}</dd>` : ''}${t.host ? html`<dt>PC</dt><dd>${t.host}</dd>` : ''}</dl>`;
 }
 
 /** 서버가 만든 링크(http://주소/#/events?...)를 현재 화면 기준 해시로 */
@@ -166,10 +191,13 @@ export async function openAlert(id, { onChange } = {}) {
         ? `${alert.group_key} 에서 ${fmtDuration(p.window_sec)} 이상 로그/하트비트가 들어오지 않았습니다.`
         : p.kind === 'stream_silent'
           ? `${alert.group_key} 로그가 ${fmtDuration(p.window_sec)} 넘게 들어오지 않습니다 — PC 는 살아 있습니다${p.stream?.per_day ? ` (평소 하루 ${fmtNum(p.stream.per_day)}건)` : ''}. 감사 정책·에이전트 설정을 확인하세요.`
+        : p.kind === 'new_terms'
+          ? termsText(p.terms ?? {})
         : p.distinct_field
           ? `최근 ${fmtDuration(p.window_sec)} 동안 서로 다른 ${GROUP_LABELS[p.distinct_field] ?? p.distinct_field.replace(/^f\./, '')} ${fmtNum(p.distinct_count)}개 (기준 ${fmtNum(p.distinct_min)}개 이상) · 이벤트 ${fmtNum(alert.event_count)}건`
           : `최근 ${fmtDuration(p.window_sec)} 동안 조건에 맞는 이벤트 ${fmtNum(alert.event_count)}건 (기준 ${fmtNum(p.threshold)}건 이상)`}</p>
       ${lifecycle(alert, p)}
+      ${p.kind === 'new_terms' ? termsBlock(p.terms ?? {}) : ''}
       ${p.distinct_values?.length ? html`<p class="muted" style="margin:-8px 0 14px;font-size:12.5px">${p.distinct_values.join(', ')}${p.distinct_count > p.distinct_values.length ? ` … 외 ${fmtNum(p.distinct_count - p.distinct_values.length)}` : ''}</p>` : ''}
 
       <div class="handle-box">

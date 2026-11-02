@@ -131,6 +131,7 @@ ACTION_LABELS = {
     "events.stats": "상위 값 조회 (사용자·IP·원본 필드)",
     "events.sessions": "로그온 세션 조회",
     "alerts.playbook": "알림 조사 플레이북 조회",
+    "alerts.preview": "알림 규칙 미리보기 (계정·IP 값)",
     "compliance.bundle": "심사 증적 묶음 내려받기",
     "settings.tls.ca_download": "CA 인증서 내려받기",
     "user.dormant_lock": "장기 미사용 계정 자동 잠금",

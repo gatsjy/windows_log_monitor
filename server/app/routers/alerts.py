@@ -40,7 +40,7 @@ from ..filters import EVENT_FIELD, EventFilter, FilterError, parse_time, scopes_
 from ..normalizers import Event, layout_keys, normalize_sample
 from ..querylang import QueryError, account_key, format_term, parse_terms, raw_field, raw_text
 from .ingest import _fix_surrogates
-from .query import read_time_limit
+from .query import PERSONAL_FIELDS, read_time_limit
 
 log = logging.getLogger(__name__)
 
@@ -175,6 +175,9 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
             "unknown_notify": [n for n in r.notify if n not in known],
             "tags": list(r.tags), "sid": r.sid, "group": r.group,
             "distinct": {"field": r.distinct_field, "min": r.distinct_min} if r.distinct_field else None,
+            # 처음 보는 값 (B-47)
+            "fields": list(r.terms_fields), "history_sec": _seconds(r.history), "learn_sec": _seconds(r.learn),
+            "max_terms": r.max_terms, "burst": r.burst,
             "resolve": r.resolve, "channels": list(r.channels), "coverage": coverage.public(data.get(r.name)),
             "mode": r.mode, "quality": quality.get(r.name),
             # 마지막 평가 (ADR-045): 상태 칩·오류 줄
@@ -361,6 +364,18 @@ def _clean_rule(raw: dict[str, Any]) -> dict[str, Any]:
         for key in ("hosts", "channels"):
             if str_list(key):
                 rule[key] = str_list(key)
+    elif kind == "new_terms":
+        rule["match"] = {str(k).strip(): str(v).strip() for k, v in (raw.get("match") or {}).items() if str(k).strip() and str(v).strip()}
+        rule["fields"] = str_list("fields")
+        for key, label in (("history", "다시 새로 볼 기간"), ("learn", "배우는 기간")):
+            rule[key] = _duration_text(raw.get(f"{key}_sec", 30 * 86400 if key == "history" else 14 * 86400), label)
+        for key, default in (("max_terms", 50000), ("burst", 20)):
+            try:
+                value = int(raw.get(key, default))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(422, f"{key} 는 숫자여야 합니다") from exc
+            if value != default:
+                rule[key] = value
     else:
         match = {str(k).strip(): str(v).strip() for k, v in (raw.get("match") or {}).items()
                  if str(k).strip() and str(v).strip()}
@@ -484,7 +499,7 @@ async def set_rule_mode(body: ModeBody, request: Request, admin: User = Depends(
 
 
 @router.post("/api/alerts/rules/preview", dependencies=[Depends(read_time_limit)])
-async def preview_rule(body: PreviewBody, admin: User = Depends(require_permission("alerts.manage"))):
+async def preview_rule(body: PreviewBody, request: Request, admin: User = Depends(require_permission("alerts.manage"))):
     """최근 N시간 데이터에 이 규칙을 적용했다면: 맞는 이벤트 수, 알림 횟수(재알림 간격 반영, 근사), 대상별."""
     rule = _check_one(_clean_rule({**body.rule, "name": body.rule.get("name") or "(미리보기)"}), need_notify=False)
     now = datetime.now(UTC)
@@ -504,11 +519,22 @@ async def preview_rule(body: PreviewBody, admin: User = Depends(require_permissi
         rule_f = await rule_filter(rule, now)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    if rule.kind == "new_terms":
+        # 처음 보는 값 (B-47): 앞의 며칠(배우는 기간, 7일까지)로 배웠다 치고 최근 N시간에 처음 보인 조합 — 실제는 history·만료까지 보니 근사
+        lookback = min(rule.learn, timedelta(days=7))
+        since_new = now - timedelta(hours=body.hours)
+        f = replace(rule_f, received_since=since_new - lookback, scopes=admin.scopes)
+        out = await repository.new_terms_preview(f, list(rule.terms_fields), since_new, 50)
+        await _preview_accesslog(request, admin, rule, list(rule.terms_fields), body.hours, len(out["items"]))
+        return {"kind": rule.kind, "hours": body.hours, "lookback_days": lookback.days, "fields": list(rule.terms_fields),
+                "total": out["total"], "new": out["new"], "max_terms": rule.max_terms, "burst": rule.burst,
+                "items": [{"values": i["values"], "first": i["first"], "n": i["n"]} for i in out["items"]]}
     base = replace(rule_f, received_since=now - timedelta(hours=body.hours), scopes=admin.scopes)
     window_sec = max(1, _seconds(rule.window))
     matched = (await repository.count(base))["current"]
     rows = await repository.rule_preview(base, rule.group_by, window_sec, rule.threshold,
                                          rule.distinct_field, rule.distinct_min)
+    await _preview_accesslog(request, admin, rule, [rule.group_by], body.hours, len(rows))
     step = max(1, math.ceil(_seconds(rule.cooldown) / window_sec))
     groups: dict[str, dict[str, Any]] = {}
     for row in rows:  # 구간 순서대로 — 재알림 간격 안의 구간은 알림 1번으로 친다
@@ -524,6 +550,14 @@ async def preview_rule(body: PreviewBody, admin: User = Depends(require_permissi
         "fires": sum(g["fires"] for g in ranked), "targets": len(ranked),
         "groups": [{"key": g["key"], "fires": g["fires"], "max": g["max"]} for g in ranked[:10]],
     }
+
+
+async def _preview_accesslog(request: Request, admin: User, rule: Rule, fields: list[str], hours: int, rows: int) -> None:
+    """미리보기가 계정·IP 값을 보여 주면 접속기록 (B-47 — 처음 보는 값은 그 값 목록이 결과다). 건수는 key 에서 뺀다."""
+    if not any(k in PERSONAL_FIELDS or k.startswith("f.") for k in fields):
+        return
+    await accesslog.record(request, admin.username, "alerts.preview", rule.name, {"fields": fields, "hours": hours, "rows": rows},
+                           key={"fields": fields, "hours": hours, "match": rule.match})
 
 
 # ------------------------------------------------------------ 규칙 시험기 (B-52)
@@ -587,7 +621,7 @@ async def test_rule(body: RuleTestBody, request: Request, user: User = Depends(r
         rule = _check_one(_clean_rule({**body.rule, "name": body.rule.get("name") or "(시험)"}), need_notify=False)
     else:
         raise HTTPException(400, "규칙을 주세요")
-    if rule.kind != "count":
+    if rule.kind not in ("count", "new_terms"):
         raise HTTPException(400, "끊김 규칙은 로그 하나로 시험할 수 없습니다")
     now = datetime.now(UTC)
     event = await _test_event(body, user, request, rule.name)
@@ -607,6 +641,10 @@ async def test_rule(body: RuleTestBody, request: Request, user: User = Depends(r
         else:
             value = event.get(EVENT_FIELD.get(rule.group_by, rule.group_by))
         checks.append({"key": rule.group_by, "op": "group_key", "expected": [], "actual": value, "ok": value is not None,
+                       "exception": None})
+    for name in rule.terms_fields:   # 처음 보는 값 (B-47): 볼 값이 비면 세지 않는다(엔진의 '' 제외와 같게)
+        value = _event_value(event, name)
+        checks.append({"key": name, "op": "term_field", "expected": [], "actual": value, "ok": value not in (None, ""),
                        "exception": None})
     return {
         "rule": rule.name, "matched": all(c["ok"] for c in checks), "checks": checks,
@@ -920,6 +958,17 @@ async def end_silence(silence_id: int, request: Request, user: User = Depends(re
                    {"id": silence_id, "rule": silence["rule"], "group_key": silence["group_key"],
                     "reason": silence["reason"]}, actor_ip=client_ip(request))
     return {"ok": True}
+
+
+def _event_value(event: dict[str, Any], name: str) -> str | None:
+    """엔진이 묶거나 보는 값과 같은 글자 (repository._field_expr) — f.<경로>는 원본 글자, account 는 계정 열쇠."""
+    if name.startswith("f."):
+        current = raw_field(event.get("raw"), [p for p in name[2:].split(".") if p])
+        return None if current is None else raw_text(current)
+    if name == "account":
+        return account_key(event.get("username"))
+    value = event.get(EVENT_FIELD.get(name, name))
+    return None if value is None else str(value)
 
 
 async def _followup(alert: dict[str, Any]) -> dict[str, Any] | None:

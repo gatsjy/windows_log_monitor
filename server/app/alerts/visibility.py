@@ -37,9 +37,14 @@ def alert_visible(user: User, alert: dict[str, Any]) -> bool:
     if alert["rule"] in BUILTIN_RULES:   # 설정 변경 등 내장 알림은 이 시스템 관리 정보 — 범위가 없는 사용자만 (ADR-043)
         return False
     cats = _rule_categories(alert["rule"])
+    rule = next((r for r in engine.config.rules if r.name == alert["rule"]), None)
+    if rule is not None and rule.kind == "new_terms":   # 대상 이름은 값 조합 — PC 는 payload 에 (없으면 PC 범위 사용자에게 안 보임)
+        host = ((alert.get("payload") or {}).get("terms") or {}).get("host")
+    else:
+        host = alert_host(alert["rule"], alert["group_key"])
     for scope in user.scopes:
         cat_ok = not scope.categories or bool(cats & set(scope.categories))
-        host_ok = scope.allows_host(alert_host(alert["rule"], alert["group_key"]))
+        host_ok = scope.allows_host(host)
         if cat_ok and host_ok:
             return True
     return False
