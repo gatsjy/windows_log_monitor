@@ -121,8 +121,12 @@ def test_follow_up_overdue_in_readiness_and_report(ctx):
     assert o["follow_up"] == ["kim"] and not o["overdue"] and o["age_days"] == 0
     assert admin.portal.call(review.overview, now + timedelta(days=93), 92)["overdue"]
     assert not admin.portal.call(review.overview, now + timedelta(days=93), 0)["overdue"]   # 0 = 알리지 않음
-    items = {i.key: i for i in readiness.judge(admin.portal.call(readiness.collect, now))}
+    facts = admin.portal.call(readiness.collect, now)
+    items = {i.key: i for i in readiness.judge(facts)}
     assert items["access_review"].status == "bad" and "kim" in items["access_review"].detail
+    # 주기를 꺼도(0) 승인한 회수인데 켜진 계정은 알린다 — 예전에는 'skip' 으로 가려졌다 (검토에서 재현)
+    off = {**facts, "access_review": admin.portal.call(review.overview, now, 0)}
+    assert {i.key: i for i in readiness.judge(off)}["access_review"].status == "bad"
     payload = admin.portal.call(builder.build, "daily", now - timedelta(hours=1), now + timedelta(minutes=1))
     assert any("회수로 정했는데 아직 켜진 계정 1개: kim" in a["text"] for a in payload["attention"])
     old = {k: v for k, v in payload.items() if k != "access_review"}

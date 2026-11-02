@@ -142,10 +142,11 @@ def judge(f: dict[str, Any]) -> list[Item]:
     ar = f.get("access_review")
     if ar is not None:
         problems = review.attention(ar)
-        if not ar["days"]:
-            status, detail = "skip", "권한 검토 주기를 정하지 않았습니다 (WLM_ACCESS_REVIEW_DAYS=0 — 내부 관리계획에 따라 따로 점검)"
-        elif problems:
+        # 문제가 먼저 — 주기를 끄면(0) 주기 알림만 없어지고, 승인한 회수인데 켜진 계정은 그대로 알린다(보고서와 같게, 검토에서 재현)
+        if problems:
             status, detail = ("bad" if any(p["level"] == "bad" for p in problems) else "warn"), " / ".join(p["text"] for p in problems)
+        elif not ar["days"]:
+            status, detail = "skip", "권한 검토 주기를 정하지 않았습니다 (WLM_ACCESS_REVIEW_DAYS=0 — 내부 관리계획에 따라 따로 점검)"
         else:
             status, detail = "ok", f"마지막 승인 {ar['age_days']}일 전('{ar['last_title']}') — 주기 {ar['days']}일"
         if ar["in_progress"] and status != "skip":
