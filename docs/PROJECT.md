@@ -217,7 +217,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 
 | 엔드포인트 | 설명 |
 |---|---|
-| `GET /api/events?limit=&cursor=` | 최신순 목록. `next_cursor` 로 다음 페이지 (keyset). `format=csv&reason=` 면 CSV(최대 1만 건, 넘으면 `X-WLM-Truncated`, 사유 필수·접속기록 `events.export`, B-62) |
+| `GET /api/events?limit=&cursor=&cols=` | 최신순 목록. `next_cursor` 로 다음 페이지 (keyset). `cols` = 더 볼 열(최대 6개, 컬럼명·`f.<경로>` — 통계와 같은 필드 식, 행마다 `cols: [값…]`, B-65). `format=csv&reason=` 면 CSV(최대 1만 건, 넘으면 `X-WLM-Truncated`, 사유 필수·접속기록 `events.export`, B-62 — `cols` 는 맨 뒤 칸) |
 | `GET /api/events/{id}` | 단건 + raw |
 | `GET /api/events/{id}/context?direction=before\|after&same=host\|source&limit=&cursor=` | 앞뒤 로그 (B-61): 같은 PC(·소스)에서 바로 앞(가까운 것부터)·뒤. 같은 시각은 번호로 나눔, `next_cursor` 로 이어 보기, 조회 범위 적용, 접속기록 `events.context`(10분 묶음) |
 | `GET /api/stats/count?compare=true` | 건수 + 직전 같은 길이 기간 건수 |
@@ -316,6 +316,8 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
 - **라우팅:** `#/dashboard/<이름>`, `#/live`, `#/events?<필터>`, `#/alerts`, `#/agents`, `#/fields?source=&path=`, `#/reports/<번호>`
   - 필터는 URL에 남기 때문에 주소를 공유하면 같은 화면이 열립니다.
 - **필터 막대 (이벤트 검색·실시간):** 1행 = 검색 문장 칸(§4.1), 2행 = 기간·PC·분류·채널·수준 칩·저장한 검색·링크 복사·초기화.
+  - **열·시간 막대 (B-65 3단계):** 목록 '열'에서 사용자·IP·채널·공급자·소스·원본 필드(`f.<경로>`)를 6개까지 더하고 머리글 ✕ 로 뺍니다(주소 `cols=` 에 남음, CSV 에도).
+    시간 막대는 누르면 그 구간, 끌면 여러 구간 — 고를 때마다 브라우저 기록이 하나 쌓여 '뒤로'(또는 '← 이전 구간')가 앞 구간으로 돌아갑니다. 대시보드 시계열 위젯도 끌어 고르기.
   - **필드 탭 (B-65):** 필드(사용자·PC·IP·이벤트 ID·분류·소스·채널·공급자·수준)마다 많은 값 5개 — 불러온 로그 기준(비율), '전체 기준'은 지금 조건 전체(`/api/stats/top`, 사용자·IP 는 접속기록). 값의 + 는 좁히기, − 는 빼기.
   - **세션 탭 (B-63):** 목록 | 통계 | 세션 — 지금 조건의 Windows 로그온마다 로그오프를 짝지어 로그온 시각·PC·사용자·방식(LogonType)·출발지 IP·로그오프·길이. 행을 누르면 로그온 로그 상세.
   - **저장한 검색 (B-64):** 지금 문장을 이름·설명·공유(·보호: 관리자)와 함께 저장하고, 목록에서 [적용](문장을 바꿈)·[더하기](지금 문장에 AND)·고치기·지우기. 기간은 저장하지 않습니다(불러올 때 지금 기간).

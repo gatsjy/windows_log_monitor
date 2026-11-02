@@ -119,15 +119,17 @@ def _summarize(rows: list[dict]) -> list[dict]:
 @router.get("/api/events")
 async def list_events(request: Request, limit: int = Query(100, ge=1, le=EXPORT_MAX_ROWS), cursor: str | None = None,
                       format: str = Query("json", pattern="^(json|csv)$"), reason: str | None = Query(None, max_length=200),
-                      user: User = Depends(require_user)):
+                      cols: str = Query("", max_length=500), user: User = Depends(require_user)):
+    """목록. cols = 더 볼 열 (B-65 3단계, 최대 LIST_MAX_COLS — 컬럼명 또는 f.<원본 경로>) → 행마다 cols: [값…]. 조건(cols 포함)은 접속기록에."""
     f = _filter(request)
+    extra = _fields(cols, LIST_MAX_COLS, "cols")
     if format == "csv":
-        return await _events_csv(request, user, f, export_reason(reason))
+        return await _events_csv(request, user, f, export_reason(reason), extra)
     if limit > 1000:
         raise HTTPException(400, "limit 은 1000 이하 (CSV 는 10000)")
     position = _cursor(cursor) if cursor else None
     try:
-        rows = _summarize(await repository.list_events(f, limit + 1, position))
+        rows = _with_cols(_summarize(await repository.list_events(f, limit + 1, position, extra)), extra)
     except db.QueryTimeout as exc:
         # 끝나지 않은 검색도 접속기록에 남긴다 — 시도한 조건이 기록에서 빠지지 않게 (ISMS 2.9.4)
         if cursor is None:
@@ -141,20 +143,26 @@ async def list_events(request: Request, limit: int = Query(100, ge=1, le=EXPORT_
     return {"items": rows, "next_cursor": next_cursor}
 
 
-async def _events_csv(request: Request, user: User, f, reason: str):
+def _with_cols(rows: list[dict], extra: list[str]) -> list[dict]:
+    for r in rows:
+        r["cols"] = [r.pop(f"x{i}") for i in range(len(extra))]
+    return rows
+
+
+async def _events_csv(request: Request, user: User, f, reason: str, extra: list[str] = ()):
     """이벤트 CSV (B-62): 개인정보가 든 파일이라 사유를 받아 접속기록(events.export)에 함께 — 기록 못 하면 내주지 않는다(ADR-042).
-    로그에서 온 값이 엑셀 수식으로 실행되지 않게 csv_response 로."""
-    rows = _summarize(await repository.list_events(f, EXPORT_MAX_ROWS + 1))
+    로그에서 온 값이 엑셀 수식으로 실행되지 않게 csv_response 로. 화면에서 더한 열(cols)은 맨 뒤에."""
+    rows = _with_cols(_summarize(await repository.list_events(f, EXPORT_MAX_ROWS + 1, extra=extra)), extra)
     truncated = len(rows) > EXPORT_MAX_ROWS
     rows = rows[:EXPORT_MAX_ROWS]
     await db.audit(user.username, "events.export", "events",
                    {"query": accesslog.conditions(request, drop=("limit", "format", "reason")), "rows": len(rows),
                     "truncated": truncated, "reason": reason}, actor_ip=client_ip(request), required=True)
-    return csv_response(EVENT_CSV_HEAD,
+    return csv_response([*EVENT_CSV_HEAD, *(STATS_FIELD_LABELS.get(c, c) for c in extra)],
                         ([r["ts"].isoformat(), r["received_at"].isoformat(), r["host"], r["source"], r["category"] or "",
                           r["channel"] or "", r["provider"] or "", r["event_id"] if r["event_id"] is not None else "",
                           LEVEL_LABELS.get(r["level"], r["level"]), r["username"] or "", r["src_ip"] or "", r["summary"] or "",
-                          r["message"] or ""]
+                          r["message"] or "", *("" if v is None else v for v in r["cols"])]
                          for r in rows),
                         f"events_{datetime.now(UTC):%Y%m%d_%H%M%S}.csv",
                         headers={"X-WLM-Truncated": "1"} if truncated else None)
@@ -350,6 +358,7 @@ async def suggest(request: Request, key: str, prefix: str = Query("", max_length
 
 
 GROUP_MAX_BY, GROUP_MAX_DISTINCT, GROUP_MAX_ROWS = 3, 2, 1000
+LIST_MAX_COLS = 6   # 검색 목록에 더 볼 열 (B-65 3단계, cols=)
 STATS_FIELD_LABELS = {"host": "PC", "user": "사용자", "ip": "IP", "event_id": "이벤트 ID", "category": "분류", "source": "소스",
                       "channel": "채널", "provider": "공급자", "level": "수준"}
 

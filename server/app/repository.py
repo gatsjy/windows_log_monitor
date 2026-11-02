@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -622,13 +622,21 @@ async def purge_iis_layouts(cutoff: datetime) -> int:
 
 # ------------------------------------------------------------------ read
 
-async def list_events(f: EventFilter, limit: int, cursor: tuple[datetime, int] | None = None) -> list[dict]:
+async def list_events(f: EventFilter, limit: int, cursor: tuple[datetime, int] | None = None,
+                      extra: Sequence[str] = ()) -> list[dict]:
+    """목록. extra = 더 볼 열 (B-65 3단계, 검색 화면 cols=) — 상위 값·통계와 같은 필드 식(_field_expr, f.<경로> 포함)으로 x0, x1, …"""
     where, params = where_clause(f)
     if cursor:
         where = sql.SQL("{} AND (ts, id) < (%s, %s)").format(where)
         params = [*params, *cursor]
-    query = sql.SQL("SELECT {} FROM events WHERE {} ORDER BY ts DESC, id DESC LIMIT %s").format(_LIST_COLUMNS, where)
-    return await db.fetch_all(query, [*params, limit])
+    columns, column_params = [_LIST_COLUMNS], []
+    for i, name in enumerate(extra):
+        expr, p = _field_expr(name)
+        columns.append(sql.SQL("{} AS {}").format(expr, sql.Identifier(f"x{i}")))
+        column_params += p
+    query = sql.SQL("SELECT {} FROM events WHERE {} ORDER BY ts DESC, id DESC LIMIT %s").format(
+        sql.SQL(", ").join(columns), where)
+    return await db.fetch_all(query, [*column_params, *params, limit])
 
 
 async def event_context(host: str, source: str | None, scopes: Any, position: tuple[datetime, int], direction: str,

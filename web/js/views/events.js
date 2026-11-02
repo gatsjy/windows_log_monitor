@@ -2,13 +2,13 @@
 // 옛 링크(host=…&q=a|b)로 들어오면 문장으로 접어 주소를 바꾼다 (filterState). 같은 주소 = 같은 조건.
 import * as api from '../api.js';
 import { columnChart, legend, seriesColors, seriesLabel } from '../charts.js';
-import { openEvent, setSearchContext } from '../drawer.js';
-import { EVENT_HEAD, bindRows, eventRow } from '../eventtable.js';
+import { closeDrawer, openDrawer, openEvent, setSearchContext } from '../drawer.js';
+import { bindRows, eventHead, eventRow } from '../eventtable.js';
 import { filterBar, filterState } from '../filterbar.js';
 import { exportCsv } from '../exportcsv.js';
 import { categoryLabel, levelLabel, sourceLabel } from '../levels.js';
 import { addTerm, parseTerms } from '../querylang.js';
-import { errorBox, fmtDuration, fmtNum, fmtTime, html, replaceParams, tzOffset } from '../util.js';
+import { errorBox, fmtDuration, fmtNum, fmtTime, html, pushParams, replaceParams, toast, tzOffset } from '../util.js';
 
 // 로그온 세션 (B-63): LogonType → 방식
 const LOGON_TYPES = { 2: '대화형', 3: '네트워크', 4: '배치', 5: '서비스', 7: '잠금 해제', 8: '네트워크(평문)', 9: '새 자격 증명', 10: '원격 데스크톱', 11: '캐시' };
@@ -18,11 +18,22 @@ const STATS_FIELDS = [['user', '사용자'], ['host', 'PC'], ['ip', 'IP'], ['eve
   ['source', '소스'], ['channel', '채널'], ['provider', '공급자'], ['level', '수준']];
 const FIELD_LABEL = Object.fromEntries(STATS_FIELDS);
 const INT_FIELDS = new Set(['event_id', 'level']);
+// 목록에 더 볼 열 (B-65 3단계, URL cols=): 기본 열(시각·수준·PC·분류·이벤트·메시지)에 없는 것과 원본 필드 f.<경로>. 서버도 6개까지
+const COL_CHOICES = [['user', '사용자'], ['ip', 'IP'], ['channel', '채널'], ['provider', '공급자'], ['source', '소스']];
+const MAX_COLS = 6;
+const RAW_COL = /^f\.[^\s,]+$/;
+const colLabel = (c) => Object.fromEntries(COL_CHOICES)[c] ?? c.replace(/^f\./, '');
+function parseCols(text) {
+  const ok = (c) => COL_CHOICES.some(([k]) => k === c) || RAW_COL.test(c);
+  return [...new Set(String(text || '').split(',').map((c) => c.trim()).filter(ok))].slice(0, MAX_COLS);
+}
 
 export async function mount(root, params) {
   const initial = filterState({ since: '24h', ...params }, { showTime: true });
   let state = initial.state;
-  if (initial.changed) replaceParams('events', state);
+  let cols = parseCols(params.cols);
+  const urlParams = () => ({ ...state, cols: cols.join(',') });   // 열은 검색 조건이 아니라 state 밖에 — 주소에만
+  if (initial.changed) replaceParams('events', urlParams());
   let bar = null;        // 필터 막대는 PC·채널 목록을 받은 뒤에 생긴다 — 그 전의 조작은 state 로 받고 생기면 맞춘다
   let disposed = false;
   let loadedAt = null;   // 지금 보이는 결과를 불러온 시각 ('링크 복사'가 그 구간으로 고정)
@@ -33,17 +44,19 @@ export async function mount(root, params) {
   root.innerHTML = html`
     <div class="page-head">
       <div><h1 class="page-title">이벤트 검색</h1>
-        <p class="page-sub">조건을 고르면 바로 검색됩니다. 막대를 누르면 그 시간대만, 행을 누르면 원본 데이터를 봅니다.</p></div>
-      <div class="toolbar"><span class="muted num" data-count></span></div>
+        <p class="page-sub">조건을 고르면 바로 검색됩니다. 막대를 누르거나 끌면 그 시간대만(브라우저 '뒤로' = 이전 구간), 행을 누르면 원본 데이터를 봅니다.</p></div>
+      <div class="toolbar"><button class="btn ghost sm" type="button" data-back hidden title="브라우저 '뒤로'와 같습니다">← 이전 구간</button>
+        <span class="muted num" data-count></span></div>
     </div>
     <div data-filter></div>
     <section class="card" style="margin-bottom:14px"><div class="card-body" data-hist><div class="skeleton" style="height:150px"></div></div></section>
     <div class="toolbar" style="margin-bottom:10px;justify-content:space-between">
       <div class="seg" data-tab><button data-v="list" class="on">목록</button><button data-v="stats">통계</button><button data-v="sessions">세션</button><button data-v="fields">필드</button></div>
-      <button class="btn sm" type="button" data-csv>CSV 내려받기</button>
+      <div class="toolbar" style="gap:6px"><button class="btn sm" type="button" data-cols title="목록에 사용자·IP·원본 필드 열 더하기">열</button>
+        <button class="btn sm" type="button" data-csv>CSV 내려받기</button></div>
     </div>
     <section class="card" data-list>
-      <div class="table-wrap"><table class="table ev-table"><thead>${EVENT_HEAD}</thead><tbody data-rows></tbody></table></div>
+      <div class="table-wrap"><table class="table ev-table"><thead data-head></thead><tbody data-rows></tbody></table></div>
       <div data-foot style="padding:12px;text-align:center"></div>
     </section>
     <section class="card" data-stats hidden>
@@ -81,6 +94,28 @@ export async function mount(root, params) {
   const rowsEl = root.querySelector('[data-rows]');
   const footEl = root.querySelector('[data-foot]');
   bindRows(rowsEl, (k) => items[Number(k)]);
+  const headEl = root.querySelector('[data-head]');
+  const extraOf = (ev) => cols.map((c, j) => ({ label: colLabel(c), value: ev.cols?.[j] ?? null }));
+  function renderHead() {
+    headEl.innerHTML = eventHead(cols.map((c) => html`${colLabel(c)}<button type="button" class="btn ghost sm x" data-col-remove="${c}"
+      aria-label="${colLabel(c)} 열 빼기" title="열 빼기">✕</button>`));
+  }
+  renderHead();
+  headEl.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-col-remove]');
+    if (b) setCols(cols.filter((c) => c !== b.dataset.colRemove));
+  });
+  function setCols(next) {
+    cols = next;
+    renderHead();
+    replaceParams('events', urlParams());
+    load();
+  }
+  // 이전 구간 (B-65): 막대로 고를 때마다 기록을 하나 쌓는다 — 뒤로 가면 화면이 그 주소로 다시 열린다
+  const backBtn = root.querySelector('[data-back]');
+  const updateBack = () => { backBtn.hidden = !(history.state?.zoom > 0); };
+  updateBack();
+  backBtn.addEventListener('click', () => history.back());
 
   function renderFoot() {
     footEl.innerHTML = cursor
@@ -93,7 +128,7 @@ export async function mount(root, params) {
     const my = token;
     let page;
     try {
-      page = await api.get('/api/events', { ...state, limit: 100, cursor });
+      page = await api.get('/api/events', { ...state, cols: cols.join(','), limit: 100, cursor });
     } catch (err) {
       if (my !== token) return;
       // 이미 받은 결과는 두고 안내 + 다시 시도 단추 (뒤 페이지일수록 오래 걸려 시간 상한에 걸릴 수 있다)
@@ -105,7 +140,7 @@ export async function mount(root, params) {
     const start = items.length;
     items = items.concat(page.items);
     cursor = page.next_cursor;
-    rowsEl.insertAdjacentHTML('beforeend', String(html`${page.items.map((ev, i) => eventRow(ev, start + i))}`));
+    rowsEl.insertAdjacentHTML('beforeend', String(html`${page.items.map((ev, i) => eventRow(ev, start + i, { extra: extraOf(ev) }))}`));
     renderFoot();
   }
 
@@ -139,7 +174,7 @@ export async function mount(root, params) {
       const [series, count, page] = await Promise.all([
         api.get('/api/stats/timeseries', { ...state, group: 'level', buckets: 60, tz_offset: tzOffset() }),
         api.get('/api/stats/count', state),
-        api.get('/api/events', { ...state, limit: 100 }),
+        api.get('/api/events', { ...state, cols: cols.join(','), limit: 100 }),
       ]);
       if (my !== token || disposed) return;
       root.querySelector('[data-count]').textContent = `${fmtNum(count.current)}건`;
@@ -150,7 +185,7 @@ export async function mount(root, params) {
       hist.innerHTML = html`${legend(ser)}<div data-chart></div>`;
       columnChart(hist.querySelector('[data-chart]'), {
         buckets: series.buckets, intervalSec: series.interval_sec, series: [...ser].reverse(), height: 150,
-        onSelect: (range) => { state = { ...state, ...range }; replaceParams('events', state); bar?.setState(state); load(); },
+        onSelect: (range) => { state = { ...state, ...range }; pushParams('events', urlParams()); updateBack(); bar?.setState(state); load(); },
       });
 
       items = page.items;
@@ -158,7 +193,7 @@ export async function mount(root, params) {
       Object.keys(full).forEach((k) => delete full[k]);
       if (tab === 'fields') renderFields();
       rowsEl.innerHTML = items.length
-        ? html`${items.map((ev, i) => eventRow(ev, i))}`
+        ? html`${items.map((ev, i) => eventRow(ev, i, { extra: extraOf(ev) }))}`
         : html`<tr><td colspan="6" class="empty" style="padding:48px 16px;">조건에 일치하는 이벤트가 없습니다. 상단 필터를 조정해보세요.</td></tr>`;
       renderFoot();
     } catch (err) {
@@ -184,8 +219,54 @@ export async function mount(root, params) {
   }));
   root.querySelector('[data-csv]').addEventListener('click', () => {
     if (tab === 'stats' && lastStats) exportCsv('/api/stats/group', { ...state, ...lastStats }, { what: '통계 표' });
-    else exportCsv('/api/events', state, { what: '로그 목록(최대 1만 건)' });
+    else exportCsv('/api/events', { ...state, cols: cols.join(',') }, { what: '로그 목록(최대 1만 건)' });
   });
+  root.querySelector('[data-cols]').addEventListener('click', openCols);
+
+  // ---- 열 고르기 (B-65 3단계)
+  async function openCols() {
+    const body = openDrawer({ title: '목록 열', subtitle: `기본 열 말고 더 볼 열 — ${MAX_COLS}개까지, 주소(cols=)에 남아 링크로 나눌 수 있습니다` });
+    let picked = [...cols];
+    const known = await api.get('/api/fields').then((r) => r.items.map((f) => `f.${f.path}`)).catch(() => []);
+    const draw = () => {
+      body.innerHTML = html`
+        <div class="field-grid" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">${COL_CHOICES.map(([k, l]) => html`
+          <label><input type="checkbox" data-col="${k}" ${picked.includes(k) ? 'checked' : ''}> ${l}</label>`)}</div>
+        <div class="section-title">원본 필드</div>
+        <div class="toolbar" style="gap:6px;flex-wrap:wrap">
+          <input class="input" data-raw list="col-raw-fields" placeholder="f.EventData.LogonType" style="flex:1;min-width:200px" aria-label="원본 필드 경로">
+          <button class="btn sm" type="button" data-raw-add>더하기</button></div>
+        <datalist id="col-raw-fields">${known.slice(0, 300).map((p) => html`<option value="${p}"></option>`)}</datalist>
+        ${picked.filter((c) => RAW_COL.test(c)).length ? html`<ul class="ref-list">${picked.filter((c) => RAW_COL.test(c)).map((c) => html`
+          <li>${c} <button class="btn ghost sm" type="button" data-raw-remove="${c}">빼기</button></li>`)}</ul>` : ''}
+        <p class="muted" style="font-size:12.5px">${picked.length}/${MAX_COLS}개 — 열 순서는 고른 순서입니다. 목록 머리글의 ✕ 로도 뺄 수 있습니다.</p>
+        <div class="toolbar"><button class="btn primary" type="button" data-apply>적용</button><button class="btn ghost" type="button" data-clear>모두 빼기</button></div>`;
+      body.querySelectorAll('[data-col]').forEach((c) => c.addEventListener('change', () => {
+        picked = c.checked ? [...picked, c.dataset.col] : picked.filter((x) => x !== c.dataset.col);
+        draw();
+      }));
+      const addRaw = () => {
+        let v = body.querySelector('[data-raw]').value.trim();
+        if (v && !v.startsWith('f.')) v = `f.${v}`;
+        if (!RAW_COL.test(v)) { toast('원본 필드는 f.<경로> 로 적습니다 (예: f.EventData.LogonType)', { type: 'error' }); return; }
+        if (!picked.includes(v)) picked = [...picked, v];
+        draw();
+      };
+      body.querySelector('[data-raw-add]').addEventListener('click', addRaw);
+      body.querySelector('[data-raw]').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addRaw(); } });
+      body.querySelectorAll('[data-raw-remove]').forEach((b) => b.addEventListener('click', () => {
+        picked = picked.filter((x) => x !== b.dataset.rawRemove);
+        draw();
+      }));
+      body.querySelector('[data-clear]').addEventListener('click', () => { picked = []; draw(); });
+      body.querySelector('[data-apply]').addEventListener('click', () => {
+        if (picked.length > MAX_COLS) { toast(`열은 ${MAX_COLS}개까지입니다`, { type: 'error' }); return; }
+        closeDrawer();
+        setCols(picked);
+      });
+    };
+    draw();
+  }
   const fieldOf = (text) => {
     const v = text.trim();
     return STATS_FIELDS.find(([key, label]) => v === key || v === label)?.[0] ?? v;
@@ -225,7 +306,7 @@ export async function mount(root, params) {
         text = addTerm(text, term);
       });
       root.querySelector('[data-tab] button[data-v="list"]').click();
-      if (bar) bar.applySentence(text); else { state = { ...state, query: text }; replaceParams('events', state); load(); }
+      if (bar) bar.applySentence(text); else { state = { ...state, query: text }; replaceParams('events', urlParams()); load(); }
     }));
   }
   root.querySelector('[data-stats-run]').addEventListener('click', runStats);
@@ -279,7 +360,7 @@ export async function mount(root, params) {
       const term = { key: field, values: [INT_FIELDS.has(field) ? Number(value) : value], ...(neg ? { neg: true } : {}) };
       const text = addTerm(bar?.query ?? state.query ?? '', term);
       root.querySelector('[data-tab] button[data-v="list"]').click();
-      if (bar) bar.applySentence(text); else { state = { ...state, query: text }; replaceParams('events', state); load(); }
+      if (bar) bar.applySentence(text); else { state = { ...state, query: text }; replaceParams('events', urlParams()); load(); }
     };
     fieldsOut.querySelectorAll('[data-narrow]').forEach((b) => b.addEventListener('click', () => apply(b.dataset.narrow, b.dataset.v, false)));
     fieldsOut.querySelectorAll('[data-exclude]').forEach((b) => b.addEventListener('click', () => apply(b.dataset.exclude, b.dataset.v, true)));
@@ -313,7 +394,7 @@ export async function mount(root, params) {
   root.querySelector('[data-sess-run]').addEventListener('click', runSessions);
 
   filterBar(root.querySelector('[data-filter]'), state, {
-    onChange: (next) => { if (disposed) return; state = next; replaceParams('events', state); load(); },
+    onChange: (next) => { if (disposed) return; state = next; replaceParams('events', urlParams()); load(); },
     loadedAt: () => loadedAt,
   }).then((b) => {
     if (disposed) { b.destroy(); return; }
@@ -326,7 +407,7 @@ export async function mount(root, params) {
     apply: (text) => {
       if (bar) { bar.applySentence(text); return; }
       state = { ...state, query: text };
-      replaceParams('events', state);
+      replaceParams('events', urlParams());
       load();
     },
   });

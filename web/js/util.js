@@ -95,7 +95,13 @@ export function navigate(view, params = {}) {
 /** 현재 화면에 머물면서 주소창의 파라미터만 바꾼다 (화면 재마운트 없음) */
 export function replaceParams(view, params = {}) {
   const q = qs(params);
-  history.replaceState(null, '', `#/${view}${q ? '?' + q : ''}`);
+  history.replaceState(history.state, '', `#/${view}${q ? '?' + q : ''}`);   // pushParams 가 남긴 깊이를 지우지 않게
+}
+
+/** 화면에 머물면서 기록을 하나 더한다 — 브라우저 '뒤로'가 이전 조건으로 (hashchange → 다시 마운트). state.zoom = 쌓은 깊이 */
+export function pushParams(view, params = {}) {
+  const q = qs(params);
+  history.pushState({ zoom: (history.state?.zoom || 0) + 1 }, '', `#/${view}${q ? '?' + q : ''}`);
 }
 
 export const tzOffset = () => -new Date().getTimezoneOffset();

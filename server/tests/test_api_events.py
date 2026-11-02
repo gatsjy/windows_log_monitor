@@ -73,6 +73,20 @@ def test_category_and_common_fields(client):
     assert len(_items(client, **{"f.EventData.LogonType": "10"})) == 3
 
 
+def test_extra_columns(client):
+    """목록에 더 볼 열 (B-65 3단계, cols=): 컬럼명과 f.<경로>(별칭 — 보낸 값 없으면 서버가 붙인 값). 순서는 준 순서, 없는 값은 null."""
+    fails = _items(client, user="kim", cols="ip,f.EventData.LogonType,f.EventData.Nope")
+    assert {tuple(e["cols"]) for e in fails} == {("203.0.113.7", "10", None)}
+    assert "x0" not in fails[0] and all("cols" in e for e in _items(client, limit=5))   # cols 가 없으면 빈 목록
+    for bad in ("bogus", "user,user", "f.", "user,ip,channel,provider,source,f.a,f.b"):   # 7개는 넘침
+        assert client.get("/api/events", params={"since": "1h", "cols": bad}).status_code == 400, bad
+    r = client.get("/api/events", params={"since": "1h", "user": "kim", "cols": "f.EventData.LogonType", "format": "csv",
+                                          "reason": "열 시험"})
+    head, first = r.content.decode("utf-8-sig").splitlines()[:2]
+    assert head.split(",")[-1] == "f.EventData.LogonType"   # 화면에서 더한 열은 CSV 맨 뒤에
+    assert first.split(",")[-1] == "10"
+
+
 def test_mssql_error_header_not_counted_twice(client):
     assert len(_items(client, event_id="18456")) == 1
 

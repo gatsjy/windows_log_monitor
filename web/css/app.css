@@ -416,6 +416,9 @@ table.table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .chart .tick { fill: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .chart .hit { fill: transparent; cursor: pointer; }
 .chart .hover-band { fill: var(--ink); opacity: 0.05; pointer-events: none; }
+.chart .sel-band { fill: var(--accent); opacity: 0.16; pointer-events: none; }
+.chart.selectable { touch-action: pan-y; user-select: none; }   /* 가로로 끌면 구간 고르기, 세로는 화면 스크롤 (B-65) */
+.ev-table td.ev-extra { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 12px; font-size: 13px; color: var(--ink-2); }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .legend-item .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }

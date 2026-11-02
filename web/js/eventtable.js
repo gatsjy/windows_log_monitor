@@ -10,10 +10,15 @@ export function shortTime(value) {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-export const EVENT_HEAD = html`<tr>
-  <th class="nowrap">발생 시각</th><th>수준</th><th>PC</th><th>분류</th><th>이벤트</th><th>메시지</th></tr>`;
+/** 머리글. extra = 더 볼 열의 머리글 칸 내용(검색 화면 cols=, B-65) — 메시지 앞에 */
+export function eventHead(extra = []) {
+  return html`<tr>
+  <th class="nowrap">발생 시각</th><th>수준</th><th>PC</th><th>분류</th><th>이벤트</th>${extra.map((x) => html`<th class="nowrap">${x}</th>`)}<th>메시지</th></tr>`;
+}
+export const EVENT_HEAD = eventHead();
 
-export function eventRow(ev, key, { flash = false } = {}) {
+/** extra = [{label, value}] — 더 볼 열 (B-65). 모바일 카드에 그 열 이름이 보이게 칸마다 data-label */
+export function eventRow(ev, key, { flash = false, extra = [] } = {}) {
   const doc = eventDoc(ev.event_id, ev.source);
   // Windows 이벤트는 서버가 만든 한 줄 요약(B-68)을 먼저 — 원래 메시지 첫 줄은 마우스를 올리면
   const firstLine = ev.summary || (ev.message || '').split(/\r?\n/, 1)[0];
@@ -23,6 +28,7 @@ export function eventRow(ev, key, { flash = false } = {}) {
     <td class="nowrap">${ev.host}</td>
     <td class="nowrap ink-2" title="${[ev.channel, ev.provider].filter(Boolean).join(' · ')}">${ev.category ? categoryLabel(ev.category) : ev.channel || sourceLabel(ev.source)}</td>
     <td class="nowrap">${ev.event_id != null ? html`<span class="num">${ev.event_id}</span>${doc ? html` <span class="muted">${doc}</span>` : ''}` : html`<span class="muted">${ev.provider ?? ''}</span>`}</td>
+    ${extra.map((c) => html`<td class="nowrap ev-extra" data-label="${c.label}" title="${c.value ?? ''}">${c.value ?? html`<span class="muted">–</span>`}</td>`)}
     <td class="msg" title="${firstLine}">${firstLine}</td>
   </tr>`;
 }

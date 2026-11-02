@@ -124,6 +124,7 @@ export function columnChart(el, opt) {
       s += `<text class="tick" x="${M.left - 8}" y="${yy}" text-anchor="end" dominant-baseline="middle">${fmtCompact(v)}</text>`;
     }
     s += `<rect class="hover-band" x="0" y="${M.top}" width="${band}" height="${ph}" visibility="hidden"/>`;
+    s += `<rect class="sel-band" x="0" y="${M.top}" width="${band}" height="${ph}" visibility="hidden"/>`;
 
     buckets.forEach((_, i) => {
       const x = M.left + i * band + (band - barW) / 2;
@@ -152,7 +153,7 @@ export function columnChart(el, opt) {
       s += `<rect class="hit" data-i="${i}" x="${M.left + i * band}" y="${M.top}" width="${band}" height="${ph}"/>`;
     });
 
-    el.innerHTML = `<svg class="chart" width="${width}" height="${height}" role="img">${s}</svg>`;
+    el.innerHTML = `<svg class="chart${onSelect ? ' selectable' : ''}" width="${width}" height="${height}" role="img">${s}</svg>`;
     const svg = el.firstElementChild;
     const hoverBand = svg.querySelector('.hover-band');
 
@@ -168,18 +169,46 @@ export function columnChart(el, opt) {
         <div class="tt-title">${fmtTime(start, { seconds: false })} – ${fmtTime(end, { seconds: false, date: false })}</div>
         ${rows.map((se) => html`<div class="tt-row"><span class="sw" style="background:${se.color}"></span>${se.label}<span class="v">${fmtNum(se.values[i])}</span></div>`)}
         <div class="tt-row tt-total">합계<span class="v">${fmtNum(totals[i])}</span></div>
-        ${onSelect ? html`<div class="muted" style="margin-top:4px">클릭하면 이 구간만 검색</div>` : ''}
+        ${onSelect ? html`<div class="muted" style="margin-top:4px">클릭하면 이 구간만, 끌면 여러 구간을 검색</div>` : ''}
       `, ev.clientX, ev.clientY);
     });
     svg.addEventListener('mouseleave', () => { hoverBand.setAttribute('visibility', 'hidden'); tooltip.hide(); });
     if (onSelect) {
-      svg.addEventListener('click', (ev) => {
-        const i = ev.target.dataset?.i;
-        if (i === undefined) return;
-        tooltip.hide();
-        const start = new Date(buckets[i]);
-        onSelect({ since: start.toISOString(), until: new Date(start.getTime() + intervalSec * 1000).toISOString() });
+      // 끌어 고르기 (B-65 3단계): 누른 막대부터 놓은 막대까지. 누르고 바로 놓으면 그 막대 하나(예전 클릭과 같음).
+      // 포인터를 잡아 두고 x 좌표로 칸을 정한다 — 터치에서는 손가락이 막대 밖으로 나가도 이어진다(세로 끌기는 화면 스크롤, CSS pan-y)
+      const selBand = svg.querySelector('.sel-band');
+      const at = (ev) => Math.max(0, Math.min(n - 1, Math.floor((ev.clientX - svg.getBoundingClientRect().left - M.left) / band)));
+      const range = (a, b) => {
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        return [lo, hi, new Date(buckets[lo]), new Date(new Date(buckets[hi]).getTime() + intervalSec * 1000)];
+      };
+      let anchor = null;
+      svg.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0 || ev.target.dataset?.i === undefined) return;
+        anchor = Number(ev.target.dataset.i);
+        svg.setPointerCapture(ev.pointerId);
       });
+      svg.addEventListener('pointermove', (ev) => {
+        if (anchor === null) return;
+        const [lo, hi, start, end] = range(anchor, at(ev));
+        selBand.setAttribute('x', M.left + lo * band);
+        selBand.setAttribute('width', (hi - lo + 1) * band);
+        selBand.setAttribute('visibility', 'visible');
+        if (hi > lo) {
+          tooltip.show(html`<div class="tt-title">${fmtTime(start, { seconds: false })} – ${fmtTime(end, { seconds: false, date: start.toDateString() !== end.toDateString() })}</div>
+            <div class="tt-row tt-total">합계<span class="v">${fmtNum(totals.slice(lo, hi + 1).reduce((a, b) => a + b, 0))}</span></div>`, ev.clientX, ev.clientY);
+        }
+      });
+      const finish = (ev, apply) => {
+        if (anchor === null) return;
+        const [, , start, end] = range(anchor, at(ev));
+        anchor = null;
+        selBand.setAttribute('visibility', 'hidden');
+        tooltip.hide();
+        if (apply) onSelect({ since: start.toISOString(), until: end.toISOString() });
+      };
+      svg.addEventListener('pointerup', (ev) => finish(ev, true));
+      svg.addEventListener('pointercancel', (ev) => finish(ev, false));
     }
   });
 }
