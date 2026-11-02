@@ -118,6 +118,17 @@ def _ts(record: dict) -> float:
     return datetime.fromisoformat(value).timestamp()
 
 
+def write_event(marker: str) -> None:
+    # 호스팅 러너에서 eventcreate 가 가끔 한 번 실패한다(같은 코드가 앞뒤 실행에서는 통과) — 몇 번 다시 하고, 끝내 실패하면 출력을 남긴다
+    for attempt in range(4):
+        done = subprocess.run(["eventcreate", "/T", "INFORMATION", "/ID", "999", "/L", "APPLICATION",
+                               "/SO", "WLMMemTest", "/D", marker], check=False, capture_output=True, text=True)
+        if done.returncode == 0:
+            return
+        time.sleep(2 * (attempt + 1))
+    raise SystemExit(f"eventcreate 실패 (exit {done.returncode}): {done.stdout.strip()} {done.stderr.strip()}")
+
+
 def run(exe: str, template: str, label: str, down: int, work: Path) -> dict:
     if work.exists():
         shutil.rmtree(work)
@@ -140,8 +151,7 @@ def run(exe: str, template: str, label: str, down: int, work: Path) -> dict:
             samples.append((round(time.time() - start, 1), round(private_mb(proc.pid), 1)))
             if not wrote and time.time() - start > 10 + down / 2:
                 # 장애 한가운데 생긴 로그: 서버가 돌아오면 반드시 와야 한다
-                subprocess.run(["eventcreate", "/T", "INFORMATION", "/ID", "999", "/L", "APPLICATION",
-                                "/SO", "WLMMemTest", "/D", marker], check=True, stdout=subprocess.DEVNULL)
+                write_event(marker)
                 wrote = True
             time.sleep(5)
         down_end = time.time()
