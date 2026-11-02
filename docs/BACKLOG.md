@@ -712,10 +712,10 @@
 - 마이그레이션 007 의 기존 데이터 분류(UPDATE) 공급자 목록에 `SQLBrowser`·`SQLWriter` 가 없음(새 데이터는 `classify()` 가 처리). 다음 마이그레이션에서 보정 UPDATE.
 - 필드 경로의 점(.) 구분 한계: 키 이름에 점이 있으면 `f.` 필터 불가(PROJECT.md §15). 이스케이프 문법(예: `f.a\.b`) 검토.
 - PRI 없는 syslog 줄을 수신기가 버림 — collector 에 원문 보관 경로(`log_source: file`) 추가 검토. 버린 줄 수는 B-56 지표에.
-- 시뮬레이터(`tools/simulate.py`)는 백그라운드 장시간 실행용이 아님 — `--duration` 옵션 추가.
+- ~~시뮬레이터(`tools/simulate.py`)는 백그라운드 장시간 실행용이 아님~~ — 2026-11-02 완료: `--duration 초`.
 - `requirements.txt` 가 버전 범위만 적혀 있어 빌드 시점마다 패키지 버전이 달라짐 — 잠금 파일(`requirements.lock`, pip-tools BSD) 도입. 지금은 묶음의 `images/PACKAGES.txt` 로 기록만 함.
 - 종단 기능 검증 스크립트(2026-10-04 에 122개 항목으로 수동 실행)를 `tools/smoke_test.py` 로 저장소에 넣고, 설치 확인(AIRGAP.md §9)에 활용.
-- 실시간 스트림의 원본(raw) 문자열에는 NUL 문자가 남습니다(저장할 때만 제거) — 정규화 단계에서 지워 화면·서버 매칭이 같은 값을 보게(ADR-033 남는 차이).
+- ~~실시간 스트림의 원본(raw) 문자열에는 NUL 문자가 남습니다~~ — 2026-11-02 완료: `Event.to_live` 가 저장값과 같게(`base.without_nul`, 키·값·목록). 볼 사람(구독자)이 없으면 실시간 모양을 만들지 않음(요약·NUL 처리 생략 — 수집 처리량).
 - ~~`clean_ip` 가 IP 인지 확인하지 않음~~ — 2026-11-01 완료: `ipaddress` 로 확인(포트·v6 영역 표시 제거, 표준 표기, 루프백·0.0.0.0 은 None). 이미 저장된 옛 값은 그대로(원본 raw 로 다시 구할 수 있음).
 - **벤치마킹(2026-10-29) 추가:**
   - 에이전트 기본 채널(`install.ps1` 의 `$DefaultChannels`)에 PowerShell 7(`PowerShellCore/Operational`)과 'Windows PowerShell'(엔진 시작 400 — 버전 2 다운그레이드 탐지에 필요)이 없고, `-Iis` 설치가 `Microsoft-IIS-Configuration/Operational`(모듈·로깅 설정 변경)을 받지 않습니다. 채널을 더할 때 B-48 규칙과 함께.

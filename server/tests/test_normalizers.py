@@ -538,3 +538,19 @@ def test_clean_ip_keeps_only_real_addresses(value, expected):
     from app.normalizers.base import clean_ip
 
     assert clean_ip(value) == expected
+
+
+def test_live_raw_has_the_stored_value_without_nul():
+    """실시간 원본도 저장값(jsonb — NUL 을 받지 못해 빠짐)과 같다 — 화면 매처가 검색과 다른 값을 보지 않게 (B-23)."""
+    import json
+    from datetime import UTC, datetime
+
+    from app.normalizers.base import Event
+    from app.repository import _json
+
+    raw = {"Event\x00Data": {"TargetUserName": "kim\x00", "List": ["a\x00b", 1, None, {"k\x00": "v"}]}, "글자": "\\u0000 그대로"}
+    event = Event(ts=datetime.now(UTC), host="PC", source="generic", level=4, message="m", raw=raw)
+    live = event.to_live(datetime.now(UTC))["raw"]
+    assert live == json.loads(_json(raw))
+    assert live["글자"] == "\\u0000 그대로"            # 글자 그대로의 역슬래시-u0000 은 NUL 이 아니다
+    assert raw["Event\x00Data"]["TargetUserName"] == "kim\x00"   # 원본 객체는 그대로 (저장은 따로)

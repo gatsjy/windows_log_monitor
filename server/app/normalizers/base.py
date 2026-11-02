@@ -52,7 +52,7 @@ class Event:
             "username": self.username,
             "src_ip": self.src_ip,
             "message": self.message,
-            "raw": self.raw,
+            "raw": without_nul(self.raw),   # 저장(repository._json)과 같은 값 — 화면 매처가 검색과 다르게 보지 않게
             "summary": wincatalog.summarize(self.provider, self.event_id, self.raw) if self.source == "winevtlog" else None,
         }
 
@@ -65,6 +65,18 @@ class Heartbeat:
 
 
 # ---------------------------------------------------------------- helpers
+
+def without_nul(value: Any) -> Any:
+    """문자열·키의 NUL 을 뺀 사본 — jsonb 는 NUL 을 받지 못해 저장할 때 빠진다(repository._json). 실시간으로 보내는 원본도
+    같게 해야 화면의 실시간 매처(web/js/querylang.js)가 검색(SQL)과 같은 값을 본다(ADR-033 남는 차이, B-23)."""
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, dict):
+        return {without_nul(k) if isinstance(k, str) else k: without_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [without_nul(v) for v in value]
+    return value
+
 
 _TIME_FORMATS = (
     "%Y-%m-%d %H:%M:%S %z",  # Fluent Bit winevtlog TimeCreated

@@ -11,6 +11,7 @@
   python3 tools/simulate.py                       # 과거 24시간치 채우고 실시간 전송 계속
   python3 tools/simulate.py --backfill-hours 0    # 실시간 전송만
   python3 tools/simulate.py --once                # 과거 데이터만 넣고 종료
+  python3 tools/simulate.py --duration 600        # 실시간 전송을 10분만 하고 종료 (백그라운드 실행용)
 """
 
 from __future__ import annotations
@@ -356,6 +357,25 @@ def linux_record(host: str, at: datetime) -> dict:
     }
 
 
+def logoff(user: str, logon_id: str, logon_type: str):
+    """4634 로그오프 — 4624 와 같은 TargetLogonId (로그온 세션 보기 B-63 이 짝짓는다)."""
+    return ("Security", *SEC_PROVIDER, 4634, 0, AUDIT_SUCCESS,
+            f"계정이 로그오프되었습니다.\r\n\r\n제목:\r\n\t계정 이름:\t\t{user}\r\n\t로그온 ID:\t\t{logon_id}\r\n\r\n로그온 유형:\t\t\t{logon_type}",
+            {"TargetUserSid": "S-1-5-21-1", "TargetUserName": user, "TargetDomainName": "CORP", "TargetLogonId": logon_id,
+             "LogonType": logon_type})
+
+
+def with_logoff(host: str, record: dict) -> list[dict]:
+    """로그온(4624)이면 대부분 나중에 로그오프도 — 이미 지난 시각일 때만(실시간 전송이 미래 시각을 보내지 않게)."""
+    inserts = record.get("StringInserts") or []
+    if record.get("EventID") != 4624 or len(inserts) < 9 or random.random() > 0.7:
+        return [record]
+    at = datetime.fromisoformat(record["date"].replace("Z", "+00:00")) + timedelta(minutes=random.randint(1, 240))
+    if at >= datetime.now(timezone.utc):
+        return [record]
+    return [record, win_record(host, at, logoff, inserts[5], inserts[7], str(inserts[8]))]
+
+
 def make_records(host: str, kind: str, at: datetime) -> list[dict]:
     """한 번에 PC 한 대가 만드는 로그. 웹 서버는 IIS 줄, DB 서버는 MSSQL 로그가 섞인다."""
     if kind == "linux":
@@ -367,7 +387,7 @@ def make_records(host: str, kind: str, at: datetime) -> list[dict]:
         return [mssql_event(host, at)]
     if host in MSSQL_HOSTS and roll < 0.35:
         return mssql_errorlog(host, at)
-    return [win_record(host, at)]
+    return with_logoff(host, win_record(host, at))
 
 
 def heartbeat(host: str) -> dict:
@@ -432,13 +452,14 @@ def backfill(sender: Sender, hours: float, per_hour: int) -> None:
     sender.send([heartbeat(h) for h, _, _ in HOSTS if h != OFFLINE_HOST])
 
 
-def run_live(sender: Sender, rate: float) -> None:
-    print(f"실시간 전송 시작 (초당 약 {rate}건). Ctrl+C 로 종료")
+def run_live(sender: Sender, rate: float, duration: float = 0) -> None:
+    """duration > 0 이면 그 초만큼만 보내고 끝낸다 — 백그라운드로 띄워 두고 잊어도 DB 를 계속 채우지 않게."""
+    print(f"실시간 전송 시작 (초당 약 {rate}건). " + (f"{duration:g}초 뒤 종료" if duration > 0 else "Ctrl+C 로 종료"))
     started = time.time()
     last_hb = 0.0
     weights = [w for _, _, w in HOSTS]
     sender.send([iis_header(h, datetime.now(timezone.utc)) for h in IIS_HOSTS])
-    while True:
+    while duration <= 0 or time.time() - started < duration:
         now = datetime.now(timezone.utc)
         batch = []
         for _ in range(max(0, int(random.gauss(rate, rate / 3)))):
@@ -469,6 +490,7 @@ def main() -> None:
     parser.add_argument("--per-hour", type=int, default=120, help="과거 데이터: PC 한 대당 시간당 이벤트 수")
     parser.add_argument("--rate", type=float, default=4, help="실시간: 초당 이벤트 수")
     parser.add_argument("--once", action="store_true", help="과거 데이터만 넣고 종료")
+    parser.add_argument("--duration", type=float, default=0, help="실시간 전송을 이 초만큼만 (0 = Ctrl+C 까지)")
     parser.add_argument("--event-data", action="store_true",
                         help="Windows 이벤트에 EventData 맵도 (이름을 보내는 에이전트 흉내 — 지금 에이전트는 보내지 않음)")
     args = parser.parse_args()
@@ -480,7 +502,7 @@ def main() -> None:
         backfill(sender, args.backfill_hours, args.per_hour)
     if not args.once:
         try:
-            run_live(sender, args.rate)
+            run_live(sender, args.rate, args.duration)
         except KeyboardInterrupt:
             print("\n종료")
 

@@ -166,5 +166,6 @@ async def _ingest(request: Request, x_api_key: str | None, client_ip: str | None
         events = [e for e in events if id(e) not in gone]
 
     live.ingest_rate.add(len(events))
-    live.broadcaster.publish([e.to_live(now) for e in events])
+    if live.broadcaster.subscriber_count:   # 볼 사람이 없으면 실시간 모양(요약·NUL 처리)을 만들지 않는다 — 수집 처리량
+        live.broadcaster.publish([e.to_live(now) for e in events])
     return {"accepted": len(events), "heartbeats": len(heartbeats), **({"quarantined": len(bad)} if bad else {})}
