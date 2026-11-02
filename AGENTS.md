@@ -61,6 +61,7 @@ server/app/
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
   clock.py           PC·서버 시계 차이 판단(B-57) — 하트비트 시각의 창 두 개 최솟값(repository.CLOCK_OFFSET_SQL)으로 1분·5분·서버 시계 의심
+  compliance.py      심사 대응(B-73): 규칙 태그 ISMS 항목별 현황·기간 증적 zip(MANIFEST SHA-256, csvexport 로 수식 주입 방지)
   readiness.py       운영 준비도 점검표(B-75) — 각 화면·보고서의 원천을 모아 판정(collect → judge). 새 운영 신호를 만들면 여기에도 한 줄
   assets.py          수집 대상 대조(B-55): 목록 읽기(이름·CSV·AD 내보내기)·짧은 이름으로 agents 와 맞춤 — 화면·보고서·준비도 공용
   backups.py         DB 백업·복구 시험 상태 (backup 서비스가 남긴 audit_log 로) — 로그 보관 화면·점검 보고서 공용
@@ -73,12 +74,12 @@ server/app/
   integrity.py       감사로그 해시 체인 검증(DB 함수와 따로 파이썬으로)·매일 DB 밖 앵커(archive/integrity-*.json) (ADR-050)
   eventdigest.py     수집 로그 시간별 다이제스트(감사로그 체인에 기록)·다시 계산 — 매일 검증·보관 파일 만들 때 (B-71 2단계)
   cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원, 감사로그 verify-chain, 인증서 tls-init·tls-renew·tls-status — DB 없이)
-  routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음) · searches(저장한 검색)
+  routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음) · searches(저장한 검색) · compliance(심사 대응)
 server/migrations/   번호순 SQL
 server/tests/        pytest (DB 없이 도는 단위 테스트)
 web/js/
   main.js            해시 라우터 (#/화면/하위?파라미터)
-  views/             화면: dashboard, live, events, alerts, agents, fields, reports(점검 보고서), users·audit·settings·readiness(관리자)
+  views/             화면: dashboard, live, events, alerts, agents, fields, reports(점검 보고서), compliance(심사 대응), users·audit·settings·readiness(관리자)
   auth.js            로그인·비밀번호 변경 화면, 현재 사용자 (main.js 가 init)
   widgets/           ★ 대시보드 위젯: stat, timeseries, top, events, hosts, text, alerts (live() = 실시간 갱신)
   querylang.js       ★ 검색 문장 파서·매처·옛 링크 접기·문장 편집 (import·DOM 없음 — node 로 시험)

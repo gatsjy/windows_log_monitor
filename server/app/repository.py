@@ -1509,6 +1509,28 @@ async def alert_rule_quality(since: datetime) -> dict[str, dict[str, Any]]:
                         "mttr_sec": int(r["mttr"]) if r["mttr"] is not None else None} for r in rows}
 
 
+async def isms_alert_stats(since: datetime, until: datetime) -> list[dict]:
+    """심사 대응 (B-73): 발생 때의 태그(payload.tags) 'ISMS …' 마다 기간 안 알림 수·해결 수·해결 시간 중앙값(사람)·정탐·오탐."""
+    return await db.fetch_all(
+        "SELECT t.tag, count(*) AS n, count(*) FILTER (WHERE a.status = 'resolved') AS resolved,"
+        " percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM a.resolved_at - a.fired_at))"
+        "   FILTER (WHERE a.status = 'resolved' AND NOT a.auto_resolved) AS median,"
+        " count(*) FILTER (WHERE a.resolution IN ('tp_malicious', 'tp_expected')) AS tp,"
+        " count(*) FILTER (WHERE a.resolution IN ('fp_rule', 'fp_data')) AS fp"
+        " FROM alerts a CROSS JOIN LATERAL jsonb_array_elements_text("
+        "   CASE WHEN jsonb_typeof(a.payload->'tags') = 'array' THEN a.payload->'tags' ELSE '[]'::jsonb END) AS t(tag)"
+        " WHERE a.fired_at >= %s AND a.fired_at < %s AND t.tag LIKE 'ISMS %%' GROUP BY t.tag", (since, until))
+
+
+async def isms_alerts(tag: str, since: datetime, until: datetime, limit: int) -> list[dict]:
+    """심사 대응 증적 묶음 (B-73): 그 태그로 난 기간 안 알림 (발생 순)."""
+    return await db.fetch_all(
+        "SELECT a.id, a.fired_at, a.severity, a.rule, a.group_key, a.event_count, a.status, a.acked_by, a.acked_at,"
+        " a.resolved_by, a.resolved_at, a.resolution FROM alerts a"
+        " WHERE a.fired_at >= %s AND a.fired_at < %s AND a.payload->'tags' ? %s ORDER BY a.fired_at, a.id LIMIT %s",
+        (since, until, tag, limit))
+
+
 async def resolution_counts(start: datetime, end: datetime) -> list[dict]:
     """점검 보고서 (B-44): 기간 안에 해결한 알림의 규칙·종료 분류별 수."""
     return await db.fetch_all(

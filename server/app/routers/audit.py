@@ -131,6 +131,7 @@ ACTION_LABELS = {
     "events.stats": "상위 값 조회 (사용자·IP·원본 필드)",
     "events.sessions": "로그온 세션 조회",
     "alerts.playbook": "알림 조사 플레이북 조회",
+    "compliance.bundle": "심사 증적 묶음 내려받기",
 }
 
 

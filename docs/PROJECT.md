@@ -252,6 +252,8 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `PUT /api/alerts/config` | 본문 = YAML. 검증 실패 시 422 + 오류 내용, 파일은 그대로 (저장은 audit_log 기록) |
 | `POST /api/alerts/test/{notifier}` | 알림 대상 연결 테스트 (audit_log 기록) |
 | `POST /api/settings/webhook-preview` | `{format, severity?}` 웹훅 형식별 예시 본문·헤더 (보내지 않음) — `settings.manage` |
+| `GET /api/compliance/isms?since=&until=` | 심사 대응 (B-73): 규칙 태그 `ISMS x.y.z` 항목마다 규칙(켜짐·관찰·데이터 없음)·기간 안 알림·해결·미해결·해결 시간 중앙값(사람)·정탐/오탐. 알림은 발생 때의 태그로 셈. 기간 400일까지 — `reports.view`, 조회 범위 없는 사용자만 |
+| `GET /api/compliance/isms/bundle?since=&until=&reason=` | 기간 증적 묶음 zip: `README.txt`·`요약.csv`·`ISMS_<항목>/규칙.txt`·`ISMS_<항목>/알림.csv`(항목마다 1만 건, 수식 주입 방지)·`MANIFEST.txt`(SHA-256). 사유 필수, 감사로그 `compliance.bundle`(MANIFEST 해시) 필수, 응답 머리글 `X-WLM-Manifest-SHA256` |
 | `GET /api/reports` · `GET /api/reports/{id}` | 점검 보고서 목록(확인 안 한 수, 일정) · 상세(내용·요약·내용 해시) — `reports.view`, 조회 범위 없는 사용자만 |
 | `GET /api/reports/{id}/html` | 메일과 같은 보고서 문서 (화면 iframe·인쇄용, CSP 로 스크립트 차단) — `reports.view` |
 | `POST /api/reports` · `POST /api/reports/{id}/review` | 지금 만들기 `{kind: daily|weekly}`(보내지 않음) · 점검 확인 `{note}`(한 번만) — `reports.view` |

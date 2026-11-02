@@ -41,12 +41,21 @@ def weak_reason(text: str | None) -> bool:
     return len(compact) < 4 or len(set(compact)) == 1 or not any(ch.isalpha() for ch in compact)
 
 
-def csv_response(header: list[str], rows: Iterable[list[Any]], filename: str,
-                 headers: dict[str, str] | None = None) -> Response:
+def csv_text(header: list[str], rows: Iterable[list[Any]]) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(header)
     for row in rows:
         writer.writerow([safe_cell(v) for v in row])
-    return Response("﻿" + buffer.getvalue(), media_type="text/csv; charset=utf-8",
+    return "﻿" + buffer.getvalue()
+
+
+def csv_bytes(header: list[str], rows: Iterable[list[Any]]) -> bytes:
+    """묶음(zip) 안에 넣는 CSV (심사 증적 B-73) — 내려받기와 같은 BOM·수식 주입 방지."""
+    return csv_text(header, rows).encode("utf-8")
+
+
+def csv_response(header: list[str], rows: Iterable[list[Any]], filename: str,
+                 headers: dict[str, str] | None = None) -> Response:
+    return Response(csv_text(header, rows), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{filename}"', **(headers or {})})

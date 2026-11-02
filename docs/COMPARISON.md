@@ -214,7 +214,7 @@
 | 외부 복제 | 국내 권고(분리 저장·WORM), rclone(MIT) | ✅ NAS 폴더 복제, 새 파일만·덮어쓰지 않음·만료만 삭제(ADR-047) | B-17(완료) |
 | 접속기록 점검 결과서 | 피앤피시큐어 INFOSAFER 월간 점검 리포트, ISMS-P 2.9.5 확인사항 | △ 일간·주간 운영 보고서 + 1회 점검 확인 | B-72 |
 | 권한 검토·장기 미사용 | DBSAFER IM 권한 검토·인사 연계, Sentinel IsDormantAccount | △ 사용자 화면(마지막 로그인·잠금) | B-72 |
-| 심사 증적 묶음 | Wazuh 컴플라이언스 모듈, ManageEngine EventLog Analyzer 규정별 보고서 | △ ISMS.md 목록, 사람이 화면·CSV 를 모음 | B-73 |
+| 심사 증적 묶음 | Wazuh 컴플라이언스 모듈, ManageEngine EventLog Analyzer 규정별 보고서 | ○ ISMS 항목별 현황 화면, 기간 증적 zip(항목별 규칙·알림 처리 CSV·MANIFEST SHA-256, 해시는 감사로그) | B-73 |
 | 관리자 2단계 인증 | RFC 6238 TOTP(표준) | ❌ | B-74 |
 | 한글 문서 | Logpresso 보고서 hwpx, OWPML(KS X 6101) | ❌ HTML·인쇄만 | B-83 (P3) |
 | 국산 보안 제품 | Logpresso Store 연동 앱, 이글루 SPiDER TM | ❌ 장비 syslog 원문만, 백신 규칙은 Defender 만 | B-82 (P3) |
