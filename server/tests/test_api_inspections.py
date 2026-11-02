@@ -150,6 +150,7 @@ def test_period_checks_and_duplicates(ctx):
     assert start(period_start=iso(now - timedelta(days=3))).status_code == 422
     assert start(period_start=iso(now - timedelta(hours=2)), period_end=iso(now - timedelta(hours=1))).status_code == 422
     assert start(period_start=iso(now - timedelta(days=3)), period_end=iso(now + timedelta(days=1))).status_code == 422
+    assert start(period_start="9999-12-31T23:00:00Z", period_end="2026-01-01T00:00:00Z").status_code == 422   # 넘침 → 500 이었다
     naive = {"period_start": "2026-01-01T00:00:00", "period_end": "2026-02-01T00:00:00"}
     r = start(**naive)
     assert r.status_code == 200, r.text

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -55,10 +55,13 @@ class TargetHealth:
     consecutive_failures: int = 0
     last_error: str | None = None
     last_attempt_at: datetime | None = None
+    # 실패가 이어지는 동안 403 으로 한 번 미룬 묶음 (규칙, 종류, 묶음 키) — 두 번째 403 은 받는 곳 문제로 본다. 보내지면 비운다
+    held: set[tuple[str, str, int]] = field(default_factory=set)
 
     def ok(self, now: datetime) -> None:
         self.last_ok_at = self.last_attempt_at = now
         self.failing_since, self.consecutive_failures, self.last_error = None, 0, None
+        self.held.clear()
 
     def fail(self, now: datetime, error: str) -> None:
         self.last_attempt_at = now
@@ -261,7 +264,7 @@ class Dispatcher:
         """잡은 행들을 한 통으로. 받는 곳 자체가 안 되면(시간 초과·target_down) 다시 볼 시각을 돌려준다 — 그 줄을 멈춘다.
         묶음을 받는 쪽이 알림 하나 때문에 거절하면(본문 문제 — 400·413·422·SMTP 5xx 554) 반으로 나눠 다시 보낼 차례로 돌린다(시도로 세지
         않음, split_deliveries): 거절된 알림만 혼자 시도를 쓴다. 이 자리에서 나눠 보내면 한 줄이 전송 자리를 오래 쥐었다(검토에서 재현).
-        403 은 토큰이 막힌 것일 수도, 방화벽·DLP 가 본문을 막은 것일 수도 있어 여러 건이면 나눈다 — 혼자 보내도 403 이면 받는 곳 문제."""
+        403 은 토큰이 막힌 것일 수도, 방화벽·DLP 가 본문을 막은 것일 수도 있다(_on_forbidden) — 혼자 보내도 403 이면 받는 곳 문제."""
         try:
             await asyncio.wait_for(notifier.send(_message(jobs)), timeout=SEND_TIMEOUT_SEC)
         except asyncio.CancelledError:
@@ -270,9 +273,11 @@ class Dispatcher:
             timed_out = isinstance(exc, TimeoutError)
             down = timed_out or getattr(exc, "target_down", False)
             error = "전송 시간 초과" if timed_out else str(exc)[:1000]
-            if len(jobs) > 1 and (not down or getattr(exc, "status", None) == 403):
+            if len(jobs) > 1 and not down:
                 await repository.split_deliveries(jobs, error[:900] + SPLIT_NOTE)
                 log.warning("알림 %s → %s 묶음 거절 — 하나씩 다시 보냅니다: %s", _ids(jobs), name, error)
+                return None
+            if len(jobs) > 1 and getattr(exc, "status", None) == 403 and await self._on_forbidden(name, jobs, error):
                 return None
             now = datetime.now(UTC)
             # 묶음은 함께 다시 보내도록 같은 때로 (첫 행의 실패 간격), 다섯 번째 실패한 행만 gave_up
@@ -291,6 +296,26 @@ class Dispatcher:
         await repository.finish_deliveries(jobs, "sent", None, batch_size=len(jobs))
         self.health(name).ok(datetime.now(UTC))
         return None
+
+    async def _on_forbidden(self, name: str, jobs: list[dict[str, Any]], error: str) -> bool:
+        """여러 건 묶음의 403 — 본문 때문(방화벽·DLP)이면 나눠야 하고, 토큰이 막힌 것이면 나눌수록 요청만 는다(500건 묶음이 3분에 272통,
+        고친 뒤에는 나눈 조각마다 한 통씩 271통 — 검토에서 재현). 받는 곳이 잘 되던 중의 첫 403 만 나누고, 실패가 이어지는 중이면 그 묶음을
+        한 번만 시도로 세지 않고 잠시 미룬다 — 그 사이 다른 묶음(나눈 반쪽)이 보내지면 본문 문제였으므로 다음 403 에 또 나눈다.
+        True = 처리함(나눔·미룸), False = 보통 실패로(시도로 세고 이 곳의 다른 알림을 미룸)."""
+        now, health = datetime.now(UTC), self.health(name)
+        key = (jobs[0]["rule"], jobs[0].get("action") or "trigger", jobs[0].get("split_key") or min(j["alert_id"] for j in jobs))
+        if health.failing_since is None:
+            health.fail(now, error)   # 다음 403 은 판단을 기다리게 (보내지면 ok 가 비운다)
+            await repository.split_deliveries(jobs, error[:900] + SPLIT_NOTE)
+            log.warning("알림 %s → %s 묶음 403 — 반씩 나눠 다시 보냅니다: %s", _ids(jobs), name, error)
+            return True
+        if key not in health.held:
+            health.held.add(key)
+            health.fail(now, error)
+            await repository.hold_deliveries(jobs, now + RETRY_BACKOFF[0])
+            log.warning("알림 %s → %s 묶음 403 (실패 중) — 잠시 미룹니다: %s", _ids(jobs), name, error)
+            return True
+        return False
 
     def status(self) -> dict[str, Any]:
         running = self.task is not None and not self.task.done()

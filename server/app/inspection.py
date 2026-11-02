@@ -182,7 +182,7 @@ def state(inspection: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str
 
 async def start(title: str, start_at: datetime, end_at: datetime, actor: str, now: datetime) -> int:
     # 근거는 지금까지의 기록으로 모은다 — 끝이 미래면 그 뒤는 비어 있는 채 '한 회차'가 된다 (몇 분 차이는 시계 차이로 봐준다)
-    if not (start_at + MIN_PERIOD <= end_at <= now + timedelta(minutes=5)):
+    if not (end_at - start_at >= MIN_PERIOD and end_at <= now + timedelta(minutes=5)):   # 더하기는 9999년에서 넘친다(500)
         raise InspectionError("점검 기간이 올바르지 않습니다 (하루 이상, 끝은 지금까지)", 422)
     items = await evidence(start_at, end_at, now)
     async with db.pool().connection() as conn, conn.transaction():

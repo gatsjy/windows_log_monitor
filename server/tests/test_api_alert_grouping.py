@@ -24,6 +24,7 @@ BASE = "settings:\n  interval_sec: 30\n{extra}\nrules: []\n"
 
 class _Receiver(BaseHTTPRequestHandler):
     received: ClassVar[list[tuple[str, dict]]] = []
+    denied: ClassVar[bool] = True    # /denied: 토큰이 막힌 받는 쪽 — 무엇을 보내도 403
 
     def do_POST(self):  # http.server 가 부르는 이름
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -31,6 +32,8 @@ class _Receiver(BaseHTTPRequestHandler):
         # /picky: 본문에 POISON 이 든 통만 거절하는 받는 쪽 (DLP 프록시·메일 554 처럼 알림 하나의 내용 때문에)
         poison = "POISON" in json.dumps(body, ensure_ascii=False)
         code = 503 if self.path == "/down" else 400 if self.path == "/picky" and poison else 403 if self.path == "/waf" and poison else 200
+        if self.path == "/denied" and _Receiver.denied:
+            code = 403
         self.send_response(code)
         self.end_headers()
         self.wfile.write(b"x")
@@ -72,7 +75,7 @@ def client():
             c.post("/api/auth/login", json={"username": "admin", "password": initial}, headers=CSRF)
             c.post("/api/auth/password", json={"current_password": initial, "new_password": "Root#Changed2026"}, headers=CSRF)
             for name, path, fmt in (("묶음", "ok", "text"), ("기계", "machine", "json"), ("고장", "down", "text"),
-                                    ("까다로움", "picky", "text"), ("방화벽", "waf", "text")):
+                                    ("까다로움", "picky", "text"), ("방화벽", "waf", "text"), ("토큰만료", "denied", "text")):
                 r = c.post("/api/settings/channels", json={"name": name, "type": "webhook", "config": {"format": fmt},
                                                            "url": f"http://127.0.0.1:{server.server_port}/{path}"}, headers=CSRF)
                 assert r.status_code == 200, r.text
@@ -234,6 +237,30 @@ def test_waf_403_on_a_group_is_split_not_deferred(client):
     sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE alert_id = ANY(%s) AND status IN ('pending', 'failed')", (ids,))
     drain(client)
     assert state() == {"PC-A": "sent:1", "POISON-B": "failed:2", "PC-C": "sent:1"}   # 다음 차례에 PC-C 는 간다
+
+
+def test_dead_token_403_does_not_cascade(client):
+    """토큰이 막혀 무엇이든 403 이면 나눌수록 요청만 늘었다(500건 묶음이 3분에 272통, 고친 뒤에는 나눈 조각마다 한 통씩 271통 — 검토에서 재현).
+    잘 되던 곳의 첫 403 만 한 번 나누고, 실패 중의 403 은 묶음마다 한 번 미룬 뒤 보통 실패로(시도·이 곳의 다른 알림 미룸)."""
+    ids = fire(client, "토큰 시험", [f"PC-{i:03d}" for i in range(64)], notify=("토큰만료",))
+    passed("토큰 시험", 31)
+    drain(client)
+    assert len(posts("/denied")) == 3          # 64건 한 통 → 반쪽 둘 (각각 한 번 미룸)
+    for _ in range(3):
+        sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE alert_id = ANY(%s) AND status IN ('pending', 'failed')", (ids,))
+        drain(client)
+    assert len(posts("/denied")) <= 6          # 그 뒤로는 차례마다 한 통 (다른 반쪽은 시도로 세지 않고 미룸)
+    keys = sql("SELECT count(DISTINCT split_key) FROM alert_deliveries WHERE alert_id = ANY(%s)", (ids,))[0][0]
+    assert keys == 2
+    _Receiver.denied = False                   # 토큰을 고침 → 두 통으로 (조각마다 한 통씩 쏟아지지 않음)
+    _Receiver.received.clear()
+    try:
+        sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE alert_id = ANY(%s) AND status IN ('pending', 'failed')", (ids,))
+        drain(client)
+        assert len(posts("/denied")) == 2
+        assert sql("SELECT count(*) FROM alert_deliveries WHERE alert_id = ANY(%s) AND status = 'sent'", (ids,))[0][0] == 64
+    finally:
+        _Receiver.denied = True
 
 
 def test_builtin_alerts_are_never_grouped(client):
