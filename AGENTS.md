@@ -93,6 +93,7 @@ web/js/
   catalog.js         필드·이벤트 ID 한글 설명 사전
 config/dashboards/   대시보드 정의 JSON (UI 편집기로 저장하면 이 파일이 바뀜)
 config/alerts.yaml   알림 규칙·알림 대상 (UI '규칙 편집'으로 저장하면 이 파일이 바뀜, 자동 반영)
+config/playbooks/    조사 플레이북 <규칙 번호>.yaml (B-66, app/alerts/playbook.py — 자리표시자는 format_value 로 감싼다, test_playbook 이 기본 파일 검사)
 agent/windows|linux/ 에이전트 설정 + 설치 스크립트
 collector/           syslog 수신기 설정
 tools/simulate.py    가짜 PC 로그 생성기 (표준 라이브러리만)

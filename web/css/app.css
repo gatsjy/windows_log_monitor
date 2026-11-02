@@ -722,6 +722,17 @@ body.auth-open .app { visibility: hidden; }
 .field > span em { color: var(--critical); font-style: normal; }
 .field .input, .field .select { width: 100%; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* 조사 플레이북 (B-66) */
+.pb-steps { margin: 0; padding-left: 20px; display: grid; gap: 12px; }
+.pb-why { font-size: 12.5px; margin-top: 2px; }
+.pb-run { margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; font-size: 13px; }
+.pb-run code { overflow-wrap: anywhere; }
+.pb-top { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+.pb-events { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12.5px; display: grid; gap: 2px; }
+.pb-events li { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pb-events li:hover { background: var(--accent-wash); }
+.pb-answer { margin-top: 6px; display: flex; gap: 6px; }
+.pb-answer .input { flex: 1; min-width: 0; }
 /* 규칙 시험기 (B-52) */
 .hint-box.warn { background: color-mix(in srgb, var(--bad-ink) 10%, transparent); }
 .rule-test-fail td { background: color-mix(in srgb, var(--bad-ink) 7%, transparent); }

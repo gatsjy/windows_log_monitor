@@ -1,0 +1,21 @@
+# 조사 플레이북 — 규칙 1000009 '관리자 그룹에 구성원 추가' (BACKLOG B-66)
+title: 관리자 그룹에 구성원 추가
+steps:
+  - question: 누가 추가했고, 승인된 변경인가?
+    why: 변경 요청·작업 계획과 맞는지 먼저 확인합니다 — 없다면 권한 상승 공격입니다
+    query: 'event_id:4732 host:{host}'
+    window: 1h
+    after: 10m
+    top: user
+  - question: 같은 때 새 계정이 만들어졌나?
+    why: 공격자는 계정을 만들고 바로 관리자 그룹에 넣습니다
+    query: 'event_id:4720 host:{host}'
+    window: 6h
+    after: 1h
+  - question: 추가한 계정은 그 전에 어디서 로그온했나?
+    why: 평소와 다른 PC·IP 에서 로그온했다면 그 계정이 탈취됐을 수 있습니다
+    query: 'event_id:4624 user:{user}'
+    window: 24h
+    top: ip
+false_positive: |
+  - 변경 요청서가 있는 서버 관리자 작업 (요청 번호를 메모로 남기세요)

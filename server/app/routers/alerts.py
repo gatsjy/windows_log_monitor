@@ -18,8 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from .. import db, repository
-from ..alerts import adminwatch, configdiff, coverage, health, ruleedit, targets
+from .. import accesslog, db, repository
+from ..alerts import adminwatch, configdiff, coverage, health, playbook, ruleedit, targets
 from ..alerts.builtin import SYSTEM_RULES
 from ..alerts.dispatcher import dispatcher
 from ..alerts.engine import (  # _with_group: 엔진과 같은 묶음 조건 (알림 뒤 이벤트 수)
@@ -37,7 +37,7 @@ from ..auth import groups
 from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
 from ..csvexport import csv_response, export_reason
-from ..filters import EVENT_FIELD, FilterError, parse_time, scopes_allow
+from ..filters import EVENT_FIELD, EventFilter, FilterError, parse_time, scopes_allow
 from ..normalizers import Event, layout_keys, normalize_sample
 from ..querylang import QueryError, format_term, parse_terms, raw_field, raw_text
 from .ingest import _fix_surrogates
@@ -932,3 +932,50 @@ async def get_alert(alert_id: int, request: Request):
         row["silence"] = scrub_silence(user, row["silence"])
     row["followup"] = await _followup(row)
     return row  # related_unresolved: 같은 규칙·대상의 해결 안 된 다른 알림 수 — 함께 해결할 수 있게 (재발은 따로 기록, ADR-029)
+
+
+def _slim(e: dict[str, Any]) -> dict[str, Any]:
+    message = e.get("message") or ""
+    return {"id": e["id"], "ts": e["ts"], "host": e["host"], "username": e.get("username"), "src_ip": e.get("src_ip"),
+            "event_id": e.get("event_id"), "level": e.get("level"), "message": message[:200] + ("…" if len(message) > 200 else "")}
+
+
+@router.get("/api/alerts/{alert_id}/playbook", dependencies=[Depends(read_time_limit)])
+async def alert_playbook(alert_id: int, request: Request):
+    """조사 플레이북 (B-66): 규칙 번호의 질문마다 알림 값으로 채운 검색 문장과 그 결과(건수·최근 5건·상위 값).
+    알림이 보이는 사람만, 결과는 그 사람의 조회 범위 안에서. 사용자·IP 가 보이므로 접속기록(alerts.playbook)."""
+    user = request.state.user
+    alert = await repository.get_alert(alert_id)
+    if alert is None or not alert_visible(user, alert):
+        raise HTTPException(404, "알림을 찾을 수 없습니다")
+    rule = next((r for r in engine.config.rules if r.name == alert["rule"]), None)
+    try:
+        book = playbook.load(rule.sid if rule else None)
+    except playbook.PlaybookError as exc:
+        return {"available": True, "error": f"플레이북 파일 오류 (config/playbooks/{rule.sid}.yaml): {exc}"}
+    if book is None:
+        return {"available": False}
+    samples = (alert.get("payload") or {}).get("samples") or []
+    event = await repository.get_event(samples[0]["id"]) if samples and samples[0].get("id") else None
+    if event is not None and not scopes_allow(user.scopes, event.get("category"), event.get("host")):
+        event = None
+    values = playbook.values_for(alert, rule.group_by, event)
+    fired, now = alert["fired_at"], datetime.now(UTC)
+    steps = []
+    for st in book.steps:
+        item: dict[str, Any] = {"question": st.question, "why": st.why, "top_field": st.top}
+        text, missing = playbook.fill(st.query, values)
+        if text is None:
+            steps.append({**item, "missing": missing})
+            continue
+        since, until = fired - st.window, max(min(fired + st.after, now), fired - st.window + timedelta(seconds=1))
+        f = EventFilter.from_params({"query": text, "since": since.isoformat(), "until": until.isoformat()}, default_since=None)
+        if user.scopes is not None:
+            f = replace(f, scopes=user.scopes)
+        item.update(query=text, since=since, until=until, count=(await repository.count(f))["current"],
+                    events=[_slim(e) for e in await repository.list_events(f, 5)],
+                    top=await repository.top(f, st.top, 5) if st.top else [])
+        steps.append(item)
+    await accesslog.record(request, user.username, "alerts.playbook", f"#{alert_id}", {"rule": alert["rule"], "steps": len(steps)})
+    return {"available": True, "title": book.title or alert["rule"], "steps": steps, "false_positive": book.false_positive,
+            "values": values}

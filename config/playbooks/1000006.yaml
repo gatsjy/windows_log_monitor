@@ -1,0 +1,22 @@
+# 조사 플레이북 — 규칙 1000006 '무차별 대입 (출발지 IP 기준)' (BACKLOG B-66)
+title: 무차별 대입 (출발지 IP 기준)
+steps:
+  - question: 이 IP 가 시도한 계정은 몇 개인가?
+    why: 계정이 많으면 패스워드 스프레이·사전 공격, 한 계정이면 그 계정을 노린 대입입니다
+    query: 'event_id:4625,4771 ip:{ip}'
+    window: 24h
+    top: user
+  - question: 어느 서버들을 노렸나?
+    why: 여러 서버면 내부에서 퍼지는 중일 수 있습니다
+    query: 'event_id:4625,4771 ip:{ip}'
+    window: 24h
+    top: host
+  - question: 이 IP 에서 로그온에 성공한 적이 있나?
+    why: 실패 뒤 성공이 있으면 침입했을 수 있습니다 — 성공한 계정과 이후 행동(새 서비스·예약 작업)을 봅니다
+    query: 'event_id:4624 ip:{ip}'
+    window: 24h
+    after: 6h
+    top: user
+false_positive: |
+  - 취약점 점검 도구·보안 진단 업체의 IP (점검 일정 확인)
+  - 비밀번호를 바꾼 서비스 계정을 쓰는 서버 (한 계정, 일정 간격)

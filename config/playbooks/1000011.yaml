@@ -1,0 +1,22 @@
+# 조사 플레이북 — 규칙 1000011 '새 서비스 설치' (BACKLOG B-66)
+title: 새 서비스 설치
+steps:
+  - question: 어떤 서비스가 설치됐나?
+    why: 이름·실행 파일 경로가 임시 폴더·사용자 폴더·이상한 이름이면 악성을 의심합니다 (아래 최근 로그의 메시지)
+    query: 'event_id:7045,4697 host:{host}'
+    window: 1h
+    after: 10m
+  - question: 설치 전후로 이 서버에 누가 로그온했나?
+    why: 원격 로그온 직후의 설치는 사람이 한 것 — 그 계정·출발지를 확인합니다
+    query: 'event_id:4624 host:{host}'
+    window: 2h
+    after: 30m
+    top: user
+  - question: 같은 서비스가 다른 서버에도 설치됐나?
+    why: 여러 서버면 배포 도구(정상) 또는 내부 확산(악성)입니다
+    query: 'event_id:7045,4697'
+    window: 6h
+    after: 6h
+    top: host
+false_positive: |
+  - 정기 패치·백신·모니터링 에이전트 설치 (작업 일정·배포 도구 계정 확인)

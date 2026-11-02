@@ -130,6 +130,7 @@ ACTION_LABELS = {
     "retention.purge_reports": "보관기간 만료 점검 보고서 삭제",
     "events.stats": "상위 값 조회 (사용자·IP·원본 필드)",
     "events.sessions": "로그온 세션 조회",
+    "alerts.playbook": "알림 조사 플레이북 조회",
 }
 
 

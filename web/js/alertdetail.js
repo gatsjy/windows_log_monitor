@@ -1,12 +1,12 @@
 // 알림 공용 표시: 전송 상태 칩, 처리 상태 칩, 조건 요약 문구, 알림 상세 패널(처리·메모·무음).
 import * as api from './api.js';
 import { can } from './auth.js';
-import { openDrawer } from './drawer.js';
+import { openDrawer, openEvent } from './drawer.js';
 import { EVENT_HEAD, bindRows, eventRow } from './eventtable.js';
 import { categoryLabel, levelLabel, severityBadge, sourceLabel } from './levels.js';
 import { describe } from './querybox.js';
 import { formatTerm, parseTerms } from './querylang.js';
-import { errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html } from './util.js';
+import { errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html, qs } from './util.js';
 
 const DELIVERY = {
   sent: ['✓', '전송됨'],
@@ -197,6 +197,10 @@ export async function openAlert(id, { onChange } = {}) {
         : config ? (can('audit.view') ? html`<a class="btn" data-link href="#/audit?action=alerts.config.">감사로그에서 설정 변경 보기 →</a>` : '')
         : hash ? html`<a class="btn" data-link href="${hash}">${p.kind === 'agent_silent' || p.kind === 'stream_silent' ? '수집 PC 화면 열기' : '이 알림의 이벤트 검색'} →</a>` : ''}
 
+      ${!builtin && p.kind === 'count' ? html`<div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>조사 순서 <span class="muted" style="font-weight:400">플레이북 — 무엇부터 볼지</span></span>
+        <button class="btn sm" type="button" data-pb-open>열기</button></div><div data-pb></div>` : ''}
+
       <div class="section-title">처리 기록</div>
       <ol class="timeline">
         <li><span class="tl-act fired">발생</span><span class="muted">${fmtTime(alert.fired_at)}</span></li>
@@ -227,6 +231,10 @@ export async function openAlert(id, { onChange } = {}) {
         <div class="table-wrap"><table class="table ev-table"><thead>${EVENT_HEAD}</thead>
           <tbody data-samples>${samples.map((s, i) => eventRow(s, i))}</tbody></table></div>` : ''}`;
 
+    body.querySelector('[data-pb-open]')?.addEventListener('click', (e) => {
+      e.target.disabled = true;
+      playbookSection(body.querySelector('[data-pb]'), alert, async () => { onChange?.(); await reload(); });
+    });
     const tbody = body.querySelector('[data-samples]');
     if (tbody) bindRows(tbody, (k) => samples[Number(k)]?.id && { id: samples[Number(k)].id });
     body.querySelector('[data-link]')?.addEventListener('click', () => document.querySelector('.drawer-overlay')?.click());
@@ -268,6 +276,54 @@ export async function openAlert(id, { onChange } = {}) {
   }
 
   await reload();
+}
+
+/** 조사 플레이북 (B-66): 질문마다 알림 값으로 채운 검색의 건수·상위 값·최근 로그, 답을 처리 기록 메모로 */
+async function playbookSection(box, alert, noted) {
+  box.innerHTML = '<div class="skeleton" style="height:80px"></div>';
+  let pb;
+  try {
+    pb = await api.get(`/api/alerts/${alert.id}/playbook`);
+  } catch (err) {
+    box.innerHTML = errorBox(err);
+    return;
+  }
+  if (!pb.available) {
+    box.innerHTML = html`<p class="muted" style="font-size:13px">이 규칙의 플레이북이 없습니다 — 규칙 번호로 <code>config/playbooks/&lt;번호&gt;.yaml</code> 을 만들면 여기에 나옵니다.</p>`;
+    return;
+  }
+  if (pb.error) { box.innerHTML = errorBox(new Error(pb.error)); return; }
+  const link = (s) => `#/events?${qs({ since: s.since, until: s.until, query: s.query })}`;
+  box.innerHTML = html`<ol class="pb-steps">${pb.steps.map((s, i) => html`<li>
+      <div><b>${s.question}</b></div>
+      ${s.why ? html`<div class="muted pb-why">${s.why}</div>` : ''}
+      ${s.missing ? html`<div class="muted pb-why">이 알림에 ${s.missing.join('·')} 값이 없어 건너뜁니다.</div>` : html`
+        <div class="pb-run"><code>${s.query}</code> <span class="num"><b>${fmtNum(s.count)}</b>건</span>
+          <a href="${link(s)}" data-pb-link>검색에서 보기 →</a></div>
+        ${s.top.length ? html`<div class="pb-top">${s.top.map((t) => html`<span class="type-tag">${t.value ?? '(없음)'} <b class="num">${fmtNum(t.n)}</b></span>`)}</div>` : ''}
+        ${s.events.length ? html`<ul class="pb-events">${s.events.map((e) => html`<li data-pb-ev="${e.id}" title="이 로그 상세">
+          <span class="num muted">${fmtTime(e.ts)}</span> ${e.host}${e.username ? ` · ${e.username}` : ''}${e.src_ip ? ` · ${e.src_ip}` : ''}
+          <span class="ink-2">${e.message}</span></li>`)}</ul>` : ''}`}
+      <div class="pb-answer"><input class="input" data-pb-answer="${i}" maxlength="500" placeholder="답 (예: 내부 PC 한 대, 백업 계정)">
+        <button class="btn sm" type="button" data-pb-note="${i}">메모로 남기기</button></div>
+    </li>`)}</ol>
+    ${pb.false_positive ? html`<div class="hint-box" style="white-space:pre-line;margin-top:8px"><b>오탐 판단 기준</b>
+${pb.false_positive}</div>` : ''}`;
+  box.querySelectorAll('[data-pb-link]').forEach((a) => a.addEventListener('click', () => document.querySelector('.drawer-overlay')?.click()));
+  box.querySelectorAll('[data-pb-ev]').forEach((li) => li.addEventListener('click', () => openEvent(Number(li.dataset.pbEv))));
+  box.querySelectorAll('[data-pb-note]').forEach((b) => b.addEventListener('click', async () => {
+    const i = Number(b.dataset.pbNote);
+    const answer = box.querySelector(`[data-pb-answer="${i}"]`).value.trim();
+    if (!answer) { box.querySelector(`[data-pb-answer="${i}"]`).focus(); return; }
+    b.disabled = true;
+    try {
+      await api.send('POST', `/api/alerts/${alert.id}/notes`, { text: `[조사] ${pb.steps[i].question} — ${answer}` });
+      await noted();
+    } catch (err) {
+      b.disabled = false;
+      box.insertAdjacentHTML('beforeend', String(errorBox(err)));
+    }
+  }));
 }
 
 /** 해결 / 다시 열기 양식: 조치 내용(선택) + (해결) 같은 규칙·대상의 해결 안 된 다른 알림도 함께 */

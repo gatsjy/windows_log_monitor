@@ -1,0 +1,23 @@
+# 조사 플레이북 — 규칙 1000008 '계정 잠금' (BACKLOG B-66)
+title: 계정 잠금
+steps:
+  - question: 잠기기 전 이 계정의 로그온 실패는 어디서 왔나?
+    why: 실패를 일으킨 PC·IP 가 잠김의 원인입니다 (예전 비밀번호가 남은 PC·휴대폰 메일·매핑된 드라이브)
+    query: 'event_id:4625,4771,4776 user:{user}'
+    window: 2h
+    after: 10m
+    top: ip
+  - question: 실패가 여러 PC 에서 났나?
+    why: 여러 PC 면 공격, 한 PC 면 그 PC 의 저장된 비밀번호를 지웁니다
+    query: 'event_id:4625,4771,4776 user:{user}'
+    window: 2h
+    after: 10m
+    top: host
+  - question: 다른 계정들도 같은 때 잠겼나?
+    why: 여러 계정이 함께 잠기면 패스워드 스프레이입니다
+    query: 'event_id:4740'
+    window: 2h
+    after: 1h
+    top: user
+false_positive: |
+  - 비밀번호를 바꾼 사용자의 예전 비밀번호가 남은 기기 (한 PC·한 IP 에서 반복)

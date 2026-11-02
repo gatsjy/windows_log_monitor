@@ -1,0 +1,21 @@
+# 조사 플레이북 — 규칙 1000007 '원격 데스크톱 무차별 대입' (BACKLOG B-66)
+title: 원격 데스크톱 무차별 대입
+steps:
+  - question: 이 IP 가 원격 데스크톱으로 시도한 계정은?
+    why: administrator·admin 같은 흔한 이름이면 인터넷에 열린 원격 데스크톱을 노린 자동 공격입니다
+    query: 'event_id:4625 f.EventData.LogonType:10 ip:{ip}'
+    window: 24h
+    top: user
+  - question: 원격 데스크톱으로 성공한 로그온이 있나?
+    why: 있다면 즉시 그 세션을 확인하고 계정 비밀번호를 바꿉니다
+    query: 'event_id:4624 f.EventData.LogonType:10 ip:{ip}'
+    window: 24h
+    after: 6h
+    top: host
+  - question: 성공 뒤 서버에 새 서비스·예약 작업이 생겼나?
+    why: 랜섬웨어는 원격 접속 뒤 서비스·예약 작업으로 실행 파일을 심습니다
+    query: 'event_id:7045,4697,4698 host:{host}'
+    window: 6h
+    after: 12h
+false_positive: |
+  - 비밀번호를 잊은 원격 근무자 (내부 VPN 대역, 한 계정, 몇 번)

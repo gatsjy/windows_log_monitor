@@ -1,0 +1,27 @@
+# 조사 플레이북 — 규칙 1000005 '로그온 실패 급증' (BACKLOG B-66). 자리표시자: {host} {user} {ip} {key}
+title: 로그온 실패 급증
+steps:
+  - question: 실패한 계정은 몇 개이고 어느 것인가?
+    why: 한두 계정이면 비밀번호를 잊은 사용자·바뀐 서비스 비밀번호, 여러 계정이면 대입 공격일 수 있습니다
+    query: 'event_id:4625 host:{host}'
+    window: 1h
+    top: user
+  - question: 어디서 시도했나?
+    why: 내부 PC 한 대면 그 PC 의 프로그램·사용자, 외부·여러 IP 면 공격을 의심합니다
+    query: 'event_id:4625 host:{host}'
+    window: 1h
+    top: ip
+  - question: 실패 뒤 같은 계정으로 로그온에 성공했나?
+    why: 실패가 이어지다 성공했다면 비밀번호를 맞혔을 수 있습니다 — 성공한 로그온의 출발지와 방식을 확인하세요
+    query: 'event_id:4624 host:{host} user:{user}'
+    window: 2h
+    after: 2h
+    top: ip
+  - question: 그 계정이 잠겼나?
+    why: 잠겼으면 사용자 업무가 멈춥니다. 잠김 원인(4740 상세의 '잠김 원인 찾기')으로 시도한 PC 를 찾습니다
+    query: 'event_id:4740 user:{user}'
+    window: 2h
+    after: 2h
+false_positive: |
+  - 비밀번호를 바꾼 뒤 예전 비밀번호로 계속 접속하는 서비스·예약 작업·매핑된 드라이브 (같은 계정·같은 내부 IP 가 일정 간격)
+  - 휴가 뒤 비밀번호를 잊은 사용자 (한 계정, 몇 번, 곧 성공)

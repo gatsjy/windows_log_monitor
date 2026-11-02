@@ -1,0 +1,20 @@
+# 조사 플레이북 — 규칙 1000013 '보안 감사 로그 삭제' (BACKLOG B-66)
+title: 보안 감사 로그 삭제
+steps:
+  - question: 누가 로그를 지웠나?
+    why: 감사 로그 삭제는 침입 흔적을 지우는 전형적인 행동입니다 — 지운 계정을 먼저 봅니다 (아래 최근 로그의 메시지)
+    query: 'event_id:1102,104 host:{host}'
+    window: 1h
+    after: 10m
+  - question: 지우기 전 이 서버에 원격으로 로그온한 계정은?
+    why: 삭제 직전의 원격 로그온이 공격자의 접속일 수 있습니다
+    query: 'event_id:4624 host:{host}'
+    window: 6h
+    after: 10m
+    top: ip
+  - question: 지우기 전에 남은 로그 중 의심스러운 것은?
+    why: 이 시스템은 지우기 전에 받은 로그를 갖고 있습니다 — 새 서비스·예약 작업·계정 변경을 봅니다
+    query: 'event_id:7045,4697,4698,4720,4732 host:{host}'
+    window: 24h
+false_positive: |
+  - 로그 크기 정리 작업 (변경 요청과 작업자 확인 — 이 시스템이 원본을 보관하므로 지울 필요가 없다는 것도 안내)
