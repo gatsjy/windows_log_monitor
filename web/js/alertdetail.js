@@ -19,12 +19,25 @@ const DELIVERY = {
 // 처리 상태 (server: alerts.status) — 확인은 알림을 볼 수 있으면 누구나, 해결·다시 열기·무음은 alerts.handle
 export const ALERT_STATUS = { open: '처리 안 됨', acked: '확인함', resolved: '해결됨' };
 const NOTE_ACTIONS = { note: '메모', ack: '확인', resolve: '해결', reopen: '다시 열기', auto_resolve: '자동 해결' };
+// 종료 분류 (B-44) — 해결할 때 필수. auto 는 엔진의 자동 해소 (server: alerts/message.RESOLUTION_LABELS)
+export const RESOLUTIONS = {
+  tp_malicious: ['정탐 — 의심 행위', '정탐'], tp_expected: ['정탐 — 예상된 관리 작업', '정탐(예상)'],
+  fp_rule: ['오탐 — 규칙 문제', '오탐'], fp_data: ['오탐 — 데이터 문제', '오탐(데이터)'], undetermined: ['판단 불가', '판단 불가'],
+  auto: ['자동 해소', '자동'],
+};
+/** 해결 양식의 종료 분류 칸 (고르기 전에는 비어 있음 — 기본값으로 대충 닫지 않게) */
+export function resolutionSelect(attr = 'data-resolution') {
+  return html`<select class="select" ${attr === 'data-resolution' ? html`data-resolution` : html`data-bulk-resolution`} aria-label="종료 분류">
+    <option value="">종료 분류 고르기…</option>
+    ${Object.entries(RESOLUTIONS).filter(([k]) => k !== 'auto').map(([k, [label]]) => html`<option value="${k}">${label}</option>`)}</select>`;
+}
 export const SILENCE_DURATIONS = [[3600, '1시간'], [4 * 3600, '4시간'], [86400, '하루'], [3 * 86400, '사흘']];
 
 export function statusChip(a) {
   const auto = a.status === 'resolved' && a.auto_resolved;   // 조건이 풀려 엔진이 해결 (B-35 2단계)
   const who = auto ? '조건이 풀려 자동으로' : a.status === 'resolved' ? a.resolved_by : a.status === 'acked' ? a.acked_by : '';
-  return html`<span class="ast ${a.status}" title="${who ? `${who} · ${fmtTime(a.status === 'resolved' ? a.resolved_at : a.acked_at)}` : ''}">${ALERT_STATUS[a.status] ?? a.status}${auto ? ' (자동)' : ''}</span>${
+  const kind = a.status === 'resolved' && !auto && RESOLUTIONS[a.resolution] ? ` · ${RESOLUTIONS[a.resolution][1]}` : '';
+  return html`<span class="ast ${a.status}" title="${who ? `${who} · ${fmtTime(a.status === 'resolved' ? a.resolved_at : a.acked_at)}${RESOLUTIONS[a.resolution] ? ` · ${RESOLUTIONS[a.resolution][0]}` : ''}` : ''}">${ALERT_STATUS[a.status] ?? a.status}${auto ? ' (자동)' : ''}${kind}</span>${
     a.silence_id ? html` <span class="ast silenced" title="무음 #${a.silence_id} — 보내지 않음">무음</span>` : ''}${
     a.observed ? html` <span class="ast silenced" title="관찰 모드 규칙 — 기록만 하고 보내지 않음">관찰</span>` : ''}`;
 }
@@ -188,7 +201,8 @@ export async function openAlert(id, { onChange } = {}) {
       <ol class="timeline">
         <li><span class="tl-act fired">발생</span><span class="muted">${fmtTime(alert.fired_at)}</span></li>
         ${alert.notes.map((n) => html`<li>
-          <span class="tl-act ${n.action}">${NOTE_ACTIONS[n.action] ?? n.action}</span><b>${n.author}</b>
+          <span class="tl-act ${n.action}">${NOTE_ACTIONS[n.action] ?? n.action}</span>${n.action === 'resolve' && RESOLUTIONS[n.resolution]
+            ? html`<span class="muted">${RESOLUTIONS[n.resolution][0]}</span> ` : ''}<b>${n.author}</b>
           <span class="muted">${fmtTime(n.at)}</span>
           ${n.text ? html`<div class="tl-text">${n.text}</div>` : ''}</li>`)}
       </ol>
@@ -219,8 +233,8 @@ export async function openAlert(id, { onChange } = {}) {
     const msg = body.querySelector('[data-msg]');
     const formbox = body.querySelector('[data-formbox]');
 
-    async function act(action, ids, note = '', withRelated = false) {
-      await api.send('POST', '/api/alerts/handle', { ids, action, note, with_related: withRelated });
+    async function act(action, ids, note = '', withRelated = false, resolution = null) {
+      await api.send('POST', '/api/alerts/handle', { ids, action, note, with_related: withRelated, resolution });
       onChange?.();
       await reload();
     }
@@ -235,7 +249,7 @@ export async function openAlert(id, { onChange } = {}) {
       if (formbox.dataset.kind === kind) { formbox.innerHTML = ''; formbox.dataset.kind = ''; return; }
       formbox.dataset.kind = kind;
       if (kind === 'silence') silenceForm(formbox, alert, () => onChange?.()); // 이미 발생한 알림은 그대로라 다시 그리지 않는다
-      else handleForm(formbox, kind, related, async (note, withRelated) => act(kind, [alert.id], note, withRelated));
+      else handleForm(formbox, kind, related, async (note, withRelated, resolution) => act(kind, [alert.id], note, withRelated, resolution));
     }));
 
     body.querySelector('[data-addnote]').addEventListener('click', async (e) => {
@@ -260,6 +274,7 @@ export async function openAlert(id, { onChange } = {}) {
 function handleForm(box, kind, related, submit) {
   const resolve = kind === 'resolve';
   box.innerHTML = html`<div class="inline-form">
+    ${resolve ? html`<label class="field"><span>종료 분류 <small class="muted">(필수 — 규칙별 오탐률에 쓰임)</small></span>${resolutionSelect()}</label>` : ''}
     <label class="field"><span>${resolve ? '조치 내용' : '다시 여는 이유'} <small class="muted">(선택, 처리 기록에 남음)</small></span>
       <textarea class="input" rows="2" maxlength="2000" data-text placeholder="${resolve ? '예: 계정 잠금 해제, 사용자 비밀번호 초기화' : '예: 같은 증상 재발'}"></textarea></label>
     ${resolve && related ? html`<label class="check-row"><input type="checkbox" data-related checked>
@@ -267,12 +282,18 @@ function handleForm(box, kind, related, submit) {
     <div class="toolbar"><button class="btn ${resolve ? 'primary' : ''}" data-ok>${resolve ? '해결로 표시' : '다시 열기'}</button>
       <button class="btn ghost" data-cancel>취소</button></div>
     <div data-err></div></div>`;
-  box.querySelector('[data-text]').focus();
+  (box.querySelector('[data-resolution]') || box.querySelector('[data-text]')).focus();
   box.querySelector('[data-cancel]').addEventListener('click', () => { box.innerHTML = ''; box.dataset.kind = ''; });
   box.querySelector('[data-ok]').addEventListener('click', async (e) => {
+    const resolution = box.querySelector('[data-resolution]')?.value || null;
+    if (resolve && !resolution) {
+      box.querySelector('[data-err]').innerHTML = errorBox(new Error('종료 분류를 고르세요 (정탐·오탐·판단 불가)'));
+      box.querySelector('[data-resolution]').focus();
+      return;
+    }
     e.target.disabled = true;
     try {
-      await submit(box.querySelector('[data-text]').value.trim(), !!box.querySelector('[data-related]')?.checked);
+      await submit(box.querySelector('[data-text]').value.trim(), !!box.querySelector('[data-related]')?.checked, resolution);
     } catch (err) {
       e.target.disabled = false;
       box.querySelector('[data-err]').innerHTML = errorBox(err);

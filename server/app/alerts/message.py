@@ -16,6 +16,9 @@ SEVERITY_LABELS = {"critical": "심각", "error": "오류", "warning": "경고",
 SEVERITY_COLORS = {"critical": "#d03b3b", "error": "#ec835a", "warning": "#fab219", "info": "#2a78d6"}
 RESOLVED_COLOR = "#2f9e5b"   # 해소 통지 (B-35 2단계)
 LEVEL_LABELS = {1: "심각", 2: "오류", 3: "경고", 4: "정보", 5: "상세"}
+# 알림 종료 분류 (B-44) — 해결할 때 사람이 고른다. auto 는 엔진의 자동 해소(사람이 고를 수 없음)
+RESOLUTION_LABELS = {"tp_malicious": "정탐 — 의심 행위", "tp_expected": "정탐 — 예상된 관리 작업", "fp_rule": "오탐 — 규칙 문제",
+                     "fp_data": "오탐 — 데이터 문제", "undetermined": "판단 불가", "auto": "자동 해소"}
 
 
 def local(dt: datetime | None) -> str:

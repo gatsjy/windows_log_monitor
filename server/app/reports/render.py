@@ -11,7 +11,7 @@ from datetime import datetime
 from html import escape
 from typing import Any
 
-from ..alerts.message import SEVERITY_COLORS, SEVERITY_LABELS, Notice, local
+from ..alerts.message import RESOLUTION_LABELS, SEVERITY_COLORS, SEVERITY_LABELS, Notice, local
 from ..config import settings
 from .builder import integrity_bad_count
 
@@ -194,6 +194,14 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
         ["번호", "발생", "심각도", "규칙", "대상", "상태"],
         [[_e(f"#{a['id']}"), _e(_t(a["fired_at"])), _e(SEVERITY_LABELS.get(a["severity"], a["severity"])), _e(a["rule"]),
           _e(a["group_key"] or "-"), _e(STATUS_LABELS.get(a["status"], a["status"]))] for a in al["unresolved_oldest"]]) + "</div>"
+    if al.get("resolutions"):   # 종료 분류 (B-44 이전 보고서에는 없다)
+        body += ("<div style='margin-top:12px'><b style='font-size:13px'>해결한 알림의 종료 분류</b>"
+                 + _table(["분류", "건수"], [[_e(RESOLUTION_LABELS.get(k, "분류 없음 (B-44 이전)")), _e(v)]
+                                          for k, v in sorted(al["resolutions"].items(), key=lambda kv: -kv[1])], right=(1,)))
+        if al.get("false_positive_rules"):
+            body += (f"<p style='color:{MUTED};margin:6px 0'>오탐이 많은 규칙 — 조건을 고치거나 예외를 검토할 후보: "
+                     + _e(", ".join(f"{r['rule']} {r['n']:,}건" for r in al["false_positive_rules"])) + "</p>")
+        body += "</div>"
     if "config_changes" in al:   # ADR-043 이전 보고서에는 없다 (보고서는 고칠 수 없으므로 예전 형식도 그린다)
         body += _config_changes(al)
     out.append(_section("알림 처리", body))

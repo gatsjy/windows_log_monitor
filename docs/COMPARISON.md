@@ -150,7 +150,7 @@
 | 반복 점검·라벨 무음 | Alertmanager `time_interval`·라벨 매처 무음, Grafana mute timing, Zabbix 점검 기간 | △ 1회성 무음(30일 이내, 규칙·대상 단위) | B-42 |
 | 에스컬레이션 | PagerDuty 에스컬레이션 정책·확인 시간 초과, Zabbix 액션 단계 | ❌ | B-43 |
 | 받는 곳 경로 | Alertmanager route 트리(matchers·continue) | △ 규칙마다 `notify` 목록 | B-26 |
-| 대기열·종료 분류 | Security Onion Alerts(Group By·ack/escalate), Sentinel 종료 분류(TP/BP/FP) | △ 발생마다 한 행, 같은 규칙·대상 함께 해결 | B-44 |
+| 대기열·종료 분류 | Security Onion Alerts(Group By·ack/escalate), Sentinel 종료 분류(TP/BP/FP) | ○ 규칙 › 대상 묶어 보기·묶음 확인/해결, 해결 시 종료 분류 필수, 규칙별 오탐률·보고서 분류 통계 (escalate 는 B-43) | B-44 |
 | 탐지 약화 변경 | (검토에서 도출 — 조사 자료에 대응 제품 기능 없음) | △ 알림 설정은 판본·약화 알림(ADR-043): 화면 저장·서버 파일 직접 수정·꺼져 있는 동안의 수정을 판본으로 남기고, 약해지는 변경·넓은 무음은 바뀌기 전 받는 곳에 알림. 수신 그룹 구성원·보관 파일 삭제·권한 부여 같은 다른 관리 작업은 감사로그에만 | B-36 |
 | 운영 준비도 | (조사 종합 — 단일 제품 기능 아님) | △ 신호가 여러 화면·로그에 흩어짐 | B-75 |
 | 메신저 형식 | Alertmanager·Grafana 기본 통합 | ✅ Slack·Teams·두레이·잔디(ADR-030), 실채널 확인만 남음 | B-04 |

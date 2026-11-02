@@ -29,7 +29,7 @@ from ..alerts.engine import (  # _with_group: 엔진과 같은 묶음 조건 (�
     stream_label,
 )
 from ..alerts.health import RULE_LABELS
-from ..alerts.message import local
+from ..alerts.message import RESOLUTION_LABELS, local
 from ..alerts.notifiers import SEVERITY_LABELS, NotifierError
 from ..alerts.rules import SILENT_KINDS, AlertConfig, ConfigError, Rule, parse, parse_text
 from ..alerts.visibility import alert_stats_for, alert_visible, count_by_status, scrub_silence, silence_visible
@@ -88,7 +88,27 @@ async def list_alerts(
     return {"items": items, "counts": count_by_status(user, groups)}
 
 
+@router.get("/api/alerts/groups")
+async def alert_groups(
+    request: Request,
+    since: str = "7d",
+    rule: str | None = None,
+    severity: str | None = None,
+    host: str | None = None,
+    status: str | None = Query(None, pattern=STATUS_PATTERN),
+    limit: int = Query(300, ge=1, le=1000),
+):
+    """알림 이력 묶어 보기 (B-44): 규칙 › 대상마다 한 줄. 조회 범위는 GROUP BY 전에(목록과 같은 pairs)."""
+    start, user = _since(since), request.state.user
+    groups = await repository.alert_group_counts(start)
+    pairs = None if user.scopes is None else sorted({(g["rule"], g["group_key"]) for g in groups if alert_visible(user, g)})
+    rows = await repository.alert_groups(start, limit + 1, rule=rule, severity=severity, group_key=host, status=status,
+                                         pairs=pairs)
+    return {"items": rows[:limit], "truncated": len(rows) > limit, "limit": limit}
+
+
 CSV_LIMIT = 10000
+QUALITY_WINDOW = timedelta(days=90)
 
 
 async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
@@ -104,13 +124,16 @@ async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
     def lines():
         for a in rows:
             history = " / ".join(
-                f"{local(n['at'])} {n['author']} [{NOTE_LABELS[n['action']]}]{' ' + n['text'] if n['text'] else ''}"
+                f"{local(n['at'])} {n['author']} [{NOTE_LABELS[n['action']]}"
+                f"{' · ' + RESOLUTION_LABELS[n['resolution']] if n.get('resolution') in RESOLUTION_LABELS else ''}]"
+                f"{' ' + n['text'] if n['text'] else ''}"
                 for n in notes.get(a["id"], []))
             yield [
                 a["id"], local(a["fired_at"]), SEVERITY_LABELS.get(a["severity"], a["severity"]), a["rule"], a["group_key"],
                 a["event_count"], STATUS_LABELS[a["status"]] + (" (자동)" if a["auto_resolved"] else ""), a["acked_by"] or "",
                 local(a["acked_at"]) if a["acked_at"] else "", a["resolved_by"] or "",
-                local(a["resolved_at"]) if a["resolved_at"] else "", f"#{a['silence_id']}" if a["silence_id"] else "",
+                local(a["resolved_at"]) if a["resolved_at"] else "", RESOLUTION_LABELS.get(a["resolution"] or "", ""),
+                f"#{a['silence_id']}" if a["silence_id"] else "",
                 "; ".join(f"{d['notifier']}{' 해소' if d.get('action') == 'resolve' else ''}:{d['status']}"
                           for d in a["deliveries"]), history,
             ]
@@ -119,7 +142,7 @@ async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
 
     return csv_response(
         ["번호", "발생 시각", "심각도", "규칙", "대상", "건수", "처리 상태", "확인한 사람", "확인 시각",
-         "해결한 사람", "해결 시각", "무음", "전송", "처리 기록"],
+         "해결한 사람", "해결 시각", "종료 분류", "무음", "전송", "처리 기록"],
         lines(), f"alerts_{datetime.now(UTC):%Y%m%d_%H%M%S}.csv",
         headers={"X-WLM-Truncated": "1"} if truncated else None)
 
@@ -135,6 +158,8 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
     known = await targets.target_names()
     # 규칙별 데이터 유무 (B-37 2단계) — 빠진 PC 이름이 들어 있어 조회 범위가 없는 사용자에게만
     data = await coverage.current(engine.config.rules) if user.scopes is None else {}
+    # 규칙별 90일 품질 (B-44): 발생·오탐률·평균 해결 시간 — 모든 알림을 센 숫자라 조회 범위가 없는 사용자에게만
+    quality = await repository.alert_rule_quality(datetime.now(UTC) - QUALITY_WINDOW) if user.scopes is None else {}
     state = await health.current()
     rules = []
     for r in engine.config.rules:
@@ -151,7 +176,7 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
             "tags": list(r.tags), "sid": r.sid, "group": r.group,
             "distinct": {"field": r.distinct_field, "min": r.distinct_min} if r.distinct_field else None,
             "resolve": r.resolve, "channels": list(r.channels), "coverage": coverage.public(data.get(r.name)),
-            "mode": r.mode,
+            "mode": r.mode, "quality": quality.get(r.name),
             # 마지막 평가 (ADR-045): 상태 칩·오류 줄
             "run": {**(run.as_dict() if run else {}), "state": rule_state, "label": RULE_LABELS[rule_state]},
         })
@@ -700,7 +725,9 @@ class HandleBody(BaseModel):
     ids: list[int] = Field(min_length=1, max_length=1000)
     action: Literal["ack", "resolve", "reopen"]
     note: str = Field(default="", max_length=2000)
-    with_related: bool = False  # 같은 규칙·대상의 다른 알림도 함께 (상세에서 '함께 해결')
+    with_related: bool = False  # 같은 규칙·대상의 다른 알림도 함께 (상세에서 '함께 해결'·묶어 보기의 묶음 처리)
+    # 종료 분류 (B-44) — 해결할 때 필수. 'auto'(자동 해소)는 엔진만
+    resolution: Literal["tp_malicious", "tp_expected", "fp_rule", "fp_data", "undetermined"] | None = None
 
 
 class NoteBody(BaseModel):
@@ -722,12 +749,18 @@ async def handle_alerts(body: HandleBody, request: Request, user: User = Depends
     if not visible:
         raise HTTPException(404, "알림을 찾을 수 없습니다")
     note = body.note.strip()
+    if body.action == "resolve" and body.resolution is None:
+        # 닫을 때 정탐·오탐을 남겨야 규칙을 고치거나 끌지 데이터로 정한다 (B-44)
+        raise HTTPException(422, "종료 분류를 고르세요 (정탐·오탐·판단 불가)")
     # 같은 규칙·대상의 알림은 보이는지 여부도 같다 → 보이는 알림에서 넓혀도 범위를 벗어나지 않는다
-    changed = await repository.handle_alerts(visible, body.action, user.username, note, with_related=body.with_related)
+    changed = await repository.handle_alerts(visible, body.action, user.username, note, with_related=body.with_related,
+                                             resolution=body.resolution if body.action == "resolve" else None)
     unchanged = [i for i in visible if i not in changed]
     if changed:
+        targets = len({(r["rule"], r["group_key"]) for r in await repository.alert_refs(changed)})
         await db.audit(user.username, f"alerts.{body.action}", _ids_text(changed),
-                       {"ids": changed, "unchanged": unchanged, "note": note, "with_related": body.with_related},
+                       {"ids": changed, "unchanged": unchanged, "note": note, "with_related": body.with_related,
+                        "targets": targets, **({"resolution": body.resolution} if body.action == "resolve" else {})},
                        actor_ip=client_ip(request))
     return {"ok": True, "changed": changed, "unchanged": unchanged, "missing": [i for i in ids if i not in visible]}
 

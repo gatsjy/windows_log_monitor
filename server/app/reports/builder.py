@@ -136,7 +136,17 @@ async def _alerts(start: datetime, end: datetime) -> dict[str, Any]:
     # 탐지를 바꾼 관리 작업 (ADR-043) — 알림 설정 판본과 넓은 무음
     versions = await repository.report_config_changes(start, end)
     silences = await repository.report_wide_silences(start, end)
+    # 종료 분류 (B-44): 기간 안에 해결한 알림의 정탐·오탐 — 오탐이 많은 규칙부터 고칠 후보
+    res = await repository.resolution_counts(start, end)
+    by_resolution: dict[str, int] = {}
+    fp_by_rule: dict[str, int] = {}
+    for r in res:
+        by_resolution[r["resolution"]] = by_resolution.get(r["resolution"], 0) + r["n"]
+        if r["resolution"] in ("fp_rule", "fp_data"):
+            fp_by_rule[r["rule"]] = fp_by_rule.get(r["rule"], 0) + r["n"]
     return {
+        "resolutions": by_resolution,
+        "false_positive_rules": [{"rule": k, "n": v} for k, v in sorted(fp_by_rule.items(), key=lambda kv: -kv[1])[:5]],
         "fired": sum(by_severity.values()), "by_severity": by_severity, "by_status": by_status,
         "unresolved_by_severity": {r["severity"]: r["n"] for r in data["open_by_severity"]},
         "unresolved_oldest": [{**r, "fired_at": _iso(r["fired_at"])} for r in data["oldest_unresolved"]],

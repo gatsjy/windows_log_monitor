@@ -113,9 +113,12 @@ def _alerts(client, **params):
     return r.json()
 
 
-def _handle(client, ids, action, note="", with_related=False):
-    return client.post("/api/alerts/handle", json={"ids": ids, "action": action, "note": note,
-                                                   "with_related": with_related}, headers=CSRF)
+def _handle(client, ids, action, note="", with_related=False, resolution="tp_expected"):
+    """해결은 종료 분류가 필수(B-44) — 이 파일의 시험은 처리 흐름을 보므로 기본 분류를 붙인다."""
+    body = {"ids": ids, "action": action, "note": note, "with_related": with_related}
+    if action == "resolve":
+        body["resolution"] = resolution
+    return client.post("/api/alerts/handle", json=body, headers=CSRF)
 
 
 def _ingest(client, *hosts):
@@ -227,7 +230,7 @@ def test_csv_export_has_handling_columns(ctx, monkeypatch):
     assert rows[0][6:11] == ["처리 상태", "확인한 사람", "확인 시각", "해결한 사람", "해결 시각"]
     pc_a = next(row for row in rows[1:] if row[4] == "PC-A")
     assert pc_a[6] == "해결됨" and pc_a[9] == "handler"
-    assert "[다시 열기] 재발" in pc_a[13] and "[메모] 사용자에게 전화함" in pc_a[13]
+    assert "[다시 열기] 재발" in pc_a[14] and "[메모] 사용자에게 전화함" in pc_a[14]   # 14 = 처리 기록 (10 = 종료 분류, B-44)
     audit = ctx["admin"].get("/api/audit", params={"since": "1h", "action": "alerts."}, headers=CSRF).json()["items"]
     assert {"alerts.ack", "alerts.resolve", "alerts.reopen", "alerts.note", "alerts.export"} <= {a["action"] for a in audit}
 

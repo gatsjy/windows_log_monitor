@@ -263,7 +263,7 @@ def test_reopen_is_respected(client):
     _quiet(client, "WEB-05", now, minutes=8)
     assert _alert(alert_id) == ("open", False, None)
     # 사람이 해결해도 자동 해소 통지는 나가지 않는다
-    assert client.post("/api/alerts/handle", json={"ids": [alert_id], "action": "resolve", "note": "재시작"},
+    assert client.post("/api/alerts/handle", json={"ids": [alert_id], "action": "resolve", "note": "재시작", "resolution": "tp_expected"},
                        headers=CSRF).status_code == 200
     _drain(client)
     assert [b["event_action"] for b in _bodies("WEB-05")] == ["trigger"]

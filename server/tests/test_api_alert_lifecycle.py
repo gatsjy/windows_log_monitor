@@ -95,7 +95,7 @@ def test_events_skipped_by_cooldown_are_counted(client):
 
 def test_resolved_alert_recurs_only_with_new_events(client):
     first = client.get("/api/alerts", params={"since": "1h"}, headers=CSRF).json()["items"][0]
-    r = client.post("/api/alerts/handle", json={"ids": [first["id"]], "action": "resolve", "note": "서비스 재시작"},
+    r = client.post("/api/alerts/handle", json={"ids": [first["id"]], "action": "resolve", "note": "서비스 재시작", "resolution": "tp_expected"},
                     headers=CSRF)
     assert r.status_code == 200, r.text
     # 해결 직후 창 안에 남은 같은 이벤트로는 울리지 않는다

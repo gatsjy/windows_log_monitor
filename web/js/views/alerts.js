@@ -6,7 +6,8 @@
 import * as api from '../api.js';
 import { can } from '../auth.js';
 import {
-  ALERT_STATUS, GROUP_LABELS, SILENCE_DURATIONS, deliveryChips, matchText, openAlert, silenceScope, statusChip,
+  ALERT_STATUS, GROUP_LABELS, SILENCE_DURATIONS, deliveryChips, matchText, openAlert, resolutionSelect, silenceScope,
+  statusChip,
 } from '../alertdetail.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
 import { exportCsv } from '../exportcsv.js';
@@ -35,6 +36,8 @@ export async function mount(root, params, sub) {
   let config = null;
   let timer;
   const selected = new Set(); // 이력에서 체크한 알림 id (자동 새로고침해도 유지)
+  // 이력 보기 (B-44): 알림마다 | 규칙 › 대상으로 묶어 — 장애 때 같은 규칙이 수십 PC 에서 터져도 다른 심각 알림이 묻히지 않게
+  let view = store.get('wlm.alerts.view') === 'groups' ? 'groups' : 'list';
   // 규칙 관리 화면 상태 (묶음 선택·검색은 브라우저에 기억)
   const ui = { group: store.get('wlm.rules.group') || '', q: '', state: 'all' };
 
@@ -99,6 +102,73 @@ export async function mount(root, params, sub) {
   }
 
   // ---------------------------------------------------------------- 이력
+  function viewToggle() {
+    return html`<div class="seg" data-view aria-label="보기">${[['list', '알림마다'], ['groups', '규칙 › 대상으로 묶어']].map(([v, l]) => html`
+      <button type="button" data-v="${v}" class="${v === view ? 'on' : ''}">${l}</button>`)}</div>`;
+  }
+
+  function bindHistoryToolbar(el) {
+    el.querySelectorAll('[data-status] button').forEach((b) => b.addEventListener('click', () => {
+      status = b.dataset.v;
+      selected.clear();
+      replaceParams('alerts', { since, status });
+      root.querySelector('.tabs a').href = `#/alerts?since=${since}${status ? `&status=${status}` : ''}`;
+      load();
+    }));
+    el.querySelectorAll('[data-view] button').forEach((b) => b.addEventListener('click', () => {
+      if (view === b.dataset.v) return;
+      view = b.dataset.v;
+      store.set('wlm.alerts.view', view);
+      selected.clear();
+      load();
+    }));
+  }
+
+  /** 묶어 보기 (B-44): 규칙 › 대상마다 한 줄. 행을 누르면 그 묶음의 가장 최근 알림 — 상세의 '함께 해결'이 묶음 전체를 처리한다 */
+  function renderGroups(res, counts) {
+    const el = root.querySelector('[data-tab]');
+    const total = counts.open + counts.acked + counts.resolved;
+    const items = res?.items ?? [];
+    el.innerHTML = html`<section class="card">
+      <div class="rule-toolbar">
+        <div class="seg" data-status aria-label="처리 상태">${STATUS_FILTERS.map(([v, l]) => html`
+          <button type="button" data-v="${v}" class="${v === status ? 'on' : ''}">${l}<span class="seg-count num">${fmtNum(v ? counts[v] : total)}</span></button>`)}</div>
+        ${viewToggle()}
+      </div>
+      ${items.length ? html`<div class="table-wrap"><table class="table alert-table">
+        <thead><tr><th>심각도</th><th>규칙</th><th>대상</th><th class="r">알림</th><th>처리</th><th>마지막 발생</th><th></th></tr></thead>
+        <tbody>${items.map((g, i) => html`<tr class="clickable ${g.open + g.acked ? '' : 'row-done'}" data-g="${i}">
+          <td class="nowrap">${severityBadge(g.severity)}</td>
+          <td class="nowrap"><b>${g.rule}</b></td>
+          <td class="nowrap">${g.group_key || '–'}</td>
+          <td class="r num">${fmtNum(g.n)}</td>
+          <td class="nowrap">${g.open ? html`<span class="ast open">처리 안 됨 ${fmtNum(g.open)}</span> ` : ''}${g.acked ? html`<span class="ast acked">확인함 ${fmtNum(g.acked)}</span> ` : ''}${g.resolved ? html`<span class="ast resolved">해결됨 ${fmtNum(g.resolved)}</span>` : ''}</td>
+          <td class="nowrap num muted" title="처음 ${fmtTime(g.first_fired_at)}">${fmtTime(g.last_fired_at)}</td>
+          <td class="r nowrap">${g.open ? html`<button class="btn sm" data-g-ack="${i}" title="이 묶음의 처리 안 된 알림을 모두 확인">모두 확인</button>` : ''}</td>
+        </tr>`)}</tbody></table></div>
+        ${res.truncated ? html`<p class="muted rule-foot">처리 안 된·심각한 묶음부터 ${fmtNum(res.limit)}개까지 보입니다.</p>` : ''}
+        <p class="muted rule-foot">행을 누르면 그 묶음의 가장 최근 알림 — 상세의 '해결…'에서 같은 규칙·대상의 다른 알림도 함께 해결합니다.</p>`
+        : html`<div class="empty">${EMPTY_TEXT[status]}</div>`}
+    </section>`;
+    bindHistoryToolbar(el);
+    el.querySelectorAll('tr[data-g]').forEach((tr) => tr.addEventListener('click', (e) => {
+      if (e.target.closest('[data-g-ack]')) return;
+      openAlert(items[Number(tr.dataset.g)].last_id, { onChange: load });
+    }));
+    el.querySelectorAll('[data-g-ack]').forEach((b) => b.addEventListener('click', async () => {
+      const g = items[Number(b.dataset.gAck)];
+      b.disabled = true;
+      try {
+        const r = await api.send('POST', '/api/alerts/handle', { ids: [g.last_id], action: 'ack', with_related: true });
+        toast(`${g.rule} · ${g.group_key || '전체'} — ${fmtNum(r.changed.length)}건 확인`, { type: 'success' });
+        load();
+      } catch (err) {
+        b.disabled = false;
+        toast(err.message, { type: 'error' });
+      }
+    }));
+  }
+
   function renderHistory(items, counts) {
     const el = root.querySelector('[data-tab]');
     const total = counts.open + counts.acked + counts.resolved;
@@ -108,6 +178,7 @@ export async function mount(root, params, sub) {
       <div class="rule-toolbar">
         <div class="seg" data-status aria-label="처리 상태">${STATUS_FILTERS.map(([v, l]) => html`
           <button type="button" data-v="${v}" class="${v === status ? 'on' : ''}">${l}<span class="seg-count num">${fmtNum(v ? counts[v] : total)}</span></button>`)}</div>
+        ${viewToggle()}
         <span style="flex:1"></span>
         <button type="button" class="btn ghost" data-csv title="처리 상태·처리한 사람·처리 기록 포함 (감사 증적)">CSV 내려받기</button>
       </div>
@@ -115,7 +186,7 @@ export async function mount(root, params, sub) {
         <b data-bulk-count></b>
         <input class="input" data-bulk-note maxlength="2000" placeholder="조치 내용 (선택, 처리 기록에 남음)" aria-label="조치 내용">
         <button class="btn" data-bulk-act="ack">확인</button>
-        ${can('alerts.handle') ? html`<button class="btn primary" data-bulk-act="resolve">해결</button>` : ''}
+        ${can('alerts.handle') ? html`${resolutionSelect('bulk')}<button class="btn primary" data-bulk-act="resolve">해결</button>` : ''}
         <button class="btn ghost" data-bulk-clear>선택 해제</button>
         <span data-bulk-msg></span>
       </div>
@@ -136,13 +207,7 @@ export async function mount(root, params, sub) {
     </section>`;
 
     el.querySelector('[data-csv]').addEventListener('click', () => exportCsv('/api/alerts', { since, status }, { what: '알림 이력' }));
-    el.querySelectorAll('[data-status] button').forEach((b) => b.addEventListener('click', () => {
-      status = b.dataset.v;
-      selected.clear();
-      replaceParams('alerts', { since, status });
-      root.querySelector('.tabs a').href = `#/alerts?since=${since}${status ? `&status=${status}` : ''}`;
-      load();
-    }));
+    bindHistoryToolbar(el);
     el.querySelectorAll('tr[data-id]').forEach((tr) => tr.addEventListener('click', (e) => {
       if (e.target.closest('.pick')) return;
       openAlert(tr.dataset.id, { onChange: load });
@@ -170,11 +235,18 @@ export async function mount(root, params, sub) {
     bar.querySelectorAll('[data-bulk-act]').forEach((b) => b.addEventListener('click', async () => {
       const action = b.dataset.bulkAct;
       const label = action === 'resolve' ? '해결로 표시' : '확인으로 표시';
+      const resolution = action === 'resolve' ? bar.querySelector('[data-bulk-resolution]').value : null;
+      if (action === 'resolve' && !resolution) {
+        bar.querySelector('[data-bulk-msg]').innerHTML = errorBox(new Error('종료 분류를 고르세요'));
+        bar.querySelector('[data-bulk-resolution]').focus();
+        return;
+      }
       const ok = await confirmModal({ title: `알림 ${label}`, message: `선택한 알림 ${selected.size}건을 ${label}할까요?`, confirmText: label });
       if (!ok) return;
       b.disabled = true;
       try {
-        const res = await api.send('POST', '/api/alerts/handle', { ids: [...selected], action, note: bar.querySelector('[data-bulk-note]').value.trim() });
+        const res = await api.send('POST', '/api/alerts/handle', { ids: [...selected], action, resolution,
+          note: bar.querySelector('[data-bulk-note]').value.trim() });
         selected.clear();
         await load();
         const skipped = res.unchanged.length ? ` · 이미 처리된 ${res.unchanged.length}건은 그대로` : '';
@@ -413,7 +485,7 @@ export async function mount(root, params, sub) {
                 ? html`<div class="tag-bad" style="font-size:12px">없는 대상: ${r.unknown_notify.join(', ')}</div>` : ''}</td>
               <td class="nowrap" data-run="${r.name}">${runChip(r)}</td>
               <td class="r nowrap"><span class="num">${fmtNum(r.fired)}</span>
-                ${r.last_fired_at ? html`<div class="muted" style="font-size:12px">${fmtRelative(r.last_fired_at)}</div>` : ''}</td>
+                ${r.last_fired_at ? html`<div class="muted" style="font-size:12px">${fmtRelative(r.last_fired_at)}</div>` : ''}${qualityLine(r.quality)}</td>
             </tr>`)}</tbody></table></div>`
           : html`<div class="empty">${config.rules.length ? '조건에 맞는 규칙이 없습니다' : '규칙이 없습니다. \'규칙 추가\'로 만드세요.'}</div>`}
         <p class="muted rule-foot">발생 수는 선택한 기간(${RANGES.find(([v]) => v === since)?.[1]}) 기준입니다.
@@ -482,6 +554,16 @@ export async function mount(root, params, sub) {
       }
       toggle(items.map((r) => r.name), turnOn, sw);
     }));
+  }
+
+  /** 규칙별 90일 품질 (B-44): 오탐률(분류한 것 중, 표본 수와 함께)·사람이 해결한 평균 시간 */
+  function qualityLine(q) {
+    if (!q) return '';
+    const judged = q.tp + q.fp;
+    const parts = [];
+    if (judged) parts.push(html`<span class="${q.fp_rate >= 0.5 && judged >= 5 ? 'tag-bad' : ''}">오탐 ${Math.round(q.fp_rate * 100)}%</span> <span class="muted">(${fmtNum(judged)}건 중)</span>`);
+    if (q.mttr_sec != null) parts.push(html`<span class="muted">해결 평균 ${fmtDuration(q.mttr_sec)}</span>`);
+    return parts.length ? html`<div style="font-size:12px" title="최근 90일: 발생 ${fmtNum(q.n)} · 정탐 ${fmtNum(q.tp)} · 오탐 ${fmtNum(q.fp)} · 판단 불가 ${fmtNum(q.undetermined)} · 자동 해소 ${fmtNum(q.auto)}">${parts.map((p, i) => html`${i ? html`<br>` : ''}${p}`)}</div>` : '';
   }
 
   async function toggle(names, enabled, sw) {
@@ -649,9 +731,10 @@ export async function mount(root, params, sub) {
       // 다른 탭에서도 이력 탭의 숫자(기간 안 전체)를 보여 주려고 counts 만 가볍게 받는다
       const [cfg, history, silences] = await Promise.all([
         api.get('/api/alerts/config', { since }),
-        api.get('/api/alerts', tab ? { since, limit: 1 } : { since, status, limit: HISTORY_LIMIT }),
+        api.get('/api/alerts', tab || view === 'groups' ? { since, limit: 1 } : { since, status, limit: HISTORY_LIMIT }),
         tab === 'silences' ? api.get('/api/alerts/silences', { since })
-          : tab === 'exceptions' ? api.get('/api/alerts/exceptions') : null,
+          : tab === 'exceptions' ? api.get('/api/alerts/exceptions')
+            : !tab && view === 'groups' ? api.get('/api/alerts/groups', { since, status }) : null,
       ]);
       config = cfg;
       renderStatus();
@@ -662,6 +745,7 @@ export async function mount(root, params, sub) {
       else if (tab === 'targets') renderNotifiers();
       else if (tab === 'silences') renderSilences(silences);
       else if (tab === 'exceptions') renderExceptions(silences);
+      else if (view === 'groups') renderGroups(silences, c);
       else renderHistory(history.items, c);
     } catch (err) {
       const box = root.querySelector('[data-tab]');

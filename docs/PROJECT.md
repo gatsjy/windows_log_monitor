@@ -243,7 +243,8 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/alerts?since=&rule=&severity=&host=&status=` | 알림 이력 (전송·처리 상태 포함) + `counts`(기간 안 처리 상태별 수). `status` = `open`·`acked`·`resolved`·`unresolved` |
 | `GET /api/alerts?format=csv` | 알림 이력 CSV (처리 상태·처리자·처리 시각·무음·전송·처리 기록, 최대 1만 건 — 넘으면 마지막 줄·`X-WLM-Truncated`·감사로그에 표시). 수식 주입 방지 — 감사로그 `alerts.export` |
 | `GET /api/alerts/{id}` | 알림 상세 (payload: 본문, 최근 이벤트 샘플, 처리 기록 `notes`, 무음 `silence`, 같은 규칙·대상의 해결 안 된 다른 알림 수 `related_unresolved`) |
-| `POST /api/alerts/handle` | `{ids, action, note, with_related?}` 확인(`ack`, 볼 수 있으면 누구나)·해결(`resolve`)·다시 열기(`reopen`: 확인함·해결됨 → 처리 안 됨, `alerts.handle`). 최대 1000건(`with_related` 면 같은 규칙·대상 전부), 결과 `changed/unchanged/missing` |
+| `POST /api/alerts/handle` | `{ids, action, note, with_related?, resolution?}` 확인(`ack`, 볼 수 있으면 누구나)·해결(`resolve`)·다시 열기(`reopen`: 확인함·해결됨 → 처리 안 됨, `alerts.handle`). 최대 1000건(`with_related` 면 같은 규칙·대상 전부), 결과 `changed/unchanged/missing`. 해결은 종료 분류 `resolution` 필수(B-44: `tp_malicious`·`tp_expected`·`fp_rule`·`fp_data`·`undetermined`, 없으면 422 — `auto` 는 엔진만), 다시 열면 비움. 감사로그에 분류·대상 수 |
+| `GET /api/alerts/groups?since=&status=&rule=&severity=&host=&limit=` | 묶어 보기 (B-44): (규칙, 대상)마다 수·상태별 수·가장 높은 심각도·처음/마지막 발생·`last_id`. 처리 안 된·심각한 묶음부터. 조회 범위는 GROUP BY·LIMIT 전에 |
 | `POST /api/alerts/{id}/notes` | `{text}` 메모 (볼 수 있으면 누구나, 고칠 수 없음) |
 | `GET /api/alerts/silences?since=` | 무음 목록 (적용 중·예정 + 기간 안에 끝난 것, 보내지 않은 알림 수) |
 | `POST /api/alerts/silences` · `DELETE /api/alerts/silences/{id}` | 무음 걸기(`{rule?, group_key?, starts_at?, ends_at? 또는 duration_sec, reason}`, 끝 시각은 지금부터 30일 안) · 일찍 해제 — `alerts.handle` |
@@ -536,7 +537,10 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
   - 처리 상태 필터: 처리 안 됨 / 확인함 / 해결됨 / 전체 (각각 기간 안 건수). 기간은 24시간·7일·30일·1년·전체(보관기간 안 전부), 처리 안 됨·확인함은 기본이 '전체'입니다(사이드바 숫자와 같은 범위).
   - 행마다 처리 상태 칩(누가·언제는 칩에 마우스), 무음 중 발생이면 '무음' 칩, 메모 수.
   - 체크해서 **여러 건을 한 번에 확인·해결**(조치 내용 한 줄 함께 기록). 좁은 화면에서는 동작 막대가 화면 아래에 뜹니다.
-  - **CSV 내려받기**: 처리 상태·처리자·처리 시각·처리 기록 포함 (사고 대응 증적).
+  - **CSV 내려받기**: 처리 상태·처리자·처리 시각·종료 분류·처리 기록 포함 (사고 대응 증적).
+  - **알림마다 | 규칙 › 대상으로 묶어 (B-44):** 묶음마다 한 줄(처리 안 된·심각한 것부터, '모두 확인'). 행을 누르면 그 묶음의 가장 최근 알림 — 상세의 '해결…'이 같은 규칙·대상을 함께 해결.
+  - **종료 분류 (B-44):** 해결할 때 정탐(의심 행위·예상된 관리 작업)·오탐(규칙 문제·데이터 문제)·판단 불가 중 하나를 꼭 고릅니다. 자동 해결은 '자동 해소'. 해결됨 칩에 분류, 처리 기록에 그때의 분류.
+  - 규칙 관리의 '발생' 칸에 최근 90일 **오탐률**(분류한 것 중, 표본 수)·사람이 해결한 평균 시간(조회 범위가 없는 사용자만). 점검 보고서 '알림 처리'에 종료 분류 표와 오탐이 많은 규칙.
 - **알림 상세:** 앞 알림과의 관계(재발·지난 알림 이후 n건)·이 알림 뒤 같은 조건으로 더 들어온 건수와 마지막 시각(같은 대상의 가장 최근 알림일 때)·지연 수신 표시(B-35), 처리 상자(확인 / 해결… / 다시 열기… / 무음…), 처리 기록 타임라인(발생 → 확인 → 해결 → 메모), 메모 입력, 전송 상태, 포함 이벤트.
   - 다시 열기는 해결됨뿐 아니라 확인함에서도 됩니다(누구나 하는 '확인'으로 대기열에서 치운 알림을 담당자가 되돌림).
   - 해결할 때 같은 규칙·대상의 해결 안 된 다른 알림을 함께 해결할 수 있습니다(재발은 합치지 않고 발생마다 따로 기록).
