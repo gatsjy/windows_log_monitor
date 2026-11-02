@@ -21,7 +21,7 @@ const INT_FIELDS = new Set(['event_id', 'level']);
 // 목록에 더 볼 열 (B-65 3단계, URL cols=): 기본 열(시각·수준·PC·분류·이벤트·메시지)에 없는 것과 원본 필드 f.<경로>. 서버도 6개까지
 const COL_CHOICES = [['user', '사용자'], ['ip', 'IP'], ['channel', '채널'], ['provider', '공급자'], ['source', '소스']];
 const MAX_COLS = 6;
-const RAW_COL = /^f\.[^\s,]+$/;
+const RAW_COL = /^f\.(?=[^\s,]*[^.\s,])[^\s,]+$/;   // 점만 있는 경로('f..')는 서버가 400 — 화면에서 먼저 막는다
 const colLabel = (c) => Object.fromEntries(COL_CHOICES)[c] ?? c.replace(/^f\./, '');
 function parseCols(text) {
   const ok = (c) => COL_CHOICES.some(([k]) => k === c) || RAW_COL.test(c);
@@ -115,7 +115,9 @@ export async function mount(root, params) {
   const backBtn = root.querySelector('[data-back]');
   const updateBack = () => { backBtn.hidden = !(history.state?.zoom > 0); };
   updateBack();
-  backBtn.addEventListener('click', () => history.back());
+  // 주소가 같아진 기록(구간을 고른 뒤 구간을 다시 해제)으로 돌아가면 hashchange 가 없어 화면이 그대로다 — 단추도 따라 맞춘다(검토에서 재현)
+  window.addEventListener('popstate', updateBack);
+  backBtn.addEventListener('click', () => { if (history.state?.zoom > 0) history.back(); else updateBack(); });
 
   function renderFoot() {
     footEl.innerHTML = cursor
@@ -412,5 +414,5 @@ export async function mount(root, params) {
     },
   });
   load();
-  return () => { disposed = true; token++; bar?.destroy(); setSearchContext(null); };
+  return () => { disposed = true; token++; bar?.destroy(); setSearchContext(null); window.removeEventListener('popstate', updateBack); };
 }

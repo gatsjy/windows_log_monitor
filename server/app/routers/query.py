@@ -88,7 +88,8 @@ def _filter(request: Request, default_since: str | None = "24h") -> EventFilter:
 
 
 def _check_field(field: str) -> str:
-    if field in repository.COLUMN_EXPR or (field.startswith("f.") and len(field) > 2):
+    # 원본 경로는 점으로 나눈 이름이 하나라도 있어야 하고 NUL 이 없어야 한다 — 'f..'·NUL 은 SQL 단계에서 500 이 됐다(검토에서 재현)
+    if field in repository.COLUMN_EXPR or (field.startswith("f.") and "\x00" not in field and any(field[2:].split("."))):
         return field
     raise HTTPException(400, f"알 수 없는 field: {field} (컬럼명 또는 f.<원본 경로>)")
 

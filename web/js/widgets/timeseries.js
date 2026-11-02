@@ -41,7 +41,11 @@ export default {
 
   live(body, cfg, ctx, events) {
     const st = body._live;
-    if (!st || !events.length || !st.buckets.length) return;
+    if (!st) return;
+    // 막대를 끌어 고르는 중에는 다시 그리지 않고 모아 둔다 — 다시 그리면 끌던 막대 그림이 바뀌어 고른 구간이 사라졌다(검토에서 재현)
+    if (body.querySelector('[data-chart][data-dragging]')) { (st.held ||= []).push(...events); return; }
+    if (st.held) { events = [...st.held, ...events]; st.held = null; }
+    if (!events.length || !st.buckets.length) return;
     const t0 = new Date(st.buckets[0]).getTime();
     const step = st.intervalSec * 1000;
     const now = Date.now();

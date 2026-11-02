@@ -187,6 +187,7 @@ export function columnChart(el, opt) {
         if (ev.button !== 0 || ev.target.dataset?.i === undefined) return;
         anchor = Number(ev.target.dataset.i);
         svg.setPointerCapture(ev.pointerId);
+        el.dataset.dragging = '1';   // 실시간 위젯이 끄는 동안 다시 그리지 않게 (다시 그리면 끌던 것이 사라진다)
       });
       svg.addEventListener('pointermove', (ev) => {
         if (anchor === null) return;
@@ -203,6 +204,7 @@ export function columnChart(el, opt) {
         if (anchor === null) return;
         const [, , start, end] = range(anchor, at(ev));
         anchor = null;
+        delete el.dataset.dragging;
         selBand.setAttribute('visibility', 'hidden');
         tooltip.hide();
         if (apply) onSelect({ since: start.toISOString(), until: end.toISOString() });

@@ -78,8 +78,10 @@ def test_extra_columns(client):
     fails = _items(client, user="kim", cols="ip,f.EventData.LogonType,f.EventData.Nope")
     assert {tuple(e["cols"]) for e in fails} == {("203.0.113.7", "10", None)}
     assert "x0" not in fails[0] and all("cols" in e for e in _items(client, limit=5))   # cols 가 없으면 빈 목록
-    for bad in ("bogus", "user,user", "f.", "user,ip,channel,provider,source,f.a,f.b"):   # 7개는 넘침
+    # 7개는 넘침, 점만 있는 경로·NUL 은 SQL 에서 500 이 됐다 (검토에서 재현)
+    for bad in ("bogus", "user,user", "f.", "f..", "f...", "f.a\x00b", "user,ip,channel,provider,source,f.a,f.b"):
         assert client.get("/api/events", params={"since": "1h", "cols": bad}).status_code == 400, bad
+    assert client.get("/api/stats/top", params={"since": "1h", "field": "f.."}).status_code == 400   # 같은 검사를 쓴다
     r = client.get("/api/events", params={"since": "1h", "user": "kim", "cols": "f.EventData.LogonType", "format": "csv",
                                           "reason": "열 시험"})
     head, first = r.content.decode("utf-8-sig").splitlines()[:2]
