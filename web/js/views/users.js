@@ -11,7 +11,7 @@ const TABS = (on) => html`<div class="tabs" role="tablist">
   <a role="tab" href="#/users/groups" class="${on === 'groups' ? 'on' : ''}" aria-selected="${on === 'groups'}">사용자 그룹</a></div>`;
 
 function statusOf(u) {
-  if (!u.is_active) return html`<span class="status offline"><span class="dot"></span>비활성</span>`;
+  if (!u.is_active) return html`<span class="status offline" title="${u.disabled_reason === 'dormant' ? '오래 로그인하지 않아 자동으로 꺼짐 — 다시 켜면 그때부터 다시 셉니다' : ''}"><span class="dot"></span>${u.disabled_reason === 'dormant' ? '장기 미사용으로 꺼짐' : '비활성'}</span>`;
   if (u.locked) return html`<span class="status stale"><span class="dot"></span>잠김</span>`;
   if (u.must_change_password) return html`<span class="status stale"><span class="dot"></span>임시 비밀번호</span>`;
   if (u.password_expired) return html`<span class="status stale"><span class="dot"></span>비밀번호 만료</span>`;
