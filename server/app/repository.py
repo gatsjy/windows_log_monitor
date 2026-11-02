@@ -580,9 +580,10 @@ async def purge_agent_streams(cutoff_day: Any) -> int:
     return len(rows)
 
 
-async def purge_ingest_problems(cutoff: datetime) -> tuple[int, int]:
-    """격리 레코드(원본 로그라 로그 보관기간)와 그보다 오래된 거절 장부 시간 줄."""
-    q = await db.fetch_all("DELETE FROM ingest_quarantine WHERE received_at < %s RETURNING id", (cutoff,))
+async def purge_ingest_problems(quarantine_cutoff: datetime | None, cutoff: datetime) -> tuple[int, int]:
+    """격리 레코드(원본 로그 — 보관 등급의 가장 긴 기간, None 이면 지우지 않음)와 cutoff 보다 오래된 거절 장부 시간 줄."""
+    q = [] if quarantine_cutoff is None else await db.fetch_all(
+        "DELETE FROM ingest_quarantine WHERE received_at < %s RETURNING id", (quarantine_cutoff,))
     r = await db.fetch_all("DELETE FROM ingest_rejections WHERE hour < %s RETURNING status", (cutoff,))
     return len(q), len(r)
 

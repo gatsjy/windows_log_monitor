@@ -189,6 +189,8 @@ async def archive_partition(partition: str, start: datetime, end: datetime,
     tiers = []
     for key, g in sorted(groups.items(), key=lambda kv: kv[0] or ""):
         await asyncio.to_thread(os.replace, g.tmp, g.final)
+        # 같은 이름을 다시 만들면(복원한 달을 기간을 늘린 뒤 다시 보관) 앞의 지운 표시를 치운다 — 남으면 외부 복제가 새 파일을 건너뛰고 복제본을 지웠다
+        tombstone_path(g.final.name).unlink(missing_ok=True)
         g.sha256 = await asyncio.to_thread(sha256_file, g.final)
         if key is None:
             continue
@@ -248,8 +250,11 @@ async def restore(partition: str, hold_days: int, actor: str) -> int:
         if existing:
             raise ArchiveError(f"{partition} 파티션에 이미 {existing}건이 있습니다 (이미 복원됨?)")
         async with conn.transaction():
+            # 같은 행이 두 파일에 있을 수 있다(만들다 멈춘 달을 등급 이름을 바꾼 뒤 다시 만듦 — 검토에서 재현) — 임시 표에 모은 뒤 겹치는 것은 한 번만
+            staging = sql.Identifier(f"restore_{partition}")
+            await conn.execute(sql.SQL("CREATE TEMP TABLE {} (LIKE events INCLUDING DEFAULTS) ON COMMIT DROP").format(staging))
             async with conn.cursor() as cur, cur.copy(sql.SQL("COPY {} ({}) FROM STDIN").format(
-                    sql.Identifier(partition), sql.SQL(", ").join(map(sql.Identifier, COLUMNS)))) as copy:
+                    staging, sql.SQL(", ").join(map(sql.Identifier, COLUMNS)))) as copy:
                 for checked in checks:
                     with gzip.open(archive_dir() / checked["file"], "rt", encoding="utf-8") as fh:
                         for line in fh:
@@ -262,7 +267,10 @@ async def restore(partition: str, hold_days: int, actor: str) -> int:
                                 derived += 1
                             row["raw"] = json.dumps(row["raw"], ensure_ascii=False)
                             await copy.write_row([row[c] for c in COLUMNS])
-                            restored += 1
+            cols = sql.SQL(", ").join(map(sql.Identifier, COLUMNS))
+            cur = await conn.execute(sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {} ON CONFLICT DO NOTHING").format(
+                sql.Identifier(partition), cols, cols, staging))
+            restored = cur.rowcount
             await conn.execute(
                 "INSERT INTO partition_holds (name, hold_until, reason, created_by) VALUES (%s, now() + make_interval(days => %s), %s, %s)"
                 " ON CONFLICT (name) DO UPDATE SET hold_until = EXCLUDED.hold_until, created_by = EXCLUDED.created_by",
@@ -310,27 +318,37 @@ async def delete_expired(now: datetime, config: retention.Config) -> list[str]:
             log.exception("파기 기록을 남기지 못해 %s 을(를) 지우지 않습니다 (다음 주기에 다시)", meta["file"])
             continue
         partition, tier = meta["partition"], meta["tier"]
-        if tier:
-            tombstone_path(meta["file"]).write_text(json.dumps(
-                {"file": meta["file"], "sha256": meta["sha256"], "tier": tier, "keep_days": meta["keep_days"],
-                 "destroyed_at": now.isoformat()}, ensure_ascii=False), encoding="utf-8")
-        data_path(partition, tier).unlink(missing_ok=True)
+        try:
+            data_path(partition, tier).unlink(missing_ok=True)   # 먼저 지워 자리를 비운다 (디스크가 찼을 때 표시 쓰기가 막지 않게)
+            if tier:
+                meta_path(partition, tier).unlink(missing_ok=True)
+        except OSError:
+            log.exception("보관 파일 %s 을(를) 지우지 못했습니다 — 다음 주기에 다시", meta["file"])
+            continue
         meta["deleted"] = True
         deleted.append(meta["file"])
         log.warning("보관기간 만료 보관 파일 삭제: %s", meta["file"])
         if tier:
-            meta_path(partition, tier).unlink(missing_ok=True)
+            try:   # 외부 복제용 표시 — 못 써도 감사로그의 파기 기록으로 복제본을 지운다
+                tombstone_path(meta["file"]).write_text(json.dumps(
+                    {"file": meta["file"], "sha256": meta["sha256"], "tier": tier, "keep_days": meta["keep_days"],
+                     "destroyed_at": now.isoformat()}, ensure_ascii=False), encoding="utf-8")
+            except OSError:
+                log.exception("지운 표시 %s 를 쓰지 못했습니다 (외부 복제는 감사로그로 판단)", tombstone_path(meta["file"]).name)
     # 기본 메타(완료 표시): 그 달의 등급 파일이 남아 있는 동안은 남긴다
     left = {m["partition"] for m in metas if m["tier"] and not m.get("deleted")}
     for meta in metas:
         if meta["tier"] or not (meta.get("marker") or meta.get("deleted")):
             continue
-        if meta["partition"] in left:
-            if meta.get("deleted"):
-                raw = _read_meta(meta_path(meta["partition"])) or {}
-                meta_path(meta["partition"]).write_text(json.dumps(
-                    {**raw, "file": None, "expired_default": {k: raw.get(k) for k in ("rows", "sha256", "bytes", "file")}},
-                    ensure_ascii=False, indent=2), encoding="utf-8")
-        else:
-            meta_path(meta["partition"]).unlink(missing_ok=True)
+        try:
+            if meta["partition"] in left:
+                if meta.get("deleted"):
+                    raw = _read_meta(meta_path(meta["partition"])) or {}
+                    meta_path(meta["partition"]).write_text(json.dumps(
+                        {**raw, "file": None, "expired_default": {k: raw.get(k) for k in ("rows", "sha256", "bytes", "file")}},
+                        ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                meta_path(meta["partition"]).unlink(missing_ok=True)
+        except OSError:
+            log.exception("완료 표시 %s 를 고치지 못했습니다 — 다음 주기에 다시", meta_path(meta["partition"]).name)
     return deleted

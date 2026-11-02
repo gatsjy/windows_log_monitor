@@ -449,10 +449,19 @@ archive_expired() {  # events_YYYY_MM.* 의 달이 끝난 지 보관기간이 �
   _n=$(basename "$1")
   _rest=${_n#events_[0-9][0-9][0-9][0-9]_[0-9][0-9].}
   [ "$_rest" != "$_n" ] || return 1
+  _month=${_n%%."$_rest"}
   case $_rest in
-    jsonl.gz|meta.json) ;;
-    *.jsonl.gz) archive_destroyed "$_n"; return ;;
-    *.meta.json) archive_destroyed "${_n%.meta.json}.jsonl.gz"; return ;;
+    jsonl.gz) ;;
+    meta.json)
+      # 기본 메타는 그 달의 '보관 마침' 표시이기도 하다 — 등급 파일이 남아 있는 동안은 지우지 않는다(복제본에서 복구했을 때 다시 보관하지 않게)
+      for _t in "$ARCHIVE_DIR/$_month".*.jsonl.gz "$REPLICA_DIR/archive/$_month".*.jsonl.gz; do
+        [ -f "$_t" ] && return 1
+      done ;;
+    *.jsonl.gz|*.meta.json)
+      # 원본이 있으면 살아 있는(또는 같은 이름으로 다시 만든) 파일 — 지운 표시·기록이 남아 있어도 지우지 않는다
+      _data="${_n%.meta.json}"; _data="${_data%.jsonl.gz}.jsonl.gz"
+      [ -f "$ARCHIVE_DIR/$_data" ] && return 1
+      archive_destroyed "$_data"; return ;;
     *) return 1 ;;
   esac
   # busybox date 는 '+1 month'·'-N days' 를 모른다 → 다음 달 1일을 직접 만들고 초로 뺀다
@@ -461,7 +470,7 @@ archive_expired() {  # events_YYYY_MM.* 의 달이 끝난 지 보관기간이 �
   [ -n "$_y" ] && [ -n "$_m" ] || return 1
   _m=$((1${_m} - 100 + 1))   # 앞의 0 때문에 8진수로 읽히지 않게
   if [ "$_m" -gt 12 ]; then _y=$((_y + 1)); _m=1; fi
-  _end=$(date -d "$(printf '%04d-%02d-01' "$_y" "$_m")" +%s 2>/dev/null) || return 1
+  _end=$(date -u -d "$(printf '%04d-%02d-01' "$_y" "$_m")" +%s 2>/dev/null) || return 1   # api 처럼 UTC 달 시작 (TZ=Asia/Seoul 이면 9시간 일렀다)
   [ "$_end" -lt $(( $(date +%s) - RETENTION_DAYS * 86400 )) ]
 }
 
@@ -671,6 +680,21 @@ SQL
   check "$([ -e "$REPLICA_DIR/archive/$tier.jsonl.gz" ] || [ -e "$REPLICA_DIR/archive/$tier.meta.json" ] && echo y || echo n)" n \
     "api 가 파기한 등급 파일은 복제본도 지움 (본문·메타)"
   check "$(archive_expired "events_2000_01.x'y.jsonl.gz" && echo y || echo n)" y "이름은 psql 변수로 넘김"
+  # 원본이 있는 등급 파일은 지운 표시·기록이 있어도 살아 있는 것(같은 이름으로 다시 만듦) — 복제하고 지우지 않는다
+  tier3=$old.emr
+  echo "$tier3" > "$ARCHIVE_DIR/$tier3.jsonl.gz"; echo '{}' > "$ARCHIVE_DIR/$tier3.meta.json"; echo '{}' > "$ARCHIVE_DIR/$tier3.destroyed.json"
+  do_replicate >/dev/null
+  check "$([ -e "$REPLICA_DIR/archive/$tier3.jsonl.gz" ] && [ -e "$REPLICA_DIR/archive/$tier3.meta.json" ] && echo y || echo n)" y \
+    "다시 만든 등급 파일은 옛 지운 표시가 있어도 복제"
+  # 등급 파일이 남은 달의 기본 메타(보관 마침 표시)는 기본 기간이 지나도 복제·유지
+  echo '{"file": null}' > "$ARCHIVE_DIR/$old.meta.json"
+  check "$(archive_expired "$old.meta.json" && echo y || echo n)|$(archive_expired "$old.jsonl.gz" && echo y || echo n)" "n|y" \
+    "등급 파일이 남은 달의 기본 메타는 만료 아님 (기본 본문은 만료)"
+  do_replicate >/dev/null
+  check "$([ -e "$REPLICA_DIR/archive/$old.meta.json" ] && echo y || echo n)" y "보관 마침 표시를 복제본에도"
+  rm -f "$ARCHIVE_DIR/$tier3".* "$ARCHIVE_DIR/$old.meta.json"
+  # UTC 달 시작으로 판단 (TZ=Asia/Seoul 이면 9시간 일찍 만료로 봤다)
+  check "$(TZ=Asia/Seoul archive_expired "events_$(date -u +%Y_%m).jsonl.gz" && echo y || echo n)" n "이번 달은 시간대와 상관없이 만료 아님"
   # 감사로그가 없어도(DB 를 백업으로 되돌림) api 가 남긴 지운 표시 파일이 있으면 복제본을 지운다
   tier2=$old.web
   echo "$tier2" > "$REPLICA_DIR/archive/$tier2.jsonl.gz"; echo '{}' > "$REPLICA_DIR/archive/$tier2.meta.json"

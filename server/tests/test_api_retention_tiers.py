@@ -219,6 +219,86 @@ def test_default_meta_stays_as_marker_while_tier_files_remain(client):
     assert left == [f"{r}.access.destroyed.json", f"{r}.web.destroyed.json"]   # 지운 표시만 남는다 (완료 표시도 함께 지움)
 
 
+def test_quarantine_is_kept_for_the_longest_tier(client):
+    """격리한 원본 레코드는 어느 등급인지 가릴 수 없다(등급 문장이 보는 칸이 격리 표에 없음) — 가장 긴 등급 기간까지 둔다.
+    로그 보관기간(365일)으로 지우면 2년 등급 시스템의 접속기록이 격리됐을 때 1년 만에 사라졌다(검토에서 재현)."""
+    from app import partitions
+
+    sql("INSERT INTO ingest_quarantine (received_at, host, error, record) VALUES (now() - interval '400 days', 'EMR-01', 'x', '{}'),"
+        " (now() - interval '800 days', 'EMR-01', 'x', '{}')")
+    client.portal.call(partitions.purge_ingest_problems)
+    assert [r[0] for r in sql("SELECT (now() - received_at) > interval '700 days' FROM ingest_quarantine WHERE host = 'EMR-01'")] == [False]
+    CONFIG.write_text("tiers: [", encoding="utf-8")   # 설정이 틀리면 격리는 지우지 않는다
+    try:
+        sql("INSERT INTO ingest_quarantine (received_at, host, error, record) VALUES (now() - interval '800 days', 'EMR-02', 'x', '{}')")
+        client.portal.call(partitions.purge_ingest_problems)
+        assert sql("SELECT count(*) FROM ingest_quarantine WHERE host = 'EMR-02'") == [(1,)]
+    finally:
+        CONFIG.write_text(TIERS, encoding="utf-8")
+    sql("DELETE FROM ingest_quarantine")
+
+
+def test_restore_tolerates_the_same_row_in_two_files(client):
+    """만들다 멈춘 달을 등급 이름을 바꾼 뒤 다시 만들면 같은 행이 두 파일에 남아 복원이 UniqueViolation(500)이었다 — 한 번만 넣는다."""
+    import gzip
+    import hashlib
+
+    from app import archive
+
+    start, end = _month(-11)
+    name = f"events_{start:%Y_%m}"
+    at = (start + timedelta(days=1)).isoformat()
+    row = {c: None for c in archive.COLUMNS} | {"id": 990001, "received_at": at, "ts": at, "host": "EMR-01", "source": "winevtlog",
+                                               "level": 4, "message": "x", "raw": {}}
+    ARCHIVE.mkdir(parents=True, exist_ok=True)
+    for tier in ("access", "emr-access"):
+        path = archive.data_path(name, tier)
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+        archive.meta_path(name, tier).write_text(json.dumps({
+            "partition": name, "from": start.isoformat(), "to": end.isoformat(), "rows": 1, "file": path.name, "tier": tier,
+            "keep_days": 730, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}), encoding="utf-8")
+    try:
+        r = client.post("/api/settings/retention/restore", json={"partition": name, "hold_days": 1}, headers=CSRF)
+        assert r.status_code == 200 and r.json()["rows"] == 1, r.text
+        assert sql(f"SELECT count(*) FROM {name}") == [(1,)]
+    finally:
+        sql(f"DROP TABLE IF EXISTS {name}")
+        for path in ARCHIVE.glob(f"{name}.*"):
+            path.unlink()
+
+
+def test_tombstone_cleared_and_disk_full_safe(client, monkeypatch):
+    """지운 표시는 같은 이름을 다시 만들면 치운다(남으면 외부 복제가 새 파일을 건너뛰었다). 표시를 못 써도(디스크 가득) 정리는 멈추지 않는다."""
+    from pathlib import Path as P
+
+    from app import archive, retention
+
+    start, end = _month(-12)
+    name = f"events_{start:%Y_%m}"
+    sql(f"CREATE TABLE IF NOT EXISTS {name} PARTITION OF events FOR VALUES FROM ('{start:%Y-%m-%d}') TO ('{end:%Y-%m-%d}')")
+    at = start + timedelta(days=1)
+    sql("INSERT INTO events (received_at, ts, host, source, level, message, raw) VALUES (%s, %s, 'EMR-01', 'winevtlog', 4, 'x', '{}')", (at, at))
+    stale = archive.tombstone_path(archive.data_path(name, "access").name)
+    stale.write_text("{}", encoding="utf-8")
+    meta = client.portal.call(archive.archive_partition, name, start, end, retention.load())
+    assert meta["tiers"][0]["tier"] == "access" and not stale.exists()
+    sql(f"DROP TABLE {name}")
+    real = P.write_text
+
+    def full(self, *args, **kwargs):
+        if self.name.endswith(".destroyed.json"):
+            raise OSError(28, "No space left on device")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(P, "write_text", full)
+    deleted = client.portal.call(archive.delete_expired, datetime.now(UTC) + timedelta(days=3000), retention.load())
+    assert archive.data_path(name, "access").name in deleted and not archive.data_path(name, "access").exists()
+    monkeypatch.undo()
+    for path in ARCHIVE.glob(f"{name}.*"):
+        path.unlink()
+
+
 def test_bad_config_stops_archiving_and_deleting(client):
     """틀린 설정으로 접속기록을 짧은 등급에 넣거나 일찍 지우지 않게 — 고칠 때까지 DB 에 둔다. 감사로그는 하루 한 번."""
     from app import partitions

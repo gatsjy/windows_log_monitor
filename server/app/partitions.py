@@ -178,15 +178,21 @@ async def purge_agent_streams(now: datetime | None = None) -> None:
 
 
 async def purge_ingest_problems(now: datetime | None = None) -> None:
-    """격리한 수집 레코드는 원본 로그라 로그 보관기간까지, 수집 거절 장부도 같은 기간 조용하면 지운다 (B-40)."""
+    """격리한 수집 레코드는 원본 로그라 로그 보관기간까지, 수집 거절 장부도 같은 기간 조용하면 지운다 (B-40).
+    격리 레코드는 보관 등급(B-70)의 가장 긴 기간까지 — 등급 문장이 보는 칸(수준·메시지·f.…)이 격리 표에 없어 어느 등급인지 가릴 수 없다.
+    로그 보관기간으로 지우면 2년 등급의 진료정보 시스템 접속기록이 격리됐을 때 1년 만에 사라졌다(검토에서 재현). 설정이 틀리면 격리는 지우지 않는다."""
     from . import repository
 
-    cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.retention_days)
-    quarantined, rejections = await repository.purge_ingest_problems(cutoff)
+    now = now or datetime.now(UTC)
+    config = retention.load()
+    keep = None if config.error else config.max_keep_days()
+    cutoff = now - timedelta(days=settings.retention_days)
+    quarantined, rejections = await repository.purge_ingest_problems(
+        now - timedelta(days=keep) if keep else None, cutoff)
     if quarantined or rejections:
         await db.audit("system", "retention.purge_ingest", "ingest_quarantine",
                        {"quarantined_deleted": quarantined, "rejections_deleted": rejections,
-                        "retention_days": settings.retention_days, "cutoff": cutoff.isoformat()})
+                        "retention_days": settings.retention_days, "quarantine_keep_days": keep, "cutoff": cutoff.isoformat()})
 
 
 async def purge_alerts(now: datetime | None = None) -> None:
