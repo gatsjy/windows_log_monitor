@@ -705,6 +705,16 @@ async def top(f: EventFilter, field: str, limit: int) -> list[dict]:
     return await db.fetch_all(query, [*expr_params, *params, limit])
 
 
+async def suggest_values(f: EventFilter, field: str, prefix: str, limit: int) -> list[dict]:
+    """검색 문장 자동완성 (B-65): 이 필드에서 prefix 로 시작하는(대소문자 무시) 값을 많은 순으로. LIKE 특수 글자는 글자로."""
+    expr, expr_params = _field_expr(field)
+    where, params = where_clause(f)
+    pattern = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    query = sql.SQL("SELECT {expr} AS value, count(*) AS n FROM events WHERE {where} AND {expr} IS NOT NULL AND {expr} <> ''"
+                    " AND {expr} ILIKE %s GROUP BY 1 ORDER BY n DESC, 1 LIMIT %s").format(expr=expr, where=where)
+    return await db.fetch_all(query, [*expr_params, *params, *expr_params, *expr_params, *expr_params, pattern, limit])
+
+
 async def group_stats(f: EventFilter, by: list[str], distinct: list[str], limit: int) -> list[dict]:
     """검색 '통계' 탭 (B-62): by 필드 조합(k0, k1, …)마다 건수·처음·마지막 발생 시각·distinct 필드의 서로 다른 값 수(d0, …).
     건수가 많은 순으로 limit 행. 필드 식은 상위 값과 같다(_field_expr — f.<경로> 포함)."""

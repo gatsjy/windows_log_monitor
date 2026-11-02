@@ -182,7 +182,7 @@
 | 통계 표 | Seq SQL(group by·distinct·행 상한), Datadog Log Analytics | △ 위젯(top·timeseries·stat)으로만. 이벤트 CSV 없음 | B-62 |
 | 로그온 세션 | Datadog Transactions(공통 키로 묶어 지속 시간) | ○ Windows 4624 ↔ 4634/4647 (Logon ID·PC·최대 시간·재사용 경계). SSH 는 아직 | B-63 |
 | 저장한 검색 | Seq signals(공유·보호, 보존·알림·대시보드 재사용), Kibana saved queries | ○ 저장·공유·보호·최근 검색, 알림 규칙 `match.saved` (위젯·보고서 재사용은 남음) | B-64 |
-| 값 자동완성·필드 패널·열 | Kibana 값 제안·필드 상위 값·히스토그램 끌기, Grafana Loki label browser | △ 키·미리 받은 목록만 자동완성, 표 열 6개 고정 | B-65 |
+| 값 자동완성·필드 패널·열 | Kibana 값 제안·필드 상위 값·히스토그램 끌기, Grafana Loki label browser | △ 값 자동완성(서버의 실제 PC·사용자·IP 값), 필드 패널·열 추가·구간 끌기는 아직 | B-65 |
 | 조사 플레이북 | Security Onion Guided Analysis(질문 + 알림 값으로 채운 검색), Elastic investigation guides | ○ 규칙 번호별 질문·이유·검색(알림 값 자리표시자, 문장 주입 방지)·결과 건수·상위 값·최근 로그·답 메모·오탐 기준, 기본 7개 | B-66 |
 | 개체 페이지·관련 알림 | Sentinel entity pages, OpenSearch 자동 상관, Elastic Insights > Correlations | △ `user:`·`ip:`·`host:` 검색, 같은 규칙·대상의 미해결 알림만 | B-67 |
 | 이벤트 한 줄 요약 | Hayabusa `default_details`·data_mapping, ADAudit Plus 잠금 원인·변경 전후 값 | △ Windows 렌더 메시지(서버 언어마다 다름), 필드 설명 일부 | B-68 |

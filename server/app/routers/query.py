@@ -321,6 +321,32 @@ async def _audit_stats(request: Request, field: str, rows: int) -> None:
                            key=conditions)
 
 
+SUGGEST_FIELDS = ("host", "user", "ip", "channel", "provider", "source")
+SUGGEST_TIMEOUT_SEC = 3   # 입력마다 부르므로 짧게 — 넘으면 자동완성만 비고(화면은 조용히 넘어감) 검색은 그대로
+
+
+@router.get("/api/suggest")
+async def suggest(request: Request, key: str, prefix: str = Query("", max_length=100), limit: int = Query(20, ge=1, le=50),
+                  user: User = Depends(require_user)):
+    """검색 문장 값 자동완성 (B-65): user·host·ip 는 정확 일치·대소문자 구분이라 실제 표기를 모르면 0건이다 — 기간·조회 범위 안의
+    실제 값을 많은 순으로(문장 조건은 보지 않음, since 만). 사용자·IP 값은 접속기록(events.stats, 10분 묶음)."""
+    if key not in SUGGEST_FIELDS:
+        raise HTTPException(400, f"key 는 {', '.join(SUGGEST_FIELDS)} 중 하나")
+    db.limit_statement_time(min(settings.search_timeout_sec, SUGGEST_TIMEOUT_SEC))
+    since = request.query_params.get("since") or "7d"
+    try:
+        f = EventFilter.from_params({"since": since}, default_since="7d")
+    except FilterError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if user.scopes is not None:
+        f = replace(f, scopes=user.scopes)
+    rows = await repository.suggest_values(f, key, prefix.strip(), limit)
+    if key in PERSONAL_FIELDS:
+        await accesslog.record(request, user.username, "events.stats", f"suggest:{key}", {"since": since, "rows": len(rows)},
+                               key={"since": since, "key": key})
+    return {"key": key, "items": rows}
+
+
 GROUP_MAX_BY, GROUP_MAX_DISTINCT, GROUP_MAX_ROWS = 3, 2, 1000
 STATS_FIELD_LABELS = {"host": "PC", "user": "사용자", "ip": "IP", "event_id": "이벤트 ID", "category": "분류", "source": "소스",
                       "channel": "채널", "provider": "공급자", "level": "수준"}

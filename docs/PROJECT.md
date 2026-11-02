@@ -238,6 +238,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/searches` | 저장한 검색 (B-64): 내 것 + 공유된 것(관리자는 전부). 행마다 `used_by`(이 검색을 `match.saved` 로 쓰는 알림 규칙)·`can_edit` |
 | `POST /api/searches` · `PUT /api/searches/{id}` · `DELETE /api/searches/{id}` | `{name, query, description, shared, protected}` 저장·고치기·지우기. 문장은 검증해 정본 표기로 저장(틀리면 400), 이름 겹침 409. 고치고 지우기는 만든 사람·관리자, 보호(`protected`)는 관리자만. 알림 규칙이 쓰는 검색은 `alerts.manage` 만 고치고(문장을 바꾸면 관리 작업 알림), 이름 바꾸기·지우기는 409. 감사로그 `search.save`·`update`·`delete` |
 | `GET /api/searches/recent` | 최근 30일 내가 검색한 문장 (접속기록 `events.search` 에서, 같은 문장은 한 번·최근 순 10개) |
+| `GET /api/suggest?key=&prefix=&since=&limit=` | 값 자동완성 (B-65): `key` = host·user·ip·channel·provider·source, 기간·조회 범위 안에서 `prefix` 로 시작하는(대소문자 무시, LIKE 특수 글자는 글자로) 값을 많은 순. 문장 조건은 보지 않음. 시간 상한 3초. 사용자·IP 는 접속기록(`events.stats`, `suggest:<key>`) |
 | `GET /api/search/parse?query=` | 검색 문장 해석만 (`terms`·정규형 `canonical`·모순 `never`). 데이터 조회 없음 — 실시간 화면이 오류 위치를 받는 데 쓴다 |
 | `GET/PUT /api/dashboards/{name}` | 대시보드 JSON 읽기/저장 (저장은 audit_log 기록) |
 | `GET /api/alerts?since=&rule=&severity=&host=&status=` | 알림 이력 (전송·처리 상태 포함) + `counts`(기간 안 처리 상태별 수). `status` = `open`·`acked`·`resolved`·`unresolved` |
@@ -320,7 +321,7 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
     최근 30일 내가 검색한 문장도 다시 씁니다. 알림 규칙이 쓰는 검색은 '알림 규칙 n개가 씀'으로 보이고 지울 수 없습니다(§6.4).
   - 문장이 조건의 정본입니다. 드롭다운·수준 칩은 문장을 보여 주고 고치는 창입니다(그 키의 조건이 값 하나면 그 값, 아니면 '문장 조건').
   - 입력 중에 바로 해석해 `해석: …` 또는 틀린 곳(강조·빠른 고침)을 보여 주고, Enter·포커스 이동 때 확정합니다. 틀린 문장은 검색하지 않습니다.
-  - [?] 도움말(키 표·예문), 자동완성(키·수준·분류·PC·채널·소스, 이미 받아 둔 목록만), `/` 로 문장 칸으로 이동.
+  - [?] 도움말(키 표·예문), 자동완성(키·수준·분류·PC·채널·소스는 받아 둔 목록, 그리고 PC·사용자·IP·채널·공급자·소스는 입력을 멈추면 서버의 실제 값 — '최근 값', B-65), `/` 로 문장 칸으로 이동.
   - 옛 링크(`host=…&q=a|b&f.X=1`)는 들어올 때 문장으로 접습니다. 뜻이 똑같이 옮겨지지 않는 값(`level=7` 등)은 칩으로 남고 서버가 그대로 적용합니다.
   - 상세 패널: 검색 화면에서 열면 값마다 [이 값만]·[＋ 좁히기]·[－ 제외]로 지금 문장을 고칩니다.
   - **목록 | 통계** 탭(B-62): 통계는 지금 조건의 로그를 칸 조합(사용자·PC·IP·이벤트 ID·분류·소스·채널·공급자·수준·`f.<경로>`, 최대 3)으로 묶어 건수·처음/마지막·서로 다른 값 수를 표로 — '계정별 로그온한 PC 수', 'IP 별 시도한 계정 수' 같은 점검 질문. 행을 누르면 그 조합으로 좁힌 목록(문장에 조건 추가). [CSV 내려받기]는 목록(최대 1만 건)이나 통계 표를 사유와 함께 받습니다.

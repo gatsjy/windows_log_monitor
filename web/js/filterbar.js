@@ -91,6 +91,9 @@ export async function filterBar(el, initial, { showTime = true, onChange, loaded
     // 서버와 같은 셈: 경로가 남는 f. 파라미터만 (filters.from_params)
     fieldBudget: () => 10 - Object.keys(state).filter((k) => k.startsWith('f.') && k.slice(2).split('.').some(Boolean)).length,
     suggestions: () => ({ host: lists.host, channel: lists.channel, source: sources }),
+    // 서버의 실제 값 (B-65) — 지금 기간 안에서. 받아 둔 목록(수집 PC·최근 채널)에 없는 사용자·IP 표기도
+    fetchValues: async (key, prefix) => (await api.get('/api/suggest', { key, prefix, since: state.since || '7d', limit: 15 }))
+      .items.map((i) => i.value),
     onCommit: (text) => commit({ query: text }),
     onAnalyze: () => { if (ready) renderControls(); },
   });

@@ -178,8 +178,11 @@ function helpCard() {
  * @param {HTMLElement} el
  * @param {{value?: string, onCommit: (text: string) => void, onAnalyze?: (terms|null) => void, since?: () => string,
  *          suggestions?: () => Record<string, string[]>, fieldBudget?: () => number, placeholder?: string, label?: string,
- *          slashShortcut?: boolean, staleNote?: boolean}} opt   staleNote: 틀린 동안 '이전 결과' 안내 (검색 화면만)
+ *          slashShortcut?: boolean, staleNote?: boolean,
+ *          fetchValues?: (key: string, prefix: string) => Promise<string[]>}} opt   staleNote: 틀린 동안 '이전 결과' 안내 (검색 화면만)
+ *   fetchValues: 서버의 실제 값 자동완성 (B-65, /api/suggest) — 입력을 멈춘 뒤 한 번, 같은 (키, 앞 글자)는 다시 묻지 않음
  */
+const REMOTE_KEYS = new Set(['host', 'user', 'ip', 'channel', 'provider', 'source']);
 // 입력 칸(<input>)은 줄바꿈을 말없이 지운다 → 미리 띄어쓰기로 (문장에서 줄바꿈은 띄어쓰기와 같은 뜻)
 const oneLine = (text) => String(text ?? '').replace(/\r\n?|\n/g, ' ');
 
@@ -191,6 +194,8 @@ export function queryBox(el, opt) {
   let acIndex = -1;
   let acRange = null;
   let timer = null;
+  let remoteTimer = null;
+  const remoteCache = new Map();   // '키\n앞 글자' → 값들
 
   el.innerHTML = html`<div class="qb">
     <div class="qb-row">
@@ -295,15 +300,46 @@ export function queryBox(el, opt) {
       .map(([v, extra]) => ({ insert: formatValue(v), label: v, hint: extra }));
   }
 
-  function openAc() {
-    const tok = tokenAt(input.value, caretCp());
-    acItems = candidates(tok);
-    acRange = [tok.start, caretCp()];
+  /** 서버의 실제 값 (B-65): 받아 둔 목록에 없는 PC·사용자·IP 표기를 입력 중에 보인다 */
+  function remote(tok) {
+    if (!opt.fetchValues || tok.kind === 'key' || !REMOTE_KEYS.has(tok.key)) return;
+    const cacheKey = `${tok.key}\n${tok.prefix.toLowerCase()}`;
+    const merge = (values) => {
+      const now = tokenAt(input.value, caretCp());
+      if (now.key !== tok.key || now.prefix !== tok.prefix || document.activeElement !== input) return;
+      const chosen = new Set(tok.chosen ?? []);
+      const have = new Set(acItems.map((it) => it.label));
+      const extra = values.filter((v) => !have.has(v) && !chosen.has(v)).map((v) => ({ insert: formatValue(v), label: v, hint: '최근 값' }));
+      if (!extra.length) return;
+      acItems = [...acItems, ...extra].slice(0, 30);
+      acRange = [now.start, caretCp()];
+      renderAc();
+    };
+    if (remoteCache.has(cacheKey)) { merge(remoteCache.get(cacheKey)); return; }
+    clearTimeout(remoteTimer);
+    remoteTimer = setTimeout(async () => {
+      try {
+        const values = await opt.fetchValues(tok.key, tok.prefix);
+        remoteCache.set(cacheKey, values);
+        merge(values);
+      } catch { /* 자동완성은 없어도 된다 (시간 상한 등) */ }
+    }, 250);
+  }
+
+  function renderAc() {
     if (!acItems.length || document.activeElement !== input) { closeAc(); return; }
     acIndex = -1;
     ac.hidden = false;
     input.setAttribute('aria-expanded', 'true');
     ac.innerHTML = html`${acItems.map((it, i) => html`<li role="option" id="qb-ac-${i}" data-i="${i}"><code>${it.label}</code> <span class="muted">${it.hint}</span></li>`)}`;
+  }
+
+  function openAc() {
+    const tok = tokenAt(input.value, caretCp());
+    acItems = candidates(tok);
+    acRange = [tok.start, caretCp()];
+    remote(tok);
+    renderAc();
   }
 
   function closeAc() {
