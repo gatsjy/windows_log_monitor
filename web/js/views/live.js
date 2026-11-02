@@ -127,7 +127,8 @@ export async function mount(root, params) {
     emptyEl.hidden = rowsEl.children.length > 0;
   }
 
-  const onChange = (next) => { state = next; replaceParams('live', state); refilter(); connect(); };
+  // 떠나는 중에 검색 칸이 포커스를 잃으며 확정해도 떠난 화면이 주소를 바꾸거나 다시 연결하지 않게 (events.js 와 같은 까닭)
+  const onChange = (next) => { if (disposed) return; state = next; replaceParams('live', state); refilter(); connect(); };
   filterBar(root.querySelector('[data-filter]'), state, { showTime: false, onChange }).then((b) => {
     if (disposed) { b.destroy(); return; }
     bar = b;

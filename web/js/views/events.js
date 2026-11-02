@@ -109,6 +109,8 @@ export async function mount(root, params) {
   }
 
   async function load() {
+    // 화면을 떠나는 중에 검색 칸이 포커스를 잃으며 확정하면 떠난 화면이 다시 불러 주소까지 바꿨다 (콘솔 오류로 발견)
+    if (disposed) return;
     const my = ++token;
     loadedAt = new Date();
     rowsEl.innerHTML = '';
@@ -125,7 +127,7 @@ export async function mount(root, params) {
         api.get('/api/stats/count', state),
         api.get('/api/events', { ...state, limit: 100 }),
       ]);
-      if (my !== token) return;
+      if (my !== token || disposed) return;
       root.querySelector('[data-count]').textContent = `${fmtNum(count.current)}건`;
 
       const colors = seriesColors('level', series.series.map((s) => s.key));
@@ -144,7 +146,7 @@ export async function mount(root, params) {
         : html`<tr><td colspan="6" class="empty" style="padding:48px 16px;">조건에 일치하는 이벤트가 없습니다. 상단 필터를 조정해보세요.</td></tr>`;
       renderFoot();
     } catch (err) {
-      if (my !== token) return;
+      if (my !== token || disposed) return;
       clearResults();
       footEl.innerHTML = errorBox(err);
       bar?.showServerError(err);   // 문장 오류면 입력 칸에서 틀린 곳을 칠한다
@@ -238,7 +240,7 @@ export async function mount(root, params) {
   root.querySelector('[data-sess-run]').addEventListener('click', runSessions);
 
   filterBar(root.querySelector('[data-filter]'), state, {
-    onChange: (next) => { state = next; replaceParams('events', state); load(); },
+    onChange: (next) => { if (disposed) return; state = next; replaceParams('events', state); load(); },
     loadedAt: () => loadedAt,
   }).then((b) => {
     if (disposed) { b.destroy(); return; }
