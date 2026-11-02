@@ -122,6 +122,8 @@ class Settings:
     dormant_days: int = _int("DORMANT_DAYS", 90)   # 이만큼 로그인하지 않은 계정은 매일 정리 때 끈다 (B-72, 0 = 사용 안 함)
     # 권한 검토 주기 (B-72 2단계, ISMS 2.5.6) — 마지막 승인 뒤 이만큼 지나면 운영 준비도·점검 보고서가 알린다 (내부 관리계획, 0 = 알리지 않음)
     access_review_days: int = _int("ACCESS_REVIEW_DAYS", 92)
+    # 접속기록 점검 주기 (B-72 3단계, ISMS 2.9.5) — 마지막 승인한 점검의 기간 끝 뒤 이만큼 지나면 알린다 (내부 관리계획, 0 = 알리지 않음)
+    access_log_inspection_days: int = _int("ACCESS_LOG_INSPECTION_DAYS", 31)
     # 2단계 인증(TOTP, B-74)이 필수인 사람: privileged = 관리자와 관리 권한(알림 규칙·환경설정·감사로그·에이전트 배포) 그룹 구성원,
     # all = 모두, off = 아무도(각자 켤 수는 있음). WLM_SECRET_KEY 가 없으면 비밀값을 저장할 수 없어 강제하지 않는다(기동 로그 경고)
     mfa_required: str = _env("MFA_REQUIRED", "privileged").lower()

@@ -5,6 +5,7 @@ import * as api from '../api.js';
 import { can } from '../auth.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
 import { confirmModal, errorBox, fmtRelative, fmtTime, html, toast } from '../util.js';
+import { REPORT_TABS, mountInspections } from './inspections.js';
 
 const WEEKDAYS = ['', '월', '화', '수', '목', '금', '토', '일'];
 const DELIVERY = { sent: ['✓', '전송됨', 'sent'], failed: ['!', '실패', 'gave_up'], pending: ['…', '보내는 중', 'skipped'] };
@@ -30,6 +31,7 @@ function attentionChip(n) {
 }
 
 export async function mount(root, params, sub) {
+  if (sub === 'inspections') return mountInspections(root);   // 접속기록 점검 결과서 (B-72 3단계)
   root.innerHTML = html`
     <div class="page-head">
       <div><h1 class="page-title">점검 보고서</h1>
@@ -40,6 +42,7 @@ export async function mount(root, params, sub) {
         ${can('settings.manage') ? html`<a class="btn ghost" href="#/settings/reports">일정·받는 곳</a>` : ''}
       </div>
     </div>
+    ${REPORT_TABS('')}
     <div data-status style="margin-bottom:14px"></div>
     <section class="card"><div class="card-body flush" data-list><div class="skeleton"></div></div></section>`;
 

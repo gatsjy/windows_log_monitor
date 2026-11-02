@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 
-from .. import archive, assets, backups, clock, db, partitions, quality, repository, tlsutil
+from .. import archive, assets, backups, clock, db, inspection, partitions, quality, repository, tlsutil
 from ..alerts import coverage, health
 from ..alerts.builtin import ADMIN_RULE
 from ..alerts.engine import engine
@@ -382,6 +382,7 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
     if due:
         out.append({"level": "warn", "text": f"검토일이 지난 알림 규칙 예외 {len(due)}건 — 아직 필요한지 확인하고 끝내거나 다시 정하세요"})
     out.extend(review.attention(p.get("access_review")))   # B-72 2단계 이전 보고서에는 없다
+    out.extend(inspection.attention(p.get("access_log_inspection")))   # B-72 3단계 이전 보고서에는 없다
     out.extend(quality.attention(p.get("ingest_quality")))   # B-56 이전 보고서에는 없다
     weak = (p.get("exports") or {}).get("weak_total")   # B-38 이전 보고서에는 없다
     if weak:
@@ -442,6 +443,8 @@ async def build(kind: str, start: datetime, end: datetime, now: datetime | None 
         "rule_exceptions": await _rule_exceptions(now),
         # 권한 검토 (B-72 2단계, ISMS 2.5.6) — 주기를 넘겼나, 승인한 검토의 회수 결정이 아직 켜진 계정
         "access_review": await _access_review(now),
+        # 접속기록 점검 (B-72 3단계, ISMS 2.9.5) — 계획 대비 빠진 회차
+        "access_log_inspection": await inspection.overview(now, settings.access_log_inspection_days),
         "retention": await _retention(now),
         "backup": {"problems": backup["problems"],
                    "last_backup": _jsonable(backup["last_backup"]), "last_verify": _jsonable(backup["last_verify"]),

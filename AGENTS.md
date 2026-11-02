@@ -62,6 +62,7 @@ server/app/
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
   clock.py           PC·서버 시계 차이 판단(B-57) — 하트비트 시각의 창 두 개 최솟값(repository.CLOCK_OFFSET_SQL)으로 1분·5분·서버 시계 의심
   compliance.py      심사 대응(B-73): 규칙 태그 ISMS 항목별 현황·기간 증적 zip(MANIFEST SHA-256, csvexport 로 수식 주입 방지)
+  inspection.py      접속기록 점검 결과서(B-72 3단계): 항목 8개·근거 스냅샷·결재 상태 — 권한 검토(auth/review.py)와 같은 모양
   readiness.py       운영 준비도 점검표(B-75) — 각 화면·보고서의 원천을 모아 판정(collect → judge). 새 운영 신호를 만들면 여기에도 한 줄
   assets.py          수집 대상 대조(B-55): 목록 읽기(이름·CSV·AD 내보내기)·짧은 이름으로 agents 와 맞춤 — 화면·보고서·준비도 공용
   backups.py         DB 백업·복구 시험 상태 (backup 서비스가 남긴 audit_log 로) — 로그 보관 화면·점검 보고서 공용
@@ -262,7 +263,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 의존성: `session_user`(코드 대기 세션도 통과 — 내 정보·로그아웃·코드 확인만) → `current_user`(코드 대기 세션 막음) → `require_user`(비밀번호 변경·필수 등록까지). 새 인증 API 는 맞는 단계를 고른다.
   - 실패 수(`failed_count`)는 정식 로그인이 끝날 때만 지운다(`service._complete_login`) — 비밀번호 단계에서 지우면 코드를 끝없이 맞혀 볼 수 있다.
 - `audit_log` 는 DB 트리거로 UPDATE·DELETE·TRUNCATE 를 막습니다. 테스트나 마이그레이션에서 지우려 하면 실패합니다.
-- 권한 검토(`access_reviews`·`access_review_entries`, B-72 2단계)도 트리거로 고치거나 지울 수 없다 — 상태는 줄을 차례로 읽어 정한다(`auth/review.state`). 흐름을 바꾸면 `state` 와 `add` 의 검사를 같이, 시험은 `test_access_review.py` 표로.
+- 권한 검토(`access_reviews`·`access_review_entries`, B-72 2단계)·접속기록 점검(`inspections`·`inspection_entries`, 3단계)도 트리거로 고치거나 지울 수 없다 — 상태는 줄을 차례로 읽어 정한다(`auth/review.state`·`inspection.state`). 흐름을 바꾸면 `state` 와 `add` 의 검사를 같이, 시험은 `test_access_review.py`·`test_inspection.py` 표로.
 - **감사로그 해시 체인 (ADR-050):** INSERT 트리거가 `audit_chain` 한 줄을 잠그고 잠근 뒤 `id`·`at` 을 정한다 — 감사 INSERT 는 줄을 서므로 긴 트랜잭션 안에서 `db.audit` 를 부르고 오래 붙잡지 않는다(다른 감사 기록이 모두 기다린다).
   - **`at` 을 넣어도 무시된다**(트리거가 `clock_timestamp()`). 지난 기록을 흉내 내는 시험은 `SET session_replication_role = replica`(그 연결만 트리거를 건너뜀)로 넣고, 체인을 보는 시험이면 conftest 의 `rechain` 픽스처로 다시 잇는다.
   - 행의 글 모양은 SQL `audit_log_canonical` 과 `integrity.canonical` 이 한 글자도 같아야 한다(`test_api_audit_chain.py` 가 비교). 칸을 더하면 둘 다·새 마이그레이션으로. SQL 쪽은 칸마다 CASE 로 — 인자를 여러 번 쓰는 도우미 함수는 인라인되지 않아 7배 느렸다.

@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import clock, db, partitions, quality, repository, tlsutil
+from . import clock, db, inspection, partitions, quality, repository, tlsutil
 from .auth import review
 from .config import settings
 
@@ -77,6 +77,7 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "observing": [r.name for r in enabled if r.mode == "observe"],   # 관찰 모드 (B-52) — 기록만, 보내지 않음
         "dormant": _dormant(users, now),   # 장기 미사용 (B-72)
         "access_review": await review.overview(now, settings.access_review_days),   # 권한 검토 (B-72 2단계)
+        "access_log_inspection": await inspection.overview(now, settings.access_log_inspection_days),   # 접속기록 점검 (B-72 3단계)
         "clock": clock.assess(agents),   # 시계 차이 (B-57)
         "unknown_targets": sorted({n for n in delivery if n not in notifiers and n not in errors}),
         "broken_targets": {n: e for n, e in errors.items() if n in used},
@@ -154,6 +155,18 @@ def judge(f: dict[str, Any]) -> list[Item]:
         if ar["in_progress"] and status != "skip":
             detail += f" · 진행 중: {_names(ar['in_progress'], 2)}"
         add(Item("access_review", "계정", "권한 검토", status, detail, "#/users/reviews", "B-72, ISMS 2.5.6"))
+    li = f.get("access_log_inspection")
+    if li is not None:   # 접속기록 점검 (B-72 3단계)
+        problems = inspection.attention(li)
+        if problems:
+            status, detail = "warn", problems[0]["text"]
+        elif not li["days"]:
+            status, detail = "skip", "접속기록 점검 주기를 정하지 않았습니다 (WLM_ACCESS_LOG_INSPECTION_DAYS=0)"
+        else:
+            status, detail = "ok", f"마지막 승인 '{li['last_title']}' — 주기 {li['days']}일"
+        if li["in_progress"] and status != "skip":
+            detail += f" · 진행 중: {_names(li['in_progress'], 2)}"
+        add(Item("access_log_inspection", "보관", "접속기록 점검", status, detail, "#/reports/inspections", "B-72, ISMS 2.9.5"))
 
     # ------------------------------------------------------------ 알림
     h = f["health"]

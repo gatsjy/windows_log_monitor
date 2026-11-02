@@ -1979,7 +1979,34 @@ async def event_digest_records(since: datetime) -> list[dict[str, Any]]:
     return [r["detail"] for r in rows]
 
 
-EXPORT_ACTIONS = ("audit.export", "alerts.export", "events.export", "compliance.bundle", "access_review.export")
+EXPORT_ACTIONS = ("audit.export", "alerts.export", "events.export", "compliance.bundle", "access_review.export",
+                  "inspection.export")
+
+
+# 개인정보가 보이는 조회의 접속기록 (accesslog.record) — 대량 조회 점검(B-72 3단계)이 사람마다 센다
+PERSONAL_VIEW_ACTIONS = ("events.search", "events.view", "events.live", "events.context", "events.lockout", "events.stats",
+                         "events.sessions", "events.quarantine.view", "alerts.playbook")
+
+
+async def inspection_access_stats(start: datetime, end: datetime, tz: str, work_start: int, work_end: int) -> dict[str, Any]:
+    """접속기록 점검 근거 (B-72 3단계): 기간의 로그인(사람마다 횟수·업무시간 외 횟수 — tz 의 work_start~work_end 시, 주말은 업무시간 외),
+    인증 실패·잠김, 개인정보 조회 접속기록 사람마다 횟수."""
+    logins = await db.fetch_all(
+        "SELECT actor, count(*) AS n, count(*) FILTER (WHERE EXTRACT(ISODOW FROM at AT TIME ZONE %s) > 5"
+        "   OR EXTRACT(HOUR FROM at AT TIME ZONE %s) < %s OR EXTRACT(HOUR FROM at AT TIME ZONE %s) >= %s) AS off_hours,"
+        " min(at) AS first_at, max(at) AS last_at FROM audit_log WHERE action = 'auth.login' AND at >= %s AND at < %s"
+        " GROUP BY actor ORDER BY n DESC", (tz, tz, work_start, tz, work_end, start, end))
+    failures = await db.fetch_one(
+        "SELECT count(*) FILTER (WHERE action IN ('auth.login_failed', 'auth.mfa.failed')) AS failed,"
+        " count(*) FILTER (WHERE action = 'auth.account_locked') AS locked,"
+        " count(DISTINCT actor_ip) FILTER (WHERE action IN ('auth.login_failed', 'auth.mfa.failed')) AS failed_ips"
+        " FROM audit_log WHERE action IN ('auth.login_failed', 'auth.mfa.failed', 'auth.account_locked') AND at >= %s AND at < %s",
+        (start, end))
+    views = await db.fetch_all(
+        "SELECT actor, count(*) AS n FROM audit_log WHERE action = ANY(%s) AND at >= %s AND at < %s"
+        " GROUP BY actor ORDER BY n DESC LIMIT 20", (list(PERSONAL_VIEW_ACTIONS), start, end))
+    return {"logins": logins, "failed": failures["failed"], "locked": failures["locked"], "failed_ips": failures["failed_ips"],
+            "views": views}
 
 
 async def audit_exports(start: datetime, end: datetime) -> list[dict[str, Any]]:
