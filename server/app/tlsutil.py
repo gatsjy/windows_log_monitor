@@ -223,6 +223,8 @@ class TlsStatus:
     ca_sha256: str | None = None
     ca_ok: bool = False          # 에이전트(OpenSSL)가 이 CA·이름으로 서버를 믿는가 (agent_handshake)
     problems: tuple[tuple[str, str], ...] = ()   # (error|warn, 문장)
+    # 파일을 바꾸고 다시 시작하지 않아 지금 내보내는 옛 인증서의 만료 (없으면 파일 그대로 내보내는 중) — 보고서가 이것으로 D-n
+    served_not_after: datetime | None = None
 
     @property
     def usable_names(self) -> tuple[str, ...]:
@@ -347,6 +349,7 @@ def _read_status(s: Any, now: datetime) -> TlsStatus:
                                   "python -m app.cli tls-renew 후 api 를 다시 시작하세요.")))
     elif days_left <= WARN_DAYS:
         problems.append(("warn", f"서버 인증서가 {days_left}일 뒤({not_after:%Y-%m-%d}) 만료됩니다 — tls-renew 로 갱신하세요."))
+    served_end = None
     if _served and _served["sha256"] != leaf.fingerprint(hashes.SHA256()).hex():
         served_end = _served["not_after"]
         level = "error" if served_end <= now else "warn"
@@ -412,7 +415,7 @@ def _read_status(s: Any, now: datetime) -> TlsStatus:
                     problems.append(("error", trust_problem(code, message)))
     return TlsStatus(enabled=True, dns_names=tuple(dns), ip_names=tuple(ips), not_after=not_after, days_left=days_left,
                      cert_sha256=leaf.fingerprint(hashes.SHA256()).hex(), ca_sha256=ca_sha256, ca_ok=ca_ok,
-                     problems=tuple(problems))
+                     problems=tuple(problems), served_not_after=served_end)
 
 
 def pick_server_name(st: TlsStatus, host: str | None) -> str | None:

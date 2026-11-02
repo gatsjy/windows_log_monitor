@@ -967,7 +967,8 @@ async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict 
         async with conn.cursor() as c:
             await c.executemany(
                 "INSERT INTO alert_deliveries (alert_id, notifier, status, last_error) VALUES (%s, %s, %s, %s)",
-                [(alert_id, name, status, reason) for name in notifiers],
+                # 겹친 받는 곳은 한 줄로 — 기본 키에 걸리면 알림 행까지 되돌려져 매 주기 같은 실패를 했다(검토)
+                [(alert_id, name, status, reason) for name in dict.fromkeys(notifiers)],
             )
     return alert_id
 

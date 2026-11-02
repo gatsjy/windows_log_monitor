@@ -251,6 +251,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - Oracle 을 부르는 새 코드는 `notifiers._in_oracle_pool`(전용 스레드 넷)로 — `asyncio.to_thread` 는 기본 풀을 써서 응답 없는 Oracle 이 로그인·메일까지 막는다.
   - 규칙 쿼리는 `db.background_time_limit`(조회 자리 SEARCH_SLOTS 를 쓰지 않음). 규칙 상태(`engine.runs`)·전송 상태(`dispatcher.targets`)는 메모리(워커 1개). 상태 판단은 `alerts/health.py` 한 곳 — 화면·`/healthz/alerts`·보고서가 같이 쓴다.
 - 상태를 바꾸는 API 를 테스트할 때는 `X-WLM-CSRF: 1` 헤더가 있어야 합니다. 로그인 세션은 쿠키(`wlm_session`)로 유지합니다.
+- **받는 곳 경로 (B-26, ADR-056):** 알림을 받는 곳을 셀 때 `rule.notify` 만 보지 않는다 — 경로로만 받는 곳이 빠진다. `AlertConfig.targets_for`(그 알림)·`reachable(rule)`(그 규칙의 모든 경우)·`delivery_targets()`(켜진 규칙 전체)를 쓴다.
 - **에스컬레이션 (B-43, ADR-055):** 알림을 다시 보내는 새 경로는 전송 대기열(`alert_deliveries`)에 action 한 줄로 넣고 보낼 때 `dispatcher._stale` 에서 다시 판단한다(확인·해결됐으면 건너뜀). action 값은 마이그레이션 029 의 CHECK 에 맞춘다.
 - 알림 해결(`/api/alerts/handle` 의 `resolve`)은 종료 분류 `resolution` 이 필수입니다(B-44, 없으면 422). 알림을 직접 바꾸는 새 SQL 도 `resolution` 을 맞춥니다(다시 열면 NULL, 엔진의 자동 해결은 `auto`).
 - **2단계 인증 (B-74, ADR-049):** 시험에서는 꺼져 있다(`WLM_MFA_REQUIRED=off`, conftest). 개발 서버는 기본 privileged 라 관리자 임시 계정도 등록해야 화면을 쓴다(코드는 `app.auth.totp.code_at`).

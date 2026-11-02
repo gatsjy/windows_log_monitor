@@ -63,6 +63,11 @@ def _rule_changes(old: Rule, new: Rule) -> list[tuple[str, str, bool]]:
         out.append(("notify_removed", f"받는 곳에서 뺌: {', '.join(removed)}", True))
     if added:
         out.append(("notify_added", f"받는 곳 추가: {', '.join(added)}", False))
+    # 태그·묶음은 경로(B-26)가 받는 곳을 고르는 조건이다 — 바뀐 것을 남기고, 받는 곳이 빠지는지는 diff 가 경로로 따로 본다
+    if old.tags != new.tags:
+        out.append(("tags", f"태그 {', '.join(old.tags) or '없음'} → {', '.join(new.tags) or '없음'}", False))
+    if old.group != new.group:
+        out.append(("group", f"묶음 {old.group or '없음'} → {new.group or '없음'}", False))
     if old.kind == new.kind == "stream_silent":
         for attr, label in (("hosts", "대상 PC"), ("channels", "볼 채널")):
             # 채널은 대소문자를 가리지 않고 맞춘다(엔진) — 대소문자만 바꾼 것은 변경이 아니다. PC 는 정확히 맞춘다(SQL)
@@ -142,9 +147,23 @@ def _route_changes(old: AlertConfig, new: AlertConfig) -> list[dict]:
             # 새 경로가 받는 곳을 갈아 끼우거나, 멈춰서(continue 아님) 뒤에 있던 기존 경로를 가릴 수 있으면 약해질 수 있다
             shadows = not r.continue_ and any(n in before for n in order[order.index(name) + 1:])
             out.append(("route_added", f"경로 '{name}' 추가", r.replace or shadows))
-    if not out and [r.name for r in old.routes] != [r.name for r in new.routes]:
+    # 남아 있는 경로끼리의 순서는 늘 본다 — 새 경로를 더하면서 순서를 바꾸면 '추가'만 보고 지나쳤다(검토에서 재현)
+    kept_old = [r.name for r in old.routes if r.name in after]
+    kept_new = [r.name for r in new.routes if r.name in before]
+    if kept_old != kept_new:
         out.append(("route_order", "경로 순서 변경", True))
     return [{"rule": None, "sid": None, "key": None, "change": c, "weakens": w, "text": t} for c, t, w in out]
+
+
+def _routed_loss(old: AlertConfig, old_rule: Rule, new: AlertConfig, new_rule: Rule,
+                 hosts: tuple[str | None, ...]) -> list[str]:
+    """이 규칙의 알림을 받던 곳 중 이제 받지 못하는 곳 (경로 포함, PC 패턴마다) — 규칙의 태그·묶음·심각도·이름을 바꾸면
+    맞는 경로가 달라져 팀 하나가 조용히 빠졌다(검토에서 재현)."""
+    lost: dict[str, None] = {}
+    for host in hosts:
+        after = set(new.targets_for(new_rule, host)[0])
+        lost.update(dict.fromkeys(n for n in old.targets_for(old_rule, host)[0] if n not in after))
+    return list(lost)
 
 
 def _escalation_changes(old: AlertConfig, new: AlertConfig) -> list[dict]:
@@ -192,6 +211,7 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
                                 f"{', '.join(new.fallback_notify) or '(점검 보고서 받는 곳)'}"})
     changes += _escalation_changes(old, new)
     changes += _route_changes(old, new)
+    hosts = tuple(dict.fromkeys(old.host_samples() + new.host_samples()))
     before = {rule_key(r): r for r in old.rules}
     after = {rule_key(r): r for r in new.rules}
     # 같은 이름인데 열쇠가 바뀐 것(sid 없는 규칙을 화면에서 고치면 번호가 붙는다)은 삭제+추가가 아니라 같은 규칙
@@ -215,6 +235,13 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
         gate = rule.enabled or new_rule.enabled
         changes += [_change(rule, key, change, text, weakens and gate, new_rule.name)
                     for change, text, weakens in _rule_changes(rule, new_rule)]
+        if (old.routes or new.routes) and rule.enabled and new_rule.enabled:
+            # 규칙의 notify 에서 뺀 곳은 위(notify_removed)에서 이미 말했다 — 경로 때문에 빠진 곳만
+            removed = set(rule.notify) - set(new_rule.notify)
+            lost = [n for n in _routed_loss(old, rule, new, new_rule, hosts) if n not in removed]
+            if lost:
+                changes.append(_change(rule, key, "route_targets", f"경로로 받던 곳이 빠짐: {', '.join(lost)}", True,
+                                       new_rule.name))
     for key in added_by_name.values():
         rule = after[key]
         changes.append(_change(rule, key, "added", "추가" + ("" if rule.enabled else " (꺼짐)"), False))
@@ -237,9 +264,11 @@ def affected(old: AlertConfig | None, new: AlertConfig, changes: list[dict],
     return list({(r.sid, r.name): r for r in out}.values())
 
 
-def recipients(rules: list[Rule]) -> tuple[str, ...]:
-    """그 규칙들의 알림을 받던 곳 (순서 유지, 중복 제거)."""
-    return tuple(dict.fromkeys(n for r in rules for n in r.notify))
+def recipients(rules: list[Rule], config: AlertConfig | None = None) -> tuple[str, ...]:
+    """그 규칙들의 알림을 받던 곳 (순서 유지, 중복 제거): 규칙의 notify 와, config(바뀌기 전 설정)의 경로로 받던 곳.
+    경로를 지우거나 경로가 받는 곳을 갈아 끼운 규칙을 끄면, 실제로 받던 팀이 아니라 notify 에만 적힌 곳에 알렸다(검토에서 재현)."""
+    hosts = config.host_samples() if config else ()
+    return tuple(dict.fromkeys(n for r in rules for n in (*r.notify, *(config.reachable(r, hosts) if config else ()))))
 
 
 def severity(rules: list[Rule]) -> str:

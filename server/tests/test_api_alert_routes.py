@@ -80,3 +80,20 @@ def test_unknown_route_target_is_rejected(client):
     r = client.put("/api/alerts/config", content=RULES.replace("notify: [보안팀]", "notify: [없는팀]").encode(),
                    headers={**CSRF, "Content-Type": "text/plain"})
     assert r.status_code == 422 and "없는팀" in r.text
+
+
+def test_repeated_target_does_not_drop_the_alert(client):
+    """같은 받는 곳을 두 번 쓴 설정도 저장되고, 알림은 받는 곳마다 한 줄로 기록된다 — 예전에는 기본 키 충돌로 알림이 통째로
+    되돌려져 그 경로에 맞는 모든 알림이 매 주기 사라졌다 (검토에서 재현)."""
+    from app import repository
+    from app.alerts.engine import engine
+
+    text = RULES.replace("notify: [보안팀]", "notify: [보안팀, 보안팀]")
+    r = client.put("/api/alerts/config", content=text.encode(), headers={**CSRF, "Content-Type": "text/plain"})
+    assert r.status_code == 200, r.text
+    rule = engine.config.rules[0]
+    assert engine.config.targets_for(rule, "PC-1")[0] == ("운영팀", "보안팀")
+    message = {"fired_at": datetime.now(UTC), "rule": "중복 시험", "severity": "warning", "group_key": "PC-9", "event_count": 1,
+               "first_event_at": None, "last_event_at": None}
+    alert_id = client.portal.call(repository.insert_alert, message, ("보안팀", "보안팀", "운영팀"))   # 저장소에서도 한 번 더 막는다
+    assert sorted(n for (n,) in sql("SELECT notifier FROM alert_deliveries WHERE alert_id = %s", (alert_id,))) == ["보안팀", "운영팀"]

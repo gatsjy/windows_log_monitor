@@ -177,9 +177,13 @@ async def _tls(now: datetime) -> dict[str, Any]:
         return {"enabled": False}
     agents = await repository.agents(now - timedelta(days=7))
     plain = sorted(a["host"] for a in agents if a.get("last_transport") in ("plain", "web"))
-    return {"enabled": True, "days_left": st.days_left, "not_after": _iso(st.not_after),
+    # 만료는 지금 내보내는 인증서로 — 파일만 갱신하고 다시 시작하지 않으면 파일의 D-398 이 보이는 사이 옛 인증서가 만료됐다(검토에서 재현)
+    not_after, days_left = st.not_after, st.days_left
+    if st.served_not_after and (not_after is None or st.served_not_after < not_after):
+        not_after, days_left = st.served_not_after, (st.served_not_after - now).days
+    return {"enabled": True, "days_left": days_left, "not_after": _iso(not_after),
             "errors": [t for lv, t in st.problems if lv == "error"][:3], "plain_pcs": len(plain), "plain_names": plain[:10],
-            "ingest_plain": settings.ingest_plain}
+            "ingest_plain": settings.ingest_plain, "restart_pending": st.served_not_after is not None}
 
 
 async def _agents(now: datetime) -> dict[str, Any]:
@@ -350,10 +354,11 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
     if tls and tls.get("enabled"):
         for err in tls["errors"]:
             out.append({"level": "bad", "text": f"보안 연결(TLS): {err}"})
-        if tls["days_left"] is not None and tls["days_left"] <= 30:
+        if tls["days_left"] is not None and 0 <= tls["days_left"] <= 30:   # 이미 만료면 위 오류 줄이 말한다
             out.append({"level": "bad" if tls["days_left"] <= 7 else "warn",
                         "text": f"서버 인증서가 {tls['days_left']}일 뒤 만료됩니다 — 만료되면 에이전트가 보내지 못합니다 "
-                                "(python -m app.cli tls-renew, AIRGAP.md §13)"})
+                                + ("(인증서 파일은 갱신했지만 api 를 다시 시작하지 않아 옛 인증서를 내보내는 중 — restart api)"
+                                   if tls.get("restart_pending") else "(python -m app.cli tls-renew, AIRGAP.md §13)")})
         if tls["plain_pcs"]:
             names = ", ".join(tls["plain_names"][:3]) + (f" 외 {tls['plain_pcs'] - 3:,}대" if tls["plain_pcs"] > 3 else "")
             out.append({"level": "warn", "text": f"TLS 를 켰는데 아직 평문으로 보내는 PC {tls['plain_pcs']:,}대: {names} — 새 설치 묶음으로 다시 설치"})

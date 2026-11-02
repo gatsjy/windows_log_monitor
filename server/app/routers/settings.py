@@ -483,13 +483,14 @@ async def save_report_settings(request: Request, admin: User = Depends(require_p
 
 
 @router.get("/api/settings/tls")
-async def tls_overview():
+async def tls_overview(request: Request):
     """보안 연결 (B-31 1단계, 읽기 전용): 리스너·인증서 이름·만료 D-n·CA 지문·문제, 평문으로 보내는 PC.
-    바꾸는 것은 .env·인증서 파일·cli(tls-init·tls-renew) — 화면은 지금 상태를 보이기만 한다(AIRGAP.md §7.5)."""
+    바꾸는 것은 .env·인증서 파일·cli(tls-init·tls-renew) — 화면은 지금 상태를 보이기만 한다(AIRGAP.md §7.5).
+    PC 목록·수는 조회 범위 안에서만 — 범위가 있는 설정 관리자가 병원 전체 PC 이름을 보지 않게(ADR-025, 검토에서 재현)."""
     from .. import repository, tlsutil
 
     st = tlsutil.status(settings)
-    agents = await repository.agents(datetime.now(UTC) - timedelta(days=7))
+    agents = await repository.agents(datetime.now(UTC) - timedelta(days=7), request.state.user.scopes)
     plain = sorted(a["host"] for a in agents if a.get("last_transport") in ("plain", "web"))
     return {
         **st.as_dict(), "cert_sha256": st.cert_sha256,

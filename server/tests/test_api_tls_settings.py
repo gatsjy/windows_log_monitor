@@ -99,3 +99,36 @@ def test_report_warns_before_certificate_expiry(client, tls_on):
     payload = client.portal.call(builder.build, "daily", now - timedelta(hours=1), now + timedelta(minutes=1))
     warn = [a for a in payload["attention"] if "만료됩니다" in a["text"]]
     assert warn and warn[0]["level"] == "warn" and payload["tls"]["days_left"] <= 10
+
+
+def test_report_uses_the_served_certificate_until_restart(client, tls_on, tmp_path, monkeypatch):
+    """파일만 갱신하고 api 를 다시 시작하지 않으면 옛 인증서가 나간다 — 보고서가 파일의 D-398 을 보이며 조용했다 (검토에서 재현)."""
+    from app import tlsutil
+    from app.reports import builder
+
+    tls_on(days=3)
+    monkeypatch.setattr(tlsutil, "_served", None)
+    tlsutil.remember_served(builder.settings)          # 기동 때 내보낸 3일짜리
+    tls_on(days=400)                                   # tls-renew 로 파일만 바뀜
+    now = datetime.now(UTC)
+    payload = client.portal.call(builder.build, "daily", now - timedelta(hours=1), now + timedelta(minutes=1))
+    assert payload["tls"]["days_left"] <= 3 and payload["tls"]["restart_pending"]
+    warn = [a for a in payload["attention"] if "만료됩니다" in a["text"]]
+    assert warn and warn[0]["level"] == "bad" and "다시 시작하지 않아" in warn[0]["text"]
+
+
+def test_scoped_settings_manager_sees_only_scoped_pcs(client):
+    """범위가 있는 설정 관리자가 보안 연결 화면으로 병원 전체 PC 이름·수를 보았다 (검토에서 재현, ADR-025)."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    temp = client.post("/api/users", json={"username": "tlsadm", "role": "viewer"}, headers=CSRF).json()
+    assert client.post("/api/user-groups", json={"name": "tls-g", "permissions": ["settings.manage"], "scope_hosts": ["PC-O*"],
+                                                 "member_ids": [temp["user"]["id"]]}, headers=CSRF).status_code == 200
+    scoped = TestClient(app)
+    scoped.post("/api/auth/login", json={"username": "tlsadm", "password": temp["temp_password"]}, headers=CSRF)
+    scoped.post("/api/auth/password", json={"current_password": temp["temp_password"], "new_password": "Scoped#Tls2026q"},
+                headers=CSRF)
+    t = scoped.get("/api/settings/tls").json()
+    assert t["plain_pcs"] == ["PC-OLD"] and t["pcs"] == 1

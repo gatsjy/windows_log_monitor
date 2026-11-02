@@ -154,7 +154,31 @@ class AlertConfig:
             notify = list(route.notify) if route.replace else notify + [n for n in route.notify if n not in notify]
             if not route.continue_:
                 break
-        return tuple(notify), used
+        return tuple(dict.fromkeys(notify)), used
+
+    def host_samples(self) -> tuple[str | None, ...]:
+        """경로의 PC 패턴마다 그 패턴에 맞는 PC 이름 하나와, 어느 패턴에도 맞지 않는 경우(None).
+        PC 마다 받는 곳을 다 볼 수 없어 패턴마다 대표 이름으로 본다 — 설정 변경 판단·시험 전송·상태 판단의 받는 곳."""
+        samples: list[str | None] = [None]
+        for route in self.routes:
+            for pattern in route.hosts:
+                sample = _sample_host(pattern)
+                if sample is not None and sample not in samples:
+                    samples.append(sample)
+        return tuple(samples)
+
+    def reachable(self, rule: Rule, hosts: tuple[str | None, ...] | None = None) -> tuple[str, ...]:
+        """이 규칙의 알림이 갈 수 있는 받는 곳 전부 (경로 포함, PC 패턴마다). 규칙의 notify 만 보면 경로로만 받는 곳
+        (보안 태그 → 보안팀)이 시험 전송·상태 판단·설정 변경 알림에서 빠졌다(검토에서 재현)."""
+        out: dict[str, None] = {}
+        for host in self.host_samples() if hosts is None else hosts:
+            out.update(dict.fromkeys(self.targets_for(rule, host)[0]))
+        return tuple(out)
+
+    def delivery_targets(self) -> tuple[str, ...]:
+        """켜진 규칙의 알림이 갈 수 있는 받는 곳 — 경로 포함 (시험 전송·상태 판단·운영 준비도·관리 작업 알림)."""
+        hosts = self.host_samples()
+        return tuple(dict.fromkeys(n for r in self.rules if r.enabled for n in self.reachable(r, hosts)))
 
     def used_targets(self) -> dict[str, list[str]]:
         """알림 대상 이름 → 그 대상을 쓰는 규칙 이름들 (대상 삭제·이름 변경 막을 때 사용)."""
@@ -189,7 +213,9 @@ def _str_list(value: Any, where: str) -> tuple[str, ...]:
         value = [value]
     if not isinstance(value, list) or not all(isinstance(v, (str, int)) for v in value):
         raise ConfigError(f"{where}: 문자열 목록이어야 합니다")
-    return tuple(str(v) for v in value)
+    # 같은 값을 두 번 쓴 것은 한 번으로 — 받는 곳이 겹치면 전송 대기열 기본 키(알림·받는 곳·종류)에 걸려 그 알림이 통째로
+    # 기록되지 않았다(검토에서 재현: 경로 notify [보안팀, 보안팀] 하나로 그 경로에 맞는 모든 알림이 매 주기 실패)
+    return tuple(dict.fromkeys(str(v) for v in value))
 
 
 def _check_rule(index: int, raw: Any) -> Rule:
@@ -295,6 +321,27 @@ def _distinct(value: Any, group_by: str, window: timedelta, where: str) -> tuple
     if window > DISTINCT_MAX_WINDOW:
         raise ConfigError(f"{where}: 서로 다른 값 수를 세는 규칙의 window 는 1d 이하")
     return field_name, minimum
+
+
+def _sample_host(pattern: str) -> str | None:
+    """fnmatch 패턴에 맞는 이름 하나 ('MED-*' → 'med-', 'PC-0?' → 'pc-0x'). 만들지 못하면 None."""
+    out, i = [], 0
+    while i < len(pattern):
+        ch = pattern[i]
+        end = pattern.find("]", i + 2) if ch == "[" else -1
+        if ch == "*":
+            pass
+        elif ch == "?":
+            out.append("x")
+        elif end != -1:
+            body = pattern[i + 1:end]
+            out.append(next((c for c in "xyz0123456789" if c not in body), "_") if body.startswith("!") else body[0])
+            i = end
+        else:
+            out.append(ch)
+        i += 1
+    sample = "".join(out).casefold() or "x"   # '*' — 빈 이름은 'PC 아님'(None)과 같아져 패턴이 맞지 않는다
+    return sample if fnmatch.fnmatchcase(sample, pattern.casefold()) else None
 
 
 def _route_host(rule: Rule, key: str | None) -> str | None:

@@ -124,7 +124,7 @@ class Watchdog:
         moment = test_moment(now)
         if moment is None:
             return []
-        used = sorted({n for r in engine.config.rules if r.enabled for n in r.notify} | set(await self.recipients()))
+        used = sorted(set(engine.config.delivery_targets()) | set(await self.recipients()))   # 경로로만 받는 곳도 (B-26 검토)
         tested = await repository.latest_target_tests(used, moment)
         results = []
         for name in used:

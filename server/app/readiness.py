@@ -62,7 +62,8 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
     rules = engine.config.rules
     enabled = [r for r in rules if r.enabled]
     fallback = await watchdog.recipients()
-    used = sorted({n for r in enabled for n in r.notify} | set(fallback))
+    delivery = engine.config.delivery_targets()   # 경로로만 받는 곳도 (B-26 검토)
+    used = sorted(set(delivery) | set(fallback))
     notifiers, errors = await load_notifiers()
     smtp, _ = await smtp_config()
     agents = await repository.agents(now - timedelta(days=7))
@@ -75,7 +76,7 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "observing": [r.name for r in enabled if r.mode == "observe"],   # 관찰 모드 (B-52) — 기록만, 보내지 않음
         "dormant": _dormant(users, now),   # 장기 미사용 (B-72)
         "clock": clock.assess(agents),   # 시계 차이 (B-57)
-        "unknown_targets": sorted({n for r in enabled for n in r.notify if n not in notifiers and n not in errors}),
+        "unknown_targets": sorted({n for n in delivery if n not in notifiers and n not in errors}),
         "broken_targets": {n: e for n, e in errors.items() if n in used},
         "used_targets": used, "fallback": fallback,
         "email_targets": sorted(n for n in used if getattr(notifiers.get(n), "type", "") == "email"),

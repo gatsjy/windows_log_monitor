@@ -252,7 +252,7 @@ class AlertEngine:
         rules = configdiff.affected(old, new, changes, last_enabled) if weakened else []
         self._owed.append({"version": version, "source": source, "actor": read["actor"], "sha": read["sha"],
                            "previous": applied["sha"], "rules_n": len(new.rules), "changes": changes,
-                           "weakened": weakened, "rules": rules, "done": set()})
+                           "weakened": weakened, "rules": rules, "config": old or new, "done": set()})
         await self._send_owed()
 
     async def _send_owed(self) -> None:
@@ -270,7 +270,7 @@ class AlertEngine:
                 who = SOURCE_LABELS[item["source"]] + (f" · {item['actor']}" if item["source"] == "ui" else "")
                 await self.notify_change(
                     f"탐지를 약하게 하는 알림 설정 변경 {len(weak):,}건 ({who}, 판본 #{item['version']})",
-                    [c["text"] for c in weak], item["rules"], who)
+                    [c["text"] for c in weak], item["rules"], who, item["config"])
                 item["done"].add("notify")
             self._owed.pop(0)
 
@@ -346,9 +346,10 @@ class AlertEngine:
                 [read["error"][:500], "지금은 이전 설정(또는 마지막 판본)으로 감시하고 있습니다"], rules, SOURCE_LABELS["file"])
             done.add("notify")
 
-    async def notify_change(self, summary: str, lines: list[str], rules: list[Rule], who: str) -> int:
-        """설정 변경·넓은 무음 알림. 받는 곳 = 그 규칙들의 알림을 받던 곳(바뀌기 전 설정) — 바꾼 사람이 받는 곳도
-        같이 지울 수 있으니. 걸린 규칙이 없으면(규칙 0개) 받는 곳 없이 이력에만 남는다."""
+    async def notify_change(self, summary: str, lines: list[str], rules: list[Rule], who: str,
+                            config: AlertConfig | None = None) -> int:
+        """설정 변경·넓은 무음 알림. 받는 곳 = 그 규칙들의 알림을 받던 곳(바뀌기 전 설정 config 의 경로 포함, 없으면 지금 설정)
+        — 바꾼 사람이 받는 곳도 같이 지울 수 있으니. 걸린 규칙이 없으면(규칙 0개) 받는 곳 없이 이력에만 남는다."""
         shown = lines[:30] + ([f"… 외 {len(lines) - 30:,}건"] if len(lines) > 30 else [])
         message = AlertMessage(
             rule=CONFIG_RULE, severity=configdiff.severity(rules), kind="config", group_by="none", group_key=who,
@@ -356,7 +357,7 @@ class AlertEngine:
             description=summary + "\n" + "\n".join(f"- {line}" for line in shown),
             link=f"{settings.public_url}/#/alerts",   # 감사로그 화면은 audit.view 가 있어야 열린다 — 받는 사람 누구나 열 곳으로
         )
-        return await self.fire(message, configdiff.recipients(rules))
+        return await self.fire(message, configdiff.recipients(rules, config or self.config))
 
     # ------------------------------------------------------------ 루프
     async def run_forever(self) -> None:

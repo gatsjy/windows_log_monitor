@@ -111,8 +111,11 @@ export async function mount(root, params) {
 
   // 결과를 못 얻었을 때 이전 검색의 건수·막대가 새 조건의 결과처럼 남지 않게 비운다
   function clearResults() {
-    root.querySelector('[data-count]').textContent = '';
+    const count = root.querySelector('[data-count]');
+    if (!count) return;   // 세션이 끝나 로그인 화면이 화면을 갈아 끼운 뒤 끝난 요청 (콘솔 오류로 발견)
+    count.textContent = '';
     root.querySelector('[data-hist]').innerHTML = '<div class="empty">결과를 불러오지 못했습니다.</div>';
+    if (tab === 'fields') renderFields();
   }
 
   async function load() {
@@ -121,6 +124,10 @@ export async function mount(root, params) {
     const my = ++token;
     loadedAt = new Date();
     rowsEl.innerHTML = '';
+    // 새 조건의 결과가 오기 전(또는 실패하면) 필드 탭이 옛 조건의 값을 지금 것처럼 보이고 +/− 로 문장에 넣지 않게 (검토에서 재현)
+    items = [];
+    cursor = null;
+    Object.keys(full).forEach((k) => delete full[k]);
     // 문장이 틀렸으면 서버에 묻지 않는다 (입력 칸이 틀린 곳을 보여 준다) — 옛 링크·손으로 고친 주소로 들어온 경우
     try { parseTerms(state.query ?? ''); } catch {
       clearResults();
@@ -254,16 +261,21 @@ export async function mount(root, params) {
     })}`;
     fieldsOut.querySelectorAll('[data-full]').forEach((b) => b.addEventListener('click', async () => {
       b.disabled = true;
+      const my = token;   // 그 사이 조건이 바뀌면(막대 선택·새 검색) 늦게 온 결과를 새 조건의 '전체 기준'으로 보이지 않게
       try {
-        const res = await api.get('/api/stats/top', { ...state, field: b.dataset.full, limit: 5 });
-        full[b.dataset.full] = res.items.map((i) => ({ value: i.value, n: i.n }));
+        const res = await api.get('/api/stats/top', { ...state, field: b.dataset.full, limit: 6 });
+        if (my !== token || disposed) return;
+        // 값이 없는 로그(syslog 의 이벤트 ID·채널 등)는 서버가 빈 값 한 줄로 센다 — +/− 가 event_id:0·channel:"" 이 되므로 뺀다
+        full[b.dataset.full] = res.items.filter((i) => i.value != null && i.value !== '').slice(0, 5).map((i) => ({ value: i.value, n: i.n }));
         renderFields();
       } catch (err) {
+        if (my !== token || disposed) return;
         b.disabled = false;
         b.replaceWith(Object.assign(document.createElement('span'), { className: 'tag-bad', textContent: err.message }));
       }
     }));
     const apply = (field, value, neg) => {
+      if (value === '') return;
       const term = { key: field, values: [INT_FIELDS.has(field) ? Number(value) : value], ...(neg ? { neg: true } : {}) };
       const text = addTerm(bar?.query ?? state.query ?? '', term);
       root.querySelector('[data-tab] button[data-v="list"]').click();

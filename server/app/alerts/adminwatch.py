@@ -88,7 +88,7 @@ async def notify(actor: str, summary: str, lines: list[str], *, exclude: set[str
     from .watchdog import watchdog  # 감시와 같은 대체 경로 (순환 import 방지)
 
     names = list(dict.fromkeys([*await watchdog.recipients(),
-                                *(n for r in engine.config.rules if r.enabled for n in r.notify)]))
+                                *engine.config.delivery_targets()]))   # 경로로만 받는 곳도 (B-26 검토)
     recipients = tuple(n for n in names if n not in exclude)
     message = AlertMessage(
         rule=ADMIN_RULE, severity="warning", kind="config", group_by="none", group_key=f"관리 작업 · {actor}",

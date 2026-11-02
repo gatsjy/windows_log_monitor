@@ -180,7 +180,7 @@ async def current(now: datetime | None = None, *, fresh: bool = False) -> dict[s
             queue = await repository.delivery_queue(now)
             gave_up = await repository.count_gave_up(now - timedelta(hours=24))
             fallback = await watchdog.recipients()
-            used = {n for r in engine.config.rules if r.enabled for n in r.notify}
+            used = set(engine.config.delivery_targets())   # 경로로만 받는 곳도 (B-26 검토)
             tests = await repository.latest_target_tests(sorted(used | set(fallback)), now - TEST_LOOKBACK)
         except Exception as exc:  # noqa: BLE001 - DB 에 물을 수 없으면 그것이 문제
             result = {"status": "down", "checked_at": now, "queue": [], "rules": {},
