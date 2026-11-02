@@ -28,7 +28,7 @@ import yaml
 
 from ..config import settings
 from ..filters import parse_duration
-from ..querylang import QueryError, format_value, parse_terms
+from ..querylang import QUOTES, QueryError, format_value, parse_terms
 
 SLOTS = ("host", "user", "ip", "key")
 _SLOT = re.compile(r"\{(" + "|".join(SLOTS) + r")\}")
@@ -71,6 +71,33 @@ def _duration(raw: Any, default: str, where: str) -> timedelta:
     return value
 
 
+def _slots_are_values(query: str) -> bool:
+    """자리표시자는 '키:{x}'·'키:a,{x}' 의 값 자리에만 — 맨 단어({x} 만)·따옴표 안·앞뒤에 글자가 붙은 자리는 값의 따옴표 규칙이
+    맞지 않아 로그에서 온 값('-svc', 'OR' 등)이 조건이 된다(검토에서 재현). 값 자리면 format_value 로 한 값으로만 들어간다."""
+    quoted, i = False, 0
+    while i < len(query):
+        ch = query[i]
+        if ch in QUOTES:
+            if quoted and i + 1 < len(query) and query[i + 1] in QUOTES:   # 따옴표 안의 "" = 글자 "
+                i += 2
+                continue
+            quoted = not quoted
+        elif (m := _SLOT.match(query, i)) is not None:
+            after = query[m.end():m.end() + 1]
+            if quoted or i == 0 or query[i - 1] not in ":," or (after and not (after.isspace() or after in ",)")):
+                return False
+            # 값 자리의 앞은 키여야 한다 (단어 안의 콜론이 아니라) — 공백·여는 괄호·- 다음의 '키:'
+            start = i - 1
+            while start > 0 and not query[start - 1].isspace() and query[start - 1] != "(":
+                start -= 1
+            if not re.fullmatch(r"-?[A-Za-z_][\w.]*:(?:[^\s,:]+,)*", query[start:i]):
+                return False
+            i = m.end()
+            continue
+        i += 1
+    return True
+
+
 def fill(template: str, values: dict[str, str | None]) -> tuple[str | None, list[str]]:
     """자리표시자를 문장 정규형 값으로. 빠진 값이 있으면 (None, [빠진 이름])."""
     missing = sorted({m for m in _SLOT.findall(template) if not values.get(m)})
@@ -97,6 +124,9 @@ def parse(sid: int, text: str) -> Playbook:
         unknown = set(re.findall(r"\{(\w+)\}", query)) - set(SLOTS)
         if unknown:
             raise PlaybookError(f"{where}.query: 모르는 자리표시자 {sorted(unknown)} (쓸 수 있는 것: {', '.join(SLOTS)})")
+        if not _slots_are_values(query):
+            raise PlaybookError(f"{where}.query: 자리표시자는 '키:{{값}}' 의 값 자리에만 씁니다 (예: user:{{user}}) — "
+                                "맨 단어·따옴표 안에 두면 로그에서 온 값이 다른 조건이 될 수 있습니다")
         filled, _ = fill(query, SAMPLE_VALUES)
         try:
             parse_terms(filled or "")

@@ -973,8 +973,18 @@ async def alert_playbook(alert_id: int, request: Request):
         if text is None:
             steps.append({**item, "missing": missing})
             continue
-        since, until = fired - st.window, max(min(fired + st.after, now), fired - st.window + timedelta(seconds=1))
-        f = EventFilter.from_params({"query": text, "since": since.isoformat(), "until": until.isoformat()}, default_since=None)
+        # 구간은 발생 시각(ts) 기준 — 알림 시각이 아니라 알림이 센 이벤트의 시각에서. 밀려 들어온 로그·시계가 어긋난 PC 는 알림
+        # 시각과 이벤트 시각이 몇 시간 차이 나 0건으로 보였다(검토에서 재현)
+        start, end = alert.get("first_event_at") or fired, max(alert.get("last_event_at") or fired, alert.get("first_event_at") or fired)
+        since = start - st.window
+        until = max(min(end + st.after, now), since + timedelta(seconds=1))
+        try:
+            f = EventFilter.from_params({"query": text, "since": since.isoformat(), "until": until.isoformat()},
+                                        default_since=None)
+        except FilterError as exc:
+            # 로그에서 온 값이 검색 문장의 한도(글자 수·제어 문자)를 넘으면 그 질문만 건너뛴다 — 예전에는 플레이북 전체가 500
+            steps.append({**item, "query": text, "error": f"알림 값으로 검색 문장을 만들 수 없습니다: {exc}"})
+            continue
         if user.scopes is not None:
             f = replace(f, scopes=user.scopes)
         item.update(query=text, since=since, until=until, count=(await repository.count(f))["current"],

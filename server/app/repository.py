@@ -1477,10 +1477,14 @@ async def alert_groups(since: datetime, limit: int, rule: str | None = None, sev
         "SELECT a.rule, a.group_key, count(*) AS n,"
         " count(*) FILTER (WHERE a.status = 'open') AS open, count(*) FILTER (WHERE a.status = 'acked') AS acked,"
         " count(*) FILTER (WHERE a.status = 'resolved') AS resolved,"
-        " (array_agg(a.severity ORDER BY " + _SEVERITY_RANK + "))[1] AS severity,"
-        " min(a.fired_at) AS first_fired_at, max(a.fired_at) AS last_fired_at, max(a.id) AS last_id"
+        # 심각도·누를 알림은 해결 안 된 것을 먼저 — 해결된 심각 알림 하나 때문에 경고만 남은 묶음이 심각으로 보이거나,
+        # 가장 최근 알림이 해결됐으면 묶음을 눌러 남은 알림을 해결할 수 없었다(검토에서 재현)
+        " (array_agg(a.severity ORDER BY a.status = 'resolved', " + _SEVERITY_RANK + "))[1] AS severity,"
+        " min(a.fired_at) AS first_fired_at, max(a.fired_at) AS last_fired_at,"
+        " COALESCE(max(a.id) FILTER (WHERE a.status <> 'resolved'), max(a.id)) AS last_id"
         f" FROM alerts a WHERE {' AND '.join(clauses)} GROUP BY a.rule, a.group_key"
-        " ORDER BY count(*) FILTER (WHERE a.status <> 'resolved') > 0 DESC, min(" + _SEVERITY_RANK + ") , max(a.fired_at) DESC"
+        " ORDER BY count(*) FILTER (WHERE a.status <> 'resolved') > 0 DESC,"
+        " min(" + _SEVERITY_RANK + ") FILTER (WHERE a.status <> 'resolved'), min(" + _SEVERITY_RANK + "), max(a.fired_at) DESC"
         " LIMIT %s",
         [*params, limit],
     )

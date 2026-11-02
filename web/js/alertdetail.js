@@ -300,7 +300,8 @@ async function playbookSection(box, alert, noted) {
   box.innerHTML = html`<ol class="pb-steps">${pb.steps.map((s, i) => html`<li>
       <div><b>${s.question}</b></div>
       ${s.why ? html`<div class="muted pb-why">${s.why}</div>` : ''}
-      ${s.missing ? html`<div class="muted pb-why">이 알림에 ${s.missing.join('·')} 값이 없어 건너뜁니다.</div>` : html`
+      ${s.missing ? html`<div class="muted pb-why">이 알림에 ${s.missing.join('·')} 값이 없어 건너뜁니다.</div>`
+        : s.error ? html`<div class="tag-bad pb-why">${s.error}</div>` : html`
         <div class="pb-run"><code>${s.query}</code> <span class="num"><b>${fmtNum(s.count)}</b>건</span>
           <a href="${link(s)}" data-pb-link>검색에서 보기 →</a></div>
         ${s.top.length ? html`<div class="pb-top">${s.top.map((t) => html`<span class="type-tag">${t.value ?? '(없음)'} <b class="num">${fmtNum(t.n)}</b></span>`)}</div>` : ''}

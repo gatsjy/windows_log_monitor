@@ -37,6 +37,12 @@ def test_slot_values_cannot_inject_conditions(value):
                                                           ("host", ("PC-1",), False)]
 
 
+def test_value_positions_are_allowed():
+    for query in ("user:{user} host:{host}", "ip:10.0.0.1,{ip}", "-user:{user}", "f.EventData.TargetUserName:{user}",
+                  "(host:{host})", 'msg:"{x}" user:{user}'.replace('{x}', 'x')):
+        assert playbook._slots_are_values(query), query
+
+
 def test_missing_values_skip_the_question():
     assert playbook.fill("user:{user} ip:{ip}", {"user": "kim", "ip": None}) == (None, ["ip"])
     assert playbook.values_for({"group_key": "10.0.0.9"}, "ip", {"host": "PC-1", "username": None, "src_ip": "10.0.0.5"}) == {
@@ -51,6 +57,12 @@ def test_missing_values_skip_the_question():
     ("steps:\n  - question: q\n    query: 'event_id:1'\n    top: message", "top"),
     ("steps:\n" + "".join(f"  - question: q{i}\n    query: 'event_id:1'\n" for i in range(9)), "8개"),
     ("steps: [", "YAML"),
+    # 자리표시자는 '키:{값}' 의 값 자리에만 — 맨 단어·따옴표 안·글자가 붙은 자리는 값의 따옴표 규칙이 맞지 않는다 (검토에서 재현)
+    ("steps:\n  - question: q\n    query: 'event_id:4625 {user}'", "값 자리"),
+    ("steps:\n  - question: q\n    query: 'event_id:4625 \"{user}\"'", "값 자리"),
+    ("steps:\n  - question: q\n    query: 'user:pre{user}'", "값 자리"),
+    ("steps:\n  - question: q\n    query: 'user:{user}x'", "값 자리"),
+    ("steps:\n  - question: q\n    query: 'msg:a:{user}'", "값 자리"),
 ])
 def test_bad_playbooks_are_rejected(text, error):
     with pytest.raises(playbook.PlaybookError, match=error):

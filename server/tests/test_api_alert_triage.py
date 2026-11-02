@@ -102,6 +102,19 @@ def test_groups_put_unresolved_and_severe_first_and_scope_before_limit(ctx):
     assert [g["group_key"] for g in medic.get("/api/alerts/groups", params={"since": "1d", "limit": 1}).json()["items"]] == ["MED-01"]
 
 
+def test_group_opens_newest_unresolved_alert(ctx):
+    """가장 최근 알림만 해결된 묶음을 누르면 남은(해결 안 된) 알림이 열려야 묶음을 해결할 수 있다 (검토에서 재현)."""
+    older, newer = _alert("로그온 실패", "PC-Z", "critical", 30), _alert("로그온 실패", "PC-Z", "warning", 10)
+    sql("UPDATE alerts SET status = 'resolved', resolution = 'fp_rule' WHERE id = %s", (newer,))
+    g = next(g for g in ctx["admin"].get("/api/alerts/groups", params={"since": "1d"}).json()["items"] if g["group_key"] == "PC-Z")
+    assert g["last_id"] == older and (g["open"], g["resolved"]) == (1, 1)
+    sql("UPDATE alerts SET status = 'resolved', resolution = 'fp_rule' WHERE id = %s", (older,))
+    sql("UPDATE alerts SET status = 'open', resolution = NULL WHERE id = %s", (newer,))
+    g = next(g for g in ctx["admin"].get("/api/alerts/groups", params={"since": "1d"}).json()["items"] if g["group_key"] == "PC-Z")
+    assert g["severity"] == "warning"                 # 해결된 심각 알림 때문에 경고만 남은 묶음이 심각으로 보이지 않게
+    sql("DELETE FROM alerts WHERE group_key = 'PC-Z'")
+
+
 def test_resolve_requires_classification_and_records_it(ctx):
     handler, ids = ctx["handler"], ctx["ids"]
     assert _handle(handler, ids["PC-A"][:1], "resolve").status_code == 422

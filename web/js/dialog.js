@@ -1,6 +1,6 @@
 // 모던 다이얼로그 & 토스트 알림 컴포넌트
 // 브라우저 기본 alert(), confirm() 대신 부드럽고 일관된 UI 제공
-import { html, raw } from './util.js';
+import { SafeHTML, esc, html, raw } from './util.js';
 
 let toastContainer = null;
 
@@ -23,7 +23,8 @@ const TOAST_ICONS = {
 
 /**
  * 토스트 메시지를 화면에 띄웁니다.
- * @param {string} message - 안내 문구
+ * @param {string} message - 안내 문구. 글자로만 넣는다(로그에서 온 PC·규칙 이름이 HTML 로 실행되지 않게 — 검토에서 재현한 XSS).
+ *   굵게 등 HTML 이 필요하면 html`` 로 만든 SafeHTML 을 넘긴다
  * @param {{type?: 'info'|'success'|'error'|'warning', duration?: number, action?: {label: string, onClick: () => void}}} options
  *   action: 토스트 안의 단추 하나 (예: [되돌리기]) — 누르면 실행하고 토스트를 닫는다
  */
@@ -33,7 +34,7 @@ export function toast(message, { type = 'info', duration = 3200, action = null }
   el.className = `toast toast-${type}`;
   el.innerHTML = `
     <div class="toast-icon">${TOAST_ICONS[type] || TOAST_ICONS.info}</div>
-    <div class="toast-msg">${message}</div>
+    <div class="toast-msg">${message instanceof SafeHTML ? message : esc(String(message ?? ''))}</div>
     ${action ? html`<button type="button" class="btn sm toast-action">${action.label}</button>` : ''}
     <button type="button" class="toast-close" aria-label="닫기">✕</button>
   `;
