@@ -26,6 +26,7 @@ from typing import Any
 from .. import db, repository
 from ..config import settings
 from ..filters import EventFilter
+from ..querylang import format_value
 from . import configdiff
 from .builtin import BUILTIN_RULES, CONFIG_RULE
 from .dispatcher import dispatcher
@@ -82,8 +83,8 @@ def _with_group(f: EventFilter, group_by: str, key: str) -> EventFilter:
         attr = "levels" if group_by == "level" else "event_ids"
         return replace(f, **{attr: [int(key)]})
     attr = {"host": "hosts", "channel": "channels", "provider": "providers", "source": "sources",
-            "category": "categories", "user": "users", "ip": "ips"}[group_by]
-    return replace(f, **{attr: [key]})
+            "category": "categories", "user": "users", "account": "accounts", "ip": "ips"}[group_by]
+    return replace(f, **{attr: [key]})   # account: 묶음 값이 이미 열쇠(wlm_user_key) — 두 번 해도 같다
 
 
 def _silence_over(last: dict, now: datetime) -> bool:
@@ -123,7 +124,9 @@ def _link_params(rule: Rule, key: str, since: datetime, saved: str | None = None
     query = " ".join(filter(None, [saved, str(params.get("query") or ""), *(f"-{t}" for t in exceptions)]))
     if query:
         params["query"] = query
-    if rule.group_by != "none" and key:
+    if rule.group_by == "account" and key:   # account 는 주소 파라미터가 없다 — 문장 조건으로 (B-54)
+        params["query"] = f"{params.get('query') or ''} account:{format_value(key)}".strip()
+    elif rule.group_by != "none" and key:
         params[rule.group_by] = key
     return params
 

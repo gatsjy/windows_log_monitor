@@ -69,7 +69,7 @@
 | B-51 | 기본 규칙 팩과 현장 수정 분리 (overrides·3-way 비교) | P2 | M | 비교 §5.1 | 대기 |
 | B-52 | 규칙 시험기·관찰 모드 — 완료(ADR-053) | P2 | M | 비교 §5.1 | 완료 |
 | B-53 | 목록·자산 등록부 (값 목록·감시 목록·자산 등급·표시 보강) | P2 | L | 비교 §5.1 | 대기 |
-| B-54 | 계정 표기 통일 (user_key) | P2 | M | 비교 §5.1 | 대기 |
+| B-54 | 계정 표기 통일 (user_key) — 완료(ADR-062, 검색 키 account:) | P2 | M | 비교 §5.1 | 완료 |
 | B-55 | 수집 대상 대조 (설치 안 된 시스템 찾기) — 완료 | P2 | S | 비교 §5.3, ISMS 2.9.4 | 완료 |
 | B-56 | 수집 품질 지표·레코드 누락(EventRecordID) — 1단계(품질 지표) 완료(ADR-059) | P2 | M | 비교 §5.3 | 진행 중 |
 | B-57 | 에이전트 상태 신호 (하트비트 값·시계 오차·마지막 오류·지표) — 1단계(시계) 완료 | P2 | M | 비교 §5.3, ISMS 2.9.6 | 진행 중 |
@@ -565,6 +565,9 @@
 - **구현 방향:** 파생 열 `user_key`(소문자, 도메인 접두·UPN 접미 제거)를 마이그레이션으로 추가하고 raw·`username` 은 그대로 둡니다. `user:` 를 user_key 로 맞출지는 ADR-033 절차(케이스 표 → `querylang.py`·`querylang.js` → repository)로 정하고, 기존 SQL 스냅샷 변경은 의도적으로 합니다.
 - **완료 기준:** 표기별 왕복 시험(실측 IIS·MSSQL 표본으로 표기 확인), 케이스 표, 색인 벤치, PROJECT.md §3.2.
 - **출처:** COMPARISON.md §5.1 / 검토(누락 비평). 개념: Splunk ES identity, Sentinel Identity Correlation.
+- **완료 (2026-11-02, ADR-062):** 읽을 때 만드는 열쇠 `wlm_user_key(username)`(SQL·Python·JS 같게, 마이그레이션 038), 새 검색 키 `account:`(user: 는 그대로),
+  group_by·distinct·상위 값·자동완성·실시간 매처·상세 패널 '계정(표기 통일)', 탐지에서 `-account:` 거부, 계정 색인 하나로 user:·account: (월 파티션은 뒤에서 만들고 예전 색인은 지움).
+  남은 것: UPN 앞부분 ↔ sAMAccountName·SID 대조(B-53 목록), 기본 규칙을 account 로 바꾸기(규칙 팩, 쿨다운 키가 바뀜).
 
 ### B-55 수집 대상 대조
 - **완료 (2026-11-01):** `assets` 표(마이그레이션 023)·`app/assets.py`(목록 읽기: 이름 목록·CSV·Get-ADComputer, 짧은 이름 대조, 7일 기준), `/api/agents/assets`(관리자),

@@ -319,7 +319,7 @@ async def stats_timeseries(
 
 # 상위 값·시계열 중 사람·출발지로 나눈 것은 접속기록에 남긴다 (ADR-042, B-38). 원본 필드(f.)는 무엇이든 될 수 있어 함께 본다.
 # 대시보드 위젯이 같은 조건으로 몇 분마다 다시 부르므로 같은 사용자·같은 조건은 10분에 한 번만(accesslog)
-PERSONAL_FIELDS = frozenset({"user", "ip", "username", "src_ip"})
+PERSONAL_FIELDS = frozenset({"user", "account", "ip", "username", "src_ip"})   # account = 사용자 이름에서 만든 열쇠 (B-54)
 
 
 async def _audit_stats(request: Request, field: str, rows: int) -> None:
@@ -330,7 +330,7 @@ async def _audit_stats(request: Request, field: str, rows: int) -> None:
                            key=conditions)
 
 
-SUGGEST_FIELDS = ("host", "user", "ip", "channel", "provider", "source")
+SUGGEST_FIELDS = ("host", "user", "account", "ip", "channel", "provider", "source")
 SUGGEST_TIMEOUT_SEC = 3   # 입력마다 부르므로 짧게 — 넘으면 자동완성만 비고(화면은 조용히 넘어감) 검색은 그대로
 
 

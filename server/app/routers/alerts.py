@@ -30,7 +30,7 @@ from ..alerts.engine import (  # _with_group: 엔진과 같은 묶음 조건 (�
 from ..alerts.health import RULE_LABELS
 from ..alerts.message import RESOLUTION_LABELS, local
 from ..alerts.notifiers import SEVERITY_LABELS, NotifierError
-from ..alerts.rules import SILENT_KINDS, AlertConfig, ConfigError, Rule, parse, parse_text
+from ..alerts.rules import ACCOUNT_EXCLUDE_ERROR, SILENT_KINDS, AlertConfig, ConfigError, Rule, parse, parse_text
 from ..alerts.visibility import alert_stats_for, alert_visible, count_by_status, scrub_silence, silence_visible
 from ..auth import groups
 from ..auth.deps import client_ip, require_permission, require_user
@@ -647,6 +647,8 @@ def _exception_term(text: str) -> str:
         raise HTTPException(400, f"조건을 읽을 수 없습니다: {exc}") from exc
     if len(terms) != 1 or terms[0].neg:
         raise HTTPException(400, "예외는 조건 하나입니다 (예: user:svc_backup, ip:10.0.0.5,10.0.0.6, host:BACKUP-01)")
+    if terms[0].key == "account":
+        raise HTTPException(400, ACCOUNT_EXCLUDE_ERROR)
     return format_term(terms[0])
 
 

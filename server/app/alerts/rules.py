@@ -69,11 +69,19 @@ class Rule:
         (값이 없는 이벤트는 남김, 케이스 표가 보장). 예외끼리는 각각 뺀다(하나라도 맞으면 제외).
         saved: match.saved 가 가리키는 저장한 검색의 문장(B-64) — 규칙 문장 앞에 붙인다(AND). 찾는 일은 engine.rule_filter 가."""
         match = {k: v for k, v in self.match.items() if k != "saved"}
-        if not exceptions and not saved:
-            return EventFilter.from_params(match, default_since=None)
-        match["query"] = " ".join([saved or "", str(match.get("query") or ""), *(f"-{t}" for t in exceptions)]).strip()
-        return EventFilter.from_params(match, default_since=None)
+        if exceptions or saved:
+            match["query"] = " ".join([saved or "", str(match.get("query") or ""), *(f"-{t}" for t in exceptions)]).strip()
+        f = EventFilter.from_params(match, default_since=None)
+        if f.excludes.get("account"):   # 저장한 검색(규칙이 쓰는)으로 들어온 것도 — 저장할 때 막지만 평가에서도
+            raise FilterError(ACCOUNT_EXCLUDE_ERROR)
+        return f
 
+
+# 탐지에서 -account: 를 막는 이유 (B-54, ADR-062): 표기 통일은 IIS cs-username·sshd invalid user·4625 TargetUserName·MSSQL 18456 처럼
+# 공격자가 정하는 이름에도 적용된다 — '-account:svc_backup' 이면 'svc_backup@evil.co'·'X\\svc_backup' 으로 로그인을 시도해 규칙을 비켜 간다.
+# 포함(account:)·group_by·distinct 는 괜찮다(넓어질 뿐 빠지지 않음)
+ACCOUNT_EXCLUDE_ERROR = ("알림 규칙(규칙이 쓰는 저장한 검색·예외 포함)에서는 -account: 를 쓸 수 없습니다 — 계정 표기 통일은 공격자가 정하는 "
+                         "이름에도 적용되어 다른 표기로 규칙을 비켜 갈 수 있습니다. 빼려는 표기를 -user: 로 나열하세요 (예: -user:svc_backup,HOSP\\svc_backup)")
 
 ESCALATE_UNLESS = ("acked", "resolved")   # 이 상태가 되면 그 단계는 보내지 않는다
 ESCALATE_MAX_AFTER = timedelta(days=7)
@@ -305,6 +313,8 @@ def _check_rule(index: int, raw: Any) -> Rule:
         checked = EventFilter.from_params(match, default_since=None)
     except FilterError as exc:
         raise ConfigError(f"{where}.match: {exc}") from exc
+    if checked.excludes.get("account"):
+        raise ConfigError(f"{where}.match: {ACCOUNT_EXCLUDE_ERROR}")
 
     group_by = str(raw.get("group_by", "host"))
     if group_by != "none" and group_by not in COLUMN_EXPR and not group_by.startswith("f."):

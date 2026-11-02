@@ -8,9 +8,9 @@ import { eventDoc } from '../catalog.js';
 import { fieldValue } from '../livefilter.js';
 import { categoryLabel, levelBadge, levelColor, sourceLabel } from '../levels.js';
 
-const COLUMNS = new Set(['host', 'channel', 'provider', 'source', 'event_id', 'level', 'category', 'user', 'ip']);
+const COLUMNS = new Set(['host', 'channel', 'provider', 'source', 'event_id', 'level', 'category', 'user', 'account', 'ip']);
 // 서버(repository.TOP_SKIP_EMPTY)와 같이: 사용자·IP 는 값 없는 이벤트를 세지 않는다
-const SKIP_EMPTY = new Set(['user', 'ip']);
+const SKIP_EMPTY = new Set(['user', 'account', 'ip']);
 
 function draw(body, cfg, ctx, st) {
   const field = st.field;

@@ -8,7 +8,7 @@ import { errorBox, html, navigate, toast } from './util.js';
 const KINDS = [
   ['timeseries', '시간대별 막대', 12], ['events', '최근 로그 표', 12], ['top', '상위 값', 4], ['stat', '건수 숫자', 3],
 ];
-const TOP_FIELDS = [['host', 'PC'], ['user', '사용자'], ['ip', 'IP'], ['event_id', '이벤트 ID'], ['channel', '채널'],
+const TOP_FIELDS = [['host', 'PC'], ['user', '사용자'], ['account', '계정(표기 통일)'], ['ip', 'IP'], ['event_id', '이벤트 ID'], ['channel', '채널'],
   ['provider', '공급자'], ['category', '분류'], ['source', '소스'], ['level', '수준']];
 const RELATIVE = /^\d+[mhd]$/;
 

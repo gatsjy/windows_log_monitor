@@ -1,6 +1,6 @@
 {
  "version": 1,
- "_comment": "검색 문장(B-01) 케이스 표 — server/app/querylang.py · web/js/querylang.js · SQL 이 같은 결과를 내는지 함께 시험한다. 규칙을 바꾸면 여기에 줄을 먼저 추가한다 (AGENTS.md). 위치는 코드 포인트(0부터, end 미포함).",
+ "_comment": "검색 문장(B-01) 케이스 표 — server/app/querylang.py · web/js/querylang.js · SQL 이 같은 결과를 내는지 함께 시험한다. 규칙을 바꾸면 여기에 줄을 먼저 추가한다 (AGENTS.md). 위치는 코드 포인트(0부터, end 미포함). account_key·account_fixtures·account_match = 계정 표기 통일(B-54) — 고정 이벤트를 따로 두어 기존 match 의 id 목록이 바뀌지 않게.",
  "fixtures": [
   {
    "id": 1,
@@ -3318,6 +3318,75 @@
     "end": 78,
     "message": "메시지 단어·구절은 20개까지 쓸 수 있습니다."
    }
+  },
+  {
+   "text": "account:HOSP\\Kim",
+   "terms": [
+    {
+     "key": "account",
+     "neg": false,
+     "values": [
+      "HOSP\\Kim"
+     ],
+     "span": [
+      0,
+      16
+     ]
+    }
+   ],
+   "canonical": "account:HOSP\\Kim"
+  },
+  {
+   "text": "-account:svc_backup",
+   "terms": [
+    {
+     "key": "account",
+     "neg": true,
+     "values": [
+      "svc_backup"
+     ],
+     "span": [
+      0,
+      19
+     ]
+    }
+   ],
+   "canonical": "-account:svc_backup"
+  },
+  {
+   "text": "account:\"kim lee\"",
+   "terms": [
+    {
+     "key": "account",
+     "neg": false,
+     "values": [
+      "kim lee"
+     ],
+     "span": [
+      0,
+      17
+     ]
+    }
+   ],
+   "canonical": "account:\"kim lee\""
+  },
+  {
+   "text": "Account:kim,lee",
+   "terms": [
+    {
+     "key": "account",
+     "neg": false,
+     "values": [
+      "kim",
+      "lee"
+     ],
+     "span": [
+      0,
+      15
+     ]
+    }
+   ],
+   "canonical": "account:kim,lee"
   }
  ],
  "match": [
@@ -4262,6 +4331,24 @@
     "host": "A,B"
    },
    "query": "host:A,B"
+  },
+  {
+   "legacy": {
+    "query": "account:kim"
+   },
+   "query": "account:KIM"
+  },
+  {
+   "legacy": {
+    "query": "account:kim"
+   },
+   "query": "account:HOSP\\kim"
+  },
+  {
+   "legacy": {
+    "query": "account:kim"
+   },
+   "query": "account:\"kim@hosp.local\""
   }
  ],
  "fold": [
@@ -4670,6 +4757,510 @@
     }
    ],
    "result": "x f.EventData.X:\"a b\""
+  }
+ ],
+ "account_key": [
+  {
+   "in": "HOSP\\kim",
+   "out": "kim"
+  },
+  {
+   "in": "hosp.local\\kim",
+   "out": "kim"
+  },
+  {
+   "in": "KIM",
+   "out": "kim"
+  },
+  {
+   "in": "kim@hosp.local",
+   "out": "kim"
+  },
+  {
+   "in": "HOSP\\kim@hosp.local",
+   "out": "kim"
+  },
+  {
+   "in": "PC01\\Administrator",
+   "out": "administrator"
+  },
+  {
+   "in": ".\\admin",
+   "out": "admin"
+  },
+  {
+   "in": "NT AUTHORITY\\SYSTEM",
+   "out": "system"
+  },
+  {
+   "in": "PC01$@HOSP.LOCAL",
+   "out": "pc01$"
+  },
+  {
+   "in": "PC01$",
+   "out": "pc01$"
+  },
+  {
+   "in": "kim@HOSP",
+   "out": "kim@hosp"
+  },
+  {
+   "in": "HOSP\\",
+   "out": "hosp\\"
+  },
+  {
+   "in": "@hosp.local",
+   "out": "@hosp.local"
+  },
+  {
+   "in": "a@b.c@d.e",
+   "out": "a"
+  },
+  {
+   "in": "LocalSystem",
+   "out": "localsystem"
+  },
+  {
+   "in": "김민수",
+   "out": "김민수"
+  },
+  {
+   "in": "HOSP\\김민수",
+   "out": "김민수"
+  },
+  {
+   "in": "p\\q@r.s\\",
+   "out": "q"
+  },
+  {
+   "in": "\\",
+   "out": "\\"
+  },
+  {
+   "in": "\\\\",
+   "out": "\\\\"
+  },
+  {
+   "in": "x\\",
+   "out": "x\\"
+  },
+  {
+   "in": "\\kim",
+   "out": "kim"
+  },
+  {
+   "in": "a\\b\\c",
+   "out": "c"
+  },
+  {
+   "in": "kim.minsu@HOSP.LOCAL",
+   "out": "kim.minsu"
+  },
+  {
+   "in": "CORP\\kim.minsu",
+   "out": "kim.minsu"
+  },
+  {
+   "in": "ÄİΣ",
+   "out": "ÄİΣ"
+  },
+  {
+   "in": "ÉLÈVE",
+   "out": "ÉlÈve"
+  },
+  {
+   "in": "kim@",
+   "out": "kim@"
+  },
+  {
+   "in": "@",
+   "out": "@"
+  },
+  {
+   "in": "k@x.",
+   "out": "k"
+  },
+  {
+   "in": "k@.x",
+   "out": "k"
+  },
+  {
+   "in": "S-1-5-18",
+   "out": "s-1-5-18"
+  },
+  {
+   "in": "svc_backup",
+   "out": "svc_backup"
+  },
+  {
+   "in": "SVC_BACKUP",
+   "out": "svc_backup"
+  },
+  {
+   "in": "HOSP\\SVC_Backup@hosp.local",
+   "out": "svc_backup"
+  },
+  {
+   "in": "user@mail.example.com\\x",
+   "out": "x"
+  },
+  {
+   "in": "x\\user@mail.example.com",
+   "out": "user"
+  },
+  {
+   "in": "  spaced  ",
+   "out": "  spaced  "
+  },
+  {
+   "in": "tab\tname",
+   "out": "tab\tname"
+  },
+  {
+   "in": "😀\\Kim@a.b",
+   "out": "kim"
+  }
+ ],
+ "account_fixtures": [
+  {
+   "id": 101,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "kim",
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  },
+  {
+   "id": 102,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "KIM",
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  },
+  {
+   "id": 103,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "HOSP\\kim",
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  },
+  {
+   "id": 104,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "kim@hosp.local",
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  },
+  {
+   "id": 105,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "hosp.local\\kim",
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  },
+  {
+   "id": 106,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "PC01\\Administrator",
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  },
+  {
+   "id": 107,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "Administrator",
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  },
+  {
+   "id": 108,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "NT AUTHORITY\\SYSTEM",
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  },
+  {
+   "id": 109,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "PC01$@HOSP.LOCAL",
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  },
+  {
+   "id": 110,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": "kim@HOSP",
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  },
+  {
+   "id": 111,
+   "host": "DC-01",
+   "source": "winevtlog",
+   "category": "security",
+   "channel": "Security",
+   "provider": "Microsoft-Windows-Security-Auditing",
+   "event_id": 4624,
+   "level": 4,
+   "username": null,
+   "src_ip": null,
+   "message": "로그온",
+   "raw": {
+    "EventID": 4624
+   }
+  }
+ ],
+ "account_match": [
+  {
+   "name": "계정 열쇠 — 표기 다섯 가지",
+   "params": {
+    "query": "account:kim"
+   },
+   "ids": [
+    101,
+    102,
+    103,
+    104,
+    105
+   ]
+  },
+  {
+   "name": "계정 열쇠 — 쓴 표기 그대로",
+   "params": {
+    "query": "account:HOSP\\Kim"
+   },
+   "ids": [
+    101,
+    102,
+    103,
+    104,
+    105
+   ]
+  },
+  {
+   "name": "계정 열쇠 — 따옴표 UPN",
+   "params": {
+    "query": "account:\"kim@hosp.local\""
+   },
+   "ids": [
+    101,
+    102,
+    103,
+    104,
+    105
+   ]
+  },
+  {
+   "name": "user 는 그대로 정확히",
+   "params": {
+    "query": "user:kim"
+   },
+   "ids": [
+    101
+   ]
+  },
+  {
+   "name": "계정 열쇠 제외 — 사용자 없는 이벤트는 남김",
+   "params": {
+    "query": "-account:kim"
+   },
+   "ids": [
+    106,
+    107,
+    108,
+    109,
+    110,
+    111
+   ]
+  },
+  {
+   "name": "로컬·도메인 관리자는 합쳐짐 (알려진 한계)",
+   "params": {
+    "query": "account:administrator"
+   },
+   "ids": [
+    106,
+    107
+   ]
+  },
+  {
+   "name": "컴퓨터 계정은 이름과 다르다",
+   "params": {
+    "query": "account:pc01"
+   },
+   "ids": []
+  },
+  {
+   "name": "컴퓨터 계정 UPN",
+   "params": {
+    "query": "account:pc01$"
+   },
+   "ids": [
+    109
+   ]
+  },
+  {
+   "name": "점 없는 @ 는 그대로",
+   "params": {
+    "query": "account:kim@hosp"
+   },
+   "ids": [
+    110
+   ]
+  },
+  {
+   "name": "겹치지 않는 계정",
+   "params": {
+    "query": "account:kim account:lee"
+   },
+   "ids": []
+  },
+  {
+   "name": "같은 계정 두 번",
+   "params": {
+    "query": "account:KIM account:kim"
+   },
+   "ids": [
+    101,
+    102,
+    103,
+    104,
+    105
+   ]
+  },
+  {
+   "name": "계정 열쇠 + 정확한 표기",
+   "params": {
+    "query": "account:kim user:KIM"
+   },
+   "ids": [
+    102
+   ]
+  },
+  {
+   "name": "계정 열쇠 - 정확한 표기",
+   "params": {
+    "query": "account:kim -user:kim"
+   },
+   "ids": [
+    102,
+    103,
+    104,
+    105
+   ]
+  },
+  {
+   "name": "NT AUTHORITY",
+   "params": {
+    "query": "account:system"
+   },
+   "ids": [
+    108
+   ]
+  },
+  {
+   "name": "여러 값",
+   "params": {
+    "query": "account:KIM,administrator"
+   },
+   "ids": [
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107
+   ]
   }
  ]
 }

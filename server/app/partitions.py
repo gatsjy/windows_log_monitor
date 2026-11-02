@@ -8,9 +8,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from psycopg import errors, sql
 
@@ -270,6 +272,101 @@ async def lock_dormant_accounts() -> None:
         zone = display_zone()
         await adminwatch.notify("system", f"장기 미사용 계정 {len(locked)}개를 껐습니다 — {settings.dormant_days}일 동안 로그인하지 않음",
                                 [f"{u['username']} (마지막 사용 {u['last_used'].astimezone(zone):%Y-%m-%d})" for u in locked])
+
+
+ACCOUNT_INDEX = "events_account_ts_idx"   # 마이그레이션 038 — 부모 색인(ON ONLY)
+OLD_USER_INDEX = "events_user_ts_idx"      # 마이그레이션 007 — 계정 색인이 다 붙으면 지운다(user: 도 계정 색인으로 찾는다)
+_INDEX_LOCK_ID = 727_007
+INDEX_BUILD_EVERY_SEC = 3600
+
+
+async def account_index_status(conn) -> dict[str, Any]:
+    """계정 표기 색인(B-54): 부모 색인이 유효한가, 월 파티션 중 붙은 것 몇 개. 마이그레이션 전이면 None 들."""
+    cur = await conn.execute(
+        "SELECT x.indisvalid AS valid FROM pg_class c JOIN pg_index x ON x.indexrelid = c.oid WHERE c.relname = %s", (ACCOUNT_INDEX,))
+    row = await cur.fetchone()
+    if row is None:
+        return {"valid": None, "attached": 0, "partitions": 0, "missing": []}
+    missing = await _partitions_without_account_index(conn)
+    cur = await conn.execute("SELECT count(*) AS n FROM pg_inherits WHERE inhparent = 'events'::regclass")
+    total = (await cur.fetchone())["n"]
+    return {"valid": row["valid"], "attached": total - len(missing), "partitions": total, "missing": missing}
+
+
+async def _partitions_without_account_index(conn) -> list[str]:
+    cur = await conn.execute(
+        "SELECT c.relname AS name FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = 'events'::regclass"
+        " AND NOT EXISTS (SELECT 1 FROM pg_inherits ii JOIN pg_index x ON x.indexrelid = ii.inhrelid"
+        "                 WHERE ii.inhparent = %s::regclass AND x.indrelid = c.oid)"
+        " ORDER BY c.relname DESC", (ACCOUNT_INDEX,))
+    return [r["name"] for r in await cur.fetchall()]
+
+
+async def build_account_indexes() -> int:
+    """있던 월 파티션마다 계정 표기 색인을 CONCURRENTLY 로 만들어 부모 색인에 붙인다 (B-54, ADR-062). 최신 달부터, 수집·검색을 막지 않고.
+    마이그레이션 트랜잭션에서 한꺼번에 만들면 행 1억 개에 기동이 몇십 분 멈춰 설치 스크립트의 기동 대기를 넘었다. 다 붙으면 부모 색인이 유효해진다.
+    중간에 멈춰 남은 INVALID 조각은 지우고 다시 만든다. 붙인 파티션 수를 돌려준다."""
+    built = 0
+    async with await db.connect_autocommit() as conn:
+        cur = await conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (_INDEX_LOCK_ID,))
+        if not (await cur.fetchone())["ok"]:
+            return 0
+        try:
+            await conn.execute("SET statement_timeout = 0")
+            status = await account_index_status(conn)
+            if status["valid"] is None:
+                return 0
+            for name in status["missing"]:
+                index = f"{name}_account_ts_idx"
+                try:
+                    cur = await conn.execute("SELECT x.indisvalid AS valid FROM pg_class c JOIN pg_index x ON x.indexrelid = c.oid"
+                                             " WHERE c.relname = %s", (index,))
+                    leftover = await cur.fetchone()
+                    if leftover is not None and not leftover["valid"]:
+                        await conn.execute(sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {}").format(sql.Identifier(index)))
+                    # 식·조건은 부모 색인(마이그레이션 038)과 같아야 붙는다
+                    await conn.execute(sql.SQL("CREATE INDEX CONCURRENTLY IF NOT EXISTS {} ON {} (wlm_user_key(username), ts DESC)"
+                                               " WHERE username IS NOT NULL").format(sql.Identifier(index), sql.Identifier(name)))
+                    await conn.execute(sql.SQL("ALTER INDEX {} ATTACH PARTITION {}").format(sql.Identifier(ACCOUNT_INDEX),
+                                                                                            sql.Identifier(index)))
+                    built += 1
+                    log.info("계정 표기 색인: %s 완료", name)
+                except errors.UndefinedTable:
+                    continue   # 그 사이 로테이션이 지운 파티션
+                except Exception:
+                    log.exception("계정 표기 색인 만들기 실패: %s — 다음 주기에 다시", name)
+            if (await account_index_status(conn))["valid"]:
+                await _drop_old_user_index(conn)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock(%s)", (_INDEX_LOCK_ID,))
+    return built
+
+
+async def _drop_old_user_index(conn) -> None:
+    """계정 표기 색인이 모든 파티션에 붙은 뒤에만 예전 username 색인을 지운다 — 그 전에는 user: 가 예전 색인으로 찾는다.
+    파티션 색인은 CONCURRENTLY 로 지울 수 없어 잠깐 events 를 잠근다 — 백업이 읽는 중이면 기다리지 않고 다음 주기에(DDL_LOCK_TIMEOUT)."""
+    cur = await conn.execute("SELECT 1 FROM pg_class WHERE relname = %s AND relkind = 'I'", (OLD_USER_INDEX,))
+    if await cur.fetchone() is None:
+        return
+    try:
+        await conn.execute(sql.SQL("SET lock_timeout = {}").format(sql.Literal(DDL_LOCK_TIMEOUT)))
+        await conn.execute(sql.SQL("DROP INDEX IF EXISTS {}").format(sql.Identifier(OLD_USER_INDEX)))
+        log.warning("예전 사용자 색인 %s 을(를) 지웠습니다 — user:·account: 모두 계정 표기 색인으로 찾습니다", OLD_USER_INDEX)
+    except errors.LockNotAvailable:
+        log.warning("예전 사용자 색인 지우기를 미룸: events 잠금을 얻지 못함 (백업 중일 수 있음)")
+    finally:
+        await conn.execute("SET lock_timeout = 0")
+
+
+async def account_index_loop() -> None:
+    """기동 1분 뒤부터 한 시간마다 — 다 붙어 있으면 카탈로그만 보고 끝난다."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await build_account_indexes()
+        except Exception:
+            log.exception("계정 표기 색인 점검 실패")
+        await asyncio.sleep(INDEX_BUILD_EVERY_SEC)
 
 
 async def run_maintenance(with_integrity: bool = True) -> None:

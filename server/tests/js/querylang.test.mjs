@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { CATEGORY_LABELS, LEVELS } from '../../../web/js/levels.js';
 import { fieldValue, getPath, matchesQuery } from '../../../web/js/livefilter.js';
 import {
-  CATEGORIES, LEVEL_NAMES, QueryError, addTerm, compileQuery, cpToUtf16, foldParams, formatQuery, parseTerms, rawText,
+  CATEGORIES, LEVEL_NAMES, QueryError, accountKey, addTerm, compileQuery, cpToUtf16, foldParams, formatQuery, parseTerms, rawText,
   setKey, setLevels, termJson, tokenAt, utf16ToCp,
 } from '../../../web/js/querylang.js';
 
@@ -100,4 +100,22 @@ test('어휘가 화면의 수준·분류 이름과 같다', () => {
 test('잘못된 조건은 아무것도 맞지 않는다 (서버는 400)', () => {
   assert.equal(compileQuery({ query: 'hots:x' })(CASES.fixtures[0]), false);
   assert.equal(compileQuery({ level: 'x' })(CASES.fixtures[0]), false);
+});
+
+test('계정 열쇠 (B-54): 표의 표기마다 같은 열쇠, 두 번 해도 같다', () => {
+  for (const c of CASES.account_key) {
+    assert.equal(accountKey(c.in), c.out, JSON.stringify(c.in));
+    assert.equal(accountKey(c.out), c.out, JSON.stringify(c.out));
+  }
+  assert.equal(accountKey(null), null);
+  assert.equal(accountKey(undefined), null);
+});
+
+test('account: 검색 — 고정 이벤트에 같은 결과, 실시간 상위 값 열쇠도 같다 (B-54)', () => {
+  for (const c of CASES.account_match) {
+    assert.deepEqual(CASES.account_fixtures.filter(compileQuery(c.params)).map((f) => f.id), c.ids, c.name);
+    assert.deepEqual(CASES.account_fixtures.filter((f) => matchesQuery(c.params, f)).map((f) => f.id), c.ids, c.name);
+  }
+  assert.deepEqual(CASES.account_fixtures.map((f) => fieldValue('account', f)),
+    CASES.account_fixtures.map((f) => accountKey(f.username)));
 });

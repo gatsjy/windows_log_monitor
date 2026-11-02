@@ -23,7 +23,7 @@ from . import db, partitions
 from .config import settings
 from .filters import EventFilter
 from .normalizers import Event, Heartbeat, IisContext
-from .querylang import RAW_ALIAS
+from .querylang import RAW_ALIAS, account_key
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ COLUMN_EXPR = {
     "level": "level::text",
     "category": "category",
     "user": "username",
+    "account": "wlm_user_key(username)",   # 계정 표기 통일 (B-54, 마이그레이션 038) — 식 색인 events_account_ts_idx 와 글자까지 같게
     "ip": "src_ip",
 }
 
@@ -105,7 +106,12 @@ def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
     for column, values in (("host", f.hosts), ("channel", f.channels), ("provider", f.providers),
                            ("source", f.sources), ("category", f.categories), ("username", f.users),
                            ("src_ip", f.ips)):
-        if values:
+        if values and column == "username":
+            # user: 는 정확히 같은 표기 — 계정 열쇠 조건을 함께 써서 계정 표기 색인 하나로 user:·account: 둘 다 찾는다(B-54).
+            # 이름이 같으면 열쇠도 같으니 뜻은 그대로. 예전 username 색인을 따로 두면 수집 쓰기가 10% 느렸다(PERFORMANCE.md §2.10)
+            clauses.append(sql.SQL("(username IS NOT NULL AND wlm_user_key(username) = ANY(%s::text[]) AND username = ANY(%s::text[]))"))
+            params.extend([list(dict.fromkeys(account_key(v) for v in values)), values])
+        elif values:
             clauses.append(sql.SQL("{} = ANY(%s::text[])").format(sql.Identifier(column)))
             params.append(values)
     if f.levels:
@@ -114,6 +120,10 @@ def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
     if f.event_ids:
         clauses.append(sql.SQL("event_id = ANY(%s::int[])"))
         params.append(f.event_ids)
+    # account: (B-54) — 'username IS NOT NULL' 을 함께 써야 부분 색인(WHERE username IS NOT NULL)을 쓸 수 있다고 플래너가 안다
+    if f.accounts:
+        clauses.append(sql.SQL("(username IS NOT NULL AND wlm_user_key(username) = ANY(%s::text[]))"))
+        params.append(f.accounts)
     # 옛 q 와 문장의 메시지 묶음은 같은 모양: q=a|b 와 query=msg:a,b 는 SQL 이 같다
     for group in ([f.q_terms] if f.q_terms else []) + f.msg_all:
         clauses.append(sql.SQL("({})").format(sql.SQL(" OR ").join(sql.SQL("message ILIKE %s") for _ in group)))
@@ -136,6 +146,9 @@ def where_clause(f: EventFilter) -> tuple[sql.Composable, list[Any]]:
             clause, clause_params = _raw_clause("({raw} = ANY(%s::text[])) IS NOT TRUE", key[2:].split("."))
             clauses.append(clause)
             params.extend([*clause_params, values])
+    if f.excludes.get("account"):
+        clauses.append(sql.SQL("(username IS NOT NULL AND wlm_user_key(username) = ANY(%s::text[])) IS NOT TRUE"))
+        params.append(f.excludes["account"])
     for term in f.msg_not:
         clauses.append(sql.SQL("(message ILIKE %s) IS NOT TRUE"))
         params.append(_like(term))
@@ -747,7 +760,7 @@ async def timeseries(f: EventFilter, step: timedelta, origin: datetime, group: s
 
 
 # 값이 없는 로그(로컬 로그온, 시스템 이벤트 등)가 대부분인 필드. 상위 목록에서 '(없음)' 이 1위를 차지하지 않게 뺀다.
-TOP_SKIP_EMPTY = ("user", "ip")
+TOP_SKIP_EMPTY = ("user", "account", "ip")
 
 
 async def top(f: EventFilter, field: str, limit: int) -> list[dict]:

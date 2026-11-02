@@ -11,16 +11,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.filters import EventFilter
-from app.querylang import QueryError, parse_terms
+from app.querylang import QueryError, account_key, parse_terms
 
 CASES = json.loads((Path(__file__).resolve().parents[1] / "querylang_cases.json").read_text(encoding="utf-8"))
 
 for line in sys.stdin:
     text = json.loads(line)
+    if isinstance(text, dict):   # {"key": 사용자 이름} → 계정 열쇠 (B-54)
+        print(json.dumps({"key": account_key(text["key"])}, ensure_ascii=False))
+        continue
     try:
         terms = [t.to_json() for t in parse_terms(text)]
     except QueryError as exc:
         print(json.dumps({"error": exc.as_dict()}, ensure_ascii=False))
         continue
     f = EventFilter.from_params({"query": text}, default_since=None)
-    print(json.dumps({"terms": terms, "ids": [fx["id"] for fx in CASES["fixtures"] if f.matches(fx)]}, ensure_ascii=False))
+    print(json.dumps({"terms": terms, "ids": [fx["id"] for fx in CASES["fixtures"] if f.matches(fx)],
+                      "aids": [fx["id"] for fx in CASES["account_fixtures"] if f.matches(fx)]}, ensure_ascii=False))

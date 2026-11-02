@@ -7,6 +7,7 @@ DB 결과(SQL)와의 일치는 test_api_querylang.py.
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -193,3 +194,43 @@ def test_explain_names_the_failing_condition():
                                                     "ok": False}
     assert f.explain({"event_id": 4625, "message": "잘못된 암호", "raw": {}})[1]["ok"]   # 사용자가 없으면 제외에 걸리지 않음
     assert [c["key"] for c in _filter({"query": "event_id:4625 event_id:4624"}).explain({})][:1] == ["never"]
+
+
+
+# ---------------------------------------------------------------- 계정 표기 통일 (B-54, ADR-062)
+
+@pytest.mark.parametrize("case", CASES["account_key"], ids=[repr(c["in"]) for c in CASES["account_key"]])
+def test_account_key_vectors(case):
+    from app.querylang import account_key
+
+    assert account_key(case["in"]) == case["out"]
+    assert account_key(case["out"]) == case["out"]   # 두 번 해도 같다 — 열쇠로 다시 찾으면 같은 행
+
+
+def test_account_key_is_idempotent_on_random_names():
+    from app.querylang import account_key
+
+    pick = random.Random(54)
+    pieces = ["HOSP", "hosp", ".local", "kim", "KIM", "\\", "\\", "@", "@", ".", "PC01", "$", "김", "İ", "Σ", "😀", " ", "x"]
+    for _ in range(5000):
+        name = "".join(pick.choice(pieces) for _ in range(pick.randint(0, 8)))
+        assert account_key(account_key(name)) == account_key(name), name
+
+
+def _account_ids(params: dict) -> list[int]:
+    f = _filter(params)
+    return [fx["id"] for fx in CASES["account_fixtures"] if f.matches(fx)]
+
+
+@pytest.mark.parametrize("case", CASES["account_match"], ids=[c["name"] for c in CASES["account_match"]])
+def test_account_match(case):
+    assert _account_ids(case["params"]) == case["ids"]
+    f = _filter(case["params"])
+    for fx in CASES["account_fixtures"]:   # 규칙 시험기(explain)도 같은 뜻
+        assert all(c["ok"] for c in f.explain(fx)) == f.matches(fx), (case["name"], fx["id"])
+
+
+def test_account_does_not_change_user():
+    """user: 는 그대로 정확히·대소문자 구분 — 배포된 규칙·예외(-user:)의 뜻이 바뀌지 않는다."""
+    assert where_clause(_filter({"query": "user:kim"})) == where_clause(_filter({"user": "kim"}))
+    assert _filter({"query": "account:HOSP\\Kim"}).accounts == ["kim"]

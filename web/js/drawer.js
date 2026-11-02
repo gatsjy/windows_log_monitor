@@ -4,7 +4,7 @@ import { can } from './auth.js';
 import { eventDoc } from './catalog.js';
 import { jsonView } from './jsonview.js';
 import { categoryLabel, levelBadge, sourceLabel } from './levels.js';
-import { addTerm, aliasPath, formatTerm, parseTerms } from './querylang.js';
+import { accountKey, addTerm, aliasPath, formatTerm, parseTerms } from './querylang.js';
 import { runTest } from './ruletest.js';
 import { errorBox, fmtNum, fmtRelative, fmtTime, html, navigate } from './util.js';
 
@@ -47,6 +47,7 @@ function actions(filter) {
 
 function act(kind, filter) {
   const term = termOf(filter);
+  if (kind === 'only' && term?.key === 'account') { searchBy({ query: formatTerm(term) }); return; }   // account 는 주소 파라미터가 없다
   if (kind === 'only' || !term) { searchBy(filter); return; }
   if (kind === 'without') { searchBy({ query: formatTerm({ ...term, neg: true }) }); return; }
   const ctx = searchContext;
@@ -221,6 +222,8 @@ export async function openEvent(evOrId) {
       ${row(ev.source === 'iis' ? 'HTTP 상태' : '이벤트 ID', ev.event_id, ev.event_id != null ? { event_id: ev.event_id } : null)}
       ${row('수준', levelBadge(ev.level), { level: ev.level })}
       ${ev.username ? row('사용자', ev.username, { user: ev.username }) : ''}
+      ${ev.username ? row('계정(표기 통일)', html`<code title="HOSP\\kim·kim@hosp.local·KIM 처럼 표기가 달라도 같은 계정으로 찾습니다">${accountKey(ev.username)}</code>`,
+        { account: accountKey(ev.username) }) : ''}
       ${ev.src_ip ? row('접속 IP', ev.src_ip, { ip: ev.src_ip }) : ''}
     </dl>
     ${ev.summary ? html`<div class="section-title">요약</div><p class="summary-line">${ev.summary}</p>` : ''}

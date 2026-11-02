@@ -70,7 +70,7 @@ def test_category_user_ip_filters():
     assert f.matches({"category": "iis", "username": "kim", "src_ip": "10.0.0.5"})
     assert not f.matches({"category": "iis", "username": "lee", "src_ip": "10.0.0.5"})
     _, params = where_clause(f)
-    assert params == [["iis"], ["kim"], ["10.0.0.5"]]
+    assert params == [["iis"], ["kim"], ["kim"], ["10.0.0.5"]]   # user: 는 계정 열쇠 + 정확한 표기 (계정 색인 하나로, B-54)
 
 
 def test_scope_matches_for_live_stream():

@@ -38,6 +38,7 @@ const SYNC = /* @sync:begin */ {
     "source",
     "category",
     "user",
+    "account",
     "ip",
     "level",
     "event_id",
@@ -112,7 +113,6 @@ const SYNC = /* @sync:begin */ {
     "메시지": "msg",
     "내용": "msg",
     "username": "user",
-    "account": "user",
     "사용자": "user",
     "계정": "user",
     "src_ip": "ip",
@@ -225,6 +225,17 @@ const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
 /** A-Z 만 소문자로 (toLowerCase 는 'İ' 같은 글자를 바꿔 Python 과 어긋난다) */
 export const asciiLower = (text) => text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+/** 계정 표기 통일 (B-54) — querylang.account_key·SQL wlm_user_key 와 한 글자도 같게. 'HOSP\\kim'·'kim@hosp.local'·'KIM' → 'kim'.
+ *  끝의 역슬래시를 빼고 본 마지막 '\\' 뒤 → 첫 '@'(둘째 글자 이후, 뒤에 '.')의 앞 → A-Z 만 소문자. 나누는 글자가 모두 ASCII 라 UTF-16 위치로 잘라도 같다 */
+export function accountKey(name) {
+  if (name == null) return null;
+  const i = name.replace(/\\+$/, '').lastIndexOf('\\');
+  let t = i >= 0 ? name.slice(i + 1) : name;
+  const j = t.indexOf('@');
+  if (j >= 1 && t.slice(j + 1).includes('.')) t = t.slice(0, j);
+  return asciiLower(t);
+}
 
 /** 메시지 대소문자 무시 비교용 — PostgreSQL ILIKE 와 맞춘다 (querylang.fold 참고) */
 export const fold = (text) => text.replaceAll('İ', 'i').replaceAll('Σ', 'σ').toLowerCase();
@@ -617,7 +628,7 @@ const wsTrim = (text) => {
 function emptyFilter() {
   return {
     hosts: [], channels: [], providers: [], sources: [], categories: [], users: [], ips: [], levels: [], event_ids: [],
-    qTerms: [], fields: [], excludes: new Map(), msgAll: [], msgNot: [], fieldAny: [], never: false,
+    accounts: [], qTerms: [], fields: [], excludes: new Map(), msgAll: [], msgNot: [], fieldAny: [], never: false,
   };
 }
 
@@ -625,7 +636,8 @@ function emptyFilter() {
 export function mergeTerms(filter, terms) {
   const f = { ...filter, excludes: new Map([...filter.excludes].map(([k, v]) => [k, [...v]])) };
   for (const term of terms) {
-    const values = [...term.values];
+    // account: 쓴 표기는 문장에 남기고 비교는 열쇠로 (account:KIM account:kim → kim 하나)
+    const values = term.key === 'account' ? unique(term.values.map(accountKey)) : [...term.values];
     if (term.neg) {
       if (term.key === 'msg') { f.msgNot = [...f.msgNot, ...values.filter((v) => !f.msgNot.includes(v))]; continue; }
       const key = term.key === 'f' ? `f.${term.path.join('.')}` : term.key;
@@ -638,7 +650,7 @@ export function mergeTerms(filter, terms) {
       if (values.length === 1) f.fields = [...f.fields, [[...term.path], values[0]]];
       else f.fieldAny = [...f.fieldAny, [[...term.path], values]];
     } else {
-      const name = INCLUDE_FIELD[term.key];
+      const name = term.key === 'account' ? 'accounts' : INCLUDE_FIELD[term.key];
       if (f[name].length) {
         const narrowed = f[name].filter((v) => values.includes(v));
         f.never = f.never || !narrowed.length;
@@ -713,6 +725,7 @@ export function compileFilter(f) {
   if (!f) return () => false;
   if (f.never) return () => false;
   const cols = Object.entries(INCLUDE_FIELD).filter(([, name]) => f[name].length);
+  const accounts = f.accounts ?? [];
   const q = f.qTerms.map(fold);
   const msgAll = f.msgAll.map((g) => g.map(fold));
   const msgNot = f.msgNot.map(fold);
@@ -721,6 +734,10 @@ export function compileFilter(f) {
     for (const [key, name] of cols) {
       const v = eventValue(ev, key);
       if (v === null || !f[name].includes(v)) return false;
+    }
+    if (accounts.length) {
+      const k = accountKey(ev.username ?? null);
+      if (k === null || !accounts.includes(k)) return false;
     }
     const message = foldedMessage(ev);
     if (q.length && !q.some((t) => message.includes(t))) return false;
@@ -737,6 +754,9 @@ export function compileFilter(f) {
       if (key.startsWith('f.')) {
         const cur = rawField(ev.raw, key.slice(2).split('.'));
         if (cur != null && values.includes(rawText(cur))) return false;
+      } else if (key === 'account') {
+        const k = accountKey(ev.username ?? null);
+        if (k !== null && values.includes(k)) return false;   // 사용자가 없으면 남김
       } else {
         const v = eventValue(ev, key);
         if (v !== null && values.includes(v)) return false;   // 값이 없으면 남김 = SQL 의 IS NOT TRUE

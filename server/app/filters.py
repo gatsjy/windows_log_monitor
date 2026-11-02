@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from functools import cached_property
 from typing import Any
 
-from .querylang import FilterError, QueryError, Term, fold, parse_terms, raw_field, raw_text
+from .querylang import FilterError, QueryError, Term, account_key, fold, parse_terms, raw_field, raw_text
 
 __all__ = ["EventFilter", "FilterError", "QueryError", "Scope", "field_filters", "parse_duration", "parse_query",
            "parse_time", "query_text", "raw_text", "scopes_allow"]
@@ -140,6 +140,8 @@ class EventFilter:
     ips: list[str] = field(default_factory=list)
     levels: list[int] = field(default_factory=list)
     event_ids: list[int] = field(default_factory=list)
+    # 계정 표기 통일 열쇠 (B-54, querylang.account_key) — 문장 account: 에서만. URL 파라미터는 없다
+    accounts: list[str] = field(default_factory=list)
     q: str = ""
     fields: list[tuple[list[str], str]] = field(default_factory=list)
     # ---- 검색 문장(query)에서만 생기는 조건 (merged). 만든 뒤에는 고치지 않는다 — replace() 는 얕은 복사라서
@@ -196,7 +198,8 @@ class EventFilter:
         excludes = {k: list(v) for k, v in self.excludes.items()}
         never = self.never
         for term in terms:
-            values = list(term.values)
+            # account: 쓴 표기는 문장에 남기고 비교는 열쇠로 (account:KIM account:kim → kim 하나)
+            values = list(dict.fromkeys(account_key(v) for v in term.values)) if term.key == "account" else list(term.values)
             if term.neg:
                 key = "f." + ".".join(term.path) if term.key == "f" else term.key
                 if term.key == "msg":
@@ -212,7 +215,7 @@ class EventFilter:
                 else:
                     changes["field_any"] = [*current("field_any"), (list(term.path), values)]
             else:
-                name = INCLUDE_FIELD[term.key]
+                name = "accounts" if term.key == "account" else INCLUDE_FIELD[term.key]
                 existing = current(name)
                 if existing:
                     allowed = set(values)
@@ -261,6 +264,8 @@ class EventFilter:
             return False
         if self.event_ids and event.get("event_id") not in self.event_ids:
             return False
+        if self.accounts and account_key(event.get("username")) not in self.accounts:   # 사용자가 없으면(None) 안 맞음
+            return False
         # NULL 메시지 → '' → 포함 조건에 안 맞음 (ILIKE on NULL). folded = 미리 접은 메시지 (보관 등급이 등급마다 다시 접지 않게)
         message = folded if folded is not None else fold(event.get("message") or "") if (self.q_terms or self.msg_all or self.msg_not) else ""
         if self.q_terms and not any(fold(term) in message for term in self.q_terms):
@@ -280,6 +285,10 @@ class EventFilter:
             if key.startswith("f."):
                 current = raw_field(event.get("raw"), key[2:].split("."))
                 if current is not None and raw_text(current) in values:
+                    return False
+            elif key == "account":
+                current = account_key(event.get("username"))
+                if current is not None and current in values:
                     return False
             else:
                 current = event.get(EVENT_FIELD.get(key, key))
@@ -307,6 +316,9 @@ class EventFilter:
             if values:
                 actual = event.get(EVENT_FIELD.get(key, key))
                 check(key, "in", list(values), actual, actual in values)
+        if self.accounts:
+            actual = account_key(event.get("username"))
+            check("account", "in", list(self.accounts), actual, actual in self.accounts)
         raw_message = event.get("message") or ""
         message = fold(raw_message)
         shown = raw_message if len(raw_message) <= 300 else raw_message[:300] + "…"
@@ -326,6 +338,8 @@ class EventFilter:
             if key.startswith("f."):
                 current = raw_field(event.get("raw"), key[2:].split("."))
                 actual = None if current is None else raw_text(current)
+            elif key == "account":
+                actual = account_key(event.get("username"))
             else:
                 actual = event.get(EVENT_FIELD.get(key, key))
             check(key, "not_in", list(values), actual, actual is None or actual not in values)   # 값이 없으면 남김

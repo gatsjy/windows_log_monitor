@@ -3,16 +3,17 @@
 // Enter·포커스를 잃을 때 확정(onCommit)한다. 틀린 문장은 확정하지 않는다 (이전 결과 유지).
 // 해석 규칙은 querylang.js(서버 querylang.py 와 같은 알고리즘), 여기는 화면만.
 import { CATEGORY_LABELS, LEVELS } from './levels.js';
-import { KEYS, LEVEL_NAMES, QueryError, cpToUtf16, formatValue, parseTerms, tokenAt } from './querylang.js';
+import { KEYS, LEVEL_NAMES, QueryError, accountKey, cpToUtf16, formatValue, parseTerms, tokenAt } from './querylang.js';
 import { html } from './util.js';
 
 export const KEY_LABELS = {
-  host: 'PC', channel: '채널', provider: '공급자', source: '소스', category: '분류', user: '사용자', ip: '출발지 IP',
+  host: 'PC', channel: '채널', provider: '공급자', source: '소스', category: '분류', user: '사용자', account: '계정(표기 통일)', ip: '출발지 IP',
   level: '수준', event_id: '이벤트 ID', msg: '메시지', f: '원본 필드',
 };
 
 const EXAMPLES = [
   ['event_id:4625 -user:svc_backup', '로그온 실패 중 백업 계정 제외'],
+  ['account:kim', '표기가 달라도 같은 계정 (HOSP\\kim·kim@hosp.local·KIM)'],
   ['host:WEB-01,WEB-02 level:오류,심각', 'PC 두 대의 오류·심각'],
   ['"잘못된 암호" -ip:10.0.0.5', '구절 포함, 이 IP 제외'],
   ['msg:timeout,refused', '둘 중 하나라도 포함 (예전의 a|b)'],
@@ -44,7 +45,8 @@ export function contradiction(terms) {
   for (const t of terms) {
     if (t.neg || t.key === 'msg' || t.key === 'f') continue;
     const prev = seen.get(t.key);
-    const next = prev ? prev.filter((v) => t.values.includes(v)) : [...t.values];
+    const values = t.key === 'account' ? t.values.map(accountKey) : t.values;   // account:KIM account:kim 은 겹친다
+    const next = prev ? prev.filter((v) => values.includes(v)) : [...values];
     if (!next.length) return t.key;
     seen.set(t.key, next);
   }
@@ -182,7 +184,7 @@ function helpCard() {
  *          fetchValues?: (key: string, prefix: string) => Promise<string[]>}} opt   staleNote: 틀린 동안 '이전 결과' 안내 (검색 화면만)
  *   fetchValues: 서버의 실제 값 자동완성 (B-65, /api/suggest) — 입력을 멈춘 뒤 한 번, 같은 (키, 앞 글자)는 다시 묻지 않음
  */
-const REMOTE_KEYS = new Set(['host', 'user', 'ip', 'channel', 'provider', 'source']);
+const REMOTE_KEYS = new Set(['host', 'user', 'account', 'ip', 'channel', 'provider', 'source']);
 // 입력 칸(<input>)은 줄바꿈을 말없이 지운다 → 미리 띄어쓰기로 (문장에서 줄바꿈은 띄어쓰기와 같은 뜻)
 const oneLine = (text) => String(text ?? '').replace(/\r\n?|\n/g, ' ');
 

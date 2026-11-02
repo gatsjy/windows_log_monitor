@@ -1,6 +1,6 @@
 // 실시간 갱신용: 서버 filters.py 의 matches() 와 같은 규칙으로 이벤트가 위젯 조건에 맞는지 판단.
 // 조건 해석·매칭은 querylang.js (서버 querylang.py·filters.py 와 같은 알고리즘, 케이스 표로 함께 시험).
-import { compileQuery, rawField, rawText as queryRawText } from './querylang.js';
+import { accountKey, compileQuery, rawField, rawText as queryRawText } from './querylang.js';
 
 const FIELD_OF = { user: 'username', ip: 'src_ip' };
 const UNIT_SEC = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 };
@@ -24,6 +24,7 @@ export function sinceDate(since) {
 /** 그룹/상위값 키: 서버 timeseries/top 의 key 와 같은 문자열 */
 export function fieldValue(field, ev) {
   if (field === 'none') return '';
+  if (field === 'account') return accountKey(ev.username ?? null);   // 계정 표기 통일 (B-54) — 서버 wlm_user_key(username)
   if (FIELD_OF[field]) field = FIELD_OF[field];
   if (field.startsWith('f.')) {
     const v = getPath(ev.raw, field.slice(2));

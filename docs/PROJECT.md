@@ -296,6 +296,7 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
 |---|---|---|
 | `host` `channel` `provider` `source` | 같은 컬럼 | 정확히 일치 (대소문자 구분) |
 | `user` / `ip` | `username` / `src_ip` | 정확히 일치. IP 대역(`/`)은 아직 없음 |
+| `account` | 계정 표기 통일 열쇠 (B-54, ADR-062) | `HOSP\kim`·`hosp.local\kim`·`kim@hosp.local`·`KIM` 을 모두 `kim` 으로 — 마지막 `\` 뒤, 점 있는 UPN 의 `@` 앞, A-Z 만 소문자. `pc01$`(컴퓨터 계정)는 `pc01` 과 다름, 점 없는 `kim@HOSP` 는 그대로. 로컬·도메인의 같은 이름(`PC01\Administrator`·`HOSP\Administrator`)은 합쳐짐 — 가르려면 `user:` 나 `f.EventData.TargetDomainName:`. 주소 파라미터·규칙 `match.account` 는 없고 문장에만. 알림 규칙(규칙이 쓰는 저장한 검색·예외 포함)에서 `-account:` 는 거부 — 공격자가 정하는 이름에도 걸려 다른 표기로 비켜 갈 수 있음 |
 | `category` | 분류 | 코드 13개 (`security`… 대소문자 무시). 한글 이름은 오류 + 힌트 |
 | `level` | 수준 | `심각 오류 경고 정보 상세`, `critical error warning info verbose`, `1`~`5` |
 | `event_id` | 이벤트 ID | 0 이상 정수 |
@@ -442,8 +443,8 @@ config/alerts.yaml ──(변경 감지, 자동 반영)──▶ 엔진 (interva
 | `match` | `{}` | 검색 조건과 같은 키: `host, channel, provider, source, category, user, ip, level, event_id, q, f.<경로>`, `query`(검색 문장 §4.1, 문자열만 — YAML 에서는 작은따옴표로 감싸기), `saved`(저장한 검색의 이름, B-64 — 그 문장도 함께 만족. 검색 화면에서 문장을 고치면 다음 평가부터 반영, 없으면 저장 422·평가 오류) |
 | `window` | `5m` | 최근 이 시간 동안 **수신된** 이벤트를 셉니다 (늦게 도착한 오류도 알림) |
 | `threshold` | `1` | 이 건수 이상이면 알림 |
-| `group_by` | `host` | 이 값마다 따로 세고 따로 알림. `ip`(공격 출발지별), `user`(계정별)도 가능. `none` 이면 전체 합산 |
-| `distinct` | 없음 | `{ field: user, min: 10 }` — 묶음마다 그 필드의 **서로 다른 값**이 `min` 개 이상일 때만(건수 기준과 함께). 패스워드 스프레이(IP 마다 서로 다른 계정), 한 계정의 여러 PC 접속. `field` 는 `group_by` 와 같은 키·`f.<경로>`, `min` ≥ 2, `window` ≤ 1d. 값이 없는(NULL) 이벤트는 세지 않음. 알림 본문에 앞의 값 10개 (ADR-041) |
+| `group_by` | `host` | 이 값마다 따로 세고 따로 알림. `ip`(공격 출발지별), `user`(계정별)·`account`(표기를 통일한 계정별, B-54)도 가능. `none` 이면 전체 합산 |
+| `distinct` | 없음 | `{ field: user, min: 10 }`(`account` 면 같은 사람의 다른 표기를 한 명으로) — 묶음마다 그 필드의 **서로 다른 값**이 `min` 개 이상일 때만(건수 기준과 함께). 패스워드 스프레이(IP 마다 서로 다른 계정), 한 계정의 여러 PC 접속. `field` 는 `group_by` 와 같은 키·`f.<경로>`, `min` ≥ 2, `window` ≤ 1d. 값이 없는(NULL) 이벤트는 세지 않음. 알림 본문에 앞의 값 10개 (ADR-041) |
 | `cooldown` | `30m` | 같은 규칙과 같은 대상은 이 시간 안에 다시 알리지 않습니다. `window` 보다 짧으면 `window` 로 맞춥니다 |
 | `severity` | `warning` | `critical / error / warning / info` |
 | `notify` | (필수) | 알림 대상 이름 목록 |

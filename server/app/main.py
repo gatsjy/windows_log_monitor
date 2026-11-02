@@ -94,6 +94,7 @@ async def lifespan(_: FastAPI):
         watchdog_task = asyncio.create_task(alert_watchdog.run_forever())
     rejects_task = asyncio.create_task(rejects.run_forever())
     report_task = asyncio.create_task(report_scheduler.run_forever()) if settings.report_scheduler else None
+    index_task = asyncio.create_task(partitions.account_index_loop()) if settings.partition_index_build else None
     log.info("Log Monitor %s 시작 (보관기간: 로그 %s일 · 알림 %s일 · 감사로그 %s일 · 점검 보고서 %s일)", __version__,
              settings.retention_days, settings.alert_retention_days, settings.audit_retention_days,
              settings.report_retention_days)
@@ -117,6 +118,8 @@ async def lifespan(_: FastAPI):
         rejects_task.cancel()
         if report_task:
             report_task.cancel()
+        if index_task:
+            index_task.cancel()
         try:   # 모아 둔 수집 거절을 남기고 끝낸다
             await rejects.flush()
         except Exception:

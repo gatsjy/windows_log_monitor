@@ -48,6 +48,11 @@ def _names(names: list[str], limit: int = 5) -> str:
     return shown + (f" 외 {len(names) - limit}" if len(names) > limit else "")
 
 
+async def _account_index() -> dict[str, Any]:
+    async with await db.connect_autocommit() as conn:
+        return {k: v for k, v in (await partitions.account_index_status(conn)).items() if k != "missing"}
+
+
 async def collect(now: datetime | None = None) -> dict[str, Any]:
     from . import assets, integrity
     from .alerts import coverage, health
@@ -97,6 +102,7 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "assets": {k: v for k, v in (await assets.coverage(now)).items() if k != "items"},
         "coverage_gaps": coverage.gaps(rules, await coverage.current(rules, now)),
         "retention_warnings": partitions.retention_warnings(),
+        "account_index": await _account_index(),
         "backup": await backup_status(now),
         "replica": settings.replica,
         "integrity": (await integrity.status(now))["notices"],
@@ -263,6 +269,11 @@ def judge(f: dict[str, Any]) -> list[Item]:
     add(Item("retention", "보관", "법정 보관기간", "bad" if f["retention_warnings"] else "ok",
              "; ".join(f["retention_warnings"]) or "로그·감사로그 보관기간이 법정 최소 이상입니다",
              "#/settings/retention", "ISMS.md 법령 근거, ADR-040"))
+    ix = f.get("account_index")   # 옛 보고서·준비도 자료에는 없다
+    if ix and ix["valid"] is False:
+        add(Item("account_index", "보관", "계정 표기 색인", "warn",
+                 f"월 파티션 {ix['attached']}/{ix['partitions']}개 완료 — 서버가 뒤에서 만드는 중입니다(한 시간마다). 그동안 account: 검색이 느릴 수 있습니다",
+                 "#/events", "BACKLOG B-54, ADR-062"))
     b = f["backup"]
     backup_problems = [p for p in b["problems"] if "복제" not in p]
     add(Item("backup", "보관", "DB 백업·복구 시험", "bad" if backup_problems else "ok",

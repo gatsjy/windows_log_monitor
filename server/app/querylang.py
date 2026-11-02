@@ -25,7 +25,7 @@ SYNC: dict[str, Any] = {
     "quotes": ["\"", "\u201c", "\u201d"],
     "reserved": {"*": "wildcard", "|": "pipe", "(": "paren", ")": "paren"},
     "reserved_words": ["AND", "OR", "NOT", "&&"],
-    "keys": ["host", "channel", "provider", "source", "category", "user", "ip", "level", "event_id", "msg"],
+    "keys": ["host", "channel", "provider", "source", "category", "user", "account", "ip", "level", "event_id", "msg"],
     "time_keys": ["since", "until"],
     "levels": {"1": ["심각", "critical"], "2": ["오류", "error"], "3": ["경고", "warning"],
                "4": ["정보", "info", "information"], "5": ["상세", "verbose"]},
@@ -36,7 +36,7 @@ SYNC: dict[str, Any] = {
                        "원격 데스크톱": "rdp", "기타": "windows", "웹": "iis", "웹 서버": "iis", "web": "iis",
                        "db": "mssql", "sql": "mssql", "리눅스": "linux", "장비": "syslog", "파일": "file"},
     "key_hints": {"q": "msg", "message": "msg", "text": "msg", "메시지": "msg", "내용": "msg",
-                  "username": "user", "account": "user", "사용자": "user", "계정": "user",
+                  "username": "user", "사용자": "user", "계정": "user",
                   "src_ip": "ip", "srcip": "ip", "source_ip": "ip", "ipaddress": "ip", "출발지": "ip", "아이피": "ip",
                   "eventid": "event_id", "event": "event_id", "id": "event_id", "eid": "event_id", "이벤트": "event_id",
                   "computer": "host", "pc": "host", "hostname": "host", "호스트": "host", "컴퓨터": "host",
@@ -113,6 +113,23 @@ def ascii_lower(text: str) -> str:
     return text.translate(_ASCII_LOWER)
 
 
+def account_key(name: str | None) -> str | None:
+    """계정 표기 통일 (B-54, ADR-062) — `HOSP\\kim`·`kim@hosp.local`·`KIM` → `kim`. SQL `wlm_user_key`(마이그레이션 038)·
+    JS `accountKey` 와 한 글자도 같아야 한다(케이스 표 account_key). 원본 username 은 그대로 두고 읽을 때만 만든다(행을 고치지 않음 — 다이제스트).
+    1) 끝의 역슬래시를 빼고 본 마지막 '\\' 뒤 (없으면 그대로) — 도메인·PC·NT AUTHORITY 접두
+    2) 첫 '@' 가 둘째 글자 이후이고 그 뒤에 '.' 가 있으면 그 앞 — UPN 접미 (점 없는 kim@HOSP 는 그대로)
+    3) A-Z 만 소문자 — 로캘에 따라 달라지는 lower() 는 색인을 조용히 깨뜨린다
+    두 번 해도 같다(f(f(x)) = f(x)) — 열쇠로 다시 찾으면 같은 행. 끝의 '$'(컴퓨터 계정)는 지우지 않는다(pc01$ ≠ pc01)."""
+    if name is None:
+        return None
+    i = name.rstrip("\\").rfind("\\")
+    t = name[i + 1:] if i >= 0 else name
+    j = t.find("@")
+    if j >= 1 and "." in t[j + 1:]:
+        t = t[:j]
+    return ascii_lower(t)
+
+
 def fold(text: str) -> str:
     """메시지 대소문자 무시 비교용. PostgreSQL ILIKE(글자마다 towlower)와 맞춘다:
     Python·JS 의 lower 는 'Σ'(어말 시그마)와 'İ'(2글자로 바뀜)만 다르다. casefold 는 ß→ss 라 쓰지 않는다."""
@@ -147,7 +164,7 @@ class QueryError(FilterError):
 
 @dataclass(frozen=True)
 class Term:
-    key: str                          # host channel provider source category user ip level event_id msg f
+    key: str                          # host channel provider source category user account ip level event_id msg f
     values: tuple[Any, ...]           # level·event_id 는 int, category 는 코드, 나머지 문자열 (중복 제거·등장 순)
     neg: bool = False
     path: tuple[str, ...] = ()        # key == 'f' 일 때만

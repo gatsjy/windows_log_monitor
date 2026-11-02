@@ -960,6 +960,31 @@
     (스레드에서 해시, 가져오기는 천 행씩 — 수집을 오래 막지 않게). 많으면 `WLM_EVENT_DIGEST_VERIFY_HOURS` 를 줄인다.
   - 복원한 옛 보관 파일(v1)은 공통 필드·EventData 이름을 다시 구해 넣으므로 다이제스트와 다를 수 있다 — 매일 검증 범위(최근)에는 들지 않는다.
 
+## ADR-062 계정 표기 통일은 읽을 때 만드는 열쇠(wlm_user_key) + 새 검색 키 account:
+- **상태:** 채택 (2026-11-02). BACKLOG B-54. B-47(처음 보는 값)·B-67(개체 페이지)·B-72 의 선행. ADR-033(검색 문장)·ADR-050(행을 고치지 않음) 보완.
+- **배경:** 같은 사람이 소스마다 다르게 저장된다 — Windows `TargetUserName` 은 `kim`, IIS·MSSQL 은 `HOSP\kim`, Kerberos 는 `kim@HOSP.LOCAL`.
+  `user:` 검색·distinct·상위 값이 같은 사람을 여러 명으로 봤다.
+- **결정:**
+  1. 열쇠 = SQL `wlm_user_key(username)`(마이그레이션 038, IMMUTABLE·표현식 하나라 플래너가 펼침)·Python `querylang.account_key`·JS `accountKey` — 세 곳이 한 글자도 같다
+     (케이스 표 `account_key`, node↔Python 교차 퍼징 3,000개, SQL↔Python 3,000개). 끝의 역슬래시를 빼고 본 마지막 `\` 뒤 → 첫 `@`(둘째 글자 이후, 뒤에 `.`)의 앞 →
+     A-Z 만 소문자(lower() 는 glibc 로캘이라 이미지를 올리면 색인이 조용히 깨진다). 두 번 해도 같다(설계안의 '마지막 @'·'끝이 \ 면 그대로'는 `p\q@r.s\`→`p\q`→`q`
+     로 두 번 하면 달라 고쳤다). 컴퓨터 계정 `$` 는 지우지 않는다(noPac 이 노리는 혼동). 이 함수는 고치지 않는다 — 뜻을 바꾸면 새 이름·새 색인.
+  2. **열을 더하지 않고 읽을 때 만든다** — `events` 행을 고치지 않으니 다이제스트·보관 파일 형식이 그대로이고, 옛 행·복원한 달도 같은 열쇠다.
+  3. 새 키 `account:` — `user:` 는 그대로 정확히(배포된 규칙·예외 `-user:` 의 뜻이 바뀌지 않게). 주소 파라미터·`match.account` 는 없다(문장에만).
+     group_by·distinct·상위 값·자동완성은 `account` 를 받는다(`COLUMN_EXPR`). 계정 열쇠도 개인정보 — 상위 값·자동완성은 접속기록.
+  4. **탐지에서 `-account:` 거부** — IIS cs-username·sshd·4625 TargetUserName·MSSQL 18456 처럼 공격자가 정하는 이름에도 열쇠가 걸려 `svc_backup@evil.co` 로
+     로그인을 시도하면 `-account:svc_backup` 예외로 빠진다. 규칙·규칙이 쓰는 저장한 검색·예외 어디서든(`Rule.event_filter`·규칙 검증·예외 API). 포함·묶음은 괜찮다.
+  5. 색인 하나로 둘 다: `events_account_ts_idx (wlm_user_key(username), ts DESC) WHERE username IS NOT NULL`. `user:` 도 `(username IS NOT NULL AND
+     wlm_user_key(username) = ANY(열쇠) AND username = ANY(표기))` 로 이 색인을 쓴다(뜻은 같다 — 이름이 같으면 열쇠도 같다). 예전 `events_user_ts_idx` 를 함께 두면
+     수집 쓰기가 10% 느려(PERFORMANCE.md §2.10) 모든 파티션에 계정 색인이 붙으면 지운다. `test_where_snapshot` 의 user 두 줄은 이 때문에 일부러 바꿨다.
+  6. 마이그레이션은 부모 색인만(`ON ONLY`, 카탈로그만) — 있던 월 파티션은 서버가 뒤에서 하나씩 `CREATE INDEX CONCURRENTLY` 후 `ATTACH`(최신 달부터, 한 시간마다,
+     자문 잠금 727_007, INVALID 조각은 지우고 다시). 마이그레이션 트랜잭션에서 한꺼번에 만들면 행 1억 개에 기동이 몇십 분 멈춰 설치 스크립트의 기동 대기(2분)를 넘는다.
+     새 파티션(다음 달·복원)은 PostgreSQL 이 바로 함께 만든다. 다 붙기 전에는 운영 준비도 '계정 표기 색인 n/m'(warn).
+- **알려진 합쳐짐:** 로컬·도메인의 같은 이름, 바깥 주소 `kim@gmail.com` 과 `kim`, SQL 로그인과 같은 이름의 AD 계정 — `user:`·`f.EventData.TargetDomainName:` 으로 가른다.
+  **합치지 않음:** UPN 앞부분과 sAMAccountName(사번 로그인), SID 와 이름, `LocalSystem` 과 `SYSTEM`, 비ASCII 대소문자 — B-53(목록·자산 등록부)에서.
+- **대안:** 수집 때 채우는 열 — 옛 행이 보관기간 내내 NULL 이거나 금지된 UPDATE, 보관·다이제스트 형식이 바뀜. `GENERATED STORED` — 표 전체를 다시 씀. `user:` 의 뜻을 바꿈 —
+  배포된 `-user:` 예외·distinct 규칙의 수가 조용히 바뀜. 모두 기각.
+
 ## ADR-061 이벤트 보관 등급은 보관 파일을 만들 때 나누고, 파일마다 약속한 기간보다 일찍 지우지 않는다
 - **상태:** 채택 (2026-11-02). BACKLOG B-70. ISMS 2.9.4. ADR-016(로그 로테이션)·ADR-040(기록 종류별 보관기간)·ADR-047(외부 복제) 보완.
 - **배경:** 로그 보관기간은 `WLM_RETENTION_DAYS` 하나라 민감정보 처리 시스템의 접속기록을 2년 두려면 IIS·상세 로그까지 2년이 됐다(보관 공간이 크게 는다).

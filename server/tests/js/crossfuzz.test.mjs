@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { QueryError, compileQuery, parseTerms, termJson } from '../../../web/js/querylang.js';
+import { QueryError, accountKey, compileQuery, parseTerms, termJson } from '../../../web/js/querylang.js';
 
 const CASES = JSON.parse(readFileSync(new URL('../querylang_cases.json', import.meta.url), 'utf8'));
 const PYRUN = fileURLToPath(new URL('./pyrun.py', import.meta.url));
@@ -24,13 +24,14 @@ function rng(seed) {
   return { next, pick: (list) => list[Math.floor(next() * list.length)], int: (a, b) => a + Math.floor(next() * (b - a + 1)) };
 }
 
-const KEYS = ['host', 'Host', 'HOST', 'channel', 'provider', 'source', 'category', 'user', 'ip', 'level', 'event_id', 'msg',
+const KEYS = ['host', 'Host', 'HOST', 'channel', 'provider', 'source', 'category', 'user', 'account', 'Account', 'ip', 'level', 'event_id', 'msg',
   'f.EventID', 'F.Arr', 'f.Flag', 'f.StringInserts.5', 'f.EventData.LogonType', 'f.N', 'f.a..b', 'f.', 'f.x.01', 'f.x.-1',
   'hots', 'q', 'since', '사용자', 'Error', 'C', 'http', '12', 'fe80', 'lvl', 'field.EventData.X', 'cat'];
 const VALUES = ['WEB-01', 'DC-01', 'DC-02', '"PC 01"', 'svc_backup', 'Svc_Backup', 'root', '10.0.0.5', 'fe80::1', '10.0.0.0/24',
   '오류', '심각', '경고', '1', '2', '7', 'err', 'Error', 'INFO', 'security', 'Security', 'iis', '보안', 'secrity', '4625', '04625',
   '99999999999', '+5', 'abc', 'true', '"[""x"", ""y""]"', 'user77', 'sshd', 'nginx', '-x', 'a:b', '>3', "'x'", '""', '"a,b"',
-  '“PC 01”', 'x*', 'a|b', '😀', '١٢', 'Security'];
+  '“PC 01”', 'x*', 'a|b', '😀', '١٢', 'Security', 'HOSP\\kim', 'kim@hosp.local', 'KIM', 'kim', 'PC01$', 'administrator',
+  '"NT AUTHORITY\\SYSTEM"', 'kim@HOSP'];
 const WORDS = ['timeout', 'Timeout', 'REFUSED', '잘못된', '"잘못된 암호"', '“잘못된 암호”', '"say ""hi"""', 'C:\\Windows\\System32',
   'http://intra/login', '12:30:01', 'fe80::1', 'AND', 'OR', 'not', 'or', '*', '|', '(x)', "'x'", '!x', '--x', '-', '😀',
   'İstanbul', 'istanbul', 'ΟΔΟΣ', 'οδοσ', 'οδος', '50%_off', '50%off', '\\\\srv\\share', '1,024', '"a""b"', '"unterminated',
@@ -57,7 +58,8 @@ function sentence(r) {
 function jsResult(text) {
   try {
     const terms = parseTerms(text).map(termJson);
-    return { terms, ids: CASES.fixtures.filter(compileQuery({ query: text })).map((f) => f.id) };
+    const fn = compileQuery({ query: text });
+    return { terms, ids: CASES.fixtures.filter(fn).map((f) => f.id), aids: CASES.account_fixtures.filter(fn).map((f) => f.id) };
   } catch (err) {
     if (err instanceof QueryError) return { error: err.asDict() };
     throw err;
@@ -80,4 +82,19 @@ test('교차 퍼징: JS 와 Python 이 3,000 문장에서 같은 결과', { skip
   });
   // 정상·오류가 고루 섞였는지 (한쪽만 시험하면 의미가 없다)
   assert.ok(errors > 300 && errors < 2700, `오류 ${errors}/3000`);
+});
+
+// 사용자 이름 조각(역슬래시·@·점·대소문자·한글·이모지·서로게이트 쌍)을 이어 붙인 무작위 이름
+const PIECES = ['HOSP', 'hosp', '.local', 'kim', 'KIM', 'Kim', '\\', '\\', '@', '@', '.', 'PC01', '$', '김', 'İ', 'Σ', '😀', ' ', 'x', '-'];
+
+test('교차 퍼징: 계정 열쇠(accountKey) 가 Python account_key 와 3,000개에서 같고 두 번 해도 같다 (B-54)', { skip: !python() && 'python3 3.11+ 없음' }, () => {
+  const r = rng(20261102);
+  const names = Array.from({ length: 3000 }, () => Array.from({ length: r.int(0, 7) }, () => r.pick(PIECES)).join(''));
+  const out = spawnSync('python3', ['-I', PYRUN], { input: names.map((k) => JSON.stringify({ key: k })).join('\n') + '\n', encoding: 'utf8' });
+  assert.equal(out.status, 0, out.stderr);
+  const lines = out.stdout.trim().split('\n').map((l) => JSON.parse(l).key);
+  names.forEach((name, i) => {
+    assert.equal(accountKey(name), lines[i], JSON.stringify(name));
+    assert.equal(accountKey(accountKey(name)), accountKey(name), JSON.stringify(name));
+  });
 });
