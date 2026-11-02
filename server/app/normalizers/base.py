@@ -35,6 +35,8 @@ class Event:
     category: str | None = None   # 분류 — 비워 두면 normalize() 가 categories.classify() 로 채운다
     username: str | None = None   # 공통 필드: 관련 사용자
     src_ip: str | None = None     # 공통 필드: 접속해 온 쪽 IP
+    # 수집 품질 (B-56): parse_error·unparsed·template_mismatch — 저장하지 않고 수집 트랜잭션이 agent_streams 에 센다
+    flags: frozenset[str] = frozenset()
 
     def to_live(self, received_at: datetime) -> dict[str, Any]:
         """실시간 스트림(SSE)으로 보낼 형태."""

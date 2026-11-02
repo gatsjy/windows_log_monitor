@@ -98,6 +98,13 @@ def _version(value) -> int:
         return -1
 
 
+def mismatch(provider: str | None, event_id: int | None, inserts, version=None) -> bool:
+    """알려진 이벤트인데 StringInserts 수가 템플릿과 다르다 — 이벤트 버전이 바뀌어 이름이 어긋날 수 있다 (수집 품질, B-56)."""
+    key = (provider or "", event_id or 0)
+    names = VERSIONED.get((*key, _version(version))) or TEMPLATES.get(key)
+    return names is not None and isinstance(inserts, list) and len(inserts) != len(names)
+
+
 def named(provider: str | None, event_id: int | None, inserts: list, version=None) -> dict | None:
     """StringInserts 에 이름을 붙인 맵. 모르는 이벤트면 None. 배열보다 긴 이름(새 버전에서 붙은 필드)은 버린다."""
     key = (provider or "", event_id or 0)

@@ -238,7 +238,7 @@ def normalize(record: dict, now: datetime, ctx: IisContext | None = None) -> Eve
     if found is None:
         # 맞는 열 순서가 없으면 버리지 않고 원문 그대로 저장한다 (틀린 자리의 값으로 사용자·IP 를 채우지 않는다)
         return Event(ts=now, host=host, source=SOURCE, level=INFO, message=clean_text(line), raw=record,
-                     channel="IIS", provider=file or None)
+                     channel="IIS", provider=file or None, flags=frozenset({"unparsed"}))   # 수집 품질 (B-56)
 
     parsed, mark = found
     # 표준 필드가 먼저 이름을 갖는다 — 사용자 지정 필드 이름이 겹치면('Client-IP' → client_ip) x_ 를 붙여, 요청 헤더 값이

@@ -211,6 +211,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 알려진 값 오류는 격리까지 가지 않게 미리 막는다(`normalizers._scrub` 의 범위, 수집의 NaN·서로게이트). 새로 알게 된 것도 그쪽에 — 격리는 모르는 것을 위한 그물이다. 시험은 `_write` 에 DB 값 오류를 넣어 격리를 본다(`test_api_ingest_problems.poison`).
   - `_json` 은 홀수 개 역슬래시 뒤의 `\u0000` 만 지운다(글자 그대로의 `\u0000` 을 지우면 JSON 이 깨진다 — 재현). 짝 없는 서로게이트는 수집 본문에서 U+FFFD 로.
   - 수집 거절은 `rejects.note()` 로 메모리에 모았다가 30초마다 `ingest_rejections` 에(인증 전 요청을 요청마다 DB 에 쓰지 않는다). 시험은 `rejects.flush()` 를 직접 부른다.
+- **수집 품질 (B-56, ADR-059):** 정규화기가 해석을 못 했거나 어긋났으면 `Event.flags`(parse_error·unparsed·template_mismatch)를 단다 — 저장하지 않고 `_stream_counts` 가 `agent_streams` 칸으로 센다. 새 '해석 실패' 종류는 flags 이름 + 마이그레이션 칸 + `quality.PROBLEMS` 를 함께.
 - **수집 트랜잭션의 집계 (B-37, ADR-046):** `_write` 는 events COPY 뒤 agents → field_stats → agent_streams → agent_events → iis_layouts 순서로 쓴다(같은 표 안에서는 정렬). 새 집계를 더할 때 이 순서를 지키고, 줄마다 upsert 하지 말고 문장 하나(`unnest`)로 — 줄마다면 PC 가 많은 묶음에서 수집이 13% 느려졌다(PERFORMANCE.md §2.5).
 - IIS 열 순서는 DB `iis_layouts` 가 정본입니다(ADR-037). `repository._IIS_FILE`·`_IIS_SITE` 캐시는 커밋한 뒤에만 채우고(`remember_iis_layouts`), 시험에서 '서버 재시작'은 `forget_iis_layouts()` 로 흉내 냅니다.
   - 그 파일의 순서(머리줄)는 서버 필드 모양만 봅니다(`iis.plausible` — 요청자 값으로 해석이 깨지지 않게). 추정한 순서(같은 폴더·기본)는 `iis.plausible_guess` 로 더 엄격히 봅니다 — 칸이 밀리면 요청자 값('-'·IP 모양 UA)이 서버 칸을 통과해 공격자가 `src_ip` 를 정할 수 있었습니다(검토에서 재현).

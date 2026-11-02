@@ -134,5 +134,8 @@ def normalize(record: dict, now: datetime) -> Event:
         raw={**record, SOURCE: {"EventData": derived}} if derived and SOURCE not in record else record,
         username=username,
         src_ip=src_ip,
+        # 수집 품질 (B-56): 에이전트가 이름 맵을 보내지 않았는데 필드 수가 템플릿과 다르다
+        flags=(frozenset({"template_mismatch"}) if derived is not None and win_templates.mismatch(
+            record.get("ProviderName"), event_id, record.get("StringInserts"), record.get("Version")) else frozenset()),
     )
 

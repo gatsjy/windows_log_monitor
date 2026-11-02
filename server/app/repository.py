@@ -223,11 +223,30 @@ def _field_stats(events: list[Event]) -> list[tuple]:
     return [(src, path, t, n, sample) for (src, path), (t, n, sample) in sorted(stats.items())]
 
 
-def _stream_counts(events: list[Event]) -> tuple[list[str], list[str], list[str], list[int]]:
-    """(PC, 소스, 채널)별 건수를 열마다 — 정렬해서 (동시 요청끼리 같은 순서로 잠근다)."""
-    counts: Counter[tuple[str, str, str]] = Counter((e.host, e.source, e.channel or "") for e in events)
-    rows = sorted(counts.items())
-    return [k[0] for k, _ in rows], [k[1] for k, _ in rows], [k[2] for k, _ in rows], [n for _, n in rows]
+LATE_SEC, FUTURE_SEC = 3600, 300   # 수집 품질 (B-56): 1시간 넘게 늦은 발생 시각·5분 넘게 미래
+_LAG_MAX = 2_000_000_000           # INTEGER 칸 — 0001년 같은 시각도 넣을 수 있게
+
+
+def _stream_counts(events: list[Event], now: datetime) -> list[list]:
+    """(PC, 소스, 채널)별 [건수, 해석 오류, 원문 그대로, 템플릿 불일치, 늦음, 미래, 가장 늦음(초)]을 열마다 — 정렬해서
+    (동시 요청끼리 같은 순서로 잠근다). 수집 품질(B-56)은 같은 줄의 칸으로 센다."""
+    rows: dict[tuple[str, str, str], list[int]] = {}
+    for e in events:
+        r = rows.setdefault((e.host, e.source, e.channel or ""), [0, 0, 0, 0, 0, 0, 0])
+        r[0] += 1
+        if e.flags:
+            r[1] += "parse_error" in e.flags
+            r[2] += "unparsed" in e.flags
+            r[3] += "template_mismatch" in e.flags
+        lag = (now - e.ts).total_seconds()
+        if lag > LATE_SEC:
+            r[4] += 1
+            r[6] = max(r[6], min(int(lag), _LAG_MAX))
+        elif lag < -FUTURE_SEC:
+            r[5] += 1
+    keys = sorted(rows)
+    return [[k[0] for k in keys], [k[1] for k in keys], [k[2] for k in keys],
+            *([rows[k][i] for k in keys] for i in range(7))]
 
 
 # 시계 차이 (B-57): 하트비트의 (받은 시각 − PC 시각) 창 두 개 최솟값 — 마이그레이션 026
@@ -288,14 +307,20 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
             )
             # 채널별 수신 (B-37) — 같은 트랜잭션. 잠금 순서는 agents → field_stats → agent_streams → agent_events → iis_layouts
             # 문장 하나로 (unnest) — 줄마다 upsert 하면 PC 가 많은 묶음(수집기)에서 수집이 13% 느려졌다 (PERFORMANCE.md §2.5)
-            hosts, sources, channels, ns = _stream_counts(events)
+            # 수집 품질(B-56)도 같은 줄의 칸으로 — 쓰기를 늘리지 않는다 (PERFORMANCE.md §2.8)
             now = datetime.now(UTC)
             await cur.execute(
-                "INSERT INTO agent_streams AS s (host, source, channel, day, n, first_at, last_at)"
-                " SELECT h, src, ch, %s, n, %s, %s FROM unnest(%s::text[], %s::text[], %s::text[], %s::bigint[]) AS t(h, src, ch, n)"
+                "INSERT INTO agent_streams AS s (host, source, channel, day, n, first_at, last_at,"
+                " parse_errors, unparsed, template_mismatch, late_n, future_n, max_lag_sec)"
+                " SELECT h, src, ch, %s, n, %s, %s, pe, up, tm, lt, ft, ml"
+                " FROM unnest(%s::text[], %s::text[], %s::text[], %s::bigint[], %s::int[], %s::int[], %s::int[], %s::int[],"
+                "             %s::int[], %s::int[]) AS t(h, src, ch, n, pe, up, tm, lt, ft, ml)"
                 " ON CONFLICT (host, source, channel, day) DO UPDATE SET"
-                " n = s.n + EXCLUDED.n, last_at = GREATEST(s.last_at, EXCLUDED.last_at)",
-                (now.date(), now, now, hosts, sources, channels, ns),
+                " n = s.n + EXCLUDED.n, last_at = GREATEST(s.last_at, EXCLUDED.last_at),"
+                " parse_errors = s.parse_errors + EXCLUDED.parse_errors, unparsed = s.unparsed + EXCLUDED.unparsed,"
+                " template_mismatch = s.template_mismatch + EXCLUDED.template_mismatch, late_n = s.late_n + EXCLUDED.late_n,"
+                " future_n = s.future_n + EXCLUDED.future_n, max_lag_sec = GREATEST(s.max_lag_sec, EXCLUDED.max_lag_sec)",
+                (now.date(), now, now, *_stream_counts(events, now)),
             )
             # PC 마다 보내는 이벤트 ID (B-37 2단계) — 규칙별 데이터 유무. 마지막 수신은 한 시간에 한 번만 고친다:
             # 한 시간 안에 고친 줄은 고르기에서 빼서 잠그지도 쓰지도 않는다 — ON CONFLICT … WHERE 가 거짓이어도 그 줄을 잠그고
@@ -457,6 +482,26 @@ async def list_quarantine(since: datetime, limit: int = 100) -> list[dict[str, A
 async def get_quarantine(quarantine_id: int) -> dict[str, Any] | None:
     return await db.fetch_one("SELECT id, received_at, client_ip, host, source, category, username, src_ip, error, record"
                               " FROM ingest_quarantine WHERE id = %s", (quarantine_id,))
+
+
+QUALITY_COLUMNS = ("parse_errors", "unparsed", "template_mismatch", "late_n", "future_n")
+
+
+async def ingest_quality(start: datetime, end: datetime, limit: int = 20) -> dict[str, Any]:
+    """수집 품질 (B-56): 기간의 날들에 (PC, 소스, 채널)마다 문제 칸 합 — 문제가 있는 줄만 많은 순으로 limit, 그리고 전체 합.
+    날 단위라 기간 경계의 날은 통째로 센다(점검 보고서는 하루·한 주 단위)."""
+    where = "day >= %s AND day <= %s"
+    params = ((start.astimezone(UTC)).date(), (end.astimezone(UTC)).date())
+    total = await db.fetch_one(f"SELECT COALESCE(sum(n), 0) AS n, {', '.join(f'COALESCE(sum({c}), 0) AS {c}' for c in QUALITY_COLUMNS)}"
+                               f" FROM agent_streams WHERE {where}", params)
+    rows = await db.fetch_all(
+        f"SELECT host, source, channel, sum(n) AS n, {', '.join(f'sum({c}) AS {c}' for c in QUALITY_COLUMNS)},"
+        f" max(max_lag_sec) AS max_lag_sec FROM agent_streams WHERE {where} GROUP BY host, source, channel"
+        f" HAVING sum(parse_errors + unparsed + template_mismatch + future_n) > 0 OR sum(late_n) > 0"
+        " ORDER BY sum(parse_errors + unparsed + template_mismatch + future_n) DESC, sum(late_n) DESC, host LIMIT %s",
+        (*params, limit))
+    return {"total": {k: int(v) for k, v in total.items()}, "rows": [{k: (int(v) if k not in ("host", "source", "channel") else v)
+                                                                       for k, v in r.items()} for r in rows]}
 
 
 async def ingest_problem_counts(start: datetime, end: datetime) -> dict[str, Any]:

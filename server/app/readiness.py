@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import clock, db, partitions, repository, tlsutil
+from . import clock, db, partitions, quality, repository, tlsutil
 from .auth import review
 from .config import settings
 
@@ -91,6 +91,7 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "ingest_plain": settings.ingest_plain,
         "offline_pcs": sorted(a["host"] for a in agents if a["silent_sec"] > settings.heartbeat_stale_sec),
         "silent_streams": len(await repository.silent_streams(now)),
+        "ingest_quality": await repository.ingest_quality(now - timedelta(days=1), now),   # 수집 품질 (B-56) — 어제·오늘
         "assets": {k: v for k, v in (await assets.coverage(now)).items() if k != "items"},
         "coverage_gaps": coverage.gaps(rules, await coverage.current(rules, now)),
         "retention_warnings": partitions.retention_warnings(),
@@ -227,6 +228,11 @@ def judge(f: dict[str, Any]) -> list[Item]:
     else:
         status, detail = "ok", f"목록의 {ls['total']}대가 모두 로그를 보내고 있습니다"
     add(Item("assets", "수집", "수집 대상 대조", status, detail, "#/agents", "BACKLOG B-55, ISMS 2.9.4"))
+    if "ingest_quality" in f:   # 수집 품질 (B-56) — 들어오는데 해석이 깨진 것
+        problems = quality.attention(f["ingest_quality"])
+        add(Item("ingest_quality", "수집", "수집 품질 (어제·오늘)", "warn" if problems else "ok",
+                 " / ".join(p["text"] for p in problems[:3]) or "해석 오류·원문 그대로·템플릿 불일치·미래 시각 로그가 없습니다",
+                 "#/agents", "BACKLOG B-56, ISMS 2.9.4"))
 
     # 시계 차이 (B-57) — 로그 시각이 틀리면 검색·알림 구간·사고 시간선이 어긋난다
     clk = f.get("clock") or {"known": 0, "off": [], "bad": 0, "warn": 0, "server_suspect": None}

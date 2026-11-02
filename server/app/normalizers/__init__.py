@@ -88,6 +88,7 @@ def normalize_safely(record: dict, now: datetime, iis_ctx: iis.IisContext | None
                           source=str(record.get("log_source") or generic.SOURCE)[:64], level=4,
                           message=clean_text(text), raw=raw)
         event.category = classify(event.source, event.channel, event.provider)
+        event.flags = frozenset({"parse_error"})   # 수집 품질 (B-56)
         _scrub(event)
         return event
 

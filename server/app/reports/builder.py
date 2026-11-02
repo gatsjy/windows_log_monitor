@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 
-from .. import archive, assets, backups, clock, db, partitions, repository, tlsutil
+from .. import archive, assets, backups, clock, db, partitions, quality, repository, tlsutil
 from ..alerts import coverage, health
 from ..alerts.builtin import ADMIN_RULE
 from ..alerts.engine import engine
@@ -382,6 +382,7 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
     if due:
         out.append({"level": "warn", "text": f"검토일이 지난 알림 규칙 예외 {len(due)}건 — 아직 필요한지 확인하고 끝내거나 다시 정하세요"})
     out.extend(review.attention(p.get("access_review")))   # B-72 2단계 이전 보고서에는 없다
+    out.extend(quality.attention(p.get("ingest_quality")))   # B-56 이전 보고서에는 없다
     weak = (p.get("exports") or {}).get("weak_total")   # B-38 이전 보고서에는 없다
     if weak:
         out.append({"level": "warn", "text": f"사유가 짧은 개인정보 내려받기 {weak}건 — 누가 왜 꺼냈는지 확인하세요"})
@@ -429,6 +430,8 @@ async def build(kind: str, start: datetime, end: datetime, now: datetime | None 
         "tls": await _tls(now),
         # 수집 거절·격리 (B-40) — 에이전트 쪽 로그는 같은 출력이라 서버로 오지 못하니 여기서만 보인다
         "ingest": await repository.ingest_problem_counts(start, end),
+        # 수집 품질 (B-56) — 들어오는데 해석이 깨진 것·늦게 오는 것 (PC·소스·채널마다, 날 단위)
+        "ingest_quality": await repository.ingest_quality(start, end),
         # 알림 기능 자체 (ADR-045) — 보고서를 만든 시각 기준. 평가·전송이 멈췄으면 그 사이 알림은 오지 않았다
         "alerting": await _alerting(),
         # 관리 작업 요약 (B-36) — 관리자 행위 점검(ISMS 2.9.5)

@@ -11,6 +11,7 @@ from datetime import datetime
 from html import escape
 from typing import Any
 
+from .. import quality
 from ..alerts.message import RESOLUTION_LABELS, SEVERITY_COLORS, SEVERITY_LABELS, Notice, local
 from ..config import settings
 from .builder import integrity_bad_count
@@ -54,6 +55,12 @@ def summary(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------- HTML 조각
+
+def _lag(sec: int) -> str:
+    if not sec:
+        return "–"
+    return f"{sec // 86400}일" if sec >= 86400 else f"{sec // 3600}시간" if sec >= 3600 else f"{sec // 60}분"
+
 
 def _section(title: str, body: str) -> str:
     return (f"<h2 style='font-size:15px;margin:26px 0 8px;padding-bottom:6px;border-bottom:1px solid {LINE}'>"
@@ -270,6 +277,14 @@ def html(payload: dict[str, Any], report_id: int | None = None, review: dict[str
                  f"<p style='color:{MUTED};margin:4px 0'>저장하지 못해 격리한 레코드 {_n(ig['quarantined'])}건</p>"
                  + _table(["거절", "요청", "보낸 곳"], [[_e(r["status"]), _e(r["n"]), _e(r["ips"])] for r in ig["rejected"]],
                           right=(1, 2)) + "</div>")
+    iq = p.get("ingest_quality")   # B-56 이전 보고서에는 없다
+    if iq and iq["rows"]:
+        cols = list(quality.LABELS)
+        body += ("<div style='margin-top:12px'><b style='font-size:13px'>수집 품질 — 해석이 깨졌거나 늦게 온 로그</b>" + _table(
+            ["PC", "소스 · 채널", "건수", *quality.LABELS.values(), "가장 늦음"],
+            [[_e(r["host"]), _e(r["source"] + (" · " + r["channel"] if r["channel"] else "")), _e(r["n"]),
+              *(_e(r[c] or "–") for c in cols), _e(_lag(r["max_lag_sec"]))] for r in iq["rows"]],
+            right=tuple(range(2, 3 + len(cols) + 1))) + "</div>")
     out.append(_section("수집 PC", body))
 
     # 로그 보관·백업
