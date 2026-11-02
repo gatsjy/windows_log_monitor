@@ -235,12 +235,13 @@ async def lock_dormant_accounts() -> None:
 
     from .alerts import adminwatch
     from .auth import service
-    from .config import settings
+    from .config import display_zone, settings
 
     locked = await service.lock_dormant(datetime.now(UTC))
     if locked:
+        zone = display_zone()
         await adminwatch.notify("system", f"장기 미사용 계정 {len(locked)}개를 껐습니다 — {settings.dormant_days}일 동안 로그인하지 않음",
-                                [f"{u['username']} (마지막 사용 {u['last_used']:%Y-%m-%d})" for u in locked])
+                                [f"{u['username']} (마지막 사용 {u['last_used'].astimezone(zone):%Y-%m-%d})" for u in locked])
 
 
 async def run_maintenance(with_integrity: bool = True) -> None:
@@ -259,7 +260,6 @@ async def run_maintenance(with_integrity: bool = True) -> None:
             await purge_reports()
             await purge_iis_layouts()
             await purge_sessions()
-            await lock_dormant_accounts()
             await purge_ingest_problems()
             await purge_agent_streams()
             if with_integrity:
@@ -267,6 +267,9 @@ async def run_maintenance(with_integrity: bool = True) -> None:
                     integrity,  # 감사로그 해시 체인 검증·앵커 (B-71) — repository 와 순환 import 를 피해 여기서
                 )
 
+                # 장기 미사용 잠금(B-72)도 정기 실행에서만 — 기동 중에는 알림 설정을 아직 읽지 않아 관리 작업 알림이 아무에게도
+                # 가지 않았다(검토에서 재현)
+                await lock_dormant_accounts()
                 await integrity.daily()
         finally:
             await conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))

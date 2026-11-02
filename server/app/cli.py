@@ -50,7 +50,8 @@ async def _run(args: argparse.Namespace) -> None:
             if row is None:
                 raise SystemExit(f"사용자 없음: {args.username}")
             username, temp = await service.reset_password(row["id"], "cli", None)
-            print(f"{username} 의 임시 비밀번호: {temp}  (잠금 해제됨, 첫 로그인 때 변경 필요)")
+            woke = await service.reenable_dormant(row["id"], "cli")   # 장기 미사용으로 꺼졌으면 다시 켠다 (B-72)
+            print(f"{username} 의 임시 비밀번호: {temp}  (잠금 해제됨{', 장기 미사용 잠금도 풂' if woke else ''}, 첫 로그인 때 변경 필요)")
         elif args.command == "reset-mfa":
             # 비상 절차: 관리자 모두가 인증 앱을 잃었을 때. 서버 셸에 들어올 수 있는 사람만 할 수 있다 (감사로그 actor=cli)
             row = await db.fetch_one("SELECT id FROM users WHERE username = %s",

@@ -74,3 +74,29 @@ def test_scope_and_access_log(ctx):
     assert ctx["admin"].get("/api/suggest", params={"key": "message"}).status_code == 400
     targets = {t for (t,) in sql("SELECT target FROM audit_log WHERE action = 'events.stats'")}
     assert "suggest:user" in targets and "suggest:host" not in targets
+
+
+def test_time_cap_even_when_search_limit_is_off(ctx, monkeypatch):
+    """WLM_SEARCH_TIMEOUT_SEC=0(상한 없음)이어도 입력마다 부르는 자동완성은 3초 — min(0, 3) 이면 상한·조회 자리 없이 돌았다 (검토에서 재현)."""
+    from dataclasses import replace
+
+    from app import db
+    from app.routers import query
+
+    seen = []
+    real = db.limit_statement_time
+    monkeypatch.setattr(query, "settings", replace(query.settings, search_timeout_sec=0))
+    monkeypatch.setattr(db, "limit_statement_time", lambda sec: (seen.append(sec), real(sec))[1])
+    assert ctx["admin"].get("/api/suggest", params={"key": "host"}).status_code == 200
+    assert seen[-1] == query.SUGGEST_TIMEOUT_SEC
+
+
+def test_custom_range_is_respected(ctx):
+    """고른 구간 밖의 값은 제안하지 않는다 — 고르면 0건이었다 (검토에서 재현)."""
+    from datetime import timedelta
+
+    old = {**_ev("PC-9", "old.user"), "date": (datetime.now(UTC) - timedelta(days=20)).isoformat()}
+    assert ctx["admin"].post("/api/ingest", json=[old], headers=KEY).json()["accepted"] == 1
+    since = (datetime.now(UTC) - timedelta(days=25)).isoformat()
+    until = (datetime.now(UTC) - timedelta(days=15)).isoformat()
+    assert _values(ctx["admin"], key="user", prefix="", since=since, until=until) == [("old.user", 1)]

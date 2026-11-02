@@ -328,22 +328,24 @@ SUGGEST_TIMEOUT_SEC = 3   # 입력마다 부르므로 짧게 — 넘으면 자�
 @router.get("/api/suggest")
 async def suggest(request: Request, key: str, prefix: str = Query("", max_length=100), limit: int = Query(20, ge=1, le=50),
                   user: User = Depends(require_user)):
-    """검색 문장 값 자동완성 (B-65): user·host·ip 는 정확 일치·대소문자 구분이라 실제 표기를 모르면 0건이다 — 기간·조회 범위 안의
-    실제 값을 많은 순으로(문장 조건은 보지 않음, since 만). 사용자·IP 값은 접속기록(events.stats, 10분 묶음)."""
+    """검색 문장 값 자동완성 (B-65): user·host·ip 는 정확 일치·대소문자 구분이라 실제 표기를 모르면 0건이다 — 기간(since·until)·
+    조회 범위 안의 실제 값을 많은 순으로(문장 조건은 보지 않음). 사용자·IP 값은 접속기록(events.stats, 10분 묶음)."""
     if key not in SUGGEST_FIELDS:
         raise HTTPException(400, f"key 는 {', '.join(SUGGEST_FIELDS)} 중 하나")
-    db.limit_statement_time(min(settings.search_timeout_sec, SUGGEST_TIMEOUT_SEC))
+    # 0(검색 시간 상한 없음)이어도 자동완성은 3초 — min(0, 3) 은 상한·조회 자리 없이 돌았다(검토에서 재현)
+    db.limit_statement_time(min(settings.search_timeout_sec or SUGGEST_TIMEOUT_SEC, SUGGEST_TIMEOUT_SEC))
     since = request.query_params.get("since") or "7d"
+    until = request.query_params.get("until") or None   # 고른 구간 안의 값만 — 구간 밖 값을 고르면 0건이었다(검토)
     try:
-        f = EventFilter.from_params({"since": since}, default_since="7d")
+        f = EventFilter.from_params({"since": since, "until": until}, default_since="7d")
     except FilterError as exc:
         raise HTTPException(400, str(exc)) from exc
     if user.scopes is not None:
         f = replace(f, scopes=user.scopes)
     rows = await repository.suggest_values(f, key, prefix.strip(), limit)
     if key in PERSONAL_FIELDS:
-        await accesslog.record(request, user.username, "events.stats", f"suggest:{key}", {"since": since, "rows": len(rows)},
-                               key={"since": since, "key": key})
+        await accesslog.record(request, user.username, "events.stats", f"suggest:{key}",
+                               {"since": since, "until": until, "rows": len(rows)}, key={"since": since, "until": until, "key": key})
     return {"key": key, "items": rows}
 
 

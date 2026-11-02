@@ -617,14 +617,24 @@ async def lock_dormant(now: datetime) -> list[dict]:
     for r in rows:
         if r["id"] == keep:
             continue
+        # 고르는 사이 로그인했으면 끄지 않는다 — 기준을 UPDATE 에서 다시 본다
         done = await db.fetch_one("UPDATE users SET is_active = false, disabled_reason = 'dormant' WHERE id = %s AND is_active"
-                                  " RETURNING id", (r["id"],))
+                                  f" AND {DORMANT_LAST_USE} < %s RETURNING id", (r["id"], cutoff))
         if done:
             await db.fetch_all("DELETE FROM sessions WHERE user_id = %s RETURNING token_hash", (r["id"],))
             await db.audit("system", "user.dormant_lock", r["username"],
                            {"last_used": r["last_used"].isoformat(), "days": settings.dormant_days})
             locked.append({"username": r["username"], "role": r["role"], "last_used": r["last_used"]})
     return locked
+
+
+async def reenable_dormant(user_id: int, actor: str) -> bool:
+    """장기 미사용으로 꺼진 계정을 다시 켠다(cli reset-password — 서버 셸의 복구 절차). 그날부터 다시 센다."""
+    row = await db.fetch_one("UPDATE users SET is_active = true, disabled_reason = NULL, reenabled_at = now()"
+                             " WHERE id = %s AND NOT is_active AND disabled_reason = 'dormant' RETURNING username", (user_id,))
+    if row:
+        await db.audit(actor, "user.update", row["username"], {"is_active": {"from": False, "to": True}, "reason": "dormant"})
+    return row is not None
 
 
 async def _active_admins_besides(ids: list[int]) -> int:

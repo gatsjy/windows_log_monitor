@@ -82,3 +82,20 @@ def test_last_admin_is_kept(admin):
     sql("UPDATE users SET last_login_at = now() - interval '200 days', reenabled_at = NULL WHERE username = 'admin'")
     locked = admin.portal.call(service.lock_dormant, datetime.now(UTC))
     assert "admin" not in {u["username"] for u in locked} and _active("admin")[0] is True
+
+
+def test_startup_run_does_not_lock_and_cli_recovery_reenables(admin):
+    """기동 중 정리(알림 설정을 읽기 전)에서는 끄지 않는다 — 관리 작업 알림이 아무에게도 가지 않았다. cli 복구는 다시 켠다 (검토)."""
+    from app import partitions
+    from app.auth import service
+
+    sql("UPDATE users SET last_login_at = now() - interval '200 days', reenabled_at = NULL, created_at = now() - interval '300 days'"
+        " WHERE username = 'fresh-viewer'")
+    admin.portal.call(partitions.run_maintenance, False)
+    assert _active("fresh-viewer") == (True, None)
+    admin.portal.call(partitions.lock_dormant_accounts)
+    assert _active("fresh-viewer") == (False, "dormant")
+    uid = sql("SELECT id FROM users WHERE username = 'fresh-viewer'")[0][0]
+    assert admin.portal.call(service.reenable_dormant, uid, "cli") is True
+    assert _active("fresh-viewer") == (True, None)
+    assert admin.portal.call(service.reenable_dormant, uid, "cli") is False     # 이미 켜진 계정은 그대로

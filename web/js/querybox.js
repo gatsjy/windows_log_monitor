@@ -311,9 +311,11 @@ export function queryBox(el, opt) {
       const have = new Set(acItems.map((it) => it.label));
       const extra = values.filter((v) => !have.has(v) && !chosen.has(v)).map((v) => ({ insert: formatValue(v), label: v, hint: '최근 값' }));
       if (!extra.length) return;
+      const keep = ac.hidden ? -1 : acIndex;   // 키보드로 고르던 항목은 그대로 — 늦게 온 결과가 선택을 지워 Enter 가 문장을 확정했다(검토)
       acItems = [...acItems, ...extra].slice(0, 30);
       acRange = [now.start, caretCp()];
       renderAc();
+      if (keep >= 0) moveAc(keep + 1);
     };
     if (remoteCache.has(cacheKey)) { merge(remoteCache.get(cacheKey)); return; }
     clearTimeout(remoteTimer);
@@ -442,7 +444,8 @@ export function queryBox(el, opt) {
       render();
     },
     /** 기간이 바뀌면 린트(긴 기간 제외 경고)를 다시 */
-    refresh() { lastRendered = ''; render(); },
+    // 기간이 바뀌면 다시 그린다 — 서버 값 자동완성(B-65)도 그 기간의 값이어야 하므로 받아 둔 것을 버린다
+    refresh() { lastRendered = ''; remoteCache.clear(); render(); },
     destroy() { document.removeEventListener('keydown', onSlash); clearTimeout(timer); },
   };
 }
