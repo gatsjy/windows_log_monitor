@@ -258,7 +258,7 @@ ADMIN_GROUPS = (
     ("알림 규칙·무음", ("alerts.config.save", "alerts.config.apply", "alerts.rule.", "alerts.silence.")),
     ("알림 받는 곳", ("settings.group.", "settings.channel.save", "settings.channel.delete", "settings.contact.", "settings.smtp.save")),
     ("보관·복원", ("retention.restore_archive", "retention.rotate_now", "retention.delete_archive")),
-    ("내려받기", ("audit.export", "alerts.export", "agents.package.download")),
+    ("내려받기", ("audit.export", "alerts.export", "agents.package.download", "compliance.bundle")),
 )
 
 

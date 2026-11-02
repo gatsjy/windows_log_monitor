@@ -48,12 +48,13 @@ def _sort_key(item: str) -> tuple[int, ...]:
 async def summary(rules: tuple[Rule, ...], coverage: dict[str, dict[str, Any]], since: datetime, until: datetime) -> list[dict]:
     """항목마다: 규칙(켜짐·관찰·데이터 없음), 기간 안 알림 수·해결·미해결·해결 시간 중앙값·오탐."""
     by_item = rules_by_item(rules)
-    stats = {item_of(r["tag"]): r for r in await repository.isms_alert_stats(since, until) if item_of(r["tag"])}
+    stats = {r["item"]: r for r in await repository.isms_alert_stats(since, until)}
     out = []
     for item in sorted(set(by_item) | set(stats), key=_sort_key):
         rs = by_item.get(item, [])
+        # 데이터 없음 = 그 소스·채널을 보내는 PC 가 없다(B-37 판단과 같음). 드문 이벤트(30일에 한 번도 안 난 것)는 데이터 없음이 아니다(검토)
         no_data = [r.name for r in rs if r.enabled and (c := coverage.get(r.name)) is not None
-                   and (c["pcs"] == 0 or c.get("event_pcs") == 0)]
+                   and (c["pcs"] == 0 or c.get("channel_pcs") == 0)]
         s = stats.get(item) or {}
         out.append({
             "item": item,
@@ -67,16 +68,31 @@ async def summary(rules: tuple[Rule, ...], coverage: dict[str, dict[str, Any]], 
     return out
 
 
-def _rule_lines(rule: Rule) -> str:
+def _rule_lines(rule: Rule, exceptions: list[dict[str, Any]] = (), since: datetime | None = None,
+                until: datetime | None = None) -> str:
+    """규칙 정의 — 심사에서 '무엇을 어떻게 탐지했나'를 보이는 글. 기준(건수·서로 다른 값·끊김)과 그 기간에 걸려 있던 예외까지(검토)."""
     match = ", ".join(f"{k}={v}" for k, v in rule.match.items()) or "(모든 이벤트)"
     observe = " (관찰 모드 — 보내지 않음)" if rule.mode == "observe" else ""
     lines = [f"규칙: {rule.name}", f"번호(sid): {rule.sid or '-'}", f"사용: {'예' if rule.enabled else '아니오'}{observe}",
              f"종류: {rule.kind}", f"심각도: {SEVERITY_LABELS.get(rule.severity, rule.severity)}", f"태그: {', '.join(rule.tags)}",
              f"받는 곳: {', '.join(rule.notify)}"]
     if rule.kind == "count":
-        lines += [f"조건: {match}", f"기준: {int(rule.window.total_seconds())}초 동안 {rule.threshold}건 이상 · 묶음 {rule.group_by}"]
+        distinct = f" · 서로 다른 {rule.distinct_field} {rule.distinct_min}개 이상" if rule.distinct_field else ""
+        lines += [f"조건: {match}",
+                  f"기준: {int(rule.window.total_seconds())}초 동안 {rule.threshold}건 이상{distinct} · 묶음 {rule.group_by}"]
+    else:
+        lines += [f"기준: {int(rule.silent_for.total_seconds())}초 동안 수신 없음" if rule.kind == "agent_silent"
+                  else "기준: 늘 오던 채널이 평소보다 오래 끊김", f"대상 PC: {', '.join(rule.hosts) or '전체'}"]
+        if rule.kind == "stream_silent":
+            lines.append(f"채널: {', '.join(rule.channels) or '전체'}")
     if rule.description:
         lines.append(f"설명: {rule.description}")
+    for x in exceptions:   # 그 기간에 한 번이라도 걸려 있던 예외 (B-46) — 빠진 탐지도 증적
+        live_in_period = (until is None or x["created_at"] < until) and (since is None or (
+            (x["ended_at"] is None or x["ended_at"] > since) and (x["expires_at"] is None or x["expires_at"] > since)))
+        if x["rule"] == rule.name and live_in_period:
+            lines.append(f"예외: {x['term']} — {x['reason']} ({x['created_by']}, {local(x['created_at'])}"
+                         f"{' ~ ' + local(x['ended_at']) if x['ended_at'] else ''})")
     return "\n".join(lines)
 
 
@@ -91,12 +107,16 @@ async def bundle(rules: tuple[Rule, ...], coverage: dict[str, dict[str, Any]], s
           round(i["median_resolve_sec"] / 60, 1) if i["median_resolve_sec"] is not None else "", i["true_positive"],
           i["false_positive"]] for i in items])))
     truncated = []
+    total_rows = 0
     by_item = rules_by_item(rules)
+    exceptions = await repository.list_rule_exceptions()
     for i in items:
         folder = f"ISMS_{i['item']}"
         if by_item.get(i["item"]):
-            files.append((f"{folder}/규칙.txt", ("\n\n".join(_rule_lines(r) for r in by_item[i["item"]]) + "\n").encode()))
-        rows = await repository.isms_alerts(f"ISMS {i['item']}", since, until, BUNDLE_ALERTS_MAX + 1)
+            files.append((f"{folder}/규칙.txt", ("\n\n".join(_rule_lines(r, exceptions, since, until)
+                                                            for r in by_item[i["item"]]) + "\n").encode()))
+        rows = await repository.isms_alerts(i["item"], since, until, BUNDLE_ALERTS_MAX + 1)
+        total_rows += min(len(rows), BUNDLE_ALERTS_MAX)
         if len(rows) > BUNDLE_ALERTS_MAX:
             truncated.append(i["item"])
             rows = rows[:BUNDLE_ALERTS_MAX]
@@ -129,4 +149,4 @@ async def bundle(rules: tuple[Rule, ...], coverage: dict[str, dict[str, Any]], s
             info.compress_type = zipfile.ZIP_DEFLATED
             z.writestr(info, data)
     return buf.getvalue(), hashlib.sha256(manifest).hexdigest(), {"items": len(items), "files": len(files) + 1,
-                                                                  "truncated": truncated}
+                                                                  "rows": total_rows, "truncated": truncated}

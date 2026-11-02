@@ -170,7 +170,8 @@ def _check_rule(index: int, raw: Any) -> Rule:
     common = {
         "name": name, "kind": kind, "severity": severity, "notify": notify,
         "description": str(raw.get("description") or ""), "enabled": bool(raw.get("enabled", True)),
-        "tags": _str_list(raw.get("tags"), f"{where}.tags"),
+        # 태그는 공백을 하나로·중복 없이 — 'ISMS  2.11.3' 과 'ISMS 2.11.3' 이 심사 대응(B-73)에서 다른 항목이 되지 않게
+        "tags": tuple(dict.fromkeys(" ".join(t.split()) for t in _str_list(raw.get("tags"), f"{where}.tags") if t.strip())),
         "sid": sid, "group": str(raw.get("group") or "기타").strip() or "기타",
     }
     mode = raw.get("mode", "active")

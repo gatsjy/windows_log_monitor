@@ -62,17 +62,41 @@ def test_weakening_escalation_is_flagged():
     assert _changes(BASE, BASE.replace("[당직, 보안팀장]", "[당직]")) == [("escalation", True)]          # 받는 곳 뺌
     assert _changes(BASE, BASE.replace("[critical]", "[critical, error]")) == [("escalation", False)]  # 넓힘
     assert _changes(BASE, BASE.replace("after: 15m", "after: 5m")) == [("escalation", False)]          # 당김
+    assert _changes(BASE, BASE.replace("unless: resolved", "unless: acked")) == [("escalation", True)]  # 확인만 하면 멈춤 (검토)
+    assert _changes(BASE, BASE.replace("        unless: resolved\n", "")) == [("escalation", True)]
     assert _changes(BASE, BASE[:BASE.index("escalations:")]) == [("escalation_removed", True)]
     assert _changes(BASE[:BASE.index("escalations:")], BASE) == [("escalation_added", False)]
 
 
+class _Reader:
+    """메일·메신저처럼 사람이 읽는 받는 곳 — 다시 알림을 늘 받는다."""
+
+    def accepts_escalation(self):
+        return None
+
+
 def test_stale_at_send_time():
     """넣을 때가 아니라 보낼 때 본다 — 그 사이 누가 확인·해결했으면 다시 알리지 않는다."""
-    job = {"action": "escalate:900:acked", "alert_status": "open"}
-    assert _stale(job, None) is None
-    assert _stale({**job, "alert_status": "acked"}, None) == "다시 알리기 전에 확인됨"
-    assert _stale({**job, "alert_status": "resolved"}, None) == "다시 알리기 전에 해결됨"
-    assert _stale({"action": "escalate:3600:resolved", "alert_status": "acked"}, None) is None   # 해결 전까지는 보냄
+    job, reader = {"action": "escalate:900:acked", "alert_status": "open"}, _Reader()
+    assert _stale(job, reader) is None
+    assert _stale({**job, "alert_status": "acked"}, reader) == "다시 알리기 전에 확인됨"
+    assert _stale({**job, "alert_status": "resolved"}, reader) == "다시 알리기 전에 해결됨"
+    assert _stale({"action": "escalate:3600:resolved", "alert_status": "acked"}, reader) is None   # 해결 전까지는 보냄
+
+
+def test_oracle_needs_escalation_bind():
+    """기본 INSERT(알림 번호가 기본 키)는 다시 알림을 중복으로 버리고 드라이버는 성공으로 친다 — :escalation 을 받는 SQL 만 (검토에서 재현)."""
+    from app.alerts.notifiers import ORACLE_DEFAULT_SQL, OracleNotifier, oracle_binds
+
+    default = OracleNotifier("o", object(), ORACLE_DEFAULT_SQL.format(table="LOGMON_ALERTS"))
+    assert "escalation" in _stale({"action": "escalate:900:acked", "alert_status": "open"}, default)
+    custom = "INSERT INTO T (ID, K, E) VALUES (:alert_id, :dedup_key, :escalation)"
+    assert _stale({"action": "escalate:900:acked", "alert_status": "open"}, OracleNotifier("o", object(), custom)) is None
+    m = AlertMessage(rule="r", severity="critical", kind="count", group_by="host", group_key="DC-01", event_count=1,
+                     threshold=1, window_sec=300, fired_at=datetime.now(UTC), alert_id=7)
+    assert oracle_binds(custom, m)["escalation"] is None
+    m.escalation = "15분 동안 아무도 확인하지 않음"
+    assert oracle_binds(custom, m)["escalation"] == "15분 동안 아무도 확인하지 않음"
 
 
 def test_message_says_why_it_comes_again():

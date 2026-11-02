@@ -299,6 +299,7 @@ def _stale(job: dict[str, Any], notifier: Notifier) -> str | None:
             return "다시 알리기 전에 해결됨"
         if job["action"].endswith(":acked") and job.get("alert_status") == "acked":
             return "다시 알리기 전에 확인됨"
+        return notifier.accepts_escalation()
     if job.get("auto_resolved"):
         return "보내기 전에 조건이 풀려 자동으로 해결됨"
     return None

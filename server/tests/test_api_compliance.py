@@ -71,6 +71,9 @@ def ctx():
             _alert("로그온 실패 급증", ["MITRE T1110", "ISMS 2.11.3"], "PC-3")
             _alert("옛 규칙", ["ISMS 2.10.1"], "PC-4")                               # 지금은 없는 규칙의 태그도 센다
             _alert("로그온 실패 급증", ["ISMS 2.11.3"], "PC-5", minutes_ago=200 * 24 * 60)   # 기간 밖
+            _alert("옛 규칙", ["ISMS  2.10.1", "ISMS 2.10.1"], "PC-6")                 # 공백이 다르고 두 번 — 같은 항목 한 번 (검토)
+            sql("INSERT INTO rule_exceptions (rule, term, reason, created_by) VALUES ('로그온 실패 급증', 'user:svc_backup',"
+                " '백업 계정', 'admin')")
             temp = admin.post("/api/users", json={"username": "viewer", "role": "viewer"}, headers=CSRF).json()
             viewer = TestClient(app)
             viewer.post("/api/auth/login", json={"username": "viewer", "password": temp["temp_password"]}, headers=CSRF)
@@ -89,7 +92,7 @@ def test_summary_per_isms_item(ctx):
     assert (a["alerts"], a["resolved"], a["unresolved"], a["true_positive"], a["false_positive"]) == (3, 2, 1, 1, 1)
     assert [r["name"] for r in a["rules"]] == ["로그온 실패 급증"] and a["enabled"] == 0
     assert items["2.9.4"]["alerts"] == 0 and items["2.9.4"]["enabled"] == 1
-    assert items["2.10.1"]["rules"] == [] and items["2.10.1"]["alerts"] == 1
+    assert items["2.10.1"]["rules"] == [] and items["2.10.1"]["alerts"] == 2
     assert ctx["viewer"].get("/api/compliance/isms").status_code == 403
 
 
@@ -115,4 +118,8 @@ def test_bundle_manifest_verifies_and_is_logged(ctx):
     assert rows[0][4] == "대상" and len(rows) == 4
     assert any(row[4].startswith("'=HYPERLINK") for row in rows[1:])      # 로그에서 온 값이 엑셀 수식이 되지 않게
     assert "종료 분류" in rows[0] and "오탐 — 규칙 문제" in {row[11] for row in rows[1:]}
+    assert len(list(csv.reader(io.StringIO(z.read("ISMS_2.10.1/알림.csv").decode("utf-8-sig"))))) == 3   # 공백이 다른 태그도
+    rules_txt = z.read("ISMS_2.11.3/규칙.txt").decode()
+    assert "예외: user:svc_backup — 백업 계정" in rules_txt                    # 그 기간에 걸려 있던 예외도 증적
+    assert detail["rows"] == 5                                              # 점검 보고서 '개인정보 내려받기'의 건수
     assert ctx["viewer"].get("/api/compliance/isms/bundle", params={"reason": "보기"}).status_code == 403

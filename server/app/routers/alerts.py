@@ -59,7 +59,8 @@ def _seconds(delta: timedelta) -> int:
 
 
 STATUS_LABELS = {"open": "처리 안 됨", "acked": "확인함", "resolved": "해결됨"}
-NOTE_LABELS = {"note": "메모", "ack": "확인", "resolve": "해결", "reopen": "다시 열기", "auto_resolve": "자동 해결"}
+NOTE_LABELS = {"note": "메모", "ack": "확인", "resolve": "해결", "reopen": "다시 열기", "auto_resolve": "자동 해결",
+               "escalate": "다시 알림"}
 STATUS_PATTERN = "^(open|acked|resolved|unresolved)$"
 
 
@@ -123,7 +124,7 @@ async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
     def lines():
         for a in rows:
             history = " / ".join(
-                f"{local(n['at'])} {n['author']} [{NOTE_LABELS[n['action']]}"
+                f"{local(n['at'])} {n['author']} [{NOTE_LABELS.get(n['action'], n['action'])}"
                 f"{' · ' + RESOLUTION_LABELS[n['resolution']] if n.get('resolution') in RESOLUTION_LABELS else ''}]"
                 f"{' ' + n['text'] if n['text'] else ''}"
                 for n in notes.get(a["id"], []))
@@ -133,7 +134,7 @@ async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
                 local(a["acked_at"]) if a["acked_at"] else "", a["resolved_by"] or "",
                 local(a["resolved_at"]) if a["resolved_at"] else "", RESOLUTION_LABELS.get(a["resolution"] or "", ""),
                 f"#{a['silence_id']}" if a["silence_id"] else "",
-                "; ".join(f"{d['notifier']}{' 해소' if d.get('action') == 'resolve' else ''}:{d['status']}"
+                "; ".join(f"{d['notifier']}{' 해소' if d.get('action') == 'resolve' else ' 다시 알림' if str(d.get('action') or '').startswith('escalate:') else ''}:{d['status']}"
                           for d in a["deliveries"]), history,
             ]
         if truncated:

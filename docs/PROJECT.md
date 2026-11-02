@@ -726,8 +726,9 @@ docker compose exec api python -m app.cli verify-chain                 # 감사�
   4. **접속 문자열:** Easy Connect(`host:1521/service`) 또는 `(DESCRIPTION=...)`
 - **연결 시험:** 저장 전에 입력값으로 접속해 DB 이름·서비스·스키마·버전을 보여 줍니다.
 - **알림 SQL:** 알림이 생기면 실행할 한 문장입니다(기본: `LOGMON_ALERTS` INSERT, DDL 은 `docs/oracle_alerts.sql`).
-  - 바인드: `:alert_id :rule_name :severity :host :event_count :window_sec :first_event_at :last_event_at :fired_at :title :message :link :detail_json :dedup_key :event_action`
+  - 바인드: `:alert_id :rule_name :severity :host :event_count :window_sec :first_event_at :last_event_at :fired_at :title :message :link :detail_json :dedup_key :event_action :escalation`
   - `:event_action` 을 쓴 SQL 에만 해소 통지(`resolve`)를 보냅니다(B-35 2단계) — 기본 INSERT 에 그대로 보내면 같은 ALERT_ID 가 아래 중복 처리로 '성공'이 되어 해소가 남지 않습니다.
+  - 다시 알림(에스컬레이션, B-43)도 같은 까닭으로 `:escalation`(다시 알림 문구, 처음 알림이면 NULL)을 쓴 SQL 에만 보냅니다 — 아니면 '건너뜀'.
   - 프로시저 호출은 `BEGIN 프로시저(:rule_name, :host); END;` 형태로 씁니다.
   - SQL 에 쓴 바인드만 넘기고, 알 수 없는 바인드는 저장 전에 거부합니다. 문자열 안의 `:` 는 무시합니다.
   - 시각은 UTC 기준 TIMESTAMP 입니다.

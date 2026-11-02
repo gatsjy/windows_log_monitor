@@ -109,3 +109,22 @@ def test_unknown_escalation_target_is_rejected_on_save(client):
     body = client.get("/api/alerts/config").json()
     assert body["escalations"] == [{"name": "심각 미확인", "severities": ["critical"], "rules": [], "steps": [
         {"after_sec": 900, "unless": "acked", "notify": ["운영팀"]}, {"after_sec": 3600, "unless": "resolved", "notify": ["운영팀"]}]}]
+
+
+def test_long_step_is_measured_from_queue_time(client):
+    """'하루 미해결' 같은 단계는 알림 발생 24시간 뒤에 들어간다 — 발생 시각으로 재면 넣자마자 '하루가 지나' 버려졌다 (검토에서 재현)."""
+    from datetime import timedelta
+
+    from app import repository
+
+    alert_id = _alert(25 * 60)
+    assert client.portal.call(repository.queue_escalation, alert_id, ("운영팀",), "escalate:86400:resolved", "하루 미해결") == ["운영팀"]
+    client.portal.call(repository.expire_stale_deliveries, datetime.now(UTC) - timedelta(hours=24), "하루가 지나 보내지 않았습니다")
+    assert _rows(alert_id) == [("escalate:86400:resolved", "pending")]
+
+
+def test_alert_csv_with_escalation_note(client):
+    """다시 알림 처리 기록이 있어도 알림 이력 CSV 가 만들어진다 — 예전에는 KeyError 로 500 (검토에서 재현)."""
+    r = client.get("/api/alerts", params={"since": "2d", "format": "csv", "reason": "월간 점검"}, headers=CSRF)
+    assert r.status_code == 200, r.text
+    assert "[다시 알림]" in r.text and "운영팀 다시 알림:pending" in r.text

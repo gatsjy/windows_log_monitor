@@ -1198,9 +1198,10 @@ async def expire_stale_deliveries(fired_before: datetime, error: str) -> int:
     async with db.pool().connection() as conn:
         cur = await conn.execute(
             "UPDATE alert_deliveries d SET status = 'gave_up', last_error = %s, updated_at = now() FROM alerts a"
-            # 해소 통지는 넣은 시각으로 — 이틀 끊겼던 PC 의 해소 통지가 넣자마자 버려지지 않게
+            # 해소 통지·에스컬레이션(B-43)은 넣은 시각으로 — 이틀 끊겼던 PC 의 해소 통지나 '하루 미해결' 단계가 넣자마자 버려지지
+            # 않게(검토에서 재현: after 1d 단계가 '하루가 지나 보내지 않았습니다'로 끝남)
             " WHERE a.id = d.alert_id AND d.status IN ('pending', 'failed') AND d.claimed_at IS NULL"
-            " AND (CASE WHEN d.action = 'resolve' THEN d.queued_at ELSE a.fired_at END) < %s",
+            " AND (CASE WHEN d.action = 'resolve' OR d.action LIKE 'escalate:%%' THEN d.queued_at ELSE a.fired_at END) < %s",
             (error, fired_before))
         return cur.rowcount
 
@@ -1521,24 +1522,31 @@ async def alert_rule_quality(since: datetime) -> dict[str, dict[str, Any]]:
 
 async def isms_alert_stats(since: datetime, until: datetime) -> list[dict]:
     """심사 대응 (B-73): 발생 때의 태그(payload.tags) 'ISMS …' 마다 기간 안 알림 수·해결 수·해결 시간 중앙값(사람)·정탐·오탐."""
+    # 항목 번호로 묶는다(공백 차이·같은 항목 태그 두 번이어도 알림 하나는 한 번) — 파이썬 compliance.item_of 와 같은 뜻 (검토)
     return await db.fetch_all(
-        "SELECT t.tag, count(*) AS n, count(*) FILTER (WHERE a.status = 'resolved') AS resolved,"
-        " percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM a.resolved_at - a.fired_at))"
-        "   FILTER (WHERE a.status = 'resolved' AND NOT a.auto_resolved) AS median,"
-        " count(*) FILTER (WHERE a.resolution IN ('tp_malicious', 'tp_expected')) AS tp,"
-        " count(*) FILTER (WHERE a.resolution IN ('fp_rule', 'fp_data')) AS fp"
-        " FROM alerts a CROSS JOIN LATERAL jsonb_array_elements_text("
-        "   CASE WHEN jsonb_typeof(a.payload->'tags') = 'array' THEN a.payload->'tags' ELSE '[]'::jsonb END) AS t(tag)"
-        " WHERE a.fired_at >= %s AND a.fired_at < %s AND t.tag LIKE 'ISMS %%' GROUP BY t.tag", (since, until))
+        "SELECT x.item, count(*) AS n, count(*) FILTER (WHERE x.status = 'resolved') AS resolved,"
+        " percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM x.resolved_at - x.fired_at))"
+        "   FILTER (WHERE x.status = 'resolved' AND NOT x.auto_resolved) AS median,"
+        " count(*) FILTER (WHERE x.resolution IN ('tp_malicious', 'tp_expected')) AS tp,"
+        " count(*) FILTER (WHERE x.resolution IN ('fp_rule', 'fp_data')) AS fp"
+        f" FROM (SELECT DISTINCT a.id, a.status, a.resolved_at, a.fired_at, a.auto_resolved, a.resolution, {_ISMS_ITEM} AS item"
+        f"       FROM alerts a CROSS JOIN LATERAL jsonb_array_elements_text({_TAGS}) AS t(tag)"
+        "       WHERE a.fired_at >= %s AND a.fired_at < %s) x WHERE x.item IS NOT NULL GROUP BY x.item", (since, until))
 
 
-async def isms_alerts(tag: str, since: datetime, until: datetime, limit: int) -> list[dict]:
-    """심사 대응 증적 묶음 (B-73): 그 태그로 난 기간 안 알림 (발생 순)."""
+async def isms_alerts(item: str, since: datetime, until: datetime, limit: int) -> list[dict]:
+    """심사 대응 증적 묶음 (B-73): 그 ISMS 항목 태그로 난 기간 안 알림 (발생 순, 요약과 같은 항목 판단)."""
     return await db.fetch_all(
         "SELECT a.id, a.fired_at, a.severity, a.rule, a.group_key, a.event_count, a.status, a.acked_by, a.acked_at,"
         " a.resolved_by, a.resolved_at, a.resolution FROM alerts a"
-        " WHERE a.fired_at >= %s AND a.fired_at < %s AND a.payload->'tags' ? %s ORDER BY a.fired_at, a.id LIMIT %s",
-        (since, until, tag, limit))
+        f" WHERE a.fired_at >= %s AND a.fired_at < %s AND EXISTS (SELECT 1 FROM jsonb_array_elements_text({_TAGS}) AS t(tag)"
+        f"   WHERE {_ISMS_ITEM} = %s) ORDER BY a.fired_at, a.id LIMIT %s",
+        (since, until, item, limit))
+
+
+# payload.tags(배열이 아니면 빈 배열)와 'ISMS x.y.z' 태그의 항목 번호 — 공백은 하나로 접어 본다 (compliance.ISMS_TAG 와 같은 뜻)
+_TAGS = "CASE WHEN jsonb_typeof(a.payload->'tags') = 'array' THEN a.payload->'tags' ELSE '[]'::jsonb END"
+_ISMS_ITEM = ("substring(btrim(regexp_replace(t.tag, '\\s+', ' ', 'g')) from '^ISMS ([0-9]+\\.[0-9]+(?:\\.[0-9]+)?)$')")
 
 
 async def resolution_counts(start: datetime, end: datetime) -> list[dict]:
@@ -1798,7 +1806,7 @@ async def event_digest_records(since: datetime) -> list[dict[str, Any]]:
     return [r["detail"] for r in rows]
 
 
-EXPORT_ACTIONS = ("audit.export", "alerts.export", "events.export")
+EXPORT_ACTIONS = ("audit.export", "alerts.export", "events.export", "compliance.bundle")
 
 
 async def audit_exports(start: datetime, end: datetime) -> list[dict[str, Any]]:

@@ -61,6 +61,10 @@ class Notifier:
         """해소 통지를 받을 수 없으면 그 이유 (B-35 2단계). 사람이 읽는 메일·메신저는 언제나 받는다."""
         return None
 
+    def accepts_escalation(self) -> str | None:
+        """다시 알림(에스컬레이션, B-43)을 받을 수 없으면 그 이유. 사람이 읽는 메일·메신저는 언제나 받는다."""
+        return None
+
     def target(self) -> str:
         """화면 표시용 대상 설명 (비밀값 제외)."""
         return ""
@@ -276,7 +280,8 @@ ORACLE_DEFAULT_SQL = (
     "  :first_event_at, :last_event_at, :fired_at, :title, :message, :link, :detail_json)"
 )
 ORACLE_BINDS = ("alert_id", "rule_name", "severity", "host", "event_count", "window_sec", "first_event_at",
-                "last_event_at", "fired_at", "title", "message", "link", "detail_json", "dedup_key", "event_action")
+                "last_event_at", "fired_at", "title", "message", "link", "detail_json", "dedup_key", "event_action",
+                "escalation")
 _BIND_RE = re.compile(r"(?<![:\w]):([A-Za-z_][A-Za-z0-9_]*)")
 # 생존 신호 SQL (B-34, 선택): 1분마다 실행 — 서버 전체가 멈추면 이 행이 갱신되지 않아 병원 DB 감시가 알아챈다
 HEARTBEAT_BINDS = ("at", "status", "version", "problems")
@@ -317,6 +322,7 @@ def oracle_binds(sql: str, message: AlertMessage) -> dict[str, Any]:
         "detail_json": json.dumps(message.to_dict(), ensure_ascii=False, default=str),
         "dedup_key": message.dedup_key,
         "event_action": message.event_action,
+        "escalation": message.escalation or None,   # 다시 알림 문구 (B-43) — 처음 알림이면 NULL
     }
     used = set(_BIND_RE.findall(_strip_strings(sql)))
     unknown = used - set(values)
@@ -362,6 +368,13 @@ class OracleNotifier(Notifier):
         if "event_action" in _binds_in(self.sql):
             return None
         return "SQL 에 :event_action 이 없어 해소 통지를 보내지 않습니다"
+
+    def accepts_escalation(self) -> str | None:
+        # 다시 알림은 같은 알림 번호·event_action(trigger)이라 기본 INSERT(알림 번호가 기본 키)는 중복으로 끝나고, 드라이버의 중복은
+        # 성공으로 친다 — '보냄'으로 남는데 사내 DB 에는 없었다(검토에서 재현). :escalation 을 받는 SQL 만
+        if "escalation" in _binds_in(self.sql):
+            return None
+        return "SQL 에 :escalation 이 없어 다시 알림을 보내지 않습니다"
 
     def _execute(self, binds: dict[str, Any], commit: bool, sql: str | None = None) -> int:
         try:

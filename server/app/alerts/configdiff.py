@@ -134,10 +134,11 @@ def _escalation_changes(old: AlertConfig, new: AlertConfig) -> list[dict]:
             continue
         if q == p:
             continue
-        old_steps = {(s.unless, i): s for i, s in enumerate(p.steps)}
-        weaker = len(q.steps) < len(p.steps) or any(
-            (s2 := q.steps[i] if i < len(q.steps) else None) is None or s2.after > s.after or set(s.notify) - set(s2.notify)
-            for (_, i), s in old_steps.items())
+        # 약해짐 = 옛 단계의 받는 곳 하나라도, 새 정책에서 '그 받는 곳에 같거나 이른 시각·같거나 강한 조건으로' 다시 알리는 단계가 없다.
+        # resolved(해결될 때까지)가 acked(확인되면 멈춤)보다 강하다 — resolved → acked 는 확인만 하면 다시 알리지 않게 된다(검토에서 재현)
+        rank = {"acked": 0, "resolved": 1}
+        weaker = any(not any(n in s2.notify and s2.after <= s.after and rank[s2.unless] >= rank[s.unless] for s2 in q.steps)
+                     for s in p.steps for n in s.notify)
         narrower = (bool(q.severities) and (not p.severities or bool(set(p.severities) - set(q.severities)))) or \
                    (bool(q.rules) and (not p.rules or bool(set(p.rules) - set(q.rules))))
         out.append(("escalation", f"에스컬레이션 '{name}' 변경", weaker or narrower))
