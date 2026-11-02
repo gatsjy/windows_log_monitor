@@ -2,12 +2,15 @@
 // 옛 링크(host=…&q=a|b)로 들어오면 문장으로 접어 주소를 바꾼다 (filterState). 같은 주소 = 같은 조건.
 import * as api from '../api.js';
 import { columnChart, legend, seriesColors, seriesLabel } from '../charts.js';
-import { setSearchContext } from '../drawer.js';
+import { openEvent, setSearchContext } from '../drawer.js';
 import { EVENT_HEAD, bindRows, eventRow } from '../eventtable.js';
 import { filterBar, filterState } from '../filterbar.js';
 import { exportCsv } from '../exportcsv.js';
 import { addTerm, parseTerms } from '../querylang.js';
-import { errorBox, fmtNum, fmtTime, html, replaceParams, tzOffset } from '../util.js';
+import { errorBox, fmtDuration, fmtNum, fmtTime, html, replaceParams, tzOffset } from '../util.js';
+
+// 로그온 세션 (B-63): LogonType → 방식
+const LOGON_TYPES = { 2: '대화형', 3: '네트워크', 4: '배치', 5: '서비스', 7: '잠금 해제', 8: '네트워크(평문)', 9: '새 자격 증명', 10: '원격 데스크톱', 11: '캐시' };
 
 // 통계 탭 (B-62): 묶을 칸. 원본 필드는 f.<경로> 를 직접 적는다(예: f.EventData.LogonType)
 const STATS_FIELDS = [['user', '사용자'], ['host', 'PC'], ['ip', 'IP'], ['event_id', '이벤트 ID'], ['category', '분류'],
@@ -35,7 +38,7 @@ export async function mount(root, params) {
     <div data-filter></div>
     <section class="card" style="margin-bottom:14px"><div class="card-body" data-hist><div class="skeleton" style="height:150px"></div></div></section>
     <div class="toolbar" style="margin-bottom:10px;justify-content:space-between">
-      <div class="seg" data-tab><button data-v="list" class="on">목록</button><button data-v="stats">통계</button></div>
+      <div class="seg" data-tab><button data-v="list" class="on">목록</button><button data-v="stats">통계</button><button data-v="sessions">세션</button></div>
       <button class="btn sm" type="button" data-csv>CSV 내려받기</button>
     </div>
     <section class="card" data-list>
@@ -53,6 +56,18 @@ export async function mount(root, params) {
         </div>
         <datalist id="stats-fields">${STATS_FIELDS.map(([v, l]) => html`<option value="${v}">${l}</option>`)}</datalist>
         <div data-stats-out style="margin-top:12px"></div>
+      </div>
+    </section>
+    <section class="card" data-sessions hidden>
+      <div class="card-body">
+        <p class="muted" style="font-size:12.5px;margin:0 0 10px">지금 조건의 Windows 로그온(4624)마다 같은 PC 의 로그오프(4634·4647)를 로그온 ID 로 짝지어
+          누가·언제·어느 PC 에·어떤 방식으로·얼마나 접속했는지 봅니다. 로그오프가 없으면 아직 접속 중이거나, 기록이 빠졌거나, 찾는 시간을 넘었습니다.
+          검색 문장에 다른 이벤트 ID 조건이 있으면 결과가 없습니다. 행을 누르면 로그온 로그의 상세.</p>
+        <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+          <label class="muted" style="font-size:13px">로그오프를 찾는 시간 <select class="select" data-sess-hours>
+            <option value="24">하루</option><option value="72">사흘</option><option value="168">7일</option></select></label>
+          <button class="btn primary sm" type="button" data-sess-run>보기</button></div>
+        <div data-sess-out style="margin-top:12px"></div>
       </div>
     </section>`;
 
@@ -145,6 +160,7 @@ export async function mount(root, params) {
     root.querySelectorAll('[data-tab] button').forEach((x) => x.classList.toggle('on', x === b));
     root.querySelector('[data-list]').hidden = tab !== 'list';
     root.querySelector('[data-stats]').hidden = tab !== 'stats';
+    root.querySelector('[data-sessions]').hidden = tab !== 'sessions';
   }));
   root.querySelector('[data-csv]').addEventListener('click', () => {
     if (tab === 'stats' && lastStats) exportCsv('/api/stats/group', { ...state, ...lastStats }, { what: '통계 표' });
@@ -193,6 +209,33 @@ export async function mount(root, params) {
     }));
   }
   root.querySelector('[data-stats-run]').addEventListener('click', runStats);
+
+  // ---- 세션 탭 (B-63)
+  const sessOut = root.querySelector('[data-sess-out]');
+  async function runSessions() {
+    sessOut.innerHTML = '<div class="skeleton" style="height:120px"></div>';
+    let res;
+    try {
+      res = await api.get('/api/stats/sessions', { ...state, max_hours: root.querySelector('[data-sess-hours]').value, limit: 200 });
+    } catch (err) {
+      sessOut.innerHTML = errorBox(err);
+      return;
+    }
+    const kind = (t) => (t == null ? '–' : LOGON_TYPES[t] ? `${LOGON_TYPES[t]} (${t})` : String(t));
+    sessOut.innerHTML = res.items.length ? html`
+      <div class="table-wrap"><table class="table"><thead><tr><th>로그온</th><th>PC</th><th>사용자</th><th>방식</th><th>출발지 IP</th>
+        <th>로그오프</th><th class="r">길이</th></tr></thead>
+        <tbody>${res.items.map((s, n) => html`<tr data-sess-row="${n}" title="로그온 로그 상세" style="cursor:pointer">
+          <td class="nowrap">${fmtTime(s.ts)}</td><td class="nowrap">${s.host}</td><td class="nowrap">${s.username ?? '–'}</td>
+          <td class="nowrap">${kind(s.logon_type)}</td><td class="nowrap num">${s.src_ip ?? '–'}</td>
+          <td class="nowrap">${s.end_ts ? html`${fmtTime(s.end_ts)} <span class="muted">${s.end_event === 4647 ? '사용자가 로그오프' : ''}</span>`
+            : html`<span class="muted">로그오프 기록 없음</span>`}</td>
+          <td class="r num">${s.duration_sec == null ? '–' : fmtDuration(s.duration_sec)}</td></tr>`)}</tbody></table></div>
+      ${res.truncated ? html`<p class="muted" style="font-size:12.5px">최근 로그온 ${fmtNum(res.limit)}개만 보입니다 — 기간이나 조건을 좁히세요.</p>` : ''}`
+      : html`<p class="muted">조건에 맞는 로그온(4624)이 없습니다.</p>`;
+    sessOut.querySelectorAll('[data-sess-row]').forEach((tr) => tr.addEventListener('click', () => openEvent(res.items[Number(tr.dataset.sessRow)].id)));
+  }
+  root.querySelector('[data-sess-run]').addEventListener('click', runSessions);
 
   filterBar(root.querySelector('[data-filter]'), state, {
     onChange: (next) => { state = next; replaceParams('events', state); load(); },

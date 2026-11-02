@@ -224,6 +224,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/stats/timeseries?group=&buckets=&interval=&tz_offset=` | 시간 구간별 건수. group 상위 6개 + `__other__` (level 은 전부) |
 | `GET /api/stats/top?field=&limit=` | 상위 값. field = 컬럼명 또는 `f.<경로>` |
 | `GET /api/stats/group?by=&distinct=&limit=` | 통계 표 (B-62): `by`(최대 3, 쉼표) 조합마다 건수·처음/마지막 발생 시각·`distinct`(최대 2) 서로 다른 값 수. 건수 많은 순 최대 1,000행(`truncated`). 사용자·IP·`f.` 가 들면 접속기록 `events.stats`. `format=csv&reason=` 는 사유 필수·`events.export` |
+| `GET /api/stats/sessions?<필터>&max_hours=&limit=` | 로그온 세션 (B-63): 지금 조건 + `event_id:4624 source:winevtlog` 의 로그온(최근 것부터 `limit`, 최대 500)마다 같은 PC 의 4634·4647 을 `EventData.TargetLogonId`(별칭)로 짝지음 — `max_hours`(1~720, 기본 24) 안, 그 사이 같은 PC·같은 ID 의 새 로그온이 있으면 그 앞까지(재부팅 뒤 ID 재사용). `logon_type`·`end_ts`·`end_event`·`duration_sec`(없으면 null = 로그오프 기록 없음). 조회 범위 적용, 접속기록 `events.sessions`(10분 묶음) |
 | `GET /api/stats/summary` | PC 상태 수, 분당 수집량, 최근 24시간 알림 수(`alerts_24h`), 확인하지 않은 알림 수(`alerts_open`, 조회 범위 반영) |
 | `GET /api/agents?since=` | PC 목록 + 기간 내 이벤트/오류/경고 수 + 상태 + `last_transport`(마지막 하트비트의 전송 방식: `tls`·`plain`·`web`=화면 포트로 보낸 옛 묶음). `transport{tls, ingest_plain}`. `silent_streams` = 늘 오던 로그가 끊긴 (PC, 소스, 채널) (B-37, 조회 범위 반영). 행마다 `clock_offset_ms`(서버 − PC 시계, 하트비트 15~30분 최솟값, 30분 넘게 하트비트가 없으면 null)·`clock_level`, `clock{known, off, bad, warn, server_suspect}`(서버 시계 의심은 조회 범위가 없는 사용자만, B-57) |
 | `GET /api/agents/problems?since=` | 수집 거절 장부·격리 레코드 목록 (관리자, B-40) |
@@ -311,6 +312,7 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
 - **라우팅:** `#/dashboard/<이름>`, `#/live`, `#/events?<필터>`, `#/alerts`, `#/agents`, `#/fields?source=&path=`, `#/reports/<번호>`
   - 필터는 URL에 남기 때문에 주소를 공유하면 같은 화면이 열립니다.
 - **필터 막대 (이벤트 검색·실시간):** 1행 = 검색 문장 칸(§4.1), 2행 = 기간·PC·분류·채널·수준 칩·저장한 검색·링크 복사·초기화.
+  - **세션 탭 (B-63):** 목록 | 통계 | 세션 — 지금 조건의 Windows 로그온마다 로그오프를 짝지어 로그온 시각·PC·사용자·방식(LogonType)·출발지 IP·로그오프·길이. 행을 누르면 로그온 로그 상세.
   - **저장한 검색 (B-64):** 지금 문장을 이름·설명·공유(·보호: 관리자)와 함께 저장하고, 목록에서 [적용](문장을 바꿈)·[더하기](지금 문장에 AND)·고치기·지우기. 기간은 저장하지 않습니다(불러올 때 지금 기간).
     최근 30일 내가 검색한 문장도 다시 씁니다. 알림 규칙이 쓰는 검색은 '알림 규칙 n개가 씀'으로 보이고 지울 수 없습니다(§6.4).
   - 문장이 조건의 정본입니다. 드롭다운·수준 칩은 문장을 보여 주고 고치는 창입니다(그 키의 조건이 값 하나면 그 값, 아니면 '문장 조건').

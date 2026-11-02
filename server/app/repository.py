@@ -718,6 +718,35 @@ async def group_stats(f: EventFilter, by: list[str], distinct: list[str], limit:
     return await db.fetch_all(query, [*select_params, *params, limit])
 
 
+SESSION_LOGON, SESSION_ENDS = 4624, (4634, 4647)   # 로그온 → 로그오프·사용자가 시작한 로그오프
+
+
+async def logon_sessions(f: EventFilter, max_hours: int, limit: int) -> list[dict]:
+    """로그온 세션 (B-63): 조건(4624 로 좁힌 f)에 맞는 로그온 최근 것부터 limit 개마다 같은 PC·같은 TargetLogonId 의 첫 4634/4647.
+    Logon ID 는 재부팅 뒤 다시 쓰일 수 있다 — 끝은 max_hours 안, 그 사이 같은 PC·같은 ID 의 새 로그온이 있으면 그 앞까지만.
+    ID 는 이름 경로(EventData.TargetLogonId — 보낸 값, 없으면 서버가 붙인 값, ADR-038)로 읽는다. 끝이 없으면 end_* 가 NULL."""
+    where, params = where_clause(f)
+    logon_id, id_params = _raw_clause("{raw}", ["EventData", "TargetLogonId"])
+    logon_type, type_params = _raw_clause("{raw}", ["EventData", "LogonType"])
+    query = sql.SQL(
+        "SELECT l.id, l.host, l.ts, l.username, l.src_ip, l.logon_id, l.logon_type,"
+        "       e.id AS end_id, e.ts AS end_ts, e.event_id AS end_event"
+        "  FROM (SELECT id, host, ts, username, src_ip, {lid} AS logon_id, {ltype} AS logon_type"
+        "          FROM events WHERE {where} ORDER BY ts DESC, id DESC LIMIT %s) l"
+        "  LEFT JOIN LATERAL ("
+        "       SELECT e.id, e.ts, e.event_id FROM events e"
+        "        WHERE e.host = l.host AND e.event_id = ANY(%s) AND e.ts >= l.ts AND e.ts <= l.ts + make_interval(hours => %s)"
+        "          AND {lid} = l.logon_id"
+        "          AND NOT EXISTS (SELECT 1 FROM events n WHERE n.host = l.host AND n.event_id = %s AND n.ts > l.ts"
+        "                            AND n.ts < e.ts AND {lid} = l.logon_id)"
+        "        ORDER BY e.ts, e.id LIMIT 1) e ON l.logon_id IS NOT NULL"
+        " ORDER BY l.ts DESC, l.id DESC"
+    ).format(lid=logon_id, ltype=logon_type, where=where)
+    # {lid} 가 세 번 — 첫째는 바깥(로그온), 둘째는 끝 후보(e), 셋째는 그 사이 새 로그온(n). 이름 없는 raw 는 가장 안쪽 표의 것
+    return await db.fetch_all(query, [*id_params, *type_params, *params, limit,
+                                      list(SESSION_ENDS), max_hours, *id_params, SESSION_LOGON, *id_params])
+
+
 async def agents(since: datetime, scopes=None) -> list[dict]:
     """수집 PC 목록. scopes(사용자 그룹 범위)가 있으면 범위 안의 이벤트만 세고,
     범위 안 이벤트가 있었거나 PC 이름 패턴에 맞는 PC 만 보여 준다."""

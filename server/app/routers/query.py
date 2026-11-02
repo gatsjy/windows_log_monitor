@@ -365,6 +365,26 @@ async def stats_group(request: Request, by: str, distinct: str = "", limit: int 
     return {"by": keys, "distinct": counts, "items": items, "truncated": truncated, "limit": limit}
 
 
+SESSIONS_MAX = 500
+
+
+@router.get("/api/stats/sessions")
+async def stats_sessions(request: Request, limit: int = Query(200, ge=1, le=SESSIONS_MAX),
+                         max_hours: int = Query(24, ge=1, le=24 * 30), user: User = Depends(require_user)):
+    """로그온 세션 (B-63): 지금 조건의 Windows 로그온(4624)마다 같은 PC 의 로그오프(4634·4647)를 TargetLogonId 로 짝지어
+    누가·언제·어느 PC 에·어떤 방식(LogonType)으로·얼마나. 검색 문장에 'event_id:4624 source:winevtlog' 를 더한 것과 같다
+    (다른 이벤트 ID 조건이 있으면 결과가 없다). 끝이 없으면 '로그오프 기록 없음' — 아직 접속 중이거나, 기록이 빠졌거나,
+    max_hours 를 넘었다. 사용자·IP 를 보이므로 접속기록(events.sessions, 10분 묶음)."""
+    f = _filter(request).merged(parse_terms(f"event_id:{repository.SESSION_LOGON} source:winevtlog"))
+    rows = await repository.logon_sessions(f, max_hours, limit + 1)
+    truncated = len(rows) > limit
+    items = [{**r, "duration_sec": int((r["end_ts"] - r["ts"]).total_seconds()) if r["end_ts"] else None} for r in rows[:limit]]
+    conditions = accesslog.conditions(request, drop=("limit",))
+    await accesslog.record(request, user.username, "events.sessions", None, {"query": conditions, "rows": len(items)},
+                           key=conditions)
+    return {"items": items, "truncated": truncated, "limit": limit, "max_hours": max_hours}
+
+
 @router.get("/api/stats/top")
 async def stats_top(request: Request, field: str = "host", limit: int = Query(10, ge=1, le=100)):
     rows = await repository.top(_filter(request), _check_field(field), limit)
