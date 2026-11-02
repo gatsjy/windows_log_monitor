@@ -6,6 +6,7 @@ import { openEvent, setSearchContext } from '../drawer.js';
 import { EVENT_HEAD, bindRows, eventRow } from '../eventtable.js';
 import { filterBar, filterState } from '../filterbar.js';
 import { exportCsv } from '../exportcsv.js';
+import { categoryLabel, levelLabel, sourceLabel } from '../levels.js';
 import { addTerm, parseTerms } from '../querylang.js';
 import { errorBox, fmtDuration, fmtNum, fmtTime, html, replaceParams, tzOffset } from '../util.js';
 
@@ -38,7 +39,7 @@ export async function mount(root, params) {
     <div data-filter></div>
     <section class="card" style="margin-bottom:14px"><div class="card-body" data-hist><div class="skeleton" style="height:150px"></div></div></section>
     <div class="toolbar" style="margin-bottom:10px;justify-content:space-between">
-      <div class="seg" data-tab><button data-v="list" class="on">목록</button><button data-v="stats">통계</button><button data-v="sessions">세션</button></div>
+      <div class="seg" data-tab><button data-v="list" class="on">목록</button><button data-v="stats">통계</button><button data-v="sessions">세션</button><button data-v="fields">필드</button></div>
       <button class="btn sm" type="button" data-csv>CSV 내려받기</button>
     </div>
     <section class="card" data-list>
@@ -56,6 +57,12 @@ export async function mount(root, params) {
         </div>
         <datalist id="stats-fields">${STATS_FIELDS.map(([v, l]) => html`<option value="${v}">${l}</option>`)}</datalist>
         <div data-stats-out style="margin-top:12px"></div>
+      </div>
+    </section>
+    <section class="card" data-fields hidden>
+      <div class="card-body">
+        <p class="muted" style="font-size:12.5px;margin:0 0 10px" data-fields-note></p>
+        <div class="field-grid" data-fields-out></div>
       </div>
     </section>
     <section class="card" data-sessions hidden>
@@ -141,6 +148,8 @@ export async function mount(root, params) {
 
       items = page.items;
       cursor = page.next_cursor;
+      Object.keys(full).forEach((k) => delete full[k]);
+      if (tab === 'fields') renderFields();
       rowsEl.innerHTML = items.length
         ? html`${items.map((ev, i) => eventRow(ev, i))}`
         : html`<tr><td colspan="6" class="empty" style="padding:48px 16px;">조건에 일치하는 이벤트가 없습니다. 상단 필터를 조정해보세요.</td></tr>`;
@@ -163,6 +172,8 @@ export async function mount(root, params) {
     root.querySelector('[data-list]').hidden = tab !== 'list';
     root.querySelector('[data-stats]').hidden = tab !== 'stats';
     root.querySelector('[data-sessions]').hidden = tab !== 'sessions';
+    root.querySelector('[data-fields]').hidden = tab !== 'fields';
+    if (tab === 'fields') renderFields();
   }));
   root.querySelector('[data-csv]').addEventListener('click', () => {
     if (tab === 'stats' && lastStats) exportCsv('/api/stats/group', { ...state, ...lastStats }, { what: '통계 표' });
@@ -211,6 +222,56 @@ export async function mount(root, params) {
     }));
   }
   root.querySelector('[data-stats-run]').addEventListener('click', runStats);
+
+  // ---- 필드 탭 (B-65): 필드마다 많은 값 — 불러온 로그 기준(바로), '전체 기준'은 서버가 지금 조건 전체로(/api/stats/top).
+  // 값을 누르면 좁히기(+)·제외(−) — 실제 표기(대소문자·도메인)를 몰라 0건이 나오던 것을 줄인다
+  const EVENT_KEY = { user: 'username', ip: 'src_ip' };
+  const SHOW = { category: categoryLabel, level: (v) => levelLabel(Number(v)), source: sourceLabel };
+  const fieldsOut = root.querySelector('[data-fields-out]');
+  const full = {};   // 필드 → 서버 결과 (조건이 바뀌면 비운다)
+  function topOfLoaded(field) {
+    const counts = new Map();
+    for (const ev of items) {
+      const v = ev[EVENT_KEY[field] || field];
+      if (v == null || v === '') continue;
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([value, n]) => ({ value, n }));
+  }
+  function renderFields() {
+    root.querySelector('[data-fields-note]').textContent = `불러온 로그 ${fmtNum(items.length)}건 기준입니다 — '전체 기준'은 지금 조건의 모든 로그로 셉니다. `
+      + '값의 + 는 그 값으로 좁히고, − 는 뺍니다.';
+    fieldsOut.innerHTML = html`${STATS_FIELDS.map(([field, label]) => {
+      const rows = full[field] ?? topOfLoaded(field);
+      const total = full[field] ? null : items.length;
+      return html`<div class="field-card"><div class="field-card-head"><b>${label}</b>
+          ${full[field] ? html`<span class="muted">전체 기준</span>` : html`<button type="button" class="btn ghost sm" data-full="${field}">전체 기준</button>`}</div>
+        ${rows.length ? html`<ul>${rows.map((r) => html`<li><span class="field-val" title="${r.value}">${SHOW[field] ? SHOW[field](r.value) : r.value}</span>
+          <span class="num muted">${fmtNum(r.n)}${total ? ` · ${Math.round((r.n / total) * 100)}%` : ''}</span>
+          <button type="button" class="btn ghost sm" data-narrow="${field}" data-v="${r.value}" title="이 값으로 좁히기">+</button>
+          <button type="button" class="btn ghost sm" data-exclude="${field}" data-v="${r.value}" title="이 값 빼기">−</button></li>`)}</ul>`
+          : html`<p class="muted" style="margin:6px 0 0">값 없음</p>`}</div>`;
+    })}`;
+    fieldsOut.querySelectorAll('[data-full]').forEach((b) => b.addEventListener('click', async () => {
+      b.disabled = true;
+      try {
+        const res = await api.get('/api/stats/top', { ...state, field: b.dataset.full, limit: 5 });
+        full[b.dataset.full] = res.items.map((i) => ({ value: i.value, n: i.n }));
+        renderFields();
+      } catch (err) {
+        b.disabled = false;
+        b.replaceWith(Object.assign(document.createElement('span'), { className: 'tag-bad', textContent: err.message }));
+      }
+    }));
+    const apply = (field, value, neg) => {
+      const term = { key: field, values: [INT_FIELDS.has(field) ? Number(value) : value], ...(neg ? { neg: true } : {}) };
+      const text = addTerm(bar?.query ?? state.query ?? '', term);
+      root.querySelector('[data-tab] button[data-v="list"]').click();
+      if (bar) bar.applySentence(text); else { state = { ...state, query: text }; replaceParams('events', state); load(); }
+    };
+    fieldsOut.querySelectorAll('[data-narrow]').forEach((b) => b.addEventListener('click', () => apply(b.dataset.narrow, b.dataset.v, false)));
+    fieldsOut.querySelectorAll('[data-exclude]').forEach((b) => b.addEventListener('click', () => apply(b.dataset.exclude, b.dataset.v, true)));
+  }
 
   // ---- 세션 탭 (B-63)
   const sessOut = root.querySelector('[data-sess-out]');
