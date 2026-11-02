@@ -13,9 +13,11 @@ const TOP_FIELDS = [['host', 'PC'], ['user', '사용자'], ['ip', 'IP'], ['event
 const RELATIVE = /^\d+[mhd]$/;
 
 /** 위젯 JSON (화면·시험 공용) */
-export function buildWidget({ kind, title, query, field, since, keepSince }) {
+export function buildWidget({ kind, title, query, extra = {}, field, since, keepSince }) {
   const w = KINDS.find(([k]) => k === kind)?.[2] ?? 12;
-  const widget = { type: kind, title: title.trim(), w, ...(query ? { query: { query } } : {}) };
+  // extra: 문장으로 옮기지 못한 옛 조건(filterbar 의 '서버는 그대로 적용' 칩) — 빼면 위젯이 검색보다 넓게 센다
+  const cond = { ...extra, ...(query ? { query } : {}) };
+  const widget = { type: kind, title: title.trim(), w, ...(Object.keys(cond).length ? { query: cond } : {}) };
   if (kind === 'timeseries') widget.group = 'level';
   if (kind === 'events') widget.limit = 20;
   if (kind === 'top') Object.assign(widget, { field, limit: 8 });
@@ -24,7 +26,7 @@ export function buildWidget({ kind, title, query, field, since, keepSince }) {
   return widget;
 }
 
-export async function openAddToDashboard({ query = '', since = '', kind = 'timeseries', field = 'host' } = {}) {
+export async function openAddToDashboard({ query = '', extra = {}, since = '', kind = 'timeseries', field = 'host' } = {}) {
   const body = openDrawer({ title: '대시보드에 추가', subtitle: '지금 검색 문장으로 위젯 하나를 만들어 대시보드 맨 뒤에 붙입니다' });
   body.innerHTML = '<div class="skeleton"></div>';
   let list;
@@ -41,8 +43,9 @@ export async function openAddToDashboard({ query = '', since = '', kind = 'times
       <label>위젯<select class="select" name="kind">${KINDS.map(([k, l]) => html`<option value="${k}" ${k === kind ? 'selected' : ''}>${l}</option>`)}</select></label>
       <label data-field-row ${kind === 'top' ? '' : 'hidden'}>상위 값을 볼 필드<select class="select" name="field">${TOP_FIELDS.map(([k, l]) => html`
         <option value="${k}" ${k === field ? 'selected' : ''}>${l}</option>`)}</select></label>
-      <label>제목<input class="input" name="title" maxlength="80" required value="${query ? query.slice(0, 60) : '전체 로그'}"></label>
-      <p class="muted" style="font-size:12.5px;margin:0">조건: <code>${query || '(조건 없음 — 모든 로그)'}</code></p>
+      <label>제목<input class="input" name="title" maxlength="80" required value="${query ? Array.from(query).slice(0, 60).join('') : '전체 로그'}"></label>
+      <p class="muted" style="font-size:12.5px;margin:0">조건: <code>${query || (Object.keys(extra).length ? '' : '(조건 없음 — 모든 로그)')}</code>
+        ${Object.entries(extra).map(([k, v]) => html` <span class="chip on">${k} = ${v}</span>`)}</p>
       ${relative ? html`<label class="check"><input type="checkbox" name="keep"> 이 기간(${since})으로 고정 — 끄면 대시보드의 기간을 따릅니다</label>`
         : since ? html`<p class="muted" style="font-size:12.5px;margin:0">고른 구간(절대 시각)은 저장하지 않고 대시보드의 기간을 따릅니다.</p>` : ''}
       <div class="toolbar"><button class="btn primary" type="submit">추가</button></div>
@@ -53,7 +56,7 @@ export async function openAddToDashboard({ query = '', since = '', kind = 'times
   f.kind.addEventListener('change', () => { form.querySelector('[data-field-row]').hidden = f.kind.value !== 'top'; });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const widget = buildWidget({ kind: f.kind.value, title: f.title.value, query, field: f.field.value, since,
+    const widget = buildWidget({ kind: f.kind.value, title: f.title.value, query, extra, field: f.field.value, since,
       keepSince: f.keep?.checked });
     try {
       await api.send('POST', `/api/dashboards/${encodeURIComponent(f.dash.value)}/widgets`, widget);

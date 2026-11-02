@@ -249,6 +249,49 @@ def test_add_widget_from_search_appends_on_the_server(ctx, monkeypatch):
     assert detail["title"] == "실패 계정" and detail["widgets"] == 2
 
 
+def test_dashboard_writes_keep_file_and_audit_in_step(ctx):
+    """검토에서 재현: NUL 제목은 파일만 바뀌고 감사 기록 없음(jsonb), 반쪽 이모지는 500 + 임시 파일, 큰 위젯은 지울 수 없는 감사로그에 그대로.
+    편집기의 옛 JSON 저장은 그 사이 검색 화면에서 더한 위젯을 지웠다 → If-Match(ETag)로 409."""
+    admin, folder = ctx["admin"], Path(os.environ["WLM_DASHBOARD_DIR"])
+    base = {"title": "저장 시험", "widgets": [{"type": "text", "text": "처음"}]}
+    assert admin.put("/api/dashboards/guard-test", json=base, headers=CSRF).status_code == 200
+    before = len(_audit("dashboard.widget_add"))
+    for bad in ({"type": "stat", "title": "a\u0000b"}, {"type": "stat", "query": {"junk\u0000": "1"}},
+                {"type": "stat", "title": "x" * 201}, {"type": "stat", "title": "y", "query": {"junk": "z" * 20_000}}):
+        r = admin.post("/api/dashboards/guard-test/widgets", content=json.dumps(bad), headers={**CSRF, "Content-Type": "application/json"})
+        assert r.status_code == 422, (bad.keys(), r.text)
+    r = admin.post("/api/dashboards/guard-test/widgets", content='{"type": "stat", "title": "half \\ud83d"}',
+                   headers={**CSRF, "Content-Type": "application/json"})
+    assert r.status_code == 422, r.text
+    assert not list(folder.glob("*.tmp")) and len(_audit("dashboard.widget_add")) == before
+    assert json.loads((folder / "guard-test.json").read_text(encoding="utf-8")) == base     # 파일도 그대로
+
+    # 감사로그에는 짧게 — 조건 전체는 해시로
+    long_query = {"query": "event_id:4625", "f.legacy": "1"}
+    assert admin.post("/api/dashboards/guard-test/widgets", json={"type": "stat", "title": "t", "query": long_query},
+                      headers=CSRF).status_code == 200
+    detail = _audit("dashboard.widget_add")[-1]
+    assert detail["query"] == "event_id:4625" and len(detail["query_sha256"]) == 64 and "f.legacy" not in json.dumps(detail)
+
+    # 편집기: 연 판본(ETag)이 아니면 409, 맞으면 저장
+    got = admin.get("/api/dashboards/guard-test")
+    etag, stale = got.headers["ETag"], got.json()
+    assert admin.post("/api/dashboards/guard-test/widgets", json={"type": "text", "text": "검색 화면에서"}, headers=CSRF).status_code == 200
+    r = admin.put("/api/dashboards/guard-test", json=stale, headers={**CSRF, "If-Match": etag})
+    assert r.status_code == 409 and len(admin.get("/api/dashboards/guard-test").json()["widgets"]) == 3
+    fresh = admin.get("/api/dashboards/guard-test")
+    r = admin.put("/api/dashboards/guard-test", json=fresh.json(), headers={**CSRF, "If-Match": fresh.headers["ETag"]})
+    assert r.status_code == 200 and r.headers["ETag"] == admin.get("/api/dashboards/guard-test").headers["ETag"]
+    # 새 이름으로 저장(If-None-Match: *)은 있는 대시보드를 덮지 않는다
+    assert admin.put("/api/dashboards/guard-test", json=base, headers={**CSRF, "If-None-Match": "*"}).status_code == 409
+    assert admin.put("/api/dashboards/guard-new", json=base, headers={**CSRF, "If-None-Match": "*"}).status_code == 200
+
+
+def _audit(action):
+    with psycopg.connect(os.environ["WLM_DATABASE_URL"]) as conn:
+        return [d for (d,) in conn.execute("SELECT detail FROM audit_log WHERE action = %s ORDER BY id", (action,)).fetchall()]
+
+
 def test_alert_rule_with_sentence(ctx):
     admin = ctx["admin"]
     rule = {"name": "문장 규칙", "kind": "count", "severity": "warning", "notify": ["운영팀"], "group_by": "host",

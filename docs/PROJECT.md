@@ -240,8 +240,8 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/searches/recent` | 최근 30일 내가 검색한 문장 (접속기록 `events.search` 에서, 같은 문장은 한 번·최근 순 10개) |
 | `GET /api/suggest?key=&prefix=&since=&limit=` | 값 자동완성 (B-65): `key` = host·user·ip·channel·provider·source, 기간·조회 범위 안에서 `prefix` 로 시작하는(대소문자 무시, LIKE 특수 글자는 글자로) 값을 많은 순. 문장 조건은 보지 않음. 시간 상한 3초. 사용자·IP 는 접속기록(`events.stats`, `suggest:<key>`) |
 | `GET /api/search/parse?query=` | 검색 문장 해석만 (`terms`·정규형 `canonical`·모순 `never`). 데이터 조회 없음 — 실시간 화면이 오류 위치를 받는 데 쓴다 |
-| `GET/PUT /api/dashboards/{name}` | 대시보드 JSON 읽기/저장 (저장은 audit_log 기록) |
-| `POST /api/dashboards/{name}/widgets` | 위젯 하나를 맨 뒤에 (B-07 1단계, 검색 화면 [대시보드에 추가]) — 서버가 파일을 읽어 덧붙임(옛 JSON 으로 덮지 않게), 검증·`dashboards.edit`·감사로그 `dashboard.widget_add` |
+| `GET/PUT /api/dashboards/{name}` | 대시보드 JSON 읽기/저장 (저장은 audit_log 기록). GET 은 `ETag`(파일 sha256) — 편집기는 `If-Match` 로 저장해 그 사이 바뀌었으면 409(검색 화면에서 더한 위젯을 덮지 않게), 새 이름 저장은 `If-None-Match: *`(있으면 409). 헤더 없이는 예전처럼 덮어씀. NUL·잘린 이모지·200자 넘는 제목은 422 |
+| `POST /api/dashboards/{name}/widgets` | 위젯 하나를 맨 뒤에 (B-07 1단계, 검색 화면 [대시보드에 추가]) — 서버가 파일을 읽어 덧붙임(옛 JSON 으로 덮지 않게), 검증·`dashboards.edit`·감사로그 `dashboard.widget_add`(제목·문장은 잘라서, 조건 전체는 `query_sha256`). 위젯 16KB 까지 |
 | `GET /api/alerts?since=&rule=&severity=&host=&status=` | 알림 이력 (전송·처리 상태 포함) + `counts`(기간 안 처리 상태별 수). `status` = `open`·`acked`·`resolved`·`unresolved` |
 | `GET /api/alerts?format=csv` | 알림 이력 CSV (처리 상태·처리자·처리 시각·무음·전송·처리 기록, 최대 1만 건 — 넘으면 마지막 줄·`X-WLM-Truncated`·감사로그에 표시). 수식 주입 방지 — 감사로그 `alerts.export` |
 | `GET /api/alerts/{id}` | 알림 상세 (payload: 본문, 최근 이벤트 샘플, 처리 기록 `notes`, 무음 `silence`, 같은 규칙·대상의 해결 안 된 다른 알림 수 `related_unresolved`) |
@@ -368,6 +368,7 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
 
 **검색에서 추가 (B-07 1단계):** 이벤트 검색의 [대시보드에 추가](목록 → 시간대별 막대·최근 로그 표·건수, 필드 탭 카드의 ＋대시보드 → 상위 값)가 지금 검색 문장으로 위젯을 만들어
 고른 대시보드 맨 뒤에 붙입니다. 기간은 대시보드를 따르고(원하면 상대 기간만 고정), 막대로 고른 절대 구간은 저장하지 않습니다. `dashboards.edit` 권한.
+문장으로 옮기지 못한 옛 조건(막대의 '서버는 그대로 적용' 칩)도 위젯 `query` 에 그대로 넣습니다 — 빼면 위젯이 검색보다 넓게 셉니다.
 
 **대시보드 변수 (B-07 2단계):** `"variables": [{"name": "host", "key": "host", "label": "PC", "default": ""}]`(5개까지) — 화면 위 입력 칸(지금 기간의 실제 값 제안)·
 주소 `#/dashboard/server?var-host=EMR-DB-01` 의 값을 검색 조건을 쓰는 위젯(건수·시간대별 막대·상위 값·최근 로그)의 조건에 `host:EMR-DB-01` 로 더합니다(비우면 조건 없음 —
@@ -648,10 +649,13 @@ escalations:
 ### 6.6 정기 점검 보고서 (ISMS 2.9.5, ADR-032)
 
 **접속기록 점검 결과서 (B-72 3단계, ADR-060):** 점검 보고서 화면의 '접속기록 점검' 탭(`#/reports/inspections`, `reports.view`·조회 범위 없는 사용자).
-[지난달 점검 시작]이 지난달(표시 시간대)의 항목별 근거를 모아 스냅샷으로 남깁니다 — 보관기간(법정 최소 경고), 위·변조(해시 체인·다이제스트 상태), 개인정보 내려받기와
+[지난달 점검 시작]이 지난달(표시 시간대)의 항목별 근거를 모아 스냅샷으로 남깁니다 — 보관기간(법정 최소 경고), 위·변조(**기간 안의** 검증·앵커·백업 횟수와 실패·
+복구 시험 실패·보관 때 다이제스트 불일치·하루 넘게 빈 구간 + 지금 상태), 개인정보 내려받기와
 짧은 사유, 업무시간(평일 08~19시) 외 로그인, 인증 실패·잠금, 권한·계정 관리 작업, 개인정보 조회 300회 넘은 사람, 로그인한 계정 목록. 항목마다 적정·부적정(조치 필수)·
-해당 없음 → 점검자 서명 → 서명하지 않은 사람이 승인·반려(사유). API `GET/POST /api/inspections`, `GET /api/inspections/{id}`, `POST …/entries`, `GET …/csv?reason=`.
-주기 `WLM_ACCESS_LOG_INSPECTION_DAYS`(31, 0=알리지 않음) — 마지막 승인한 점검의 기간 끝에서 넘으면 운영 준비도·보고서 '점검 필요'.
+해당 없음 → 점검자 서명 → 서명하지 않은 사람이 승인·반려(사유). API `GET/POST /api/inspections`, `GET /api/inspections/{id}`(접속기록 `inspection.view`),
+`POST …/entries`, `GET …/csv?reason=`. 기간을 직접 주면 시작·끝 함께, 하루 이상, 끝은 지금까지(시간대 없는 값은 표시 시간대). 같은 기간의 승인 전 점검이 있으면 409.
+주기 `WLM_ACCESS_LOG_INSPECTION_DAYS`(31, 0=알리지 않음) — 기한 = 마지막 승인한 점검의 기간 끝 + 한 주기 + 여유(주기의 절반, 최대 14일). 넘으면 운영 준비도·보고서
+'점검 필요'. 이미 승인한 기간까지 덮인 진행 중 점검(겹쳐 시작·버려진 것)은 '진행 중'에 보이지 않습니다. 대량 조회는 감사로그·보고서·점검 열람 접속기록도 셉니다.
 
 ```
 1분마다 (app/reports/scheduler.py, advisory lock 으로 1곳에서만)

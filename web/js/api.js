@@ -62,10 +62,16 @@ export async function get(path, params = {}) {
   return handle(await fetch(url, { headers: headers('GET') }), path);
 }
 
-/** POST/PUT/PATCH/DELETE. body 가 문자열이면 text/plain (알림 YAML 저장 등), 객체면 JSON */
-export async function send(method, path, body) {
+/** GET + ETag — 대시보드 편집기: 저장할 때 If-Match 로 돌려줘 그 사이 바뀐 파일을 덮지 않게 */
+export async function getWithEtag(path) {
+  const res = await fetch(new URL(path, location.origin), { headers: headers('GET') });
+  return { data: await handle(res, path), etag: res.headers.get('ETag') };
+}
+
+/** POST/PUT/PATCH/DELETE. body 가 문자열이면 text/plain (알림 YAML 저장 등), 객체면 JSON. more = 덧붙일 헤더 (If-Match 등) */
+export async function send(method, path, body, more = {}) {
   const isText = typeof body === 'string';
-  const extra = body === undefined ? {} : { 'Content-Type': isText ? 'text/plain; charset=utf-8' : 'application/json' };
+  const extra = body === undefined ? { ...more } : { 'Content-Type': isText ? 'text/plain; charset=utf-8' : 'application/json', ...more };
   const res = await fetch(path, {
     method,
     headers: headers(method, extra),
@@ -74,4 +80,4 @@ export async function send(method, path, body) {
   return handle(res, path);
 }
 
-export const put = (path, body) => send('PUT', path, body);
+export const put = (path, body, more) => send('PUT', path, body, more);

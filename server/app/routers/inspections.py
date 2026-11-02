@@ -11,11 +11,11 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import db, inspection
+from .. import accesslog, db, inspection
 from ..alerts.message import local
 from ..auth.deps import client_ip
 from ..auth.service import User
-from ..config import settings
+from ..config import display_zone, settings
 from ..csvexport import csv_response, export_reason
 from .reports import report_reader
 
@@ -48,13 +48,22 @@ async def list_inspections(user: User = Depends(report_reader)):
     now = datetime.now(UTC)
     start, end = inspection.last_month(now)
     return {"items": await inspection.list_inspections(), "days": settings.access_log_inspection_days,
-            "default_period": {"start": start, "end": end}, "results": inspection.RESULTS, "statuses": inspection.STATUS_LABELS}
+            "grace_days": inspection.grace_days(settings.access_log_inspection_days),
+            "default_period": {"start": start, "end": end, "title": inspection.month_title(start)},
+            "results": inspection.RESULTS, "statuses": inspection.STATUS_LABELS}
+
+
+def _aware(at: datetime) -> datetime:
+    # 시간대 없이 온 값은 표시 시간대로 본다 (그대로 두면 지금 시각과 비교하다 500)
+    return at if at.tzinfo else at.replace(tzinfo=display_zone())
 
 
 @router.post("/api/inspections")
 async def start_inspection(body: StartBody, request: Request, user: User = Depends(report_reader)):
     now = datetime.now(UTC)
-    start, end = (body.period_start, body.period_end) if body.period_start and body.period_end else inspection.last_month(now)
+    if (body.period_start is None) != (body.period_end is None):
+        raise HTTPException(422, "기간은 시작과 끝을 함께 주세요 (둘 다 비우면 지난달)")
+    start, end = (_aware(body.period_start), _aware(body.period_end)) if body.period_start else inspection.last_month(now)
     try:
         inspection_id = await inspection.start(body.title.strip(), start, end, user.username, now)
     except inspection.InspectionError as exc:
@@ -66,11 +75,14 @@ async def start_inspection(body: StartBody, request: Request, user: User = Depen
 
 
 @router.get("/api/inspections/{inspection_id}")
-async def get_inspection(inspection_id: int, user: User = Depends(report_reader)):
+async def get_inspection(inspection_id: int, request: Request, user: User = Depends(report_reader)):
+    """근거에 계정 이름·로그인 시각·내려받기 사유가 든다 — 접속기록을 남긴다(ADR-042, 같은 CSV 는 사유까지 받는다)."""
     try:
-        return await inspection.get(inspection_id)
+        r = await inspection.get(inspection_id)
     except inspection.InspectionError as exc:
         raise _error(exc) from exc
+    await accesslog.record(request, user.username, "inspection.view", str(inspection_id), {"title": r["title"]})
+    return r
 
 
 @router.post("/api/inspections/{inspection_id}/entries")

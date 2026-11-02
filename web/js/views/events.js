@@ -37,6 +37,8 @@ export async function mount(root, params) {
   const urlParams = () => ({ ...state, cols: cols.join(',') });   // 열은 검색 조건이 아니라 state 밖에 — 주소에만
   if (initial.changed) replaceParams('events', urlParams());
   let bar = null;        // 필터 막대는 PC·채널 목록을 받은 뒤에 생긴다 — 그 전의 조작은 state 로 받고 생기면 맞춘다
+  // 문장으로 옮기지 못한 옛 조건(막대의 '서버는 그대로 적용' 칩) — 대시보드 위젯에도 그대로 넘긴다(빼면 검색보다 넓게 센다)
+  const leftovers = () => Object.fromEntries(Object.entries(state).filter(([k]) => !['since', 'until', 'query'].includes(k)));
   let disposed = false;
   let loadedAt = null;   // 지금 보이는 결과를 불러온 시각 ('링크 복사'가 그 구간으로 고정)
   let items = [];
@@ -230,7 +232,7 @@ export async function mount(root, params) {
   root.querySelector('[data-cols]').addEventListener('click', openCols);
   // 대시보드에 추가 (B-07 1단계): 목록·통계는 시간대별 막대, 필드 탭은 그 카드의 상위 값
   root.querySelector('[data-dash-add]')?.addEventListener('click', () =>
-    openAddToDashboard({ query: bar?.query ?? state.query ?? '', since: state.since, kind: tab === 'list' ? 'timeseries' : tab === 'fields' ? 'top' : 'timeseries' }));
+    openAddToDashboard({ query: bar?.query ?? state.query ?? '', extra: leftovers(), since: state.since, kind: tab === 'list' ? 'timeseries' : tab === 'fields' ? 'top' : 'timeseries' }));
 
   // ---- 열 고르기 (B-65 3단계)
   async function openCols() {
@@ -366,7 +368,7 @@ export async function mount(root, params) {
       }
     }));
     fieldsOut.querySelectorAll('[data-dash-field]').forEach((b) => b.addEventListener('click', () =>
-      openAddToDashboard({ query: bar?.query ?? state.query ?? '', since: state.since, kind: 'top', field: b.dataset.dashField })));
+      openAddToDashboard({ query: bar?.query ?? state.query ?? '', extra: leftovers(), since: state.since, kind: 'top', field: b.dataset.dashField })));
     const apply = (field, value, neg) => {
       if (value === '') return;
       const term = { key: field, values: [INT_FIELDS.has(field) ? Number(value) : value], ...(neg ? { neg: true } : {}) };

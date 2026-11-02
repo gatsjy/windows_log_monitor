@@ -61,8 +61,8 @@ export async function mount(root, params, sub) {
   const arrivals = []; // [수신 시각 ms, 건수] — 분당 속도
 
   async function load() {
-    const [list, dashboard] = await Promise.all([api.get('/api/dashboards'), api.get(`/api/dashboards/${name}`)]);
-    doc = dashboard;
+    const [list, dashboard] = await Promise.all([api.get('/api/dashboards'), api.getWithEtag(`/api/dashboards/${name}`)]);
+    doc = dashboard.data;
     since ||= doc.time_range || '24h';
     vars = varValues(doc.variables, { ...params, ...Object.fromEntries(Object.entries(vars).map(([k, v]) => [`var-${k}`, v])) });
     render(list.items);
@@ -256,10 +256,18 @@ export async function mount(root, params, sub) {
     if (el) el.textContent = varErrors.join(' · ');
   }
 
-  function openEditor() {
+  async function openEditor() {
     const body = openDrawer({ title: '대시보드 편집', subtitle: `config/dashboards/${name}.json` });
+    // 편집은 지금 파일로 — 화면을 연 뒤 검색 화면에서 더한 위젯이 있을 수 있다. 저장할 때 이 판본(ETag)이 아니면 서버가 409
+    let fresh;
+    try {
+      fresh = await api.getWithEtag(`/api/dashboards/${name}`);
+    } catch (err) {
+      body.innerHTML = errorBox(err);
+      return;
+    }
     body.innerHTML = html`
-      <textarea class="input editor" spellcheck="false" data-json>${JSON.stringify(doc, null, 2)}</textarea>
+      <textarea class="input editor" spellcheck="false" data-json>${JSON.stringify(fresh.data, null, 2)}</textarea>
       <div class="toolbar" style="margin:10px 0">
         <button class="btn primary" data-save>저장</button>
         <input class="input" data-newname placeholder="다른 이름으로 저장 (영문 소문자)" style="width:220px">
@@ -277,7 +285,8 @@ export async function mount(root, params, sub) {
         return;
       }
       try {
-        await api.put(`/api/dashboards/${target}`, parsed);
+        await api.put(`/api/dashboards/${target}`, parsed,
+          target === name ? (fresh.etag ? { 'If-Match': fresh.etag } : {}) : { 'If-None-Match': '*' });
         closeDrawer();
         if (target === name) { doc = parsed; await load(); } else navigate(`dashboard/${target}`);
       } catch (err) {

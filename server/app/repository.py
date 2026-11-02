@@ -1989,7 +1989,8 @@ EXPORT_ACTIONS = ("audit.export", "alerts.export", "events.export", "compliance.
 
 # 개인정보가 보이는 조회의 접속기록 (accesslog.record) — 대량 조회 점검(B-72 3단계)이 사람마다 센다
 PERSONAL_VIEW_ACTIONS = ("events.search", "events.view", "events.live", "events.context", "events.lockout", "events.stats",
-                         "events.sessions", "events.quarantine.view", "alerts.playbook")
+                         "events.sessions", "events.quarantine.view", "alerts.playbook", "audit.list", "report.view", "report.print",
+                         "inspection.view")
 
 
 async def inspection_access_stats(start: datetime, end: datetime, tz: str, work_start: int, work_end: int) -> dict[str, Any]:
@@ -2011,6 +2012,12 @@ async def inspection_access_stats(start: datetime, end: datetime, tz: str, work_
         " GROUP BY actor ORDER BY n DESC LIMIT 20", (list(PERSONAL_VIEW_ACTIONS), start, end))
     return {"logins": logins, "failed": failures["failed"], "locked": failures["locked"], "failed_ips": failures["failed_ips"],
             "views": views}
+
+
+async def integrity_records(start: datetime, end: datetime, actions: list[str]) -> list[dict[str, Any]]:
+    """접속기록 점검 '위·변조 방지' 근거: 기간 안의 검증·앵커·백업 기록 (매일 몇 줄 — 한 달이면 수백 줄)."""
+    return await db.fetch_all("SELECT id, at, action, target, detail FROM audit_log WHERE action = ANY(%s) AND at >= %s AND at < %s"
+                              " ORDER BY at, id", (actions, start, end))
 
 
 async def audit_exports(start: datetime, end: datetime) -> list[dict[str, Any]]:

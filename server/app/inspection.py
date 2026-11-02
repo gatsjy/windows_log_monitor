@@ -6,8 +6,8 @@
 - 시작하면 기간(기본: 지난달, 표시 시간대)의 항목별 근거를 모아 스냅샷으로 둔다(inspections.items) — 나중에 숫자가 바뀌어도 그때 무엇을
   보고 판단했는지가 남는다. 근거는 다른 화면·보고서가 쓰는 원천 그대로(보관기간 경고·위·변조 상태·내려받기 사유·감사로그).
 - 결과·서명·승인·반려는 inspection_entries 에 한 줄씩(고칠 수 없음, 마이그레이션 036). 상태는 줄을 차례로 읽어 정한다(state).
-- 주기는 내부 관리계획의 값(WLM_ACCESS_LOG_INSPECTION_DAYS, 기본 31 = 월 1회) — 마지막 승인한 점검의 기간 끝에서 그만큼 지나면
-  '계획 대비 빠진 회차'로 운영 준비도·점검 보고서가 알린다.
+- 주기는 내부 관리계획의 값(WLM_ACCESS_LOG_INSPECTION_DAYS, 기본 31 = 월 1회) — 마지막 승인한 점검의 기간 끝에서 한 주기가 지나
+  다음 회차를 점검할 수 있게 된 뒤 여유(grace_days)까지 지나면 '계획 대비 빠진 회차'로 운영 준비도·점검 보고서가 알린다.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import db, integrity, partitions, repository
+from . import backups, db, integrity, partitions, repository
 from .config import display_zone, settings
 from .csvexport import weak_reason
 
@@ -24,6 +24,8 @@ RESULTS = {"ok": "적정", "issue": "부적정", "na": "해당 없음"}
 STATUS_LABELS = {"open": "진행 중", "signed": "서명 — 승인 대기", "approved": "승인됨"}
 WORK_HOURS = (8, 19)          # 업무시간 (표시 시간대 08~19시, 평일) — 밖의 로그인은 '업무시간 외'
 MASS_VIEWS = 300              # 기간에 개인정보 조회 접속기록이 이만큼 넘는 사람은 '대량 조회' 후보
+MIN_PERIOD = timedelta(days=1)   # 이보다 짧은 기간은 한 회차로 치지 않는다 (한 시간짜리 점검을 승인해 주기 경고를 끄지 못하게)
+_START_LOCK = 727_006            # 같은 기간의 점검을 두 사람이 동시에 시작해도 하나만
 
 # (key, 항목, 근거 조항) — 화면·CSV·결과서가 같은 순서로
 CHECKLIST = (
@@ -45,6 +47,17 @@ class InspectionError(Exception):
         self.message, self.status = message, status
 
 
+def grace_days(days: int) -> int:
+    """한 회차가 끝난 뒤 점검·서명·승인에 주는 여유 — 월 1회면 14일, 주 1회면 3일."""
+    return min(14, max(1, days // 2))
+
+
+def month_title(start: datetime) -> str:
+    """기본 제목 — 표시 시간대의 달 (브라우저 시간대로 정하면 서쪽 PC 에서 지난지난달 이름이 영구 기록에 남는다)."""
+    local = start.astimezone(display_zone())
+    return f"{local.year}년 {local.month}월 접속기록 점검"
+
+
 def last_month(now: datetime) -> tuple[datetime, datetime]:
     """지난달 (표시 시간대의 1일 0시 ~ 이번 달 1일 0시)."""
     zone = display_zone()
@@ -54,10 +67,57 @@ def last_month(now: datetime) -> tuple[datetime, datetime]:
     return start.astimezone(UTC), end.astimezone(UTC)
 
 
+# 위·변조 방지 항목: 기간 안의 기록 중 문제인 것 (동작 → 문구). 지금 상태(integrity.status)만 보면 기간 안에 있었다가 풀린
+# 검증 실패·보관 때 다이제스트 불일치(30일 뒤 상태에서 빠짐)가 가려져 '정상'으로 남는다 — 검토에서 재현
+_PERIOD_PROBLEMS = {
+    "integrity.verify": "감사로그·수집 로그 위·변조 검증 실패",
+    "integrity.events_mismatch": "보관 파일로 옮긴 로그가 다이제스트와 다름",
+    "integrity.anchor_failed": "감사로그 체인 앵커 실패",
+    "retention.purge_audit_refused": "감사로그 만료 삭제 멈춤 (체인과 맞지 않음)",
+    "retention.archive_failed": "보관 파일 만들기 실패",
+    "backup.failed": "백업 실패",
+    "backup.verify": "복구 시험 실패",
+    "backup.replicate": "외부 저장소 복제 실패",
+    "backup.restore": "DB 를 백업으로 복원함 (그 사이 감사로그는 백업 시점으로 돌아감)",
+}
+_OK_WHEN = {"integrity.verify", "backup.verify", "backup.replicate"}   # detail.ok 가 참이면 문제가 아니다
+_RUNS = (("integrity.verify", "위·변조 검증", integrity.STALE_AFTER), ("integrity.anchor", "체인 앵커", integrity.STALE_AFTER),
+         ("backup.create", "백업", backups.BACKUP_STALE))
+
+
+def _integrity_period(rows: list[dict[str, Any]], start: datetime, end: datetime) -> dict[str, Any]:
+    """기간의 위·변조 검증·앵커·백업 기록 → 횟수·문제(실패·빈 구간). DB 없이 — 시험이 표로 본다."""
+    problems: list[dict[str, str]] = []
+    for r in rows:
+        if r["action"] in _PERIOD_PROBLEMS and not (r["action"] in _OK_WHEN and (r["detail"] or {}).get("ok") is True):
+            first = ((r["detail"] or {}).get("problems") or [(r["detail"] or {}).get("error") or (r["detail"] or {}).get("reason") or ""])[0]
+            text = _PERIOD_PROBLEMS[r["action"]] + (f" ({r['target']})" if r["target"] and r["action"] != "integrity.verify" else "")
+            problems.append({"at": r["at"].isoformat(), "action": r["action"], "text": text + (f": {str(first)[:160]}" if first else "")})
+    runs = {}
+    for action, label, stale in _RUNS:
+        times = [r["at"] for r in rows if r["action"] == action and not (action == "integrity.verify" and (r["detail"] or {}).get("ok") is not True)]
+        runs[action] = len(times)
+        if not times:
+            problems.append({"at": start.isoformat(), "action": action, "text": f"기간에 {label} 기록이 없습니다"})
+            continue
+        # 빈 구간: 기록 사이와 마지막 기록 → 기간 끝. 기간 시작 → 첫 기록은 보지 않는다(기간 중에 설치한 경우)
+        for a, b in zip(times, [*times[1:], end], strict=True):
+            if b - a > stale:
+                problems.append({"at": a.isoformat(), "action": action,
+                                 "text": f"{label} 기록이 {int((b - a).total_seconds() // 3600)}시간 비었습니다 ({a.astimezone(display_zone()):%m-%d %H:%M} 뒤)"})
+                break
+    return {"runs": runs, "problems": problems}
+
+
 async def evidence(start: datetime, end: datetime, now: datetime) -> list[dict[str, Any]]:
     """항목마다 근거 숫자와 한 줄 요약 — 점검자가 보고 판단한다(판단은 사람이). 시작할 때 한 번 모아 스냅샷으로."""
     warnings = partitions.retention_warnings()
     chain = await integrity.status(now)
+    backup = await backups.backup_status(now)
+    period = _integrity_period(await repository.integrity_records(start, end, [*_PERIOD_PROBLEMS, *(a for a, _, _ in _RUNS)]),
+                               start, end)
+    current = [n["text"] for n in chain["notices"]] + backup["problems"]
+    runs = period["runs"]
     exports = await repository.audit_exports(start, end)
     weak = [e for e in exports if weak_reason(e["reason"])]
     stats = await repository.inspection_access_stats(start, end, display_zone().key, *WORK_HOURS)
@@ -71,8 +131,13 @@ async def evidence(start: datetime, end: datetime, now: datetime) -> list[dict[s
                        "audit_days": settings.audit_retention_days, "warnings": warnings},
                       " · ".join(warnings) or f"로그 {settings.retention_days}일(DB {settings.db_retention_days}일)·감사로그 "
                                                f"{settings.audit_retention_days}일 보관 — 법정 최소 이상"),
-        "integrity": ({"notices": chain["notices"]},
-                      " · ".join(n["text"] for n in chain["notices"]) or "감사로그 해시 체인·수집 로그 다이제스트 검증 정상"),
+        "integrity": ({"runs": runs, "problems": period["problems"][:30], "problem_count": len(period["problems"]),
+                       "notices": chain["notices"], "backup_problems": backup["problems"]},
+                      (f"기간 중 문제 {len(period['problems'])}건 — " + " · ".join(p["text"] for p in period["problems"][:3])
+                       if period["problems"] else
+                       f"기간 중 위·변조 검증 {runs['integrity.verify']}회·체인 앵커 {runs['integrity.anchor']}회·백업 "
+                       f"{runs['backup.create']}회 — 실패·빈 구간 없음")
+                      + (" / 지금: " + " · ".join(current) if current else "")),
         "downloads": ({"total": len(exports), "weak": [{"at": e["at"].isoformat(), "actor": e["actor"], "action": e["action"],
                                                         "reason": e["reason"] or "", "rows": e["rows"]} for e in weak[:30]]},
                       f"내려받기 {len(exports)}건" + (f", 사유가 짧은 것 {len(weak)}건 — 확인 필요" if weak else ", 모두 사유 있음")),
@@ -116,13 +181,23 @@ def state(inspection: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str
 
 
 async def start(title: str, start_at: datetime, end_at: datetime, actor: str, now: datetime) -> int:
-    if not start_at < end_at <= now + timedelta(days=1):
-        raise InspectionError("점검 기간이 올바르지 않습니다 (시작 < 끝, 끝은 오늘까지)", 422)
+    # 근거는 지금까지의 기록으로 모은다 — 끝이 미래면 그 뒤는 비어 있는 채 '한 회차'가 된다 (몇 분 차이는 시계 차이로 봐준다)
+    if not (start_at + MIN_PERIOD <= end_at <= now + timedelta(minutes=5)):
+        raise InspectionError("점검 기간이 올바르지 않습니다 (하루 이상, 끝은 지금까지)", 422)
     items = await evidence(start_at, end_at, now)
-    row = await db.fetch_one(
-        "INSERT INTO inspections (kind, title, period_start, period_end, started_by, items) VALUES ('access_log', %s, %s, %s, %s, %s::jsonb)"
-        " RETURNING id", (title, start_at, end_at, actor, json.dumps(items, ensure_ascii=False, default=str)))
-    return row["id"]
+    async with db.pool().connection() as conn, conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_START_LOCK,))
+        cur = await conn.execute(
+            "SELECT i.id FROM inspections i WHERE i.kind = 'access_log' AND i.period_start = %s AND i.period_end = %s"
+            " AND NOT EXISTS (SELECT 1 FROM inspection_entries e WHERE e.inspection_id = i.id AND e.kind = 'approve') LIMIT 1",
+            (start_at, end_at))
+        if dup := await cur.fetchone():
+            # 점검 행은 지울 수 없다 — 겹쳐 시작한 것은 영영 '진행 중'으로 남는다
+            raise InspectionError(f"같은 기간의 점검이 진행 중입니다 (#{dup['id']}) — 그 점검을 이어서 하세요")
+        cur = await conn.execute(
+            "INSERT INTO inspections (kind, title, period_start, period_end, started_by, items) VALUES ('access_log', %s, %s, %s, %s, %s::jsonb)"
+            " RETURNING id", (title, start_at, end_at, actor, json.dumps(items, ensure_ascii=False, default=str)))
+        return (await cur.fetchone())["id"]
 
 
 async def _load(conn: Any, inspection_id: int, lock: bool) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -201,15 +276,27 @@ async def list_inspections() -> list[dict[str, Any]]:
     return out
 
 
-async def overview(now: datetime, days: int) -> dict[str, Any]:
-    """운영 준비도·점검 보고서용: 마지막 승인한 점검의 기간 끝, 지난 날수, 계획 대비 빠짐(주기 넘김), 진행 중."""
-    items = await list_inspections()
+def judge(items: list[dict[str, Any]], now: datetime, days: int) -> dict[str, Any]:
+    """list_inspections 의 결과로 판단 (DB 없이 — 시험이 날짜 표로 본다).
+
+    기한 = 마지막 승인한 점검의 기간 끝 + 한 주기(다음 회차가 끝나 점검할 수 있게 되는 때) + 여유. 기간 끝에서 한 주기만 재면
+    지난달 점검은 그달이 끝난 뒤 1~4일 안에 승인까지 마쳐야 했다(검토에서 재현)."""
     approved = [i for i in items if i["status"] == "approved"]
     last = max(approved, key=lambda i: i["period_end"], default=None)
     age = (now - last["period_end"]).days if last else None
-    return {"days": days, "last_title": last and last["title"], "last_period_end": last and last["period_end"].isoformat(),
-            "age_days": age, "overdue": bool(days) and (age is None or age > days),
-            "in_progress": [i["title"] for i in items if i["status"] != "approved"][:3]}
+    due = last["period_end"] + timedelta(days=days + grace_days(days)) if last and days else None
+    # 이미 승인한 기간까지 덮인 진행 중 점검(겹쳐 시작했거나 버려진 것)은 빼고 보여 준다 — 지울 수 없으므로
+    covered = last["period_end"] if last else None
+    return {"days": days, "grace_days": grace_days(days) if days else 0, "last_title": last and last["title"],
+            "last_period_end": last and last["period_end"].isoformat(), "age_days": age, "due": due and due.isoformat(),
+            "overdue": bool(days) and (last is None or now > due),
+            "in_progress": [i["title"] for i in items if i["status"] != "approved"
+                            and (covered is None or i["period_end"] > covered)][:3]}
+
+
+async def overview(now: datetime, days: int) -> dict[str, Any]:
+    """운영 준비도·점검 보고서용: 마지막 승인한 점검의 기간 끝, 지난 날수, 계획 대비 빠짐(기한 넘김), 진행 중."""
+    return judge(await list_inspections(), now, days)
 
 
 def attention(o: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -218,4 +305,5 @@ def attention(o: dict[str, Any] | None) -> list[dict[str, str]]:
         return []
     when = (f"마지막 승인한 점검의 기간 끝이 {o['age_days']}일 전('{o['last_title']}')" if o["age_days"] is not None
             else "승인한 접속기록 점검이 없습니다")
-    return [{"level": "warn", "text": f"접속기록 점검 주기({o['days']}일)를 넘겼습니다 — {when}. 점검 보고서 > 접속기록 점검"}]
+    grace = f" + 여유 {o['grace_days']}일" if o.get("grace_days") else ""   # 옛 보고서에는 없다
+    return [{"level": "warn", "text": f"접속기록 점검 주기({o['days']}일{grace})를 넘겼습니다 — {when}. 점검 보고서 > 접속기록 점검"}]

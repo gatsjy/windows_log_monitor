@@ -95,7 +95,7 @@ web/js/
   alertdetail.js     알림 상세 패널(확인·해결·메모·무음), 전송·처리 상태 칩, 규칙 요약 문구
   charts.js          SVG 차트 (누적 막대, 가로 막대, 스파크라인)
   catalog.js         필드·이벤트 ID 한글 설명 사전
-config/dashboards/   대시보드 정의 JSON (UI 편집기로 저장하면 이 파일이 바뀜)
+config/dashboards/   대시보드 정의 JSON (UI 편집기로 저장하면 이 파일이 바뀜 — 편집기는 If-Match(ETag)로, 그 사이 바뀌었으면 409)
 config/alerts.yaml   알림 규칙·알림 대상 (UI '규칙 편집'으로 저장하면 이 파일이 바뀜, 자동 반영)
 config/playbooks/    조사 플레이북 <규칙 번호>.yaml (B-66, app/alerts/playbook.py — 자리표시자는 format_value 로 감싼다, test_playbook 이 기본 파일 검사)
 agent/windows|linux/ 에이전트 설정 + 설치 스크립트

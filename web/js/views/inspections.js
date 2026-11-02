@@ -20,11 +20,6 @@ function statusChip(status) {
   return html`<span class="status ${cls}"><span class="dot"></span>${label}</span>`;
 }
 
-function monthTitle(start) {
-  const d = new Date(start);
-  return `${d.getFullYear()}년 ${d.getMonth() + 1}월 접속기록 점검`;
-}
-
 export async function mountInspections(root) {
   let disposed = false;
   root.innerHTML = html`
@@ -60,13 +55,13 @@ export async function mountInspections(root) {
           <td class="nowrap">${r.approved_by ? html`${r.approved_by} <span class="muted">${fmtTime(r.approved_at, { seconds: false })}</span>` : html`<span class="muted">–</span>`}</td>
         </tr>`)}</tbody></table></div>` : html`<div class="empty">아직 접속기록 점검이 없습니다 — '지난달 점검 시작'</div>`}
     </div></section>
-    ${data.days ? html`<p class="muted rule-foot">점검 주기 ${data.days}일 (WLM_ACCESS_LOG_INSPECTION_DAYS) — 마지막 승인한 점검의 기간 끝 뒤 이만큼 지나면 운영 준비도·점검 보고서가 알립니다.</p>` : ''}`;
+    ${data.days ? html`<p class="muted rule-foot">점검 주기 ${data.days}일 (WLM_ACCESS_LOG_INSPECTION_DAYS) — 마지막 승인한 점검의 기간 끝 뒤 한 주기와 여유 ${data.grace_days}일이 지나도록 다음 점검을 승인하지 않으면 운영 준비도·점검 보고서가 알립니다.</p>` : ''}`;
     root.querySelectorAll('[data-insp]').forEach((tr) => tr.addEventListener('click', () => open(Number(tr.dataset.insp))));
   }
 
   root.querySelector('[data-start]').addEventListener('click', async () => {
     const title = await promptModal({ title: '접속기록 점검 시작', message: '지난달(표시 시간대 1일~말일)의 점검 근거를 모아 시작합니다.',
-      defaultValue: defaults ? monthTitle(defaults.start) : '접속기록 점검', confirmText: '시작' });
+      defaultValue: defaults?.title ?? '접속기록 점검', confirmText: '시작' });
     if (title == null) return;
     try {
       const res = await api.send('POST', '/api/inspections', { title: title.trim() });
@@ -105,6 +100,8 @@ export async function mountInspections(root) {
       ${r.items.map((it) => html`<section class="card" style="margin-bottom:10px"><div class="card-body">
         <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>${it.label}</b><span class="muted" style="font-size:12px">${it.basis}</span></div>
         <p class="muted" style="font-size:13px;margin:6px 0">${it.summary}</p>
+        ${it.evidence?.problems?.length > 3 ? html`<details style="font-size:12.5px;margin-bottom:6px"><summary>기간 중 문제 ${it.evidence.problem_count ?? it.evidence.problems.length}건 모두 보기</summary>
+          <ul class="ref-list">${it.evidence.problems.map((p) => html`<li>${fmtTime(p.at, { seconds: false })} · ${p.text}</li>`)}</ul></details>` : ''}
         ${editable ? html`<div class="toolbar" style="flex-wrap:wrap;gap:6px">
             <select class="input" data-result="${it.key}" aria-label="${it.label} 결과"><option value="">결과…</option>
               ${RESULTS.map(([v, l]) => html`<option value="${v}" ${it.result?.result === v ? 'selected' : ''}>${l}</option>`)}</select>

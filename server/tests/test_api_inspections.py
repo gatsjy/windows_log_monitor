@@ -72,8 +72,8 @@ def test_flow_with_evidence_and_two_step_approval(ctx, monkeypatch):
     monkeypatch.setattr(inspection, "WORK_HOURS", (0, 0))   # 모든 로그인을 업무시간 외로 — 시각과 상관없이 근거를 본다
     auditor, admin = ctx["auditor"], ctx["admin"]
     now = datetime.now(UTC)
-    r = auditor.post("/api/inspections", json={"title": "시험 점검", "period_start": (now - timedelta(hours=1)).isoformat(),
-                                               "period_end": (now + timedelta(minutes=5)).isoformat()}, headers=CSRF)
+    r = auditor.post("/api/inspections", json={"title": "시험 점검", "period_start": (now - timedelta(days=2)).isoformat(),
+                                               "period_end": (now + timedelta(minutes=1)).isoformat()}, headers=CSRF)
     assert r.status_code == 200, r.text
     iid = r.json()["id"]
     d = auditor.get(f"/api/inspections/{iid}").json()
@@ -125,13 +125,63 @@ def test_overdue_in_readiness_and_report(ctx):
     now = datetime.now(UTC)
     o = ctx["admin"].portal.call(inspection.overview, now, 31)
     assert not o["overdue"] and o["last_title"] == "시험 점검"
-    assert ctx["admin"].portal.call(inspection.overview, now + timedelta(days=40), 31)["overdue"]
+    assert not ctx["admin"].portal.call(inspection.overview, now + timedelta(days=40), 31)["overdue"]   # 한 주기 + 여유 14일
+    assert ctx["admin"].portal.call(inspection.overview, now + timedelta(days=46), 31)["overdue"]
     items = {i.key: i for i in readiness.judge(ctx["admin"].portal.call(readiness.collect, now))}
     assert items["access_log_inspection"].status == "ok"
     later = {**ctx["admin"].portal.call(readiness.collect, now),
-             "access_log_inspection": ctx["admin"].portal.call(inspection.overview, now + timedelta(days=40), 31)}
+             "access_log_inspection": ctx["admin"].portal.call(inspection.overview, now + timedelta(days=46), 31)}
     assert {i.key: i for i in readiness.judge(later)}["access_log_inspection"].status == "warn"
     payload = ctx["admin"].portal.call(builder.build, "daily", now - timedelta(hours=1), now + timedelta(minutes=1))
     assert payload["access_log_inspection"]["last_title"] == "시험 점검"
     old = {k: v for k, v in payload.items() if k != "access_log_inspection"}
     assert builder._attention(old) is not None   # B-72 3단계 이전 보고서도
+
+
+def test_period_checks_and_duplicates(ctx):
+    """기간: 시작·끝 함께, 하루 이상, 끝은 지금까지. 시간대 없는 값은 표시 시간대(전에는 500). 같은 기간을 겹쳐 시작하면 409 — 지울 수 없어
+    영영 '진행 중'으로 남는다."""
+    auditor, now = ctx["auditor"], datetime.now(UTC)
+
+    def start(**period):
+        return auditor.post("/api/inspections", json={"title": "기간 시험", **period}, headers=CSRF)
+
+    iso = lambda d: d.isoformat()
+    assert start(period_start=iso(now - timedelta(days=3))).status_code == 422
+    assert start(period_start=iso(now - timedelta(hours=2)), period_end=iso(now - timedelta(hours=1))).status_code == 422
+    assert start(period_start=iso(now - timedelta(days=3)), period_end=iso(now + timedelta(days=1))).status_code == 422
+    naive = {"period_start": "2026-01-01T00:00:00", "period_end": "2026-02-01T00:00:00"}
+    r = start(**naive)
+    assert r.status_code == 200, r.text
+    d = auditor.get(f"/api/inspections/{r.json()['id']}").json()
+    assert datetime.fromisoformat(d["period_start"]) == datetime(2025, 12, 31, 15, tzinfo=UTC)   # 한국 시간 1월 1일 0시
+    dup = start(**naive)
+    assert dup.status_code == 409 and f"#{r.json()['id']}" in dup.json()["detail"]
+    assert auditor.get("/api/inspections").json()["default_period"]["title"].endswith("월 접속기록 점검")
+
+
+def test_detail_view_is_access_logged(ctx):
+    """근거에 계정 이름·내려받기 사유가 든다 — 열람도 접속기록(ADR-042). 대량 조회 점검도 센다."""
+    from app import accesslog, repository
+
+    accesslog.forget()
+    iid = ctx["auditor"].get("/api/inspections").json()["items"][0]["id"]
+    before = sql("SELECT count(*) FROM audit_log WHERE action = 'inspection.view'")[0][0]
+    assert ctx["auditor"].get(f"/api/inspections/{iid}").status_code == 200
+    assert sql("SELECT count(*) FROM audit_log WHERE action = 'inspection.view'")[0][0] == before + 1
+    assert {"inspection.view", "audit.list", "report.view", "report.print"} <= set(repository.PERSONAL_VIEW_ACTIONS)
+
+
+def test_integrity_evidence_covers_failures_inside_the_period(ctx):
+    """기간 안에 검증이 실패했다가 다시 통과해도 근거에 남는다 (지금 상태만 보면 '정상'). 이 모듈의 마지막 시험 — 실패 기록을 남긴다."""
+    from app import db
+
+    admin, now = ctx["admin"], datetime.now(UTC)
+    admin.portal.call(db.audit, "system", "integrity.verify", "audit_log", {"ok": False, "problems": ["#3 해시 다름"]})
+    admin.portal.call(db.audit, "system", "integrity.verify", "audit_log", {"ok": True, "problems": []})
+    r = ctx["auditor"].post("/api/inspections", json={"title": "위변조 시험", "period_start": (now - timedelta(days=1, hours=1)).isoformat(),
+                                                      "period_end": (datetime.now(UTC) + timedelta(minutes=1)).isoformat()}, headers=CSRF)
+    assert r.status_code == 200, r.text
+    item = next(i for i in ctx["auditor"].get(f"/api/inspections/{r.json()['id']}").json()["items"] if i["key"] == "integrity")
+    assert item["summary"].startswith("기간 중 문제") and "위·변조 검증 실패: #3 해시 다름" in item["summary"]
+    assert item["evidence"]["runs"]["integrity.verify"] == 1 and item["evidence"]["problem_count"] >= 1
