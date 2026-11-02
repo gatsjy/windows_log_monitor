@@ -134,6 +134,12 @@ ACTION_LABELS = {
     "compliance.bundle": "심사 증적 묶음 내려받기",
     "settings.tls.ca_download": "CA 인증서 내려받기",
     "user.dormant_lock": "장기 미사용 계정 자동 잠금",
+    "access_review.start": "권한 검토 시작",
+    "access_review.decision": "권한 검토 결정 (유지·회수·조정)",
+    "access_review.sign": "권한 검토 서명 (점검자)",
+    "access_review.approve": "권한 검토 승인 (책임자)",
+    "access_review.reject": "권한 검토 반려 (책임자)",
+    "access_review.export": "권한 검토 결과 내려받기",
 }
 
 

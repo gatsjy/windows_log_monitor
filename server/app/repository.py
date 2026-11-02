@@ -1873,7 +1873,7 @@ async def event_digest_records(since: datetime) -> list[dict[str, Any]]:
     return [r["detail"] for r in rows]
 
 
-EXPORT_ACTIONS = ("audit.export", "alerts.export", "events.export", "compliance.bundle")
+EXPORT_ACTIONS = ("audit.export", "alerts.export", "events.export", "compliance.bundle", "access_review.export")
 
 
 async def audit_exports(start: datetime, end: datetime) -> list[dict[str, Any]]:

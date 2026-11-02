@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import clock, db, partitions, repository, tlsutil
+from .auth import review
 from .config import settings
 
 TEST_LOOKBACK = timedelta(days=8)       # 받는 곳 시험 전송 — 매주 정기 시험(B-34) + 하루
@@ -75,6 +76,7 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "enabled_rules": len(enabled),
         "observing": [r.name for r in enabled if r.mode == "observe"],   # 관찰 모드 (B-52) — 기록만, 보내지 않음
         "dormant": _dormant(users, now),   # 장기 미사용 (B-72)
+        "access_review": await review.overview(now, settings.access_review_days),   # 권한 검토 (B-72 2단계)
         "clock": clock.assess(agents),   # 시계 차이 (B-57)
         "unknown_targets": sorted({n for n in delivery if n not in notifiers and n not in errors}),
         "broken_targets": {n: e for n, e in errors.items() if n in used},
@@ -137,6 +139,18 @@ def judge(f: dict[str, Any]) -> list[Item]:
     else:
         status, detail = "ok", f"{d['days']}일 동안 로그인하지 않은 계정은 매일 정리 때 자동으로 끕니다"
     add(Item("dormant", "계정", "장기 미사용 계정", status, detail, "#/users", "B-72, ISMS 2.5.6"))
+    ar = f.get("access_review")
+    if ar is not None:
+        problems = review.attention(ar)
+        if not ar["days"]:
+            status, detail = "skip", "권한 검토 주기를 정하지 않았습니다 (WLM_ACCESS_REVIEW_DAYS=0 — 내부 관리계획에 따라 따로 점검)"
+        elif problems:
+            status, detail = ("bad" if any(p["level"] == "bad" for p in problems) else "warn"), " / ".join(p["text"] for p in problems)
+        else:
+            status, detail = "ok", f"마지막 승인 {ar['age_days']}일 전('{ar['last_title']}') — 주기 {ar['days']}일"
+        if ar["in_progress"] and status != "skip":
+            detail += f" · 진행 중: {_names(ar['in_progress'], 2)}"
+        add(Item("access_review", "계정", "권한 검토", status, detail, "#/users/reviews", "B-72, ISMS 2.5.6"))
 
     # ------------------------------------------------------------ 알림
     h = f["health"]

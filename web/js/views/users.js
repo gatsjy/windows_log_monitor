@@ -1,14 +1,17 @@
 // 사용자 관리 (관리자 전용): 계정 추가, 역할·활성 변경, 비밀번호 초기화, 잠금 해제.
 // 탭 '사용자 그룹'(#/users/groups): DB팀·보안팀처럼 묶어 기능 권한과 볼 수 있는 범위(분류·PC)를 준다.
+// 탭 '권한 검토'(#/users/reviews, B-72 2단계): 분기마다 계정별 유지·회수·조정 → 점검자 서명 → 다른 관리자 승인 (ISMS 2.5.6).
 import * as api from '../api.js';
 import { currentUser } from '../auth.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
+import { exportCsv } from '../exportcsv.js';
 import { categoryLabel } from '../levels.js';
-import { confirmModal, errorBox, fmtRelative, fmtTime, html, toast } from '../util.js';
+import { confirmModal, errorBox, fmtNum, fmtRelative, fmtTime, html, promptModal, toast } from '../util.js';
 
 const TABS = (on) => html`<div class="tabs" role="tablist">
   <a role="tab" href="#/users" class="${on === '' ? 'on' : ''}" aria-selected="${on === ''}">사용자</a>
-  <a role="tab" href="#/users/groups" class="${on === 'groups' ? 'on' : ''}" aria-selected="${on === 'groups'}">사용자 그룹</a></div>`;
+  <a role="tab" href="#/users/groups" class="${on === 'groups' ? 'on' : ''}" aria-selected="${on === 'groups'}">사용자 그룹</a>
+  <a role="tab" href="#/users/reviews" class="${on === 'reviews' ? 'on' : ''}" aria-selected="${on === 'reviews'}">권한 검토</a></div>`;
 
 function statusOf(u) {
   if (!u.is_active) return html`<span class="status offline" title="${u.disabled_reason === 'dormant' ? '오래 로그인하지 않아 자동으로 꺼짐 — 다시 켜면 그때부터 다시 셉니다' : ''}"><span class="dot"></span>${u.disabled_reason === 'dormant' ? '장기 미사용으로 꺼짐' : '비활성'}</span>`;
@@ -33,6 +36,7 @@ function showTempPassword(body, username, password, title) {
 
 export async function mount(root, params, sub) {
   if (sub === 'groups') return mountGroups(root);
+  if (sub === 'reviews') return mountReviews(root);
   let data = { items: [], roles: {} };
 
   root.innerHTML = html`
@@ -323,4 +327,170 @@ async function mountGroups(root) {
 
   root.querySelector('[data-add]').addEventListener('click', () => openGroup(null));
   await load();
+}
+
+
+// ------------------------------------------------------------------ 권한 검토 (B-72 2단계, ISMS 2.5.6, ADR-058)
+const REVIEW_STATUS = { open: ['stale', '진행 중'], signed: ['stale', '서명 — 승인 대기'], approved: ['online', '승인됨'] };
+const DECISIONS = [['keep', '유지'], ['revoke', '회수'], ['change', '조정']];
+const DECISION_LABEL = Object.fromEntries(DECISIONS);
+const ENTRY_LABEL = { decision: '결정', sign: '서명', approve: '승인', reject: '반려' };
+
+function reviewStatus(status) {
+  const [cls, label] = REVIEW_STATUS[status] ?? ['offline', status];
+  return html`<span class="status ${cls}"><span class="dot"></span>${label}</span>`;
+}
+
+function defaultTitle(now = new Date()) {
+  return `${now.getFullYear()}년 ${Math.floor(now.getMonth() / 3) + 1}분기 권한 검토`;
+}
+
+async function mountReviews(root) {
+  let disposed = false;
+  root.innerHTML = html`
+    <div class="page-head">
+      <div><h1 class="page-title">사용자</h1>
+        <p class="page-sub">분기마다 계정·권한이 아직 필요한지 검토합니다 — 계정마다 유지·회수·조정을 정하고, 점검자가 서명하면 다른 관리자가 승인합니다.</p></div>
+      <div class="toolbar"><button class="btn primary" data-start>새 권한 검토 시작</button></div>
+    </div>
+    ${TABS('reviews')}
+    <div data-list><div class="skeleton"></div></div>
+    <section class="card" style="margin-top:16px"><div class="card-body">
+      <div class="section-title" style="margin-top:0">진행 방법</div>
+      <ul class="ref-list">
+        <li>시작하면 그때의 모든 계정·역할·그룹·권한·조회 범위·마지막 사용을 그대로 남기고, 그 목록으로 검토합니다.</li>
+        <li>켜진 계정마다 <b>유지·회수·조정</b>을 정합니다(회수·조정은 사유 필수). 회수는 결정만 남기므로 사용자 탭에서 계정을 끄세요 — 끄지 않으면 운영 준비도·점검 보고서가 알립니다.</li>
+        <li>모두 정하면 점검자가 서명하고, <b>서명한 사람이 아닌 다른 관리자</b>가 승인하거나 사유를 적어 반려합니다(반려하면 다시 고칠 수 있음).</li>
+        <li>결정·서명·승인·반려는 고치거나 지울 수 없게 남고(감사로그에도), 결과를 CSV 로 받아 심사 증적으로 씁니다.</li>
+      </ul></div></section>`;
+
+  async function load() {
+    let data;
+    try {
+      data = await api.get('/api/access-reviews');
+    } catch (err) {
+      root.querySelector('[data-list]').innerHTML = errorBox(err);
+      return;
+    }
+    if (disposed) return;
+    const due = data.days ? html`<p class="muted rule-foot">검토 주기 ${data.days}일 (WLM_ACCESS_REVIEW_DAYS) — 마지막 승인 뒤 이만큼 지나면 운영 준비도·점검 보고서가 알립니다.</p>` : '';
+    root.querySelector('[data-list]').innerHTML = html`<section class="card"><div class="card-body flush">
+      ${data.items.length ? html`<div class="table-wrap"><table class="table">
+        <thead><tr><th>검토</th><th>상태</th><th class="r">결정</th><th class="r">회수</th><th>시작</th><th>서명</th><th>승인</th></tr></thead>
+        <tbody>${data.items.map((r) => html`<tr class="clickable" data-review="${r.id}">
+          <td><b>${r.title}</b></td>
+          <td class="nowrap">${reviewStatus(r.status)}</td>
+          <td class="r num">${fmtNum(r.decided)}/${fmtNum(r.active)}</td>
+          <td class="r num">${r.revokes ? fmtNum(r.revokes) : '–'}</td>
+          <td class="nowrap muted">${r.started_by} · ${fmtTime(r.started_at, { seconds: false })}</td>
+          <td class="nowrap">${r.signed_by || html`<span class="muted">–</span>`}</td>
+          <td class="nowrap">${r.approved_by ? html`${r.approved_by} <span class="muted">${fmtTime(r.approved_at, { seconds: false })}</span>` : html`<span class="muted">–</span>`}</td>
+        </tr>`)}</tbody></table></div>` : html`<div class="empty">아직 권한 검토가 없습니다 — '새 권한 검토 시작'</div>`}
+    </div></section>${due}`;
+    root.querySelectorAll('[data-review]').forEach((tr) => tr.addEventListener('click', () => openReview(Number(tr.dataset.review))));
+  }
+
+  root.querySelector('[data-start]').addEventListener('click', async () => {
+    const title = await promptModal({ title: '새 권한 검토', message: '검토 이름 — 지금의 계정·권한을 그대로 남기고 시작합니다.',
+      defaultValue: defaultTitle(), confirmText: '시작' });
+    if (title == null) return;
+    try {
+      const res = await api.send('POST', '/api/access-reviews', { title: title.trim() });
+      toast('권한 검토를 시작했습니다.', { type: 'success' });
+      await load();
+      openReview(res.id);
+    } catch (err) {
+      toast(err.message, { type: 'error' });
+    }
+  });
+
+  async function post(id, body) {
+    await api.send('POST', `/api/access-reviews/${id}/entries`, body);
+    await load();
+    await openReview(id, true);
+  }
+
+  async function openReview(id, keep = false) {
+    let r;
+    try {
+      r = await api.get(`/api/access-reviews/${id}`);
+    } catch (err) {
+      toast(err.message, { type: 'error' });
+      return;
+    }
+    if (disposed) return;
+    const scroll = keep ? document.querySelector('.drawer-body')?.scrollTop : 0;
+    const body = openDrawer({ title: r.title, subtitle: `${r.started_by} 시작 · ${fmtTime(r.started_at, { seconds: false })}`,
+      actions: html`<button class="btn sm" data-csv>CSV 내려받기</button>` });
+    const me = currentUser();
+    const open = r.status === 'open';
+    const signedByMe = r.signed && r.signed.author === me.username;
+    body.innerHTML = html`
+      <p>${reviewStatus(r.status)} <span class="muted">켜진 계정 ${fmtNum(r.active)}개 중 ${fmtNum(r.decided)}개 결정</span></p>
+      ${r.rejected && open ? html`<div class="hint-box">반려됨 — ${r.rejected.author}: ${r.rejected.note}</div>` : ''}
+      ${r.follow_up.length ? html`<div class="error-box">회수로 정했는데 아직 켜진 계정: ${r.follow_up.join(', ')} — 아래 '지금 끄기'</div>` : ''}
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>계정</th><th>역할·그룹</th><th>권한</th><th>마지막 사용</th><th>결정</th></tr></thead>
+        <tbody>${r.users.map((u) => html`<tr>
+          <td class="nowrap"><b>${u.username}</b>${u.display_name ? html` <span class="muted">${u.display_name}</span>` : ''}
+            ${u.is_active ? '' : html`<div class="muted">검토 때 꺼짐${u.disabled_reason === 'dormant' ? ' (장기 미사용)' : ''}</div>`}
+            ${u.now_active === null ? html`<div class="muted">지금은 지운 계정</div>` : ''}</td>
+          <td>${u.role_label}${u.groups.length ? html`<div>${u.groups.map((g) => html`<span class="type-tag" style="margin-right:4px">${g}</span>`)}</div>` : ''}
+            ${u.scoped ? html`<div class="muted">조회 범위 있음</div>` : ''}</td>
+          <td style="font-size:12.5px">${u.permissions.length ? u.permissions.join(', ') : html`<span class="muted">보기만</span>`}${u.mfa ? html`<div class="muted">2단계 인증 사용</div>` : ''}</td>
+          <td class="nowrap muted">${u.last_used ? fmtRelative(u.last_used) : '없음'}</td>
+          <td>${u.is_active && open ? html`<div class="toolbar" style="flex-wrap:wrap;gap:6px">
+              <select class="input" data-decision="${u.id}" aria-label="${u.username} 결정">
+                <option value="">결정…</option>${DECISIONS.map(([v, l]) => html`<option value="${v}" ${u.decision?.decision === v ? 'selected' : ''}>${l}</option>`)}</select>
+              <input class="input" data-note="${u.id}" maxlength="1000" placeholder="사유 (회수·조정은 필수)" value="${u.decision?.note || ''}" aria-label="${u.username} 사유">
+              <button class="btn sm" data-save="${u.id}">저장</button></div>
+              ${u.decision ? html`<div class="muted" style="font-size:12px">${u.decision.author} · ${fmtTime(u.decision.at, { seconds: false })}</div>` : ''}`
+            : u.decision ? html`<b>${DECISION_LABEL[u.decision.decision]}</b> ${u.decision.note ? html`<span class="muted">— ${u.decision.note}</span>` : ''}
+              <div class="muted" style="font-size:12px">${u.decision.author} · ${fmtTime(u.decision.at, { seconds: false })}</div>` : html`<span class="muted">–</span>`}
+            ${u.decision?.decision === 'revoke' && u.now_active ? html`<div><button class="btn sm danger" data-disable="${u.id}" data-name="${u.username}">지금 끄기</button></div>` : ''}</td>
+        </tr>`)}</tbody></table></div>
+      <div class="section-title">결재</div>
+      ${r.status === 'open' ? html`<div class="toolbar" style="flex-wrap:wrap">
+          <input class="input" data-sign-note maxlength="1000" placeholder="점검 의견 (선택)" style="flex:1;min-width:200px">
+          <button class="btn primary" data-sign ${r.missing.length ? 'disabled' : ''}>점검 완료 — 서명</button></div>
+          ${r.missing.length ? html`<p class="muted" style="font-size:12.5px">결정하지 않은 계정 ${r.missing.length}개: ${r.missing.slice(0, 5).join(', ')}${r.missing.length > 5 ? ' …' : ''}</p>` : ''}`
+        : r.status === 'signed' ? html`<p>${r.signed.author} 서명 · ${fmtTime(r.signed.at, { seconds: false })}${r.signed.note ? ` — ${r.signed.note}` : ''}</p>
+          ${signedByMe ? html`<p class="muted">서명한 사람이 아닌 다른 관리자가 승인·반려합니다.</p>` : html`<div class="toolbar" style="flex-wrap:wrap">
+            <input class="input" data-approve-note maxlength="1000" placeholder="의견 (반려는 필수)" style="flex:1;min-width:200px">
+            <button class="btn primary" data-approve>승인</button><button class="btn" data-reject>반려</button></div>`}`
+        : html`<p>${r.signed?.author} 서명 → <b>${r.approved.author}</b> 승인 · ${fmtTime(r.approved.at, { seconds: false })}${r.approved.note ? ` — ${r.approved.note}` : ''}</p>`}
+      <div class="section-title">기록</div>
+      <ul class="ref-list" style="font-size:12.5px">${r.entries.slice().reverse().map((e) => html`<li>${fmtTime(e.at)} · ${e.author} · <b>${ENTRY_LABEL[e.kind]}</b>
+        ${e.username ? ` ${e.username} → ${DECISION_LABEL[e.decision]}` : ''}${e.note ? html` <span class="muted">— ${e.note}</span>` : ''}</li>`)}</ul>`;
+    if (scroll) body.scrollTop = scroll;   // 저장한 뒤 같은 줄 근처를 계속 보게
+
+    const run = async (fn) => {
+      try { await fn(); } catch (err) { toast(err.message, { type: 'error' }); }
+    };
+    body.querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', () => run(async () => {
+      const userId = Number(b.dataset.save);
+      const decision = body.querySelector(`[data-decision="${userId}"]`).value;
+      if (!decision) { toast('유지·회수·조정 중 하나를 고르세요', { type: 'error' }); return; }
+      await post(id, { kind: 'decision', user_id: userId, decision, note: body.querySelector(`[data-note="${userId}"]`).value });
+    })));
+    body.querySelector('[data-sign]')?.addEventListener('click', () => run(() =>
+      post(id, { kind: 'sign', note: body.querySelector('[data-sign-note]').value })));
+    body.querySelector('[data-approve]')?.addEventListener('click', () => run(() =>
+      post(id, { kind: 'approve', note: body.querySelector('[data-approve-note]').value })));
+    body.querySelector('[data-reject]')?.addEventListener('click', () => run(() =>
+      post(id, { kind: 'reject', note: body.querySelector('[data-approve-note]').value })));
+    body.querySelectorAll('[data-disable]').forEach((b) => b.addEventListener('click', () => run(async () => {
+      const ok = await confirmModal({ title: '계정 끄기', message: `${b.dataset.name} 계정을 끌까요? (권한 검토에서 회수로 정함)`, danger: true, confirmText: '끄기' });
+      if (!ok) return;
+      await api.send('PATCH', `/api/users/${b.dataset.disable}`, { is_active: false });
+      toast(`${b.dataset.name} 계정을 껐습니다.`, { type: 'success' });
+      await load();
+      await openReview(id, true);
+    })));
+    document.querySelector('.drawer [data-csv]')?.addEventListener('click', () =>
+      exportCsv(`/api/access-reviews/${id}/csv`, {}, { what: '권한 검토 결과', format: '' }));
+  }
+
+  await load();
+  return () => { disposed = true; };
 }
