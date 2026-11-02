@@ -47,6 +47,7 @@ GROUP_MAX = 500   # 묶음 한 통에 담는 알림 상한 (B-41) — 넘는 것
 # 403: 토큰이 막힌 것(받는 곳 문제)인지 방화벽·DLP 가 본문을 막은 것인지 내용 없는 확인 메시지로 가린다 (_content_403)
 PROBE_EVERY = timedelta(minutes=10)    # 확인 메시지도 거절됐으면 이 동안은 다시 묻지 않고 받는 곳 문제로
 CONTENT_403_FOR = timedelta(hours=1)   # 확인 메시지가 통했으면 이 동안 403 은 본문 문제로 (묻지 않음)
+CONTENT_403_STREAK = 12                # 그 동안에도 보낸 것 없이 403 이 이만큼 이어지면 다시 확인 (통하면 두 배로 늘림)
 
 
 @dataclass
@@ -60,11 +61,14 @@ class TargetHealth:
     last_attempt_at: datetime | None = None
     content_403_until: datetime | None = None   # 확인 메시지가 통함 → 그때까지 403 은 본문 때문(방화벽·DLP)
     probe_refused_at: datetime | None = None     # 확인 메시지도 거절 → 토큰·주소 문제
+    forbidden_streak: int = 0                    # 마지막으로 보낸 뒤 이어진 403 수
+    reprobe_streak: int = CONTENT_403_STREAK     # 본문 문제로 보는 동안 이만큼 이어지면 다시 확인
 
     def ok(self, now: datetime) -> None:
         self.last_ok_at = self.last_attempt_at = now
         self.failing_since, self.consecutive_failures, self.last_error = None, 0, None
         self.probe_refused_at = None
+        self.forbidden_streak, self.reprobe_streak = 0, CONTENT_403_STREAK
 
     def fail(self, now: datetime, error: str) -> None:
         self.last_attempt_at = now
@@ -305,9 +309,12 @@ class Dispatcher:
         """403 이 본문 때문인가 — 같은 곳에 내용 없는 확인 메시지를 보내 본다. 통하면 받는 곳은 살아 있고 이 알림(들)의 본문을 방화벽·DLP 가
         막은 것(True). 확인 메시지도 거절되면 토큰·주소 문제(False). 실패가 이어지는지·몇 번째 403 인지로 가리면 막힌 알림이 양쪽 반쪽에
         다 있거나 앞서 다른 실패가 있을 때 좋은 알림까지 버려졌고(4차 검토), 403 마다 나누면 토큰이 막힌 곳에 요청이 쏟아졌다(500건이 3분에 272통).
-        확인 메시지는 통하면 채널에 보이므로 한 시간에 한 번, 거절되면 10분 동안 다시 묻지 않는다."""
+        확인 메시지는 통하면 채널에 보이므로 한 시간에 한 번, 거절되면 10분 동안 다시 묻지 않는다. 다만 본문 문제로 보는 한 시간 안에도
+        보낸 것 없이 403 이 12번 이어지면 다시 확인한다(통하면 다음은 두 배 뒤) — 그 사이 토큰이 막히면 다시 묶음마다 끝까지 나눠 요청이
+        쏟아지고 고친 뒤 조각마다 한 통씩 갔다(검토에서 재현)."""
         now, health = datetime.now(UTC), self.health(name)
-        if health.content_403_until and now < health.content_403_until:
+        health.forbidden_streak += 1
+        if health.content_403_until and now < health.content_403_until and health.forbidden_streak < health.reprobe_streak:
             return True
         if health.probe_refused_at and now - health.probe_refused_at < PROBE_EVERY:
             return False
@@ -321,11 +328,11 @@ class Dispatcher:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 확인도 안 되면 받는 곳 문제
-            health.probe_refused_at = now
+            health.probe_refused_at, health.content_403_until = now, None
             log.warning("알림 대상 %s 403 — 확인 메시지도 거절되어 받는 곳 문제로 봅니다: %s", name, str(exc)[:300])
             return False
         health.content_403_until = now + CONTENT_403_FOR
-        health.ok(now)
+        health.reprobe_streak = max(CONTENT_403_STREAK, 2 * health.forbidden_streak)
         log.warning("알림 대상 %s 403 — 확인 메시지는 통해 본문 때문으로 봅니다 (한 시간 동안)", name)
         return True
 

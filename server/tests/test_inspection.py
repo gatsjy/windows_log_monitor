@@ -113,7 +113,12 @@ def test_integrity_gap_crossing_the_period_start():
             for d in range(6) for a in ("integrity.verify", "integrity.anchor", "backup.create")]
     texts = [p["text"] for p in inspection._integrity_period(late, start, end)["problems"]]
     assert len(texts) == 3 and all("시간 비었습니다" in t for t in texts) and texts[0].startswith("위·변조 검증 기록이 609시간")
-    installed = inspection._integrity_period(late, start, end, since=datetime(2026, 10, 25, 23, tzinfo=UTC))
+    installed = inspection._integrity_period(late, start, end, since=datetime(2026, 10, 25, 23, tzinfo=UTC),
+                                             backup_since=datetime(2026, 10, 26, tzinfo=UTC))
     assert installed["problems"] == []
     before = inspection._integrity_period([], start, end, since=end + timedelta(days=1))["problems"]
-    assert [p["action"] for p in before] == ["audit_chain"]
+    assert [p["action"] for p in before] == ["audit_chain", "backup.create"]   # 백업은 체인보다 먼저 있었다 — 그대로 본다
+    # 업그레이드 전 달: 백업은 있었고 열흘 멈췄다 → 체인 시작으로 재면 '백업 기록 없음'이라고 틀리게 적혔다 (검토에서 재현)
+    backups = [_rec("backup.create", start + timedelta(days=d)) for d in (*range(19), *range(29, 31))]
+    texts = [p["text"] for p in inspection._integrity_period(backups, start, end, since=end + timedelta(days=1))["problems"]]
+    assert texts[0].startswith("감사로그 체인을 시작하기 전") and "백업 기록이 264시간 비었습니다" in texts[1] and len(texts) == 2

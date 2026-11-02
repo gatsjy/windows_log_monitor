@@ -88,9 +88,11 @@ _RUNS = (("integrity.verify", "위·변조 검증", integrity.STALE_AFTER), ("in
          ("backup.create", "백업", backups.BACKUP_STALE))
 
 
-def _integrity_period(rows: list[dict[str, Any]], start: datetime, end: datetime, since: datetime | None = None) -> dict[str, Any]:
+def _integrity_period(rows: list[dict[str, Any]], start: datetime, end: datetime, since: datetime | None = None,
+                      backup_since: datetime | None = None) -> dict[str, Any]:
     """기간의 위·변조 검증·앵커·백업 기록 → 횟수·문제(실패·빈 구간). DB 없이 — 시험이 표로 본다.
-    since = 감사로그 체인을 시작한 때(설치) — 그 전은 빈 구간으로 보지 않는다. 빈 구간·기록 없음을 앞에 둔다: 스냅샷은 30건·요약은 3건만
+    since = 감사로그 체인을 시작한 때(설치·업그레이드) — 검증·앵커는 그 전을 빈 구간으로 보지 않는다. backup_since = 첫 백업 — 백업은 체인보다
+    먼저 있었을 수 있어 따로 본다. 빈 구간·기록 없음을 앞에 둔다: 스냅샷은 30건·요약은 3건만
     남는데 매일 실패한 복제 30건 뒤로 밀려 '검증이 168시간 비었다'가 빠졌다(검토에서 재현)."""
     zone = display_zone()
     lead = max(start, since) if since else start
@@ -103,17 +105,21 @@ def _integrity_period(rows: list[dict[str, Any]], start: datetime, end: datetime
             failures.append({"at": r["at"].isoformat(), "action": r["action"], "text": text + (f": {str(first)[:160]}" if first else "")})
     runs = {}
     if lead >= end:
-        gaps.append({"at": start.isoformat(), "action": "audit_chain", "text": "감사로그 체인을 시작(설치)하기 전 기간입니다 — 검증·백업 기록이 없습니다"})
+        gaps.append({"at": start.isoformat(), "action": "audit_chain",
+                     "text": "감사로그 체인을 시작하기 전(업그레이드 전) 기간입니다 — 위·변조 검증·앵커 기록이 없습니다"})
     for action, label, stale in _RUNS:
         times = [r["at"] for r in rows if r["action"] == action and not (action == "integrity.verify" and (r["detail"] or {}).get("ok") is not True)]
         runs[action] = len(times)
-        if lead >= end:
+        # 검증·앵커는 감사로그 체인(마이그레이션 022)부터 있다. 백업은 그보다 먼저 있었으니 기간 시작부터 본다
+        # (체인 시작으로 재면 업그레이드 전 백업 멈춤이 사라지고 '백업 기록 없음'이라고 틀리게 적혔다 — 검토에서 재현)
+        first = (max(start, backup_since) if backup_since else start) if action == "backup.create" else lead
+        if first >= end:
             continue
         if not times:
-            gaps.append({"at": lead.isoformat(), "action": action, "text": f"기간에 {label} 기록이 없습니다"})
+            gaps.append({"at": first.isoformat(), "action": action, "text": f"기간에 {label} 기록이 없습니다"})
             continue
-        # 빈 구간: 기간 시작(설치 뒤)→첫 기록, 기록 사이, 마지막 기록→기간 끝. 기간 경계를 넘는 멈춤이 어느 점검에도 안 잡혔다(검토에서 재현)
-        for a, b in zip([lead, *times], [*times, end], strict=True):
+        # 빈 구간: 기간 시작(체인 시작 뒤)→첫 기록, 기록 사이, 마지막 기록→기간 끝. 기간 경계를 넘는 멈춤이 어느 점검에도 안 잡혔다(검토에서 재현)
+        for a, b in zip([first, *times], [*times, end], strict=True):
             if b - a > stale:
                 gaps.append({"at": a.isoformat(), "action": action,
                              "text": f"{label} 기록이 {int((b - a).total_seconds() // 3600)}시간 비었습니다 ({a.astimezone(zone):%m-%d %H:%M} 뒤)"})
@@ -127,7 +133,8 @@ async def evidence(start: datetime, end: datetime, now: datetime) -> list[dict[s
     chain = await integrity.status(now)
     backup = await backups.backup_status(now)
     period = _integrity_period(await repository.integrity_records(start, end, [*_PERIOD_PROBLEMS, *(a for a, _, _ in _RUNS)]),
-                               start, end, chain["head"]["started_at"] if chain["head"] else None)
+                               start, end, chain["head"]["started_at"] if chain["head"] else None,
+                               (await repository.backup_audit())["first_backup_at"])
     current = [n["text"] for n in chain["notices"]] + backup["problems"]
     runs = period["runs"]
     exports = await repository.audit_exports(start, end)

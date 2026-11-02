@@ -56,13 +56,16 @@ async function route() {
   const current = document.querySelector(`[data-nav="${name}"] span`);
   document.getElementById('topbar-page').textContent = current ? current.textContent : '';
   setNavOpen(false);
-  root.innerHTML = '';
+  // 화면마다 새 그릇 — 첫 불러오기가 늦게 끝난 앞 화면(정리 함수를 아직 돌려주지 않음)이 새 화면을 덮어 그렸다(검토에서 재현).
+  // 이제 앞 화면은 떼어 낸 제 그릇에만 그린다
+  const host = document.createElement('div');
+  root.replaceChildren(host);
   window.scrollTo(0, 0);
   try {
-    const cleanup = await VIEWS[name].mount(root, params, sub);
+    const cleanup = await VIEWS[name].mount(host, params, sub);
     if (my !== seq) cleanup?.(); else unmount = cleanup || null;
   } catch (err) {
-    if (my === seq) root.innerHTML = html`<div class="error-box">화면을 불러오지 못했습니다: ${err.message}</div>`;
+    if (my === seq) host.innerHTML = html`<div class="error-box">화면을 불러오지 못했습니다: ${err.message}</div>`;
   }
 }
 

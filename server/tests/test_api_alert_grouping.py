@@ -25,6 +25,7 @@ BASE = "settings:\n  interval_sec: 30\n{extra}\nrules: []\n"
 class _Receiver(BaseHTTPRequestHandler):
     received: ClassVar[list[tuple[str, dict]]] = []
     denied: ClassVar[bool] = True    # /denied: 토큰이 막힌 받는 쪽 — 무엇을 보내도 403
+    poison_only: ClassVar[bool] = False   # /denied 를 잠시 방화벽처럼 (POISON 만 403)
 
     def do_POST(self):  # http.server 가 부르는 이름
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -32,7 +33,7 @@ class _Receiver(BaseHTTPRequestHandler):
         # /picky: 본문에 POISON 이 든 통만 거절하는 받는 쪽 (DLP 프록시·메일 554 처럼 알림 하나의 내용 때문에)
         poison = "POISON" in json.dumps(body, ensure_ascii=False)
         code = 503 if self.path == "/down" else 400 if self.path == "/picky" and poison else 403 if self.path == "/waf" and poison else 200
-        if self.path == "/denied" and _Receiver.denied:
+        if self.path == "/denied" and (_Receiver.denied or (_Receiver.poison_only and poison)):
             code = 403
         self.send_response(code)
         self.end_headers()
@@ -269,6 +270,33 @@ def test_earlier_failure_does_not_stop_the_split(client):
     passed("방화벽 뒤", 31)
     drain(client)
     assert _state(ids) == {"PC-X": "sent:1", "POISON-Y": "failed:1", "PC-Z": "sent:1"}
+
+
+def test_token_revoked_while_content_mode(client):
+    """확인 메시지가 통해 본문 문제로 보는 한 시간 안에 토큰이 막히면 묶음마다 끝까지 나눠 요청이 쏟아지고(64건에 127통) 고친 뒤 64통이
+    따로 갔다(검토에서 재현) — 보낸 것 없이 403 이 12번 이어지면 다시 확인해 거절되면 받는 곳 문제로."""
+    _fresh("토큰만료")
+    _Receiver.denied = False
+    _Receiver.poison_only = True   # 처음에는 POISON 만 403 (본문 문제)
+    try:
+        old = fire(client, "토큰 본문", ["POISON-1"], notify=("토큰만료",))
+        passed("토큰 본문", 31)
+        drain(client)
+        assert _state(old) == {"POISON-1": "failed:1"} and len(posts("/denied")) == 2   # 알림 + 확인 메시지(통함)
+        _Receiver.poison_only, _Receiver.denied = False, True   # 이제 토큰이 막힘 — 무엇이든 403
+        _Receiver.received.clear()
+        ids = fire(client, "토큰 막힘", [f"PC-{i:03d}" for i in range(64)], notify=("토큰만료",))
+        passed("토큰 막힘", 31)
+        drain(client)
+        assert len(posts("/denied")) <= 13          # 12번 이어진 403 + 다시 확인 (예전 127통)
+        _Receiver.denied = False
+        _Receiver.received.clear()
+        sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE alert_id = ANY(%s) AND status IN ('pending', 'failed')", (ids,))
+        drain(client)
+        assert len(posts("/denied")) <= 13          # 나눈 조각만큼 (예전 64통)
+        assert sql("SELECT count(*) FROM alert_deliveries WHERE alert_id = ANY(%s) AND status = 'sent'", (ids,))[0][0] == 64
+    finally:
+        _Receiver.denied, _Receiver.poison_only = True, False
 
 
 def test_dead_token_403_does_not_cascade(client):
