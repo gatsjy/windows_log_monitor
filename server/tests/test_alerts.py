@@ -259,7 +259,7 @@ def test_distinct_rule_parses():
     ({"field": "user", "min": 1}, {}, "2 이상"),
     ({"field": "user", "min": "x"}, {}, "2 이상"),
     ({"field": "user"}, {}, "2 이상"),
-    ({"field": "host", "min": 3}, {"group_by": "host"}, "group_by 와 같으면"),
+    ({"field": "host", "min": 3}, {"group_by": "host"}, "group_by 와 같"),
     ({"field": "user", "min": 3, "max": 9}, {}, "모양"),
     ("user", {}, "모양"),
     ({"field": "user", "min": 3}, {"window": "2d"}, "1d 이하"),

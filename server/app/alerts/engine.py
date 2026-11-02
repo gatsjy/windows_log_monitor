@@ -26,7 +26,6 @@ from typing import Any
 from .. import db, repository
 from ..config import settings
 from ..filters import EventFilter
-from ..querylang import format_value
 from . import configdiff
 from .builtin import BUILTIN_RULES, CONFIG_RULE
 from .dispatcher import dispatcher
@@ -124,10 +123,8 @@ def _link_params(rule: Rule, key: str, since: datetime, saved: str | None = None
     query = " ".join(filter(None, [saved, str(params.get("query") or ""), *(f"-{t}" for t in exceptions)]))
     if query:
         params["query"] = query
-    if rule.group_by == "account" and key:   # account 는 주소 파라미터가 없다 — 문장 조건으로 (B-54)
-        params["query"] = f"{params.get('query') or ''} account:{format_value(key)}".strip()
-    elif rule.group_by != "none" and key:
-        params[rule.group_by] = key
+    if rule.group_by != "none" and key:
+        params[rule.group_by] = key   # account 도 주소 파라미터로 — 문장에 붙이면 한도(500자)를 넘을 수 있다
     return params
 
 

@@ -51,6 +51,7 @@ async def ensure_partitions(conn, now: datetime | None = None) -> None:
                     sql.Identifier(name), sql.Literal(start), sql.Literal(end)
                 )
             )
+            await account_statistics(conn, name)
         except errors.LockNotAvailable:
             log.warning("파티션 %s 만들기를 미룸: events 잠금을 얻지 못함 (백업 중일 수 있음) — 다음 주기에 다시 시도", name)
 
@@ -280,6 +281,18 @@ _INDEX_LOCK_ID = 727_007
 INDEX_BUILD_EVERY_SEC = 3600
 
 
+async def account_statistics(conn, partition: str) -> bool:
+    """계정 열쇠 식의 통계 (B-54). 부분 색인(WHERE username IS NOT NULL)의 통계는 플래너가 쓰지 않아 account:·user: 가 늘 0.5% 로 어림됐다 —
+    'SYSTEM' 처럼 40% 인 값도 색인으로 훑어 느렸다(검토에서 재현). 파티션마다(가지치기 뒤에는 부모 통계를 쓰지 않는다). 새로 만들었으면 True."""
+    stx = f"{partition}_account_stx"
+    cur = await conn.execute("SELECT 1 FROM pg_statistic_ext WHERE stxname = %s", (stx,))
+    if await cur.fetchone():
+        return False
+    await conn.execute(sql.SQL("CREATE STATISTICS IF NOT EXISTS {} ON (wlm_user_key(username)) FROM {}").format(
+        sql.Identifier(stx), sql.Identifier(partition)))
+    return True
+
+
 async def account_index_status(conn) -> dict[str, Any]:
     """계정 표기 색인(B-54): 부모 색인이 유효한가, 월 파티션 중 붙은 것 몇 개. 마이그레이션 전이면 None 들."""
     cur = await conn.execute(
@@ -327,14 +340,31 @@ async def build_account_indexes() -> int:
                     # 식·조건은 부모 색인(마이그레이션 038)과 같아야 붙는다
                     await conn.execute(sql.SQL("CREATE INDEX CONCURRENTLY IF NOT EXISTS {} ON {} (wlm_user_key(username), ts DESC)"
                                                " WHERE username IS NOT NULL").format(sql.Identifier(index), sql.Identifier(name)))
-                    await conn.execute(sql.SQL("ALTER INDEX {} ATTACH PARTITION {}").format(sql.Identifier(ACCOUNT_INDEX),
-                                                                                            sql.Identifier(index)))
+                    # 붙이기는 그 색인에 배타 잠금 — 백업(pg_dump)이 이 파티션을 읽는 동안 기다리면 뒤의 수집·검색이 모두 줄을 섰다(검토).
+                    # 잠깐만 기다리고 다음 주기에 (만든 색인은 남아 있어 다시 만들지 않는다)
+                    await conn.execute(sql.SQL("SET lock_timeout = {}").format(sql.Literal(DDL_LOCK_TIMEOUT)))
+                    try:
+                        await conn.execute(sql.SQL("ALTER INDEX {} ATTACH PARTITION {}").format(sql.Identifier(ACCOUNT_INDEX),
+                                                                                                sql.Identifier(index)))
+                    finally:
+                        await conn.execute("SET lock_timeout = 0")
                     built += 1
                     log.info("계정 표기 색인: %s 완료", name)
+                except errors.LockNotAvailable:
+                    log.warning("계정 표기 색인 붙이기를 미룸: %s 잠금을 얻지 못함 (백업 중일 수 있음)", name)
                 except errors.UndefinedTable:
                     continue   # 그 사이 로테이션이 지운 파티션
                 except Exception:
                     log.exception("계정 표기 색인 만들기 실패: %s — 다음 주기에 다시", name)
+            # 식 통계 — 있던 파티션은 새로 만든 뒤 ANALYZE (값이 바뀌지 않는 옛 달은 자동 분석이 다시 오지 않는다)
+            cur = await conn.execute("SELECT c.relname AS name FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid"
+                                     " WHERE i.inhparent = 'events'::regclass ORDER BY c.relname DESC")
+            for row in await cur.fetchall():
+                try:
+                    if await account_statistics(conn, row["name"]):
+                        await conn.execute(sql.SQL("ANALYZE {}").format(sql.Identifier(row["name"])))
+                except errors.UndefinedTable:
+                    continue
             if (await account_index_status(conn))["valid"]:
                 await _drop_old_user_index(conn)
         finally:

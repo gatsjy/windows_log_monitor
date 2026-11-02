@@ -10,7 +10,7 @@ import { foldParams, parseTerms, setKey, setLevels } from './querylang.js';
 import { openSavedSearches } from './savedsearch.js';
 import { TIME_RANGES, fmtTime, html, qs, toast } from './util.js';
 
-const KNOWN_KEYS = ['since', 'until', 'host', 'source', 'category', 'channel', 'provider', 'user', 'ip', 'level', 'event_id', 'q', 'query'];
+const KNOWN_KEYS = ['since', 'until', 'host', 'source', 'category', 'channel', 'provider', 'user', 'account', 'ip', 'level', 'event_id', 'q', 'query'];
 const SELECT_KEYS = ['host', 'category', 'channel'];
 const SENTENCE = '__sentence__';
 const ALL_LEVELS = [1, 2, 3, 4, 5];

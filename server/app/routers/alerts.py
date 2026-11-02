@@ -38,7 +38,7 @@ from ..auth.service import User
 from ..csvexport import csv_response, export_reason
 from ..filters import EVENT_FIELD, EventFilter, FilterError, parse_time, scopes_allow
 from ..normalizers import Event, layout_keys, normalize_sample
-from ..querylang import QueryError, format_term, parse_terms, raw_field, raw_text
+from ..querylang import QueryError, account_key, format_term, parse_terms, raw_field, raw_text
 from .ingest import _fix_surrogates
 from .query import read_time_limit
 
@@ -602,6 +602,8 @@ async def test_rule(body: RuleTestBody, request: Request, user: User = Depends(r
         if rule.group_by.startswith("f."):
             current = raw_field(event.get("raw"), [p for p in rule.group_by[2:].split(".") if p])
             value = None if current is None else raw_text(current)
+        elif rule.group_by == "account":   # 엔진은 wlm_user_key(username) 로 묶는다 (B-54)
+            value = account_key(event.get("username"))
         else:
             value = event.get(EVENT_FIELD.get(rule.group_by, rule.group_by))
         checks.append({"key": rule.group_by, "op": "group_key", "expected": [], "actual": value, "ok": value is not None,

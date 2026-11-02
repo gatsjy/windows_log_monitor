@@ -694,6 +694,7 @@ export function buildFilter(params) {
   for (const key of LIST_PARAMS) {
     if (params[key] != null && params[key] !== '') f[INCLUDE_FIELD[key]] = splitList(params[key]);
   }
+  if (params.account != null && params.account !== '') f.accounts = unique(splitList(params.account).map(accountKey));   // B-54
   for (const key of ['level', 'event_id']) {
     if (params[key] == null || params[key] === '') continue;
     const ints = splitList(params[key]).map(parseIntParam);
@@ -778,7 +779,7 @@ export function compileQuery(params) {
 
 // ------------------------------------------------------------------ 옛 링크 파라미터 → 문장 (화면에 들어올 때)
 
-const FOLD_KEYS = ['host', 'channel', 'provider', 'source', 'category', 'user', 'ip', 'level', 'event_id'];
+const FOLD_KEYS = ['host', 'channel', 'provider', 'source', 'category', 'user', 'account', 'ip', 'level', 'event_id'];
 const sameList = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 const unique = (list) => list.filter((v, i) => list.indexOf(v) === i);
 

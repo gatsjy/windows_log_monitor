@@ -29,7 +29,7 @@ RESOLVE_MODES = ("manual", "auto")
 RULE_MODES = ("active", "observe")
 # query = 검색 문장 (B-01). 다른 키와 AND
 # saved = 저장한 검색의 이름(B-64) — 엔진이 그 문장을 규칙 문장 앞에 붙인다(engine.rule_filter)
-MATCH_KEYS = {"host", "channel", "provider", "source", "category", "user", "ip", "level", "event_id", "q", "query", "saved"}
+MATCH_KEYS = {"host", "channel", "provider", "source", "category", "user", "account", "ip", "level", "event_id", "q", "query", "saved"}
 
 
 class ConfigError(ValueError):
@@ -345,8 +345,8 @@ def _distinct(value: Any, group_by: str, window: timedelta, where: str) -> tuple
     field_name = str(value.get("field") or "").strip()
     if field_name not in COLUMN_EXPR and not (field_name.startswith("f.") and len(field_name) > 2):
         raise ConfigError(f"{where}.distinct.field 는 {', '.join(COLUMN_EXPR)}, f.<경로> 중 하나")
-    if field_name == group_by:
-        raise ConfigError(f"{where}.distinct.field 가 group_by 와 같으면 늘 1개입니다")
+    if field_name == group_by or (group_by, field_name) == ("user", "account"):   # 표기 하나에서 나온 열쇠는 늘 하나
+        raise ConfigError(f"{where}.distinct.field 가 group_by 와 같거나 그 값에서 나오면 늘 1개입니다")
     try:   # 화면에서 저장하면 조건 값처럼 문자열로 올 수 있다
         minimum = int(str(value.get("min", "")).strip())
     except ValueError:

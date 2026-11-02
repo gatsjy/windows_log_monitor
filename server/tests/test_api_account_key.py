@@ -163,8 +163,8 @@ def test_group_by_account_counts_and_links(admin):
     f = _with_group(EventFilter.from_params({"query": "event_id:4624"}, default_since="2h"), "account", "kim")
     assert f.accounts == ["kim"]
     params = _link_params(r, "kim", T0)
-    assert params["query"] == "event_id:4624 account:kim" and "account" not in params   # 주소 파라미터가 아니라 문장으로
-    assert _sql_ids({"query": params["query"]}) == [101, 102, 103, 104, 105]
+    assert params["query"] == "event_id:4624" and params["account"] == "kim"   # 주소 파라미터로 — 문장 한도(500자)를 넘지 않게
+    assert _sql_ids({"query": params["query"], "account": params["account"]}) == [101, 102, 103, 104, 105]
 
 
 def test_top_values_by_account_are_access_logged(admin):
@@ -191,3 +191,38 @@ def test_exception_on_account_is_refused(admin):
 
     with pytest.raises(HTTPException, match="-account:"):
         _exception_term("account:svc_backup")
+
+
+def test_expression_statistics_give_real_estimates(admin):
+    """부분 색인의 통계는 플래너가 쓰지 않아 account:·user: 가 늘 0.5% 로 어림됐다 — 40% 인 'SYSTEM' 도 색인으로 훑었다(검토에서 재현).
+    파티션마다 식 통계를 두면 실제에 가깝게 어림한다."""
+    from app import partitions
+
+    sql("INSERT INTO events (received_at, ts, host, source, level, username, message, raw)"
+        " SELECT now(), now() - (g || ' seconds')::interval, 'DC-01', 'winevtlog', 4, CASE WHEN g % 10 < 4 THEN 'SYSTEM' ELSE 'u' || g END,"
+        " 'x', '{}'::jsonb FROM generate_series(1, 5000) g")
+    admin.portal.call(partitions.build_account_indexes)
+    with psycopg.connect(os.environ["WLM_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("ANALYZE events")
+        plan = conn.execute("EXPLAIN (FORMAT JSON) SELECT id FROM events WHERE username IS NOT NULL"
+                            " AND wlm_user_key(username) = ANY('{system}'::text[])").fetchone()[0]
+    rows = plan[0]["Plan"]["Plan Rows"]
+    assert rows > 1000, plan   # 실제 2,000건 — 통계 없이는 약 25건(0.5%)으로 어림했다
+    assert sql("SELECT count(*) FROM pg_statistic_ext WHERE stxname LIKE 'events_%%_account_stx'")[0][0] >= 3
+
+
+def test_account_url_param_and_tester(admin):
+    """주소 파라미터 account= — 위젯 드릴다운·알림 링크가 문장 한도를 넘지 않게. 규칙 시험기도 계정 열쇠로 묶음 값을 본다(검토)."""
+    from app.alerts.rules import ConfigError, parse_text
+
+    assert _sql_ids({"account": "HOSP\\Kim"}) == [101, 102, 103, 104, 105]
+    base = "rules:\n  - name: d\n    kind: count\n    severity: warning\n    notify: [운영팀]\n    threshold: 1\n    window_sec: 300\n"
+    with pytest.raises(ConfigError, match="늘 1개"):
+        parse_text(base + "    group_by: user\n    distinct: {field: account, min: 2}\n    match: {event_id: '4624'}\n")
+    [(event_id,)] = sql("SELECT id FROM events WHERE raw->>'_afx' = '103'")   # HOSP\kim
+    r = admin.post("/api/alerts/rules/test", headers=CSRF, json={
+        "rule": {"name": "계정 묶음 시험", "kind": "count", "severity": "warning", "notify": ["운영팀"], "group_by": "account",
+                 "match": {"event_id": "4624"}, "window_sec": 300, "threshold": 1}, "event_id": event_id})
+    assert r.status_code == 200, r.text
+    check = next(c for c in r.json()["checks"] if c["op"] == "group_key")
+    assert check["actual"] == "kim" and check["ok"]

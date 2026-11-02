@@ -33,6 +33,6 @@ def test_js_constants_match_python():
 def test_vocabulary_matches_the_rest_of_the_app():
     assert SYNC["categories"] == list(CATEGORIES)          # 분류를 추가하면 여기도 (닫힌 집합)
     assert {int(k): v[0] for k, v in SYNC["levels"].items()} == LEVEL_LABELS
-    # saved = 저장한 검색의 이름(B-64) — 검색 키가 아니라 규칙만 쓰는 참조. account(B-54)는 문장에만 — 규칙 match·주소 파라미터는 없다
-    assert set(SYNC["keys"]) - {"msg", "account"} == MATCH_KEYS - {"q", "query", "saved"}
+    # saved = 저장한 검색의 이름(B-64) — 검색 키가 아니라 규칙만 쓰는 참조
+    assert set(SYNC["keys"]) - {"msg"} == MATCH_KEYS - {"q", "query", "saved"}
     assert all(code in SYNC["categories"] for code in SYNC["category_hints"].values())

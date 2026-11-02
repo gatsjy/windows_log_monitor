@@ -4349,6 +4349,12 @@
     "query": "account:kim"
    },
    "query": "account:\"kim@hosp.local\""
+  },
+  {
+   "legacy": {
+    "account": "HOSP\\Kim"
+   },
+   "query": "account:kim"
   }
  ],
  "fold": [
@@ -4539,6 +4545,14 @@
     "q": "timeout"
    },
    "query": "timeout",
+   "rest": {},
+   "same_sql": true
+  },
+  {
+   "params": {
+    "account": "HOSP\\kim,lee"
+   },
+   "query": "account:HOSP\\kim,lee",
    "rest": {},
    "same_sql": true
   }
@@ -5260,6 +5274,19 @@
     105,
     106,
     107
+   ]
+  },
+  {
+   "name": "주소 파라미터 account= (위젯 드릴다운·알림 링크)",
+   "params": {
+    "account": "HOSP\\Kim"
+   },
+   "ids": [
+    101,
+    102,
+    103,
+    104,
+    105
    ]
   }
  ]

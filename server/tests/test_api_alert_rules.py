@@ -90,7 +90,7 @@ def test_distinct_rule_round_trip(client):
     assert "distinct: { field: user, min: 12 }" in Path(os.environ["WLM_ALERTS_FILE"]).read_text(encoding="utf-8")
     bad = client.put("/api/alerts/rules", json={"rule": {**rule, "name": "잘못", "distinct": {"field": "ip", "min": 3}}},
                      headers=CSRF)
-    assert bad.status_code == 422 and "group_by 와 같으면" in bad.json()["detail"]
+    assert bad.status_code == 422 and "group_by 와 같" in bad.json()["detail"]
     off = client.put("/api/alerts/rules", json={"original": "스프레이 화면 저장", "rule": {**rule, "distinct": None}},
                      headers=CSRF)
     assert off.status_code == 200 and rules(client)["스프레이 화면 저장"]["distinct"] is None

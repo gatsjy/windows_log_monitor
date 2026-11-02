@@ -140,6 +140,7 @@ export async function openAlert(id, { onChange } = {}) {
   // 늘 예상되는 대상(백업 계정·업체 IP)이면 규칙 예외로 (B-46) — 묶음 기준 값으로 조건을 미리 채워 예외 탭을 연다
   function exceptionLink(alert, p) {
     if (!can('alerts.manage') || p.kind !== 'count' || !p.group_by || p.group_by === 'none' || !alert.group_key) return '';
+    if (p.group_by === 'account') return '';   // account: 예외는 받지 않는다(다른 표기로 비켜 감, B-54) — 표기를 user: 로 직접 쓴다
     const term = p.group_by.startsWith('f.')
       ? formatTerm({ key: 'f', path: p.group_by.slice(2).split('.'), values: [alert.group_key], neg: false })
       : formatTerm({ key: p.group_by, values: [alert.group_key], neg: false, path: [] });

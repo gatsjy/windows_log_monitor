@@ -172,7 +172,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - **계정 표기 통일 (B-54, ADR-062):** 열쇠는 세 곳 — SQL `wlm_user_key`(마이그레이션 038, **고치지 않는다** — 뜻을 바꾸면 새 이름·새 색인), `querylang.account_key`, JS `accountKey`. 케이스 표 `account_key`·`account_fixtures`·`account_match` 에 줄을 먼저.
   - `user:` 는 정확히(그대로). SQL 은 `(username IS NOT NULL AND wlm_user_key(username) = ANY(열쇠) AND username = ANY(표기))` — 계정 색인 하나로 둘 다 찾는다(예전 `events_user_ts_idx` 는 다 붙으면 `partitions.build_account_indexes` 가 지움). `username IS NOT NULL` 을 빼면 부분 색인을 못 쓴다.
   - 알림 규칙·규칙이 쓰는 저장한 검색·예외에서 `-account:` 는 거부(`rules.ACCOUNT_EXCLUDE_ERROR`) — 공격자가 정하는 이름으로 비켜 갈 수 있다. 사용자 이름에서 나온 새 필드는 `routers/query.PERSONAL_FIELDS` 에(접속기록).
-  - 월 파티션 색인은 서버가 뒤에서(`account_index_loop`, 시험에서는 `WLM_PARTITION_INDEX_BUILD=off` — `build_account_indexes` 를 직접 부른다).
+  - 월 파티션 색인은 서버가 뒤에서(`account_index_loop`, 시험에서는 `WLM_PARTITION_INDEX_BUILD=off` — `build_account_indexes` 를 직접 부른다). 파티션마다 식 통계(`account_statistics`)도 — 부분 색인 통계는 플래너가 쓰지 않는다.
 - 알림 규칙이 감시하는 분류는 `Rule.categories`(match.category + match.query 의 `category:`)입니다. 조회 범위 판단(`alerts/visibility.py`)은 이것만 봅니다.
 - **새 API 의 권한:** 관리자만이면 `require_admin`, 그룹으로 위임할 수 있는 기능이면 `require_permission("권한")`(auth/groups.py PERMISSIONS 에 추가). 화면은 `auth.can("권한")` 으로 버튼을 숨긴다.
 - **이벤트를 돌려주는 새 API 는 반드시 `routers/query._filter(request)` 로 필터를 만든다.** 그래야 사용자 그룹의 조회 범위(`scopes`)가 붙는다. 단건 조회는 `filters.scopes_allow` 로 확인.

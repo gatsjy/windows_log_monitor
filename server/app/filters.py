@@ -176,6 +176,8 @@ class EventFilter:
             sources=_values(params, "source"),
             categories=_values(params, "category"),
             users=_values(params, "user"),
+            # 계정 표기 통일 (B-54): 주소 파라미터 account=… 도 — 위젯 드릴다운·알림 링크가 문장 한도(500자)를 넘지 않게
+            accounts=list(dict.fromkeys(account_key(v) for v in _values(params, "account"))),
             ips=_values(params, "ip"),
             levels=_ints(params, "level"),
             event_ids=_ints(params, "event_id"),

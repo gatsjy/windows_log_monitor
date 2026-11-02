@@ -296,7 +296,7 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
 |---|---|---|
 | `host` `channel` `provider` `source` | 같은 컬럼 | 정확히 일치 (대소문자 구분) |
 | `user` / `ip` | `username` / `src_ip` | 정확히 일치. IP 대역(`/`)은 아직 없음 |
-| `account` | 계정 표기 통일 열쇠 (B-54, ADR-062) | `HOSP\kim`·`hosp.local\kim`·`kim@hosp.local`·`KIM` 을 모두 `kim` 으로 — 마지막 `\` 뒤, 점 있는 UPN 의 `@` 앞, A-Z 만 소문자. `pc01$`(컴퓨터 계정)는 `pc01` 과 다름, 점 없는 `kim@HOSP` 는 그대로. 로컬·도메인의 같은 이름(`PC01\Administrator`·`HOSP\Administrator`)은 합쳐짐 — 가르려면 `user:` 나 `f.EventData.TargetDomainName:`. 주소 파라미터·규칙 `match.account` 는 없고 문장에만. 알림 규칙(규칙이 쓰는 저장한 검색·예외 포함)에서 `-account:` 는 거부 — 공격자가 정하는 이름에도 걸려 다른 표기로 비켜 갈 수 있음 |
+| `account` | 계정 표기 통일 열쇠 (B-54, ADR-062) | `HOSP\kim`·`hosp.local\kim`·`kim@hosp.local`·`KIM` 을 모두 `kim` 으로 — 마지막 `\` 뒤, 점 있는 UPN 의 `@` 앞, A-Z 만 소문자. `pc01$`(컴퓨터 계정)는 `pc01` 과 다름, 점 없는 `kim@HOSP` 는 그대로. 로컬·도메인의 같은 이름(`PC01\Administrator`·`HOSP\Administrator`)은 합쳐짐 — 가르려면 `user:` 나 `f.EventData.TargetDomainName:`. 주소 파라미터 `account=`·규칙 `match.account` 도 됨. 알림 규칙(규칙이 쓰는 저장한 검색·예외 포함)에서 `-account:` 는 거부 — 공격자가 정하는 이름에도 걸려 다른 표기로 비켜 갈 수 있음 |
 | `category` | 분류 | 코드 13개 (`security`… 대소문자 무시). 한글 이름은 오류 + 힌트 |
 | `level` | 수준 | `심각 오류 경고 정보 상세`, `critical error warning info verbose`, `1`~`5` |
 | `event_id` | 이벤트 ID | 0 이상 정수 |
