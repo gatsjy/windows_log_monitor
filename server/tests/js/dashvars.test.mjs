@@ -29,6 +29,19 @@ test('값은 한 값으로만 — 쉼표·공백·다른 조건처럼 보이는 
   assert.equal(applyVars({ query: 'host:WEB-01' }, VARS, { host: 'WEB-01' }).query.query, 'host:WEB-01');   // 이미 있으면 그대로
 });
 
+test('"variables": null 은 변수 없음 — 대시보드가 깨지지 않는다 (검토에서 재현)', () => {
+  assert.deepEqual(varValues(null, { 'var-host': 'x' }), {});
+  assert.deepEqual(applyVars({ query: 'a' }, null, { host: 'x' }), { query: { query: 'a' }, errors: [] });
+});
+
+test('검색으로 넘길 때는 누른 값이 이긴다 — 같은 키의 변수를 더하지 않는다 (PC 카드를 누르면 0건이던 것, 검토에서 재현)', () => {
+  const values = { host: 'WEB-01' };
+  assert.deepEqual(applyVars({ host: 'DB-02' }, VARS, values, { yieldToQuery: true }).query, { host: 'DB-02' });
+  assert.equal(applyVars({ query: 'host:DB-02' }, VARS, values, { yieldToQuery: true }).query.query, 'host:DB-02');
+  assert.equal(applyVars({ query: 'event_id:4625' }, VARS, values, { yieldToQuery: true }).query.query, 'event_id:4625 host:WEB-01');
+  assert.equal(applyVars({ host: 'DB-02' }, VARS, values).query.query, 'host:WEB-01');   // 위젯 조회는 변수도 같이 (원래 뜻)
+});
+
 test('그 키에 맞지 않는 값은 위젯 조건에 넣지 않고 오류로', () => {
   const { query, errors } = applyVars({ query: '' }, VARS, { eid: 'abc', host: 'DC-01' });
   assert.equal(query.query, 'host:DC-01');

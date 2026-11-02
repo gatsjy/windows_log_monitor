@@ -69,11 +69,14 @@ export async function mount(root, params, sub) {
   }
 
   // 변수는 위젯 조회·실시간 매처·검색으로 넘기기 모두 같은 문장으로 (applyVars — 문장 편집이라 서버와 같은 뜻)
-  const withVars = (q) => applyVars(q, doc?.variables, vars).query;
+  const withVars = (q, opts) => applyVars(q, doc?.variables, vars, opts).query;
+  // 검색 조건을 쓰는 위젯만 — PC 현황·알림·안내문·PC 수·초당 건수는 조건이 없다. 그런 위젯에 변수를 붙이면 실시간 갱신이 변수의 PC 로만
+  // 걸러져 다른 카드가 멈췄다(검토에서 재현)
+  const takesQuery = (cfg) => ['timeseries', 'top', 'events'].includes(cfg.type) || (cfg.type === 'stat' && (cfg.metric || 'count') === 'count');
   const urlParams = () => ({ since, ...Object.fromEntries(Object.entries(vars).filter(([, v]) => v).map(([k, v]) => [`var-${k}`, v])) });
   const ctx = {
-    query: (cfg) => withVars({ since: cfg.since || since, ...(cfg.query || {}) }),
-    drill: (q) => navigate('events', withVars({ since, ...q })),
+    query: (cfg) => (takesQuery(cfg) ? withVars : (q) => q)({ since: cfg.since || since, ...(cfg.query || {}) }),
+    drill: (q) => navigate('events', withVars({ since, ...q }, { yieldToQuery: true })),
     /** 위젯이 실시간으로 맞출 수 없는 변화(새 구간, 새 PC 등)를 만나면 그 위젯만 다시 조회 */
     resync: (body) => renderOne(Number(body.dataset.w)),
     ratePerMin: () => {
@@ -220,7 +223,9 @@ export async function mount(root, params, sub) {
   async function renderOne(i) {
     const cfg = doc.widgets?.[i];
     const body = root.querySelector(`[data-w="${i}"]`);
-    if (!cfg || !body || body._syncing) return;
+    if (!cfg || !body) return;
+    // 불러오는 중에 변수·기간을 바꾸면 끝난 뒤 한 번 더 — 그대로 두면 앞의 PC 결과가 새 PC 이름 아래 남았다(검토에서 재현)
+    if (body._syncing) { body._again = true; return; }
     const widget = WIDGETS[cfg.type];
     if (!widget) {
       body.innerHTML = errorBox(new Error(`알 수 없는 위젯 type: ${cfg.type}`));
@@ -234,6 +239,10 @@ export async function mount(root, params, sub) {
       body.innerHTML = errorBox(err);
     } finally {
       body._syncing = false;
+      if (body._again) {
+        body._again = false;
+        renderOne(i);
+      }
     }
   }
 

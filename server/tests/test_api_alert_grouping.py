@@ -29,8 +29,9 @@ class _Receiver(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         _Receiver.received.append((self.path, body))
         # /picky: 본문에 POISON 이 든 통만 거절하는 받는 쪽 (DLP 프록시·메일 554 처럼 알림 하나의 내용 때문에)
-        picky = self.path == "/picky" and "POISON" in json.dumps(body, ensure_ascii=False)
-        self.send_response(503 if self.path == "/down" else 400 if picky else 200)
+        poison = "POISON" in json.dumps(body, ensure_ascii=False)
+        code = 503 if self.path == "/down" else 400 if self.path == "/picky" and poison else 403 if self.path == "/waf" and poison else 200
+        self.send_response(code)
         self.end_headers()
         self.wfile.write(b"x")
 
@@ -71,7 +72,7 @@ def client():
             c.post("/api/auth/login", json={"username": "admin", "password": initial}, headers=CSRF)
             c.post("/api/auth/password", json={"current_password": initial, "new_password": "Root#Changed2026"}, headers=CSRF)
             for name, path, fmt in (("묶음", "ok", "text"), ("기계", "machine", "json"), ("고장", "down", "text"),
-                                    ("까다로움", "picky", "text")):
+                                    ("까다로움", "picky", "text"), ("방화벽", "waf", "text")):
                 r = c.post("/api/settings/channels", json={"name": name, "type": "webhook", "config": {"format": fmt},
                                                            "url": f"http://127.0.0.1:{server.server_port}/{path}"}, headers=CSRF)
                 assert r.status_code == 200, r.text
@@ -198,26 +199,41 @@ def test_grouping_off_sends_each_alert(client):
 
 
 def test_one_rejected_alert_does_not_sink_the_group(client):
-    """받는 쪽이 알림 하나의 내용 때문에 묶음을 거절하면 그 행들을 하나씩 다시 보낸다 — 거절된 알림만 시도를 쓰고, 묶음의 거절은
-    시도로 세지 않는다 (검토에서 재현: 예전에는 넷 모두 다섯 번 실패해 gave_up, 그다음 고침은 그 자리에서 반씩 나눠 전송 자리를 오래 쥠)."""
+    """받는 쪽이 알림 하나의 내용 때문에 묶음을 거절하면 반씩 나눠 다시 보낸다 — 거절된 알림만 시도를 쓰고, 나머지는 반쪽 묶음으로 간다
+    (검토에서 재현: 처음엔 넷 모두 다섯 번 실패해 gave_up, 그다음엔 전송 자리를 쥔 채 나눠 보냄, 그다음엔 하나씩 n통)."""
     ids = fire(client, "거절 시험", ["PC-1", "PC-2", "POISON-3", "PC-4"], notify=("까다로움",))
     passed("거절 시험", 31)
     drain(client)
-    rows = dict(sql("SELECT a.group_key, d.status || ':' || d.attempts || ':' || coalesce(d.batch_size::text, '-') || ':' || d.solo"
+    rows = dict(sql("SELECT a.group_key, d.status || ':' || d.attempts || ':' || coalesce(d.batch_size::text, '-')"
                     " FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id WHERE d.alert_id = ANY(%s)", (ids,)))
-    assert rows == {"PC-1": "sent:1:1:true", "PC-2": "sent:1:1:true", "POISON-3": "failed:1:-:true", "PC-4": "sent:1:1:true"}
+    assert rows == {"PC-1": "sent:1:2", "PC-2": "sent:1:2", "POISON-3": "failed:1:-", "PC-4": "sent:1:1"}   # 보낸 것도 시도 한 번
     texts = [b["text"] for b in posts("/picky")]
-    assert len(texts) == 5 and texts[0].startswith("[오류] 거절 시험 · 4대")   # 묶음 한 번 + 하나씩 넷
-    assert sorted(t.split(" · ")[1].split("\n")[0] for t in texts[1:]) == ["PC-1", "PC-2", "PC-4", "POISON-3"]
-    # 다시 보낼 차례가 와도 다시 묶지 않는다 — 거절된 알림은 혼자
+    # 넷 거절 → (PC-1, PC-2) 보냄 · (POISON-3, PC-4) 거절 → POISON-3 혼자 거절 · PC-4 혼자 보냄
+    assert len(texts) == 5 and texts[0].startswith("[오류] 거절 시험 · 4대") and "· 2대 (PC-1, PC-2)" in texts[1]
+    # 다시 보낼 차례가 와도 새 알림과 묶지 않는다 — 거절된 알림은 제 반쪽(혼자)으로
     sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE alert_id = ANY(%s) AND status = 'failed'", (ids,))
     fire(client, "거절 시험", ["PC-5"], notify=("까다로움",))
     passed("거절 시험", 400)
     _Receiver.received.clear()
     drain(client)
-    assert all("POISON" not in t or t.count("·") <= 3 for t in (b["text"] for b in posts("/picky")))
+    assert sorted(b["text"].split(" · ")[1].split("\n")[0] for b in posts("/picky")) == ["PC-5", "POISON-3"]
     assert sql("SELECT d.attempts FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id WHERE a.group_key = 'POISON-3'"
                " AND d.alert_id = ANY(%s)", (ids,)) == [(2,)]
+
+
+def test_waf_403_on_a_group_is_split_not_deferred(client):
+    """방화벽·DLP 가 본문 때문에 403 을 주면 묶음을 나눈다 — 403 을 받는 곳 문제로만 보면 묶음째 다섯 번 실패했다(3차 검토에서 재현).
+    혼자 보내도 403 이면 받는 곳 문제(토큰이 막힘)라 그 곳의 다른 알림은 미룬다."""
+    ids = fire(client, "방화벽 시험", ["PC-A", "POISON-B", "PC-C"], notify=("방화벽",))
+    passed("방화벽 시험", 31)
+    drain(client)
+    state = lambda: dict(sql("SELECT a.group_key, d.status || ':' || d.attempts FROM alert_deliveries d JOIN alerts a"
+                             " ON a.id = d.alert_id WHERE d.alert_id = ANY(%s)", (ids,)))
+    # (PC-A) 보냄 · (POISON-B, PC-C) 403 → POISON-B 혼자 403 = 받는 곳 문제 → PC-C 는 시도로 세지 않고 미룸
+    assert state() == {"PC-A": "sent:1", "POISON-B": "failed:1", "PC-C": "pending:0"}
+    sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE alert_id = ANY(%s) AND status IN ('pending', 'failed')", (ids,))
+    drain(client)
+    assert state() == {"PC-A": "sent:1", "POISON-B": "failed:2", "PC-C": "sent:1"}   # 다음 차례에 PC-C 는 간다
 
 
 def test_builtin_alerts_are_never_grouped(client):

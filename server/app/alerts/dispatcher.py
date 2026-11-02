@@ -42,7 +42,7 @@ HOUSEKEEPING_SEC = 60
 RELEASE_ERROR = "서버가 보내는 도중 멈춰 다시 보냅니다 (같은 알림을 두 번 받을 수 있음)"
 EXPIRE_ERROR = "하루가 지나 보내지 않았습니다"
 DOWN_NOTE = " (같은 곳으로 방금 보낸 알림이 실패해 이번에는 시도하지 않음)"
-SPLIT_NOTE = " (묶음을 받는 쪽이 거절해 하나씩 다시 보냅니다)"
+SPLIT_NOTE = " (묶음을 받는 쪽이 거절해 반씩 나눠 다시 보냅니다)"
 GROUP_MAX = 500   # 묶음 한 통에 담는 알림 상한 (B-41) — 넘는 것은 다음 묶음 간격에 '추가 n건'으로
 
 
@@ -228,7 +228,8 @@ class Dispatcher:
         if not jobs:
             return True
         try:
-            if grouping and jobs[0]["rule"] not in BUILTIN_RULES and not jobs[0]["solo"]:   # 묶지 않는 행은 모으지도 않는다
+            # 묶지 않는 행(내장 알림)·거절돼 나눈 반쪽(split_key)은 모으지도 기다리지도 않는다 — 반쪽이 묶음 간격에 걸려 늦지 않게
+            if grouping and jobs[0]["rule"] not in BUILTIN_RULES and jobs[0]["split_key"] is None:
                 hold = await _group_hold(name, jobs, config, now)
                 if hold is not None:
                     await repository.hold_deliveries(jobs, hold)
@@ -258,10 +259,9 @@ class Dispatcher:
 
     async def _send_batch(self, name: str, notifier: Notifier, jobs: list[dict[str, Any]]) -> datetime | None:
         """잡은 행들을 한 통으로. 받는 곳 자체가 안 되면(시간 초과·target_down) 다시 볼 시각을 돌려준다 — 그 줄을 멈춘다.
-        묶음을 받는 쪽이 알림 하나 때문에 거절하면(본문 문제 — 400·SMTP 554) 그 행들을 하나씩 다시 보낼 차례로 돌린다(시도로 세지
-        않음): 거절된 알림만 혼자 시도를 쓰고 나머지는 보낸다. 이 자리에서 나눠 다시 보내면 한 줄이 전송 자리를 오래 쥐고 오래된
-        잡힘 정리가 보내는 중인 행을 풀었다(검토에서 재현). 받는 쪽 전체가 거절하는 경우(401·403·404·410·SMTP 발신 거절)는
-        받는 곳 문제(target_down)라 묶음째 미룬다."""
+        묶음을 받는 쪽이 알림 하나 때문에 거절하면(본문 문제 — 400·413·422·SMTP 5xx 554) 반으로 나눠 다시 보낼 차례로 돌린다(시도로 세지
+        않음, split_deliveries): 거절된 알림만 혼자 시도를 쓴다. 이 자리에서 나눠 보내면 한 줄이 전송 자리를 오래 쥐었다(검토에서 재현).
+        403 은 토큰이 막힌 것일 수도, 방화벽·DLP 가 본문을 막은 것일 수도 있어 여러 건이면 나눈다 — 혼자 보내도 403 이면 받는 곳 문제."""
         try:
             await asyncio.wait_for(notifier.send(_message(jobs)), timeout=SEND_TIMEOUT_SEC)
         except asyncio.CancelledError:
@@ -270,7 +270,7 @@ class Dispatcher:
             timed_out = isinstance(exc, TimeoutError)
             down = timed_out or getattr(exc, "target_down", False)
             error = "전송 시간 초과" if timed_out else str(exc)[:1000]
-            if len(jobs) > 1 and not down:
+            if len(jobs) > 1 and (not down or getattr(exc, "status", None) == 403):
                 await repository.split_deliveries(jobs, error[:900] + SPLIT_NOTE)
                 log.warning("알림 %s → %s 묶음 거절 — 하나씩 다시 보냅니다: %s", _ids(jobs), name, error)
                 return None

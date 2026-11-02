@@ -27,6 +27,8 @@ def _http_error(code):
     (_http_error(429), True),     # 보내는 속도 제한 — 그 곳에 더 보내도 같다
     (_http_error(400), False),    # 이 알림의 본문 문제
     (_http_error(422), False),
+    (_http_error(413), False),
+    (_http_error(408), True),     # 잠시 — 같은 곳의 다른 알림도 같다 (3차 검토: 나눠 보내 같은 실패를 여러 번 받지 않게)
     # 주소·토큰이 지워졌거나 막힘 — 어떤 알림도 받지 않는다 (B-41 검토: 알림 하나의 문제로 보면 묶음을 하나씩 다시 보내 같은 거절을 수백 번)
     (_http_error(404), True),
     (_http_error(403), True),
@@ -76,6 +78,11 @@ def test_email(monkeypatch):
     with pytest.raises(NotifierError) as caught:
         mail._send(None)
     assert caught.value.target_down is False
+    monkeypatch.setattr(Rejecting, "send_message", lambda self, mail: (_ for _ in ()).throw(smtplib.SMTPDataError(451, "try later")))
+    with pytest.raises(NotifierError) as caught:   # 4xx 는 잠시 — 받는 곳 문제
+        mail._send(None)
+    assert caught.value.target_down is True
+    monkeypatch.setattr(Rejecting, "send_message", lambda self, mail: (_ for _ in ()).throw(smtplib.SMTPDataError(554, "rejected")))
     # 발신자 거절(530 인증·550 중계)·받는 사람 모두 거절은 이 그룹의 모든 메일이 같다 — 받는 곳 문제
     for refusal in (smtplib.SMTPSenderRefused(530, b"auth required", "x@y"), smtplib.SMTPRecipientsRefused({"a@x": (550, b"no")})):
         monkeypatch.setattr(Rejecting, "send_message", lambda self, mail, e=refusal: (_ for _ in ()).throw(e))

@@ -38,9 +38,10 @@ class NotifierError(Exception):
     target_down = 받는 곳 자체가 안 된다(연결 실패·시간 초과·5xx·429·설정 없음) — 전송기가 그 곳의 다른 대기 알림도
     이번에는 시도하지 않고 실패로 넘긴다(같은 곳에 30초씩 줄줄이 기다리지 않게, ADR-045). 알림 하나의 문제(4xx 등)는 False."""
 
-    def __init__(self, message: str, *, target_down: bool = False):
+    def __init__(self, message: str, *, target_down: bool = False, status: int | None = None):
         super().__init__(message)
         self.target_down = target_down
+        self.status = status   # 웹훅 HTTP 응답 코드 (전송기가 403 을 따로 본다 — 토큰이 막혔거나 본문이 막혔거나)
 
 
 SEVERITY_RANK = {"info": 1, "warning": 2, "error": 3, "critical": 4}
@@ -140,7 +141,7 @@ class EmailNotifier(Notifier):
             # 그 메일 하나의 문제 — 받는 곳 장애로 보면 다른 알림까지 미뤄진다(검토에서 재현)
             # 발신자 거절(530 인증 필요·550 중계 거부)·받는 사람 모두 거절은 이 그룹으로 가는 모든 메일이 같다 — 받는 곳 문제(검토 보완:
             # 알림 하나의 문제로 보면 묶음을 하나씩 다시 보내 같은 거절을 수백 번 받았다)
-            per_message = isinstance(exc, smtplib.SMTPDataError)
+            per_message = isinstance(exc, smtplib.SMTPDataError) and 500 <= exc.smtp_code < 600   # 451 등 4xx 는 잠시 — 받는 곳 문제
             raise NotifierError(f"메일 전송 실패 ({self.smtp.host}:{self.smtp.port}): {exc}",
                                 target_down=not per_message) from exc
 
@@ -175,7 +176,7 @@ _HTTPS_HOSTS = tuple(h for f in FORMATS.values() if f.https_only for h in f.host
 _BAD_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f]")
 
 
-RECEIVER_GONE = frozenset({401, 403, 404, 410, 429})   # 웹훅 응답 중 받는 곳 자체의 문제 (429 = 보내는 속도 제한)
+PER_MESSAGE = frozenset({400, 413, 422})   # 웹훅 응답 중 그 알림 본문 때문인 것 — 나머지는 받는 곳 자체의 문제
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -252,15 +253,15 @@ class WebhookNotifier(Notifier):
             # 넉넉히 읽어 가린 '뒤에' 자른다 — 먼저 자르면 경계에 걸친 토큰 앞부분이 가려지지 않고 남는다
             detail = self.redact(exc.read(4096).decode("utf-8", "replace"))[:300]
             moved = " — 다른 주소로 넘기려 합니다. 넘어간 뒤의 최종 주소를 넣으세요" if 300 <= exc.code < 400 else ""
-            # 401·403·404·410 = 주소·토큰이 지워졌거나 막힘(Slack no_service·invalid_token·channel_is_archived) — 어떤 알림도 받지
-            # 않으므로 받는 곳 문제. 400·413·422 처럼 본문 때문이면 그 알림 하나의 문제
-            raise NotifierError(f"웹훅 응답 {exc.code}{moved}: {detail}",
-                                target_down=exc.code >= 500 or exc.code in RECEIVER_GONE) from exc
+            # 본문 때문인 응답(400·413·422)만 그 알림 하나의 문제 — 401·403·404·410(주소·토큰이 지워졌거나 막힘)·408·429(잠시)·5xx·넘김은
+            # 받는 곳 문제. 403 은 방화벽이 본문을 막은 것일 수도 있어 전송기가 여러 건 묶음이면 나눠 본다(status)
+            raise NotifierError(f"웹훅 응답 {exc.code}{moved}: {detail}", target_down=exc.code not in PER_MESSAGE,
+                                status=exc.code) from exc
         except (urllib.error.URLError, OSError) as exc:
             reason = self.redact(str(getattr(exc, "reason", exc)))
             raise NotifierError(f"웹훅 연결 실패 ({self.target()}): {reason}", target_down=True) from exc
-        except Exception as exc:  # http.client.InvalidURL·ValueError 등도 주소를 문구에 넣는다 → 가려서
-            raise NotifierError(f"웹훅 전송 실패 ({self.target()}): {self.redact(str(exc))[:300]}") from exc
+        except Exception as exc:  # http.client.InvalidURL·ValueError 등도 주소를 문구에 넣는다 → 가려서. 주소 문제라 받는 곳 문제
+            raise NotifierError(f"웹훅 전송 실패 ({self.target()}): {self.redact(str(exc))[:300]}", target_down=True) from exc
 
     async def send(self, message: AlertMessage) -> None:
         await self._deliver(self.payload(message))
