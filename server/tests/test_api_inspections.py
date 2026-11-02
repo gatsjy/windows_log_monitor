@@ -151,6 +151,9 @@ def test_period_checks_and_duplicates(ctx):
     assert start(period_start=iso(now - timedelta(hours=2)), period_end=iso(now - timedelta(hours=1))).status_code == 422
     assert start(period_start=iso(now - timedelta(days=3)), period_end=iso(now + timedelta(days=1))).status_code == 422
     assert start(period_start="9999-12-31T23:00:00Z", period_end="2026-01-01T00:00:00Z").status_code == 422   # 넘침 → 500 이었다
+    # 1년: UTC 로 기원전이 되어 저장은 되는데 읽을 때마다 실패 → 점검 목록·준비도·보고서가 영영 깨졌다 (행은 지울 수 없음, 검토에서 재현)
+    assert start(period_start="0001-01-01T00:00:00+14:00", period_end=iso(now - timedelta(hours=1))).status_code == 422
+    assert start(period_start="0001-01-01T00:00:00", period_end="0001-01-03T00:00:00").status_code == 422
     naive = {"period_start": "2026-01-01T00:00:00", "period_end": "2026-02-01T00:00:00"}
     r = start(**naive)
     assert r.status_code == 200, r.text

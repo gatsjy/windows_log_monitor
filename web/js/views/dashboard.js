@@ -50,6 +50,7 @@ function iconFor(cfg) {
 export async function mount(root, params, sub) {
   const name = sub || 'overview';
   let doc;
+  let disposed = false;   // 다른 화면으로 간 뒤 늦게 끝난 위젯 조회가 같은 #view 의 새 대시보드 카드에 그리지 않게
   let timer;
   let since = params.since;
   let source = null;
@@ -76,7 +77,8 @@ export async function mount(root, params, sub) {
   const urlParams = () => ({ since, ...Object.fromEntries(Object.entries(vars).filter(([, v]) => v).map(([k, v]) => [`var-${k}`, v])) });
   const ctx = {
     query: (cfg) => (takesQuery(cfg) ? withVars : (q) => q)({ since: cfg.since || since, ...(cfg.query || {}) }),
-    drill: (q) => navigate('events', withVars({ since, ...q }, { yieldToQuery: true })),
+    // clicked = 카드·막대에서 누른 값 — 같은 키의 변수만 그 값에 자리를 내준다 (위젯 조건 q 에는 변수가 그대로 붙는다)
+    drill: (q, clicked = {}) => navigate('events', withVars({ since, ...q, ...clicked }, { yieldKeys: Object.keys(clicked) })),
     /** 위젯이 실시간으로 맞출 수 없는 변화(새 구간, 새 PC 등)를 만나면 그 위젯만 다시 조회 */
     resync: (body) => renderOne(Number(body.dataset.w)),
     ratePerMin: () => {
@@ -221,6 +223,7 @@ export async function mount(root, params, sub) {
   }
 
   async function renderOne(i) {
+    if (disposed) return;
     const cfg = doc.widgets?.[i];
     const body = root.querySelector(`[data-w="${i}"]`);
     if (!cfg || !body) return;
@@ -239,7 +242,7 @@ export async function mount(root, params, sub) {
       body.innerHTML = errorBox(err);
     } finally {
       body._syncing = false;
-      if (body._again) {
+      if (body._again && !disposed) {
         body._again = false;
         renderOne(i);
       }
@@ -307,6 +310,7 @@ export async function mount(root, params, sub) {
     root.innerHTML = errorBox(err);
   }
   return () => {
+    disposed = true;
     clearInterval(timer);
     clearTimeout(flushTimer);
     source?.close();

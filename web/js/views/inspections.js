@@ -100,7 +100,7 @@ export async function mountInspections(root) {
       ${r.items.map((it) => html`<section class="card" style="margin-bottom:10px"><div class="card-body">
         <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>${it.label}</b><span class="muted" style="font-size:12px">${it.basis}</span></div>
         <p class="muted" style="font-size:13px;margin:6px 0">${it.summary}</p>
-        ${it.evidence?.problems?.length > 3 ? html`<details style="font-size:12.5px;margin-bottom:6px"><summary>기간 중 문제 ${it.evidence.problem_count ?? it.evidence.problems.length}건 모두 보기</summary>
+        ${it.evidence?.problems?.length > 3 ? html`<details style="font-size:12.5px;margin-bottom:6px"><summary>기간 중 문제 ${it.evidence.problem_count ?? it.evidence.problems.length}건 ${(it.evidence.problem_count ?? 0) > it.evidence.problems.length ? `(앞 ${it.evidence.problems.length}건 — 빈 구간 먼저)` : '모두'} 보기</summary>
           <ul class="ref-list">${it.evidence.problems.map((p) => html`<li>${fmtTime(p.at, { seconds: false })} · ${p.text}</li>`)}</ul></details>` : ''}
         ${editable ? html`<div class="toolbar" style="flex-wrap:wrap;gap:6px">
             <select class="input" data-result="${it.key}" aria-label="${it.label} 결과"><option value="">결과…</option>

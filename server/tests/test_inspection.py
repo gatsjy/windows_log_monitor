@@ -97,3 +97,23 @@ def test_integrity_evidence_looks_at_the_whole_period():
     gap = [r for r in daily if r["action"] != "backup.create" and (r["action"] != "integrity.verify" or r["at"] < start + timedelta(days=1))]
     texts = [p["text"] for p in inspection._integrity_period(gap, start, end)["problems"]]
     assert texts[0].startswith("위·변조 검증 기록이 71시간 비었습니다 (10-01 10:00 뒤)") and texts[1] == "기간에 백업 기록이 없습니다"
+    # 빈 구간·기록 없음이 실패 기록보다 앞 — 스냅샷은 30건만 남는다 (매일 실패한 복제 30건 뒤로 밀려 빠졌다, 검토에서 재현)
+    noisy = [*gap, *(_rec("backup.replicate", start + timedelta(hours=h), {"ok": False, "error": "쓸 수 없음"}) for h in range(30))]
+    problems = inspection._integrity_period(noisy, start, end)["problems"]
+    assert [p["action"] for p in problems[:2]] == ["integrity.verify", "backup.create"] and len(problems) == 32
+
+
+def test_integrity_gap_crossing_the_period_start():
+    """멈춤이 기간 경계를 넘으면(9/30 23시 멈춤 → 10/26 재개) 10월 점검에도 9월 점검에도 안 잡혔다(검토에서 재현) — 기간 시작부터도 잰다.
+    다만 감사로그 체인을 시작(설치)하기 전은 빈 구간이 아니다."""
+    from datetime import timedelta
+
+    start, end = datetime(2026, 9, 30, 15, tzinfo=UTC), datetime(2026, 10, 31, 15, tzinfo=UTC)
+    late = [_rec(a, datetime(2026, 10, 26, tzinfo=UTC) + timedelta(days=d), {"ok": True} if a == "integrity.verify" else None)
+            for d in range(6) for a in ("integrity.verify", "integrity.anchor", "backup.create")]
+    texts = [p["text"] for p in inspection._integrity_period(late, start, end)["problems"]]
+    assert len(texts) == 3 and all("시간 비었습니다" in t for t in texts) and texts[0].startswith("위·변조 검증 기록이 609시간")
+    installed = inspection._integrity_period(late, start, end, since=datetime(2026, 10, 25, 23, tzinfo=UTC))
+    assert installed["problems"] == []
+    before = inspection._integrity_period([], start, end, since=end + timedelta(days=1))["problems"]
+    assert [p["action"] for p in before] == ["audit_chain"]

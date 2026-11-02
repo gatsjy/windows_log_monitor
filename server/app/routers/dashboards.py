@@ -133,6 +133,23 @@ def _etag(data: bytes) -> str:
     return f'"{hashlib.sha256(data).hexdigest()}"'
 
 
+_CODING_SUFFIX = re.compile(r"-(gzip|br|deflate|zstd)$")
+
+
+def _matches(if_match: str, data: bytes) -> bool:
+    """If-Match 가 지금 파일의 ETag 인가. 압축하는 프록시가 W/"…"(nginx)·"…-gzip"(Apache mod_deflate)로 바꿔 돌려주므로 그 꼴도
+    받는다 — 값은 파일의 sha256 이라 바뀐 꼴도 지금 판본에서만 나온다. '*' 는 파일이 있으면 맞음(검토에서 재현: 프록시 뒤에서 저장이 늘 409)."""
+    want = hashlib.sha256(data).hexdigest()
+    for tag in if_match.split(","):
+        tag = tag.strip()
+        if tag == "*":
+            return True
+        tag = tag.removeprefix("W/").strip().strip('"')
+        if _CODING_SUFFIX.sub("", tag) == want:
+            return True
+    return False
+
+
 @router.get("/api/dashboards/{name}")
 async def get_dashboard(name: str, response: Response):
     """ETag = 파일의 sha256 — 편집기가 저장할 때 If-Match 로 돌려준다(그 사이 검색 화면에서 더한 위젯을 덮지 않게)."""
@@ -182,7 +199,7 @@ async def save_dashboard(name: str, request: Request, response: Response, doc: d
         exists = path.exists()
         if if_none_match == "*" and exists:
             raise HTTPException(409, "같은 이름의 대시보드가 이미 있습니다 — 다른 이름을 쓰세요")
-        if if_match and (not exists or _etag(path.read_bytes()) != if_match.strip()):
+        if if_match and (not exists or not _matches(if_match, path.read_bytes())):
             raise HTTPException(409, "편집하는 사이 다른 곳에서 대시보드가 바뀌었습니다 (검색 화면에서 위젯 추가 등) — "
                                      "편집기를 닫고 다시 열어 고치세요")
         text = _write(path, doc)

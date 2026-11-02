@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -44,6 +44,9 @@ EXPIRE_ERROR = "하루가 지나 보내지 않았습니다"
 DOWN_NOTE = " (같은 곳으로 방금 보낸 알림이 실패해 이번에는 시도하지 않음)"
 SPLIT_NOTE = " (묶음을 받는 쪽이 거절해 반씩 나눠 다시 보냅니다)"
 GROUP_MAX = 500   # 묶음 한 통에 담는 알림 상한 (B-41) — 넘는 것은 다음 묶음 간격에 '추가 n건'으로
+# 403: 토큰이 막힌 것(받는 곳 문제)인지 방화벽·DLP 가 본문을 막은 것인지 내용 없는 확인 메시지로 가린다 (_content_403)
+PROBE_EVERY = timedelta(minutes=10)    # 확인 메시지도 거절됐으면 이 동안은 다시 묻지 않고 받는 곳 문제로
+CONTENT_403_FOR = timedelta(hours=1)   # 확인 메시지가 통했으면 이 동안 403 은 본문 문제로 (묻지 않음)
 
 
 @dataclass
@@ -55,13 +58,13 @@ class TargetHealth:
     consecutive_failures: int = 0
     last_error: str | None = None
     last_attempt_at: datetime | None = None
-    # 실패가 이어지는 동안 403 으로 한 번 미룬 묶음 (규칙, 종류, 묶음 키) — 두 번째 403 은 받는 곳 문제로 본다. 보내지면 비운다
-    held: set[tuple[str, str, int]] = field(default_factory=set)
+    content_403_until: datetime | None = None   # 확인 메시지가 통함 → 그때까지 403 은 본문 때문(방화벽·DLP)
+    probe_refused_at: datetime | None = None     # 확인 메시지도 거절 → 토큰·주소 문제
 
     def ok(self, now: datetime) -> None:
         self.last_ok_at = self.last_attempt_at = now
         self.failing_since, self.consecutive_failures, self.last_error = None, 0, None
-        self.held.clear()
+        self.probe_refused_at = None
 
     def fail(self, now: datetime, error: str) -> None:
         self.last_attempt_at = now
@@ -264,7 +267,8 @@ class Dispatcher:
         """잡은 행들을 한 통으로. 받는 곳 자체가 안 되면(시간 초과·target_down) 다시 볼 시각을 돌려준다 — 그 줄을 멈춘다.
         묶음을 받는 쪽이 알림 하나 때문에 거절하면(본문 문제 — 400·413·422·SMTP 5xx 554) 반으로 나눠 다시 보낼 차례로 돌린다(시도로 세지
         않음, split_deliveries): 거절된 알림만 혼자 시도를 쓴다. 이 자리에서 나눠 보내면 한 줄이 전송 자리를 오래 쥐었다(검토에서 재현).
-        403 은 토큰이 막힌 것일 수도, 방화벽·DLP 가 본문을 막은 것일 수도 있다(_on_forbidden) — 혼자 보내도 403 이면 받는 곳 문제."""
+        403 은 토큰이 막힌 것일 수도, 방화벽·DLP 가 본문을 막은 것일 수도 있다 — 내용 없는 확인 메시지로 가린다(_content_403). 본문 때문이면
+        여러 건은 나누고 한 건은 그 알림만 실패(이 곳의 다른 알림은 미루지 않음), 받는 곳 문제면 다른 실패와 같다."""
         try:
             await asyncio.wait_for(notifier.send(_message(jobs)), timeout=SEND_TIMEOUT_SEC)
         except asyncio.CancelledError:
@@ -273,11 +277,11 @@ class Dispatcher:
             timed_out = isinstance(exc, TimeoutError)
             down = timed_out or getattr(exc, "target_down", False)
             error = "전송 시간 초과" if timed_out else str(exc)[:1000]
+            if getattr(exc, "status", None) == 403 and await self._content_403(name, notifier):
+                down = False
             if len(jobs) > 1 and not down:
                 await repository.split_deliveries(jobs, error[:900] + SPLIT_NOTE)
-                log.warning("알림 %s → %s 묶음 거절 — 하나씩 다시 보냅니다: %s", _ids(jobs), name, error)
-                return None
-            if len(jobs) > 1 and getattr(exc, "status", None) == 403 and await self._on_forbidden(name, jobs, error):
+                log.warning("알림 %s → %s 묶음 거절 — 반씩 나눠 다시 보냅니다: %s", _ids(jobs), name, error)
                 return None
             now = datetime.now(UTC)
             # 묶음은 함께 다시 보내도록 같은 때로 (첫 행의 실패 간격), 다섯 번째 실패한 행만 gave_up
@@ -297,25 +301,33 @@ class Dispatcher:
         self.health(name).ok(datetime.now(UTC))
         return None
 
-    async def _on_forbidden(self, name: str, jobs: list[dict[str, Any]], error: str) -> bool:
-        """여러 건 묶음의 403 — 본문 때문(방화벽·DLP)이면 나눠야 하고, 토큰이 막힌 것이면 나눌수록 요청만 는다(500건 묶음이 3분에 272통,
-        고친 뒤에는 나눈 조각마다 한 통씩 271통 — 검토에서 재현). 받는 곳이 잘 되던 중의 첫 403 만 나누고, 실패가 이어지는 중이면 그 묶음을
-        한 번만 시도로 세지 않고 잠시 미룬다 — 그 사이 다른 묶음(나눈 반쪽)이 보내지면 본문 문제였으므로 다음 403 에 또 나눈다.
-        True = 처리함(나눔·미룸), False = 보통 실패로(시도로 세고 이 곳의 다른 알림을 미룸)."""
+    async def _content_403(self, name: str, notifier: Notifier) -> bool:
+        """403 이 본문 때문인가 — 같은 곳에 내용 없는 확인 메시지를 보내 본다. 통하면 받는 곳은 살아 있고 이 알림(들)의 본문을 방화벽·DLP 가
+        막은 것(True). 확인 메시지도 거절되면 토큰·주소 문제(False). 실패가 이어지는지·몇 번째 403 인지로 가리면 막힌 알림이 양쪽 반쪽에
+        다 있거나 앞서 다른 실패가 있을 때 좋은 알림까지 버려졌고(4차 검토), 403 마다 나누면 토큰이 막힌 곳에 요청이 쏟아졌다(500건이 3분에 272통).
+        확인 메시지는 통하면 채널에 보이므로 한 시간에 한 번, 거절되면 10분 동안 다시 묻지 않는다."""
         now, health = datetime.now(UTC), self.health(name)
-        key = (jobs[0]["rule"], jobs[0].get("action") or "trigger", jobs[0].get("split_key") or min(j["alert_id"] for j in jobs))
-        if health.failing_since is None:
-            health.fail(now, error)   # 다음 403 은 판단을 기다리게 (보내지면 ok 가 비운다)
-            await repository.split_deliveries(jobs, error[:900] + SPLIT_NOTE)
-            log.warning("알림 %s → %s 묶음 403 — 반씩 나눠 다시 보냅니다: %s", _ids(jobs), name, error)
+        if health.content_403_until and now < health.content_403_until:
             return True
-        if key not in health.held:
-            health.held.add(key)
-            health.fail(now, error)
-            await repository.hold_deliveries(jobs, now + RETRY_BACKOFF[0])
-            log.warning("알림 %s → %s 묶음 403 (실패 중) — 잠시 미룹니다: %s", _ids(jobs), name, error)
-            return True
-        return False
+        if health.probe_refused_at and now - health.probe_refused_at < PROBE_EVERY:
+            return False
+        probe = AlertMessage(
+            rule="연결 확인", severity="info", kind="test", group_by="none", group_key="", event_count=0, threshold=0, window_sec=0,
+            fired_at=now, alert_id=0, test=True, link=f"{settings.public_url}/#/alerts",
+            description=f"받는 쪽(방화벽·DLP 등)이 알림을 거절해(403) 연결을 확인합니다 — 이 메시지가 보이면 알림 대상 '{name}' 은 정상이고, "
+                        "거절된 알림은 나눠 다시 보냅니다(끝내 거절된 알림은 알림 화면에 '실패'). 답할 필요는 없습니다")
+        try:
+            await asyncio.wait_for(notifier.send(probe), timeout=SEND_TIMEOUT_SEC)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 확인도 안 되면 받는 곳 문제
+            health.probe_refused_at = now
+            log.warning("알림 대상 %s 403 — 확인 메시지도 거절되어 받는 곳 문제로 봅니다: %s", name, str(exc)[:300])
+            return False
+        health.content_403_until = now + CONTENT_403_FOR
+        health.ok(now)
+        log.warning("알림 대상 %s 403 — 확인 메시지는 통해 본문 때문으로 봅니다 (한 시간 동안)", name)
+        return True
 
     def status(self) -> dict[str, Any]:
         running = self.task is not None and not self.task.done()

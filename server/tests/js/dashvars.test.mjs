@@ -36,10 +36,18 @@ test('"variables": null 은 변수 없음 — 대시보드가 깨지지 않는�
 
 test('검색으로 넘길 때는 누른 값이 이긴다 — 같은 키의 변수를 더하지 않는다 (PC 카드를 누르면 0건이던 것, 검토에서 재현)', () => {
   const values = { host: 'WEB-01' };
-  assert.deepEqual(applyVars({ host: 'DB-02' }, VARS, values, { yieldToQuery: true }).query, { host: 'DB-02' });
-  assert.equal(applyVars({ query: 'host:DB-02' }, VARS, values, { yieldToQuery: true }).query.query, 'host:DB-02');
-  assert.equal(applyVars({ query: 'event_id:4625' }, VARS, values, { yieldToQuery: true }).query.query, 'event_id:4625 host:WEB-01');
+  assert.deepEqual(applyVars({ host: 'DB-02' }, VARS, values, { yieldKeys: ['host'] }).query, { host: 'DB-02' });
+  assert.equal(applyVars({ query: 'event_id:4625', user: 'bob' }, VARS, values, { yieldKeys: ['user'] }).query.query, 'event_id:4625 host:WEB-01');
   assert.equal(applyVars({ host: 'DB-02' }, VARS, values).query.query, 'host:WEB-01');   // 위젯 조회는 변수도 같이 (원래 뜻)
+});
+
+test('위젯 자신의 조건에 같은 키가 있어도 변수는 그대로 — 검색이 위젯보다 넓어지지 않게 (검토에서 재현)', () => {
+  const values = { host: 'WEB-01' };
+  // 위젯 조건 '-host:DC-01' + 누른 사용자 bob → 위젯이 센 것(-host:DC-01 host:WEB-01 user=bob)과 같은 검색
+  assert.equal(applyVars({ query: '-host:DC-01', user: 'bob' }, VARS, values, { yieldKeys: ['user'] }).query.query, '-host:DC-01 host:WEB-01');
+  assert.equal(applyVars({ query: 'host:WEB-01,WEB-02 event_id:4625' }, VARS, values, { yieldKeys: [] }).query.query,
+    'host:WEB-01,WEB-02 event_id:4625 host:WEB-01');
+  assert.equal(applyVars({ host: 'WEB-01' }, VARS, { host: 'DB-02' }).query.query, 'host:DB-02');   // 옛 키 위젯도 변수가 붙는다 (0건이면 검색도 0건)
 });
 
 test('그 키에 맞지 않는 값은 위젯 조건에 넣지 않고 오류로', () => {

@@ -38,12 +38,12 @@ function draw(body, ctx, st, touched = new Set()) {
   body.querySelectorAll('[data-host]').forEach((card) => {
     card.addEventListener('click', (e) => {
       if (e.target.closest('[data-del]')) return;
-      ctx.drill({ host: card.dataset.host });
+      ctx.drill({}, { host: card.dataset.host });
     });
     card.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         if (e.target.closest('[data-del]')) return;
-        ctx.drill({ host: card.dataset.host });
+        ctx.drill({}, { host: card.dataset.host });
       }
     });
   });

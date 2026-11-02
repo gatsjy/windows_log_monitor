@@ -224,40 +224,72 @@ def test_one_rejected_alert_does_not_sink_the_group(client):
                " AND d.alert_id = ANY(%s)", (ids,)) == [(2,)]
 
 
+def _fresh(name):
+    """그 받는 곳의 메모리 상태(403 판단 포함)를 처음처럼 — 다시 시작한 서버."""
+    from app.alerts.dispatcher import dispatcher
+
+    dispatcher.targets.pop(name, None)
+
+
+def _state(ids):
+    return dict(sql("SELECT a.group_key, d.status || ':' || d.attempts FROM alert_deliveries d JOIN alerts a"
+                    " ON a.id = d.alert_id WHERE d.alert_id = ANY(%s)", (ids,)))
+
+
 def test_waf_403_on_a_group_is_split_not_deferred(client):
     """방화벽·DLP 가 본문 때문에 403 을 주면 묶음을 나눈다 — 403 을 받는 곳 문제로만 보면 묶음째 다섯 번 실패했다(3차 검토에서 재현).
-    혼자 보내도 403 이면 받는 곳 문제(토큰이 막힘)라 그 곳의 다른 알림은 미룬다."""
+    본문 때문인지는 내용 없는 확인 메시지로 가린다: 통하면 나누고, 혼자서도 거절된 알림만 실패(이 곳의 다른 알림은 미루지 않음)."""
+    _fresh("방화벽")
     ids = fire(client, "방화벽 시험", ["PC-A", "POISON-B", "PC-C"], notify=("방화벽",))
     passed("방화벽 시험", 31)
     drain(client)
-    state = lambda: dict(sql("SELECT a.group_key, d.status || ':' || d.attempts FROM alert_deliveries d JOIN alerts a"
-                             " ON a.id = d.alert_id WHERE d.alert_id = ANY(%s)", (ids,)))
-    # (PC-A) 보냄 · (POISON-B, PC-C) 403 → POISON-B 혼자 403 = 받는 곳 문제 → PC-C 는 시도로 세지 않고 미룸
-    assert state() == {"PC-A": "sent:1", "POISON-B": "failed:1", "PC-C": "pending:0"}
-    sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE alert_id = ANY(%s) AND status IN ('pending', 'failed')", (ids,))
+    assert _state(ids) == {"PC-A": "sent:1", "POISON-B": "failed:1", "PC-C": "sent:1"}
+    probes = [b for b in posts("/waf") if "연결 확인용 테스트" in json.dumps(b, ensure_ascii=False)]
+    assert len(probes) == 1   # 확인 메시지는 한 번 (한 시간 동안 다시 묻지 않음)
+
+
+def test_waf_blocks_in_both_halves_still_deliver_the_good_ones(client):
+    """막힌 알림이 양쪽 반쪽에 다 있으면 다시 나누지 않아 좋은 알림까지 버려졌다(4차 검토에서 재현) — 확인 메시지가 통하면 끝까지 나눈다."""
+    _fresh("방화벽")
+    ids = fire(client, "방화벽 둘", ["PC-A", "POISON-B", "PC-C", "POISON-D"], notify=("방화벽",))
+    passed("방화벽 둘", 31)
     drain(client)
-    assert state() == {"PC-A": "sent:1", "POISON-B": "failed:2", "PC-C": "sent:1"}   # 다음 차례에 PC-C 는 간다
+    assert _state(ids) == {"PC-A": "sent:1", "POISON-B": "failed:1", "PC-C": "sent:1", "POISON-D": "failed:1"}
+
+
+def test_earlier_failure_does_not_stop_the_split(client):
+    """그 곳에 앞서 실패(혼자 거절된 알림의 재시도 등)가 있어도 새 묶음의 본문 403 은 나눈다 (4차 검토에서 재현: 묶음째 버려짐)."""
+    _fresh("방화벽")
+    old = fire(client, "방화벽 앞", ["POISON-OLD"], notify=("방화벽",))
+    passed("방화벽 앞", 31)
+    drain(client)
+    assert _state(old) == {"POISON-OLD": "failed:1"}
+    _fresh("방화벽")   # 서버를 다시 시작해 확인 결과도 잊었다
+    ids = fire(client, "방화벽 뒤", ["PC-X", "POISON-Y", "PC-Z"], notify=("방화벽",))
+    passed("방화벽 뒤", 31)
+    drain(client)
+    assert _state(ids) == {"PC-X": "sent:1", "POISON-Y": "failed:1", "PC-Z": "sent:1"}
 
 
 def test_dead_token_403_does_not_cascade(client):
     """토큰이 막혀 무엇이든 403 이면 나눌수록 요청만 늘었다(500건 묶음이 3분에 272통, 고친 뒤에는 나눈 조각마다 한 통씩 271통 — 검토에서 재현).
-    잘 되던 곳의 첫 403 만 한 번 나누고, 실패 중의 403 은 묶음마다 한 번 미룬 뒤 보통 실패로(시도·이 곳의 다른 알림 미룸)."""
+    확인 메시지도 거절되면 받는 곳 문제 — 나누지 않고 묶음째 다시 보낼 차례로 (확인은 10분에 한 번)."""
+    _fresh("토큰만료")
     ids = fire(client, "토큰 시험", [f"PC-{i:03d}" for i in range(64)], notify=("토큰만료",))
     passed("토큰 시험", 31)
     drain(client)
-    assert len(posts("/denied")) == 3          # 64건 한 통 → 반쪽 둘 (각각 한 번 미룸)
+    assert len(posts("/denied")) == 2          # 64건 한 통 + 확인 메시지
     for _ in range(3):
         sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE alert_id = ANY(%s) AND status IN ('pending', 'failed')", (ids,))
         drain(client)
-    assert len(posts("/denied")) <= 6          # 그 뒤로는 차례마다 한 통 (다른 반쪽은 시도로 세지 않고 미룸)
-    keys = sql("SELECT count(DISTINCT split_key) FROM alert_deliveries WHERE alert_id = ANY(%s)", (ids,))[0][0]
-    assert keys == 2
-    _Receiver.denied = False                   # 토큰을 고침 → 두 통으로 (조각마다 한 통씩 쏟아지지 않음)
+    assert len(posts("/denied")) == 5          # 그 뒤로는 차례마다 한 통 (10분 안에는 다시 확인하지 않음)
+    assert sql("SELECT count(*) FROM alert_deliveries WHERE alert_id = ANY(%s) AND split_key IS NOT NULL", (ids,))[0][0] == 0
+    _Receiver.denied = False                   # 토큰을 고침 → 한 통으로
     _Receiver.received.clear()
     try:
         sql("UPDATE alert_deliveries SET next_attempt_at = now() WHERE alert_id = ANY(%s) AND status IN ('pending', 'failed')", (ids,))
         drain(client)
-        assert len(posts("/denied")) == 2
+        assert len(posts("/denied")) == 1
         assert sql("SELECT count(*) FROM alert_deliveries WHERE alert_id = ANY(%s) AND status = 'sent'", (ids,))[0][0] == 64
     finally:
         _Receiver.denied = True

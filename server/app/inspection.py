@@ -25,6 +25,9 @@ STATUS_LABELS = {"open": "진행 중", "signed": "서명 — 승인 대기", "ap
 WORK_HOURS = (8, 19)          # 업무시간 (표시 시간대 08~19시, 평일) — 밖의 로그인은 '업무시간 외'
 MASS_VIEWS = 300              # 기간에 개인정보 조회 접속기록이 이만큼 넘는 사람은 '대량 조회' 후보
 MIN_PERIOD = timedelta(days=1)   # 이보다 짧은 기간은 한 회차로 치지 않는다 (한 시간짜리 점검을 승인해 주기 경고를 끄지 못하게)
+# 기간 시작의 하한 — 1년 같은 값은 UTC 로 기원전이 되어 저장은 되는데 읽을 때마다 psycopg 가 실패해 점검 목록·준비도·보고서가 영영 깨졌다
+# (행은 지울 수 없다 — 검토에서 재현)
+PERIOD_FLOOR = datetime(2000, 1, 1, tzinfo=UTC)
 _START_LOCK = 727_006            # 같은 기간의 점검을 두 사람이 동시에 시작해도 하나만
 
 # (key, 항목, 근거 조항) — 화면·CSV·결과서가 같은 순서로
@@ -85,28 +88,37 @@ _RUNS = (("integrity.verify", "위·변조 검증", integrity.STALE_AFTER), ("in
          ("backup.create", "백업", backups.BACKUP_STALE))
 
 
-def _integrity_period(rows: list[dict[str, Any]], start: datetime, end: datetime) -> dict[str, Any]:
-    """기간의 위·변조 검증·앵커·백업 기록 → 횟수·문제(실패·빈 구간). DB 없이 — 시험이 표로 본다."""
-    problems: list[dict[str, str]] = []
+def _integrity_period(rows: list[dict[str, Any]], start: datetime, end: datetime, since: datetime | None = None) -> dict[str, Any]:
+    """기간의 위·변조 검증·앵커·백업 기록 → 횟수·문제(실패·빈 구간). DB 없이 — 시험이 표로 본다.
+    since = 감사로그 체인을 시작한 때(설치) — 그 전은 빈 구간으로 보지 않는다. 빈 구간·기록 없음을 앞에 둔다: 스냅샷은 30건·요약은 3건만
+    남는데 매일 실패한 복제 30건 뒤로 밀려 '검증이 168시간 비었다'가 빠졌다(검토에서 재현)."""
+    zone = display_zone()
+    lead = max(start, since) if since else start
+    gaps: list[dict[str, str]] = []
+    failures: list[dict[str, str]] = []
     for r in rows:
         if r["action"] in _PERIOD_PROBLEMS and not (r["action"] in _OK_WHEN and (r["detail"] or {}).get("ok") is True):
             first = ((r["detail"] or {}).get("problems") or [(r["detail"] or {}).get("error") or (r["detail"] or {}).get("reason") or ""])[0]
             text = _PERIOD_PROBLEMS[r["action"]] + (f" ({r['target']})" if r["target"] and r["action"] != "integrity.verify" else "")
-            problems.append({"at": r["at"].isoformat(), "action": r["action"], "text": text + (f": {str(first)[:160]}" if first else "")})
+            failures.append({"at": r["at"].isoformat(), "action": r["action"], "text": text + (f": {str(first)[:160]}" if first else "")})
     runs = {}
+    if lead >= end:
+        gaps.append({"at": start.isoformat(), "action": "audit_chain", "text": "감사로그 체인을 시작(설치)하기 전 기간입니다 — 검증·백업 기록이 없습니다"})
     for action, label, stale in _RUNS:
         times = [r["at"] for r in rows if r["action"] == action and not (action == "integrity.verify" and (r["detail"] or {}).get("ok") is not True)]
         runs[action] = len(times)
-        if not times:
-            problems.append({"at": start.isoformat(), "action": action, "text": f"기간에 {label} 기록이 없습니다"})
+        if lead >= end:
             continue
-        # 빈 구간: 기록 사이와 마지막 기록 → 기간 끝. 기간 시작 → 첫 기록은 보지 않는다(기간 중에 설치한 경우)
-        for a, b in zip(times, [*times[1:], end], strict=True):
+        if not times:
+            gaps.append({"at": lead.isoformat(), "action": action, "text": f"기간에 {label} 기록이 없습니다"})
+            continue
+        # 빈 구간: 기간 시작(설치 뒤)→첫 기록, 기록 사이, 마지막 기록→기간 끝. 기간 경계를 넘는 멈춤이 어느 점검에도 안 잡혔다(검토에서 재현)
+        for a, b in zip([lead, *times], [*times, end], strict=True):
             if b - a > stale:
-                problems.append({"at": a.isoformat(), "action": action,
-                                 "text": f"{label} 기록이 {int((b - a).total_seconds() // 3600)}시간 비었습니다 ({a.astimezone(display_zone()):%m-%d %H:%M} 뒤)"})
+                gaps.append({"at": a.isoformat(), "action": action,
+                             "text": f"{label} 기록이 {int((b - a).total_seconds() // 3600)}시간 비었습니다 ({a.astimezone(zone):%m-%d %H:%M} 뒤)"})
                 break
-    return {"runs": runs, "problems": problems}
+    return {"runs": runs, "problems": gaps + failures}
 
 
 async def evidence(start: datetime, end: datetime, now: datetime) -> list[dict[str, Any]]:
@@ -115,7 +127,7 @@ async def evidence(start: datetime, end: datetime, now: datetime) -> list[dict[s
     chain = await integrity.status(now)
     backup = await backups.backup_status(now)
     period = _integrity_period(await repository.integrity_records(start, end, [*_PERIOD_PROBLEMS, *(a for a, _, _ in _RUNS)]),
-                               start, end)
+                               start, end, chain["head"]["started_at"] if chain["head"] else None)
     current = [n["text"] for n in chain["notices"]] + backup["problems"]
     runs = period["runs"]
     exports = await repository.audit_exports(start, end)
@@ -182,8 +194,8 @@ def state(inspection: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str
 
 async def start(title: str, start_at: datetime, end_at: datetime, actor: str, now: datetime) -> int:
     # 근거는 지금까지의 기록으로 모은다 — 끝이 미래면 그 뒤는 비어 있는 채 '한 회차'가 된다 (몇 분 차이는 시계 차이로 봐준다)
-    if not (end_at - start_at >= MIN_PERIOD and end_at <= now + timedelta(minutes=5)):   # 더하기는 9999년에서 넘친다(500)
-        raise InspectionError("점검 기간이 올바르지 않습니다 (하루 이상, 끝은 지금까지)", 422)
+    if not (start_at >= PERIOD_FLOOR and end_at - start_at >= MIN_PERIOD and end_at <= now + timedelta(minutes=5)):   # 더하기는 9999년에서 넘친다(500)
+        raise InspectionError("점검 기간이 올바르지 않습니다 (2000년 이후, 하루 이상, 끝은 지금까지)", 422)
     items = await evidence(start_at, end_at, now)
     async with db.pool().connection() as conn, conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_START_LOCK,))

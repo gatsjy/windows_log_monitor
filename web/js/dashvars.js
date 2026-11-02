@@ -20,19 +20,16 @@ export function varTerm(variable, value) {
 }
 
 /** 위젯의 조건 객체(cfg.query 와 since 를 합친 것)에 변수 값들을 문장으로 더한 새 객체. 잘못된 값은 errors 에.
- *  yieldToQuery: 조건에 이미 같은 키가 있으면 변수를 더하지 않는다 — PC 카드·상위 값을 눌러 검색으로 넘길 때 누른 값이 이긴다
- *  (변수 host:WEB-01 과 누른 host:DB-02 가 같이 들어가 늘 0건이었다, 검토에서 재현) */
-export function applyVars(query, variables, values = {}, { yieldToQuery = false } = {}) {
+ *  yieldKeys: 이 키의 변수는 더하지 않는다 — PC 카드·상위 값을 눌러 검색으로 넘길 때 **누른 값**만 이긴다(변수 host:WEB-01 과 누른
+ *  host:DB-02 가 같이 들어가 늘 0건이었다). 위젯 자신의 조건(-host:DC-01 등)에 같은 키가 있다고 변수를 빼면 검색이 위젯보다 넓어졌다(검토에서 재현). */
+export function applyVars(query, variables, values = {}, { yieldKeys = [] } = {}) {
   let text = query.query ?? '';
   const errors = [];
   for (const v of variables ?? []) {
     const value = values[v.name];
-    if (!value) continue;
+    if (!value || yieldKeys.includes(v.key)) continue;
     try {
       const term = varTerm(v, value);
-      const taken = query[v.key] != null && query[v.key] !== ''
-        || parseTerms(text).some((t) => t.key === term.key && t.path.join('.') === term.path.join('.'));
-      if (yieldToQuery && taken) continue;
       text = addTerm(text, term);
     } catch (err) {
       errors.push(`${v.label || v.name}: ${err.message}`);

@@ -282,6 +282,12 @@ def test_dashboard_writes_keep_file_and_audit_in_step(ctx):
     fresh = admin.get("/api/dashboards/guard-test")
     r = admin.put("/api/dashboards/guard-test", json=fresh.json(), headers={**CSRF, "If-Match": fresh.headers["ETag"]})
     assert r.status_code == 200 and r.headers["ETag"] == admin.get("/api/dashboards/guard-test").headers["ETag"]
+    # 압축하는 프록시가 바꾼 꼴(W/"…"·"…-gzip")·'*' 도 같은 판본으로 (프록시 뒤에서 저장이 늘 409 이던 것, 검토에서 재현)
+    for tag in (f"W/{r.headers['ETag']}", r.headers["ETag"][:-1] + '-gzip"', "*", f'"x", {r.headers["ETag"]}'):
+        current = admin.get("/api/dashboards/guard-test")
+        saved = admin.put("/api/dashboards/guard-test", json=current.json(), headers={**CSRF, "If-Match": tag.replace(r.headers["ETag"], current.headers["ETag"])})
+        assert saved.status_code == 200, (tag, saved.text)
+    assert admin.put("/api/dashboards/guard-test", json=base, headers={**CSRF, "If-Match": 'W/"0000"'}).status_code == 409
     # 새 이름으로 저장(If-None-Match: *)은 있는 대시보드를 덮지 않는다
     assert admin.put("/api/dashboards/guard-test", json=base, headers={**CSRF, "If-None-Match": "*"}).status_code == 409
     assert admin.put("/api/dashboards/guard-new", json=base, headers={**CSRF, "If-None-Match": "*"}).status_code == 200

@@ -27,7 +27,7 @@ function draw(body, cfg, ctx, st) {
   barList(body, rows, (row) => {
     if (row.raw == null) return;
     const key = COLUMNS.has(field) ? field : `f.${field.replace(/^f\./, '')}`;
-    ctx.drill({ ...(cfg.query || {}), [key]: row.raw });
+    ctx.drill(cfg.query || {}, { [key]: row.raw });
   });
 }
 
