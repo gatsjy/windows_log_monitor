@@ -36,6 +36,7 @@ settings:
 # escalations:
 #   - name: 심각 알림 미확인
 #     severity: [critical]
+#     ack_timeout: 4h       # 선택 — 확인만 하고 4시간 안에 해결하지 않으면 '처리 안 됨'으로 다시 열고 첫 단계 받는 곳에 다시 알림
 #     steps:
 #       - after: 15m
 #         notify: [당직메신저]

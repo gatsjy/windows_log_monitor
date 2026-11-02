@@ -75,7 +75,7 @@
 - **정기 점검 (2.9.5):** '점검 보고서' 화면 — 일간·주간 보고서 이력, 점검 필요 항목, 점검 확인(누가·언제·의견), 인쇄용 문서(PDF 저장). 감사로그 `report.create`(내용 해시, 만든 사람 IP)·`report.deliver`(자동 발송 결과)·`report.review`·`report.send`, 받는 곳의 메일. 보고서마다 받는 곳별 전송 기록(다시 보내도 첫 발송 결과가 남음). 보고서는 DB 트리거로 내용 수정·삭제를 막습니다(`server/migrations/011_reports.sql`). 보안 감사 대시보드 화면, 검색 결과(URL로 재현 가능)
 - **변경 이력:** `config/dashboards`, `config/alerts.yaml` 의 git 이력과 `audit_log` 의 `dashboard.save`, `alerts.config.save` 기록(내용 해시 포함)
 - **이상행위 대응:** 알림 화면의 이력(발생 시각, 규칙, 대상 PC, 전송 성공 여부), 메일·사내 DB 수신 기록
-- **사고 대응 기록 (2.11.5):** 알림 이력 CSV(처리 상태·확인한 사람·해결한 사람·시각·처리 기록 전체), 알림 상세의 처리 기록 타임라인, 감사로그 `alerts.ack`·`alerts.resolve`·`alerts.reopen`·`alerts.note`·`alerts.export`. 처리 기록은 DB 트리거로 수정·삭제·TRUNCATE 할 수 없습니다(`server/migrations/009_alert_handling.sql`, `010_alert_notes_no_truncate.sql`). CSV 는 로그에서 온 값이 수식으로 실행되지 않게 처리합니다(`app/csvexport.py`)
+- **사고 대응 기록 (2.11.5):** 알림 이력 CSV(처리 상태·확인한 사람·해결한 사람·시각·처리 기록 전체), 알림 상세의 처리 기록 타임라인, 감사로그 `alerts.ack`·`alerts.resolve`·`alerts.reopen`·`alerts.note`·`alerts.export`. 처리 기록은 DB 트리거로 수정·삭제·TRUNCATE 할 수 없습니다(`server/migrations/009_alert_handling.sql`, `010_alert_notes_no_truncate.sql`). CSV 는 로그에서 온 값이 수식으로 실행되지 않게 처리합니다(`app/csvexport.py`) 확인만 하고 정한 시간(`ack_timeout`) 안에 해결하지 않은 알림은 시스템이 다시 열고 다시 알립니다(처리 기록 '확인 시간 초과', B-43 2단계).
 - **알림 무음 이력:** 알림 > 무음 탭(범위·기간·사유·설정자·일찍 해제한 사람·보내지 않은 알림 수), 감사로그 `alerts.silence.create`·`alerts.silence.end`. 무음 중에 발생한 알림도 이력에 '무음'으로 남습니다
 - **권한 부여 내역:** 사용자 > 사용자 그룹 화면(권한·범위·구성원), 감사로그 `user_group.save/delete`
 - **수집 품질 (2.9.4, B-56 1단계, ADR-059):** 들어오는데 해석이 깨진 로그(정규화 오류·열 순서를 몰라 원문 그대로 둔 IIS 줄·필드 수가 템플릿과 다른 Windows 이벤트)와 1시간 넘게 늦거나 5분 넘게 미래인 발생 시각을

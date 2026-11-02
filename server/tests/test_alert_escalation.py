@@ -108,3 +108,23 @@ def test_message_says_why_it_comes_again():
     m.escalation = ""
     assert "escalation" not in m.to_dict()        # 보통 알림의 본문(웹훅 json·저장 payload)은 예전과 같다
     assert escalation_from_action("trigger") is None and escalation_from_action("escalate:x:acked") is None
+
+
+def test_ack_timeout_policy_parse_weakening_and_text():
+    """확인 시간 초과 (B-43 2단계): 5분~7일, 없애거나 늘리면 약화, 다시 알림 머리말."""
+    from app.alerts import configdiff
+    from app.alerts.message import escalation_from_action
+    from app.alerts.rules import ConfigError, parse_text
+
+    base = "rules: []\nescalations:\n  - name: 심각\n    severity: [critical]\n{extra}    steps:\n      - after: 15m\n        notify: [당직]\n"
+    cfg = parse_text(base.format(extra="    ack_timeout: 4h\n"))
+    assert cfg.escalations[0].ack_timeout.total_seconds() == 14400 and cfg.escalations[0].ack_timeout_action(3) == "acktimeout:14400:3"
+    for bad in ("1m", "8d"):
+        with pytest.raises(ConfigError, match="ack_timeout"):
+            parse_text(base.format(extra=f"    ack_timeout: {bad}\n"))
+    weak = lambda before, after: [c["weakens"] for c in configdiff.diff(parse_text(base.format(extra=before)),
+                                                                         parse_text(base.format(extra=after)))]
+    assert weak("    ack_timeout: 4h\n", "") == [True] and weak("    ack_timeout: 4h\n", "    ack_timeout: 8h\n") == [True]
+    assert weak("    ack_timeout: 4h\n", "    ack_timeout: 1h\n") == [False] and weak("", "    ack_timeout: 4h\n") == [False]
+    assert escalation_from_action("acktimeout:14400:2") == "확인한 뒤 4시간 동안 해결되지 않음"
+    assert escalation_from_action("escalate:900:acked") == "15분 동안 아무도 확인하지 않음"

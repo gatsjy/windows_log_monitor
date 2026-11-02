@@ -78,6 +78,7 @@ class Rule:
 ESCALATE_UNLESS = ("acked", "resolved")   # 이 상태가 되면 그 단계는 보내지 않는다
 ESCALATE_MAX_AFTER = timedelta(days=7)
 ESCALATE_MAX_STEPS = 5
+ACK_TIMEOUT_MIN, ACK_TIMEOUT_MAX = timedelta(minutes=5), timedelta(days=7)
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,12 @@ class Escalation:
     steps: tuple[EscalationStep, ...]
     severities: tuple[str, ...] = ()   # 비우면 모든 심각도
     rules: tuple[str, ...] = ()        # 비우면 모든 규칙
+    # 확인 시간 초과 (B-43 2단계): 확인한 뒤 이만큼 지나도 해결되지 않으면 다시 열고 첫 단계 받는 곳에 다시 알린다 (없으면 안 함)
+    ack_timeout: timedelta | None = None
+
+    def ack_timeout_action(self, round_: int) -> str:
+        """alert_deliveries.action — 회차마다 한 번 (마이그레이션 034)."""
+        return f"acktimeout:{int(self.ack_timeout.total_seconds())}:{round_}"
 
     def matches(self, rule: str, severity: str) -> bool:
         return (not self.severities or severity in self.severities) and (not self.rules or rule in self.rules)
@@ -450,7 +457,12 @@ def _check_escalations(raw: Any, rule_names: set[str]) -> tuple[Escalation, ...]
         keys = [s.action for s in steps]
         if len(set(keys)) != len(keys):
             raise ConfigError(f"{where}.steps: 같은 시간·조건의 단계가 겹칩니다")
-        out.append(Escalation(name=name, steps=tuple(steps), severities=severities, rules=rules))
+        ack_timeout = None
+        if p.get("ack_timeout") is not None:
+            ack_timeout = _duration(p.get("ack_timeout"), f"{where}.ack_timeout")
+            if not ACK_TIMEOUT_MIN <= ack_timeout <= ACK_TIMEOUT_MAX:
+                raise ConfigError(f"{where}.ack_timeout: 5분~7일")
+        out.append(Escalation(name=name, steps=tuple(steps), severities=severities, rules=rules, ack_timeout=ack_timeout))
     return tuple(out)
 
 

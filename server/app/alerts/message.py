@@ -38,10 +38,21 @@ def escalation_text(seconds: int, unless: str) -> str:
     return f"{_window_text(seconds)} 동안 {'아무도 확인하지 않음' if unless == 'acked' else '해결되지 않음'}"
 
 
+def ack_timeout_text(seconds: int) -> str:
+    """확인 시간 초과 문구 (B-43 2단계): '4시간 동안 해결되지 않음' — 확인한 뒤의 시간."""
+    return f"확인한 뒤 {_window_text(seconds)} 동안 해결되지 않음"
+
+
 def escalation_from_action(action: str) -> str | None:
-    """alert_deliveries.action 'escalate:<초>:<acked|resolved>' → 문구. 에스컬레이션이 아니면 None."""
-    parts = action.split(":") if action.startswith("escalate:") else []
-    return escalation_text(int(parts[1]), parts[2]) if len(parts) == 3 and parts[1].isdigit() else None
+    """alert_deliveries.action 'escalate:<초>:<acked|resolved>'·'acktimeout:<초>:<회차>' → 문구. 다시 알림이 아니면 None."""
+    parts = action.split(":")
+    if len(parts) != 3 or not parts[1].isdigit():
+        return None
+    if parts[0] == "escalate":
+        return escalation_text(int(parts[1]), parts[2])
+    if parts[0] == "acktimeout":
+        return ack_timeout_text(int(parts[1]))
+    return None
 
 
 SEVERITY_RANK = {"info": 1, "warning": 2, "error": 3, "critical": 4}

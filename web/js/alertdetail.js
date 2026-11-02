@@ -18,9 +18,9 @@ const DELIVERY = {
 
 // 처리 상태 (server: alerts.status) — 확인은 알림을 볼 수 있으면 누구나, 해결·다시 열기·무음은 alerts.handle
 export const ALERT_STATUS = { open: '처리 안 됨', acked: '확인함', resolved: '해결됨' };
-const NOTE_ACTIONS = { note: '메모', ack: '확인', resolve: '해결', reopen: '다시 열기', auto_resolve: '자동 해결', escalate: '다시 알림' };
+const NOTE_ACTIONS = { note: '메모', ack: '확인', resolve: '해결', reopen: '다시 열기', auto_resolve: '자동 해결', escalate: '다시 알림', ack_timeout: '확인 시간 초과' };
 // 에스컬레이션 (B-43): 전송 행의 action 'escalate:<초>:<acked|resolved>'
-const isEscalation = (d) => (d.action || '').startsWith('escalate:');
+const isEscalation = (d) => (d.action || '').startsWith('escalate:') || (d.action || '').startsWith('acktimeout:');
 // 종료 분류 (B-44) — 해결할 때 필수. auto 는 엔진의 자동 해소 (server: alerts/message.RESOLUTION_LABELS)
 export const RESOLUTIONS = {
   tp_malicious: ['정탐 — 의심 행위', '정탐'], tp_expected: ['정탐 — 예상된 관리 작업', '정탐(예상)'],
@@ -226,7 +226,8 @@ export async function openAlert(id, { onChange } = {}) {
         <thead><tr><th>알림 대상</th><th>상태</th><th class="r">시도</th><th>전송 시각</th><th>마지막 오류</th></tr></thead>
         <tbody>${alert.deliveries.map((d) => html`<tr>
           <td class="nowrap"><b>${d.notifier}</b>${d.action === 'resolve' ? html` <span class="muted">해소 통지</span>`
-            : isEscalation(d) ? html` <span class="muted">다시 알림 (${fmtDuration(Number(d.action.split(':')[1]))} ${d.action.endsWith(':acked') ? '미확인' : '미해결'})</span>` : ''}</td>
+            : isEscalation(d) ? html` <span class="muted">다시 알림 (${d.action.startsWith('acktimeout:') ? `확인한 뒤 ${fmtDuration(Number(d.action.split(':')[1]))} 미해결`
+              : `${fmtDuration(Number(d.action.split(':')[1]))} ${d.action.endsWith(':acked') ? '미확인' : '미해결'}`})</span>` : ''}</td>
           <td class="nowrap">${deliveryChips([d])}</td>
           <td class="r num">${d.attempts}</td>
           <td class="nowrap muted">${d.sent_at ? fmtTime(d.sent_at) : '–'}${d.batch_size > 1 ? html` <span title="같은 규칙 알림을 한 통으로 (B-41)">· ${d.batch_size}건 묶음</span>` : ''}</td>

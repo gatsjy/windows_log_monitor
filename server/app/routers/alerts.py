@@ -60,7 +60,7 @@ def _seconds(delta: timedelta) -> int:
 
 STATUS_LABELS = {"open": "처리 안 됨", "acked": "확인함", "resolved": "해결됨"}
 NOTE_LABELS = {"note": "메모", "ack": "확인", "resolve": "해결", "reopen": "다시 열기", "auto_resolve": "자동 해결",
-               "escalate": "다시 알림"}
+               "escalate": "다시 알림", "ack_timeout": "확인 시간 초과"}
 STATUS_PATTERN = "^(open|acked|resolved|unresolved)$"
 
 
@@ -214,7 +214,9 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
         # 에스컬레이션 정책 (B-43) — 규칙 관리 탭에 요약 (고치는 것은 YAML 편집)
         "escalations": [{"name": p.name, "severities": list(p.severities), "rules": list(p.rules),
                          "steps": [{"after_sec": int(s.after.total_seconds()), "unless": s.unless, "notify": list(s.notify)}
-                                   for s in p.steps]} for p in engine.config.escalations],
+                                   for s in p.steps],
+                         "ack_timeout_sec": int(p.ack_timeout.total_seconds()) if p.ack_timeout else None}
+                        for p in engine.config.escalations],
         # 묶음 전송 (B-41) — 상태 띠에 한 줄 (고치는 것은 YAML 의 settings)
         "grouping": {"wait_sec": engine.config.group_wait_sec, "interval_sec": engine.config.group_interval_sec},
         "by_severity": stats["by_severity"],

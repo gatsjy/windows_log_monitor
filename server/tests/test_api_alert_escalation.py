@@ -24,6 +24,7 @@ rules:
 escalations:
   - name: 심각 미확인
     severity: [critical]
+    ack_timeout: 2h
     steps:
       - after: 15m
         notify: [운영팀]
@@ -108,7 +109,8 @@ def test_unknown_escalation_target_is_rejected_on_save(client):
     assert r.status_code == 422 and "없는팀" in r.text
     body = client.get("/api/alerts/config").json()
     assert body["escalations"] == [{"name": "심각 미확인", "severities": ["critical"], "rules": [], "steps": [
-        {"after_sec": 900, "unless": "acked", "notify": ["운영팀"]}, {"after_sec": 3600, "unless": "resolved", "notify": ["운영팀"]}]}]
+        {"after_sec": 900, "unless": "acked", "notify": ["운영팀"]}, {"after_sec": 3600, "unless": "resolved", "notify": ["운영팀"]}],
+        "ack_timeout_sec": 7200}]
 
 
 def test_long_step_is_measured_from_queue_time(client):
@@ -128,3 +130,36 @@ def test_alert_csv_with_escalation_note(client):
     r = client.get("/api/alerts", params={"since": "2d", "format": "csv", "reason": "월간 점검"}, headers=CSRF)
     assert r.status_code == 200, r.text
     assert "[다시 알림]" in r.text and "운영팀 다시 알림:pending" in r.text
+
+
+def test_ack_timeout_reopens_and_renotifies_each_round(client):
+    """확인 시간 초과 (B-43 2단계): 확인만 하고 2시간 안에 해결하지 않으면 처리 안 됨으로 되돌리고 첫 단계 받는 곳에 다시 알린다.
+    다시 확인했다가 또 넘기면 회차가 늘어 한 번 더. 아직 시간 안·해결됨·무음·내장 알림은 그대로."""
+    from app.alerts.dispatcher import _stale
+    from app.alerts.engine import engine
+    from app.alerts.notifiers import Notifier
+
+    def acked(acked_minutes_ago, **kw):
+        aid = _alert(300, status="acked", **kw)
+        sql("UPDATE alerts SET acked_by = 'kim', acked_at = now() - make_interval(mins => %s) WHERE id = %s",
+            (acked_minutes_ago, aid))
+        return aid
+    late, recent, builtin = acked(150), acked(30), acked(150, rule="알림 설정 변경")
+    resolved = _alert(300, status="resolved")
+    run = lambda: client.portal.call(engine._ack_timeouts, datetime.now(UTC))
+    assert run() == 1
+    assert sql("SELECT status, acked_by, acked_at FROM alerts WHERE id = %s", (late,)) == [("open", None, None)]
+    assert ("acktimeout:7200:1", "pending") in _rows(late)
+    [(text,)] = sql("SELECT text FROM alert_notes WHERE alert_id = %s AND action = 'ack_timeout'", (late,))
+    assert text == "kim 이(가) 확인한 뒤 2시간 동안 해결되지 않음 (심각 미확인) — 처리 안 됨으로 다시 엶 → 운영팀 에 다시 알림"
+    for quiet in (recent, builtin, resolved):
+        assert not [r for r in _rows(quiet) if r[0].startswith("acktimeout:")], quiet
+    assert run() == 0                                      # 다시 열었으니 더 할 일이 없다
+    sql("UPDATE alerts SET status = 'acked', acked_by = 'lee', acked_at = now() - interval '3 hours' WHERE id = %s", (late,))
+    assert run() == 1 and ("acktimeout:7200:2", "pending") in _rows(late)   # 회차 2
+    # 보낼 때 다시 본다 — 그 사이 다시 확인했으면 보내지 않는다
+    job = {"action": "acktimeout:7200:2", "alert_status": "acked"}
+    assert _stale(job, Notifier("x")) == "다시 알리기 전에 확인됨"
+    assert _stale({**job, "alert_status": "open"}, Notifier("x")) is None
+    detail = client.get(f"/api/alerts/{late}").json()
+    assert [n["action"] for n in detail["notes"]].count("ack_timeout") == 2

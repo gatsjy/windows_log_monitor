@@ -1152,6 +1152,36 @@ async def escalation_candidates(since: datetime, builtin: list[str]) -> list[dic
         " ORDER BY id", (since, builtin))
 
 
+async def ack_timeout_candidates(acked_before: datetime, builtin: list[str]) -> list[dict]:
+    """확인 시간 초과를 볼 알림 (B-43 2단계): 확인한 채 acked_before 보다 먼저 확인된 것 — 무음·관찰·내장 알림은 빼고(에스컬레이션과 같음).
+    rounds = 지난 시간 초과 횟수(다음 회차 번호)."""
+    return await db.fetch_all(
+        "SELECT a.id, a.rule, a.severity, a.group_key, a.acked_at, a.acked_by,"
+        " (SELECT count(*) FROM alert_notes n WHERE n.alert_id = a.id AND n.action = 'ack_timeout') AS rounds"
+        " FROM alerts a WHERE a.status = 'acked' AND a.acked_at <= %s AND a.silence_id IS NULL"
+        " AND NOT coalesce((a.payload->>'observe')::boolean, false) AND NOT (a.rule = ANY(%s)) ORDER BY a.id",
+        (acked_before, builtin))
+
+
+async def reopen_ack_timeout(alert_id: int, acked_before: datetime, notify: tuple[str, ...], action: str,
+                             note: str) -> tuple[bool, list[str]]:
+    """확인 시간 초과 (B-43 2단계): 아직 확인 상태이고 그 확인이 acked_before 보다 앞설 때만(그 사이 해결·다시 확인·다시 열기를 덮지 않게)
+    처리 안 됨으로 되돌리고, 처리 기록(ack_timeout)과 받는 곳마다 대기열 한 줄을 한 트랜잭션에. (되돌렸나, 넣은 받는 곳)."""
+    async with db.pool().connection() as conn, conn.transaction():
+        cur = await conn.execute(
+            "UPDATE alerts SET status = 'open', acked_by = NULL, acked_at = NULL"
+            " WHERE id = %s AND status = 'acked' AND acked_at <= %s RETURNING id", (alert_id, acked_before))
+        if await cur.fetchone() is None:
+            return False, []
+        cur = await conn.execute(
+            "INSERT INTO alert_deliveries (alert_id, notifier, status, action) SELECT %s, unnest(%s::text[]), 'pending', %s"
+            " ON CONFLICT DO NOTHING RETURNING notifier", (alert_id, list(dict.fromkeys(notify)), action))
+        added = sorted(r["notifier"] for r in await cur.fetchall())
+        await conn.execute("INSERT INTO alert_notes (alert_id, author, action, text) VALUES (%s, 'system', 'ack_timeout', %s)",
+                           (alert_id, f"{note}{' → ' + ', '.join(added) + ' 에 다시 알림' if added else ''}"))
+    return True, added
+
+
 async def queue_escalation(alert_id: int, notify: tuple[str, ...], action: str, note: str) -> list[str]:
     """에스컬레이션 한 단계 (B-43): 받는 곳마다 대기열에 한 줄(같은 단계는 기본 키로 한 번만)과 처리 기록 한 줄. 새로 넣은 받는 곳."""
     async with db.pool().connection() as conn, conn.transaction():
@@ -1321,7 +1351,8 @@ async def expire_stale_deliveries(fired_before: datetime, error: str) -> int:
             # 해소 통지·에스컬레이션(B-43)은 넣은 시각으로 — 이틀 끊겼던 PC 의 해소 통지나 '하루 미해결' 단계가 넣자마자 버려지지
             # 않게(검토에서 재현: after 1d 단계가 '하루가 지나 보내지 않았습니다'로 끝남)
             " WHERE a.id = d.alert_id AND d.status IN ('pending', 'failed') AND d.claimed_at IS NULL"
-            " AND (CASE WHEN d.action = 'resolve' OR d.action LIKE 'escalate:%%' THEN d.queued_at ELSE a.fired_at END) < %s",
+            " AND (CASE WHEN d.action = 'resolve' OR d.action LIKE 'escalate:%%' OR d.action LIKE 'acktimeout:%%'"
+            " THEN d.queued_at ELSE a.fired_at END) < %s",
             (error, fired_before))
         return cur.rowcount
 

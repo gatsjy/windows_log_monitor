@@ -485,7 +485,8 @@ export async function mount(root, params, sub) {
           <b>에스컬레이션</b> — 확인(또는 해결)되지 않은 알림을 기한이 지나면 다른 받는 곳에 다시 알립니다 (YAML 편집의 <code>escalations</code>).
           <ul style="margin:4px 0 0;padding-left:18px">${config.escalations.map((p) => html`<li><b>${p.name}</b>
             <span class="muted">${p.severities.length ? p.severities.map((s) => SEVERITIES[s]?.label ?? s).join('·') : '모든 심각도'}${p.rules.length ? ` · 규칙 ${p.rules.join(', ')}` : ''}</span>:
-            ${p.steps.map((s) => `${fmtDuration(s.after_sec)} ${s.unless === 'acked' ? '미확인' : '미해결'} → ${s.notify.join(', ')}`).join(' / ')}</li>`)}</ul></div>` : ''}
+            ${p.steps.map((s) => `${fmtDuration(s.after_sec)} ${s.unless === 'acked' ? '미확인' : '미해결'} → ${s.notify.join(', ')}`).join(' / ')}
+            ${p.ack_timeout_sec ? ` / 확인한 뒤 ${fmtDuration(p.ack_timeout_sec)} 미해결 → 다시 엶·${p.steps[0].notify.join(', ')}` : ''}</li>`)}</ul></div>` : ''}
         ${shown.length ? html`<div class="table-wrap"><table class="table rules-table">
           <thead><tr><th>사용</th><th>SID</th><th>규칙</th><th>조건 · 기준</th><th>받는 곳</th><th>평가</th><th class="r">발생</th></tr></thead>
           <tbody>${shown.sort((a, b) => (a.sid ?? 1e9) - (b.sid ?? 1e9)).map((r) => html`

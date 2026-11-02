@@ -199,7 +199,9 @@ def _escalation_changes(old: AlertConfig, new: AlertConfig) -> list[dict]:
                      for s in p.steps for n in s.notify)
         narrower = (bool(q.severities) and (not p.severities or bool(set(p.severities) - set(q.severities)))) or \
                    (bool(q.rules) and (not p.rules or bool(set(p.rules) - set(q.rules))))
-        out.append(("escalation", f"에스컬레이션 '{name}' 변경", weaker or narrower))
+        # 확인 시간 초과 (2단계): 없애거나 늘리면 확인만 하고 잊힌 알림이 더 늦게(또는 영영) 다시 열린다. 받는 곳은 첫 단계라 단계 비교가 본다
+        later = p.ack_timeout is not None and (q.ack_timeout is None or q.ack_timeout > p.ack_timeout)
+        out.append(("escalation", f"에스컬레이션 '{name}' 변경", weaker or narrower or later))
     for name in after:
         if name not in before:
             out.append(("escalation_added", f"에스컬레이션 '{name}' 추가", False))

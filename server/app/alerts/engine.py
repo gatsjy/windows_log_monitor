@@ -29,7 +29,7 @@ from ..filters import EventFilter
 from . import configdiff
 from .builtin import BUILTIN_RULES, CONFIG_RULE
 from .dispatcher import dispatcher
-from .message import AlertMessage, _window_text, escalation_text, local, search_link
+from .message import AlertMessage, _window_text, ack_timeout_text, escalation_text, local, search_link
 from .rules import AlertConfig, ConfigError, Rule, parse_text
 
 log = logging.getLogger(__name__)
@@ -400,6 +400,7 @@ class AlertEngine:
                         self.runs[rule.name].last_query_at = self.runs[rule.name].last_gap = None
                 self.current_rule = None
                 try:
+                    await self._ack_timeouts(now)
                     await self._escalate(now)
                 except Exception:   # 에스컬레이션이 실패해도 탐지는 계속한다 (다음 주기에 다시 본다 — 같은 단계는 한 번만 들어간다)
                     log.exception("에스컬레이션 확인 실패")
@@ -633,6 +634,30 @@ class AlertEngine:
             log.warning("에스컬레이션 %d건을 대기열에 넣었습니다", queued)
             dispatcher.wake()
         return queued
+
+    async def _ack_timeouts(self, now: datetime) -> int:
+        """확인 시간 초과 (B-43 2단계, ADR-055): 확인만 하고 ack_timeout 안에 해결하지 않은 알림을 처리 안 됨으로 되돌리고 정책의
+        첫 단계 받는 곳에 다시 알린다 — 확인만 눌러 두고 잊히는 것을 막는다. 알림 하나에 맞는 정책이 여럿이면 가장 짧은 시간의 정책.
+        되돌린 알림은 다시 '처리 안 됨'이라 그 뒤의 미확인 단계(unless: acked)도 기한이 되면 나간다(6시간 넘게 늦은 단계는 빼고)."""
+        policies = [p for p in self.config.escalations if p.ack_timeout]
+        if not policies:
+            return 0
+        shortest = min(p.ack_timeout for p in policies)
+        reopened = 0
+        for row in await repository.ack_timeout_candidates(now - shortest, sorted(BUILTIN_RULES)):
+            matching = sorted((p for p in policies if p.matches(row["rule"], row["severity"])), key=lambda p: p.ack_timeout)
+            policy = next((p for p in matching if row["acked_at"] <= now - p.ack_timeout), None)
+            if policy is None:
+                continue
+            seconds = int(policy.ack_timeout.total_seconds())
+            note = f"{row['acked_by']} 이(가) {ack_timeout_text(seconds)} ({policy.name}) — 처리 안 됨으로 다시 엶"
+            done, _ = await repository.reopen_ack_timeout(row["id"], now - policy.ack_timeout, policy.steps[0].notify,
+                                                          policy.ack_timeout_action(row["rounds"] + 1), note)
+            reopened += done
+        if reopened:
+            log.warning("확인 시간 초과로 알림 %d건을 다시 열었습니다", reopened)
+            dispatcher.wake()
+        return reopened
 
     async def fire_rule(self, rule: Rule, message: AlertMessage) -> int:
         """규칙의 알림 — 받는 곳은 규칙의 notify 에 경로(routes, B-26)를 적용해서. 거친 경로 이름은 payload 에(증적)."""

@@ -362,11 +362,12 @@ def _stale(job: dict[str, Any], notifier: Notifier) -> str | None:
         if not job.get("delivered"):
             return "이 곳으로 알림이 전해지지 않아 해소 통지도 보내지 않습니다"
         return notifier.accepts_resolve()
-    if (job.get("action") or "").startswith("escalate:"):
-        # 에스컬레이션 (B-43): 넣을 때가 아니라 보낼 때 본다 — 그 사이 누가 확인·해결했으면 다시 알릴 까닭이 없다
+    if (job.get("action") or "").startswith(("escalate:", "acktimeout:")):
+        # 에스컬레이션 (B-43): 넣을 때가 아니라 보낼 때 본다 — 그 사이 누가 확인·해결했으면 다시 알릴 까닭이 없다.
+        # 확인 시간 초과(2단계)는 다시 연 알림이라 그 사이 다시 확인했으면 보내지 않는다
         if job.get("alert_status") == "resolved":
             return "다시 알리기 전에 해결됨"
-        if job["action"].endswith(":acked") and job.get("alert_status") == "acked":
+        if (job["action"].endswith(":acked") or job["action"].startswith("acktimeout:")) and job.get("alert_status") == "acked":
             return "다시 알리기 전에 확인됨"
         return notifier.accepts_escalation()
     if job.get("auto_resolved"):
