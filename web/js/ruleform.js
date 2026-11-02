@@ -6,7 +6,7 @@ import { closeDrawer, openDrawer } from './drawer.js';
 import { CATEGORY_LABELS, LEVELS, SEVERITIES, categoryLabel, levelIcon, severityBadge } from './levels.js';
 import { queryBox } from './querybox.js';
 import { runTest } from './ruletest.js';
-import { confirmModal, errorBox, fmtNum, html, toast } from './util.js';
+import { confirmModal, errorBox, fmtNum, html, raw, toast } from './util.js';
 
 const UNITS = [['s', '초', 1], ['m', '분', 60], ['h', '시간', 3600], ['d', '일', 86400]];
 const GROUP_BY = [['host', 'PC'], ['ip', '출발지 IP'], ['user', '사용자'], ['category', '분류'], ['event_id', '이벤트 ID'],
@@ -108,6 +108,8 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
     resolve: rule?.resolve ?? '',
     mode: rule?.mode ?? 'active',
   };
+  // 로그 하나로 시험 (B-52): 조건을 바꾸면 폼을 다시 그리므로 입력·결과를 여기 둔다 — 바꾼 조건으로 같은 로그를 다시 시험하게
+  const test = { id: '', sample: '', open: false, out: '' };
   const body = openDrawer({ title: isNew ? '새 알림 규칙' : '알림 규칙 수정', subtitle: isNew ? '규칙 번호(SID)는 저장할 때 자동으로 붙습니다' : `SID ${r.sid ?? '–'} · ${r.group || '기타'}` });
   body.innerHTML = '<div class="skeleton"></div>';
   const [meta, fields, searches] = await Promise.all([
@@ -257,11 +259,11 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
       ${SILENT.has(r.kind) ? '' : html`<section class="form-section">
         <h3>로그 하나로 시험</h3>
         <p class="muted" style="margin:0 0 8px;font-size:13px">이 로그가 조건에 맞는지 조건마다 보여 줍니다 — '왜 안 걸렸나'. 건수·기간은 보지 않습니다.</p>
-        <div class="toolbar" style="flex-wrap:wrap"><input class="input" data-test-id inputmode="numeric" placeholder="이벤트 번호" style="max-width:160px">
+        <div class="toolbar" style="flex-wrap:wrap"><input class="input" data-test-id inputmode="numeric" placeholder="이벤트 번호" style="max-width:160px" value="${test.id}">
           <button type="button" class="btn" data-test-run>시험</button></div>
-        <details style="margin-top:8px"><summary class="muted">원본 붙여넣기 (에이전트가 보낸 JSON 한 건 — 이벤트 상세의 'JSON 복사')</summary>
-          <textarea class="input" data-test-sample rows="6" style="width:100%;margin-top:6px;font-family:var(--mono, monospace)" placeholder='{"log_source": "winevtlog", "EventID": 4625, "Channel": "Security", ...}'></textarea></details>
-        <div data-test-out style="margin-top:10px"></div>
+        <details style="margin-top:8px" ${test.open ? 'open' : ''}><summary class="muted">원본 붙여넣기 (에이전트가 보낸 JSON 한 건 — 이벤트 상세의 'JSON 복사')</summary>
+          <textarea class="input" data-test-sample rows="6" style="width:100%;margin-top:6px;font-family:var(--mono, monospace)" placeholder='{"log_source": "winevtlog", "EventID": 4625, "Channel": "Security", ...}'>${test.sample}</textarea></details>
+        <div data-test-out style="margin-top:10px">${test.out}</div>
       </section>`}
 
       <div data-msg></div>
@@ -323,7 +325,10 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
     });
     body.querySelector('[data-resolve]').addEventListener('change', (e) => { r.resolve = e.target.value; refresh(); });
     body.querySelector('[data-mode]')?.addEventListener('change', (e) => { r.mode = e.target.value; refresh(); });
-    body.querySelector('[data-test-run]')?.addEventListener('click', () => {
+    body.querySelector('[data-test-id]')?.addEventListener('input', (e) => { test.id = e.target.value; });
+    body.querySelector('[data-test-sample]')?.addEventListener('input', (e) => { test.sample = e.target.value; });
+    body.querySelector('[data-test-sample]')?.closest('details').addEventListener('toggle', (e) => { test.open = e.target.open; });
+    body.querySelector('[data-test-run]')?.addEventListener('click', async () => {
       const out = body.querySelector('[data-test-out]');
       const text = body.querySelector('[data-test-sample]').value.trim();
       const id = Number(body.querySelector('[data-test-id]').value.trim());
@@ -334,7 +339,8 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
         out.innerHTML = errorBox(new Error('이벤트 번호를 넣거나 원본을 붙여 넣으세요'));
         return;
       }
-      runTest(out, sample ? { rule: payload(), sample } : { rule: payload(), event_id: id });
+      await runTest(out, sample ? { rule: payload(), sample } : { rule: payload(), event_id: id });
+      test.out = raw(out.innerHTML);
     });
     body.querySelector('[data-dmin]')?.addEventListener('input', (e) => {
       r.distinct.min = Math.max(2, Number(e.target.value) || 2);

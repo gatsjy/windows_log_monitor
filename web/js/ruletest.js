@@ -32,6 +32,7 @@ function expected(c) {
     case 'msg_any': return `${c.expected.map((v) => `'${v}'`).join(' 또는 ')} 포함`;
     case 'msg_not': return `${c.expected.map((v) => `'${v}'`).join(', ')} 없음`;
     case 'never': return '같은 키의 포함 조건이 겹치지 않아 어떤 로그도 맞지 않음';
+    case 'group_key': return '묶음 기준 — 값이 있어야 셈 (없으면 알림이 나지 않음)';
     case 'scope': return c.expected.map((s) => [s.categories.join('·'), s.hosts.join('·')].filter(Boolean).join(' / ') || '전체').join(' 또는 ');
     default: return JSON.stringify(c.expected);
   }
@@ -55,7 +56,7 @@ export function renderTest(res) {
     ${res.checks.length ? html`<div class="table-wrap"><table class="table ctx-table rule-test">
       <thead><tr><th>조건</th><th>기대</th><th>이 로그</th><th></th></tr></thead>
       <tbody>${res.checks.map((c) => html`<tr class="${c.ok ? '' : 'rule-test-fail'}">
-        <td class="nowrap">${label(c.key)}${c.exception ? html`<div class="muted" style="font-size:12px">규칙 예외 '${c.exception}'</div>` : ''}</td>
+        <td class="nowrap">${label(c.key)}${c.op === 'group_key' ? ' (묶음)' : ''}${c.exception ? html`<div class="muted" style="font-size:12px">규칙 예외 '${c.exception}'</div>` : ''}</td>
         <td>${expected(c)}</td>
         <td class="ctx-msg">${actual(c)}</td>
         <td class="nowrap ${c.ok ? 'tag-good' : 'tag-bad'}">${c.ok ? '✓ 맞음' : '✕ 아님'}</td></tr>`)}</tbody></table></div>` : ''}`;

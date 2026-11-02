@@ -219,3 +219,25 @@ def test_pasted_sample_leaves_no_process_state():
     normalize_safely(line("Error: 18456, Severity: 14, State: 8."), now)
     assert normalize_sample(line("본문 줄"), now).event_id == 18456       # 시험도 실제 기억은 읽되
     assert normalize_safely(line("본문 줄"), now).event_id == 18456       # 꺼내 쓰지 않는다
+
+
+def test_event_without_group_key_is_not_counted(ctx):
+    """묶음 기준(group_by) 값이 없는 로그는 엔진이 세지 않는다 — 조건에 맞아도 '맞음'이라 하면 안 된다 (검토에서 재현)."""
+    admin, ids = ctx["admin"], ctx["ids"]
+    rule = {"name": "IP 별", "match": {"event_id": "4625"}, "group_by": "ip", "window_sec": 600, "threshold": 1,
+            "severity": "warning"}
+    r = _test(admin, rule=rule, event_id=ids["PC-01"]).json()           # 이 로그에는 출발지 IP 가 없다
+    assert r["matched"] is False
+    assert [c for c in r["checks"] if not c["ok"]] == [{"key": "ip", "op": "group_key", "expected": [], "actual": None,
+                                                         "ok": False, "exception": None}]
+    r = _test(admin, rule={**rule, "group_by": "f.EventData.TargetUserName"}, event_id=ids["PC-01"]).json()
+    assert r["matched"] is True and r["checks"][-1]["actual"] == "kim"
+
+
+def test_lone_surrogate_in_pasted_sample(ctx):
+    """수집이 받는 레코드(짝 없는 서로게이트 → U+FFFD)는 시험기도 받는다 — 예전에는 크기를 재다 500 (검토에서 재현)."""
+    body = ('{"name": "로그온 실패", "sample": {"log_source": "winevtlog", "agent_host": "PC-9", "EventID": 4625,'
+            ' "Channel": "Security", "Message": "x\\ud800y", "EventData": {"TargetUserName": "a\\udc00"}}}')
+    r = ctx["admin"].post("/api/alerts/rules/test", content=body.encode(), headers={**CSRF, "Content-Type": "application/json"})
+    assert r.status_code == 200, r.text
+    assert r.json()["event"]["username"] == "a�"

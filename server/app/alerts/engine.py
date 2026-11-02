@@ -48,17 +48,25 @@ HISTORY_VERSIONS = 200   # 다시 켠 규칙을 비교하려고 거슬러 보는
 SOURCE_LABELS = {"ui": "화면에서 저장", "file": "서버에서 파일 직접 수정", "startup": "서버 시작 때 발견(꺼져 있는 동안 수정)"}
 
 
-async def rule_filter(rule: Rule, now: datetime, extra_exceptions: list[str] | tuple[str, ...] = ()) -> EventFilter:
+async def saved_text(rule: Rule) -> str | None:
+    """match.saved(B-64)가 가리키는 저장한 검색의 문장. 없어졌으면 ValueError — 그 규칙만 오류(규칙 상태에 보인다)."""
+    if not rule.match.get("saved"):
+        return None
+    text = await repository.saved_query(str(rule.match["saved"]))
+    if text is None:
+        raise ValueError(f"저장한 검색 '{rule.match['saved']}' 이(가) 없습니다")
+    return text
+
+
+async def rule_filter(rule: Rule, now: datetime, extra_exceptions: list[str] | tuple[str, ...] = (),
+                      saved: str | None = None) -> EventFilter:
     """규칙이 실제로 보는 조건 — 저장한 검색(match.saved, B-64) + 걸린 규칙 예외(B-46). 엔진·규칙 미리보기·알림 뒤 이벤트 수·
     예외 미리 보기가 같이 쓴다(따로 만들면 화면과 엔진의 결과가 달라진다). 평가마다 읽는다 — 화면에서 바꾸면 다음 주기부터.
-    저장한 검색이 없어졌으면 그 규칙만 오류(규칙 상태에 보인다)."""
-    saved = None
-    if rule.match.get("saved"):
-        saved = await repository.saved_query(str(rule.match["saved"]))
-        if saved is None:
-            raise ValueError(f"저장한 검색 '{rule.match['saved']}' 이(가) 없습니다")
+    saved: 저장한 검색 문장을 바꾸기 전에 '바꾼 문장으로도 이 규칙이 성립하나'를 볼 때(routers/searches). 합친 문장이
+    검색 문장 한도를 넘으면 QueryError(FilterError) — 저장할 때 막는다(평가마다 실패하지 않게)."""
+    text = saved if saved is not None else await saved_text(rule)
     exceptions = await repository.active_rule_exceptions(rule.name, now)
-    return rule.event_filter([*exceptions, *extra_exceptions], saved=saved)
+    return rule.event_filter([*exceptions, *extra_exceptions], saved=text)
 
 
 def _with_group(f: EventFilter, group_by: str, key: str) -> EventFilter:
@@ -108,8 +116,13 @@ def _recurred(last: dict | None) -> bool:
 SINCE_PREVIOUS_MAX = timedelta(days=7)   # '지난 알림 이후 n건'을 셀 때 거슬러 보는 한도 (오래전 알림이면 세지 않는다)
 
 
-def _link_params(rule: Rule, key: str, since: datetime) -> dict[str, str]:
-    params = {"since": since.isoformat(), **rule.match}
+def _link_params(rule: Rule, key: str, since: datetime, saved: str | None = None, exceptions: list[str] = ()) -> dict[str, str]:
+    """알림 본문의 '검색에서 보기' — 엔진이 센 것과 같은 조건. 저장한 검색(B-64)은 이름이 아니라 문장으로(검색 화면은 saved 를
+    모른다), 걸린 예외(B-46)는 제외 항으로 — 빠뜨리면 링크가 규칙이 세지 않은 로그까지 보였다(검토)."""
+    params = {"since": since.isoformat(), **{k: v for k, v in rule.match.items() if k != "saved"}}
+    query = " ".join(filter(None, [saved, str(params.get("query") or ""), *(f"-{t}" for t in exceptions)]))
+    if query:
+        params["query"] = query
     if rule.group_by != "none" and key:
         params[rule.group_by] = key
     return params
@@ -428,7 +441,9 @@ class AlertEngine:
         if rule.kind == "stream_silent":
             return await self._evaluate_stream_silent(rule, now)
         since = now - rule.window
-        base = replace(await rule_filter(rule, now), received_since=since)
+        saved = await saved_text(rule)
+        exceptions = await repository.active_rule_exceptions(rule.name, now)
+        base = replace(await rule_filter(rule, now, saved=saved or ""), received_since=since)
         fired = []
         if run is not None:
             run.query_at = datetime.now(UTC)   # 이 쿼리가 본 구간의 끝 (주기 시작 시각이 아니라)
@@ -467,7 +482,7 @@ class AlertEngine:
                 group_by=rule.group_by, group_key=key, event_count=row["n"], threshold=rule.threshold,
                 window_sec=int(rule.window.total_seconds()), fired_at=now,
                 first_event_at=row["first_ts"], last_event_at=row["last_ts"],
-                link=search_link(_link_params(rule, key, row["first_ts"] - timedelta(minutes=1))),
+                link=search_link(_link_params(rule, key, row["first_ts"] - timedelta(minutes=1), saved, exceptions)),
                 samples=[_sample(s) for s in samples], tags=list(rule.tags),
                 distinct_field=rule.distinct_field or "", distinct_min=rule.distinct_min,
                 distinct_count=row.get("dn") or 0, distinct_values=[str(v) for v in (row.get("dvals") or [])],

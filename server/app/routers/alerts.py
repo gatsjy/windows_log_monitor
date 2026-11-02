@@ -37,9 +37,10 @@ from ..auth import groups
 from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
 from ..csvexport import csv_response, export_reason
-from ..filters import FilterError, parse_time, scopes_allow
+from ..filters import EVENT_FIELD, FilterError, parse_time, scopes_allow
 from ..normalizers import Event, layout_keys, normalize_sample
-from ..querylang import QueryError, format_term, parse_terms
+from ..querylang import QueryError, format_term, parse_terms, raw_field, raw_text
+from .ingest import _fix_surrogates
 from .query import read_time_limit
 
 log = logging.getLogger(__name__)
@@ -200,6 +201,13 @@ async def _validate(text: str) -> AlertConfig:
     wanted = {r.match["saved"] for r in config.rules if r.match.get("saved")}
     if missing := sorted(wanted - await repository.saved_search_names()) if wanted else []:
         raise HTTPException(422, f"없는 저장한 검색: {', '.join(missing)} — 이벤트 검색에서 먼저 저장하세요")
+    now = datetime.now(UTC)
+    for rule in config.rules:   # 저장한 검색·걸린 예외와 합친 조건이 검색 문장 한도 안인지 — 넘으면 평가마다 실패한다(검토)
+        if rule.match.get("saved"):
+            try:
+                await rule_filter(rule, now)
+            except FilterError as exc:
+                raise HTTPException(422, f"규칙 '{rule.name}' 을 저장한 검색과 합치면: {exc}") from exc
     return config
 
 
@@ -504,6 +512,8 @@ async def _test_event(body: RuleTestBody, user: User, request: Request, rule_nam
                         "src_ip": row.get("src_ip"), "category": row.get("category"), "rule_test": rule_name},
                        actor_ip=client_ip(request), required=True)
         return row
+    # 짝 없는 서로게이트는 수집처럼 U+FFFD 로 — 그대로면 크기 재기(UTF-8)부터 500 이었다(검토). 표본은 작아 늘 훑는다
+    body.sample = _fix_surrogates(body.sample)
     if len(json.dumps(body.sample, ensure_ascii=False).encode()) > SAMPLE_MAX_BYTES:
         raise HTTPException(413, f"원본은 {SAMPLE_MAX_BYTES // 1024}KB 까지입니다")
     now = datetime.now(UTC)
@@ -547,6 +557,15 @@ async def test_rule(body: RuleTestBody, request: Request, user: User = Depends(r
         raise HTTPException(400, str(exc)) from exc
     exceptions = [(t, parse_terms(t)[0]) for t in await repository.active_rule_exceptions(rule.name, now)]
     checks = [{**c, "exception": _exception_of(c, exceptions)} for c in f.explain(event)]
+    if rule.group_by != "none":
+        # 묶음 기준 값이 없는(NULL) 로그는 엔진이 세지 않는다(alert_candidates 가 묶음마다 셈) — 조건에 맞아도 알림이 나지 않는다(검토)
+        if rule.group_by.startswith("f."):
+            current = raw_field(event.get("raw"), [p for p in rule.group_by[2:].split(".") if p])
+            value = None if current is None else raw_text(current)
+        else:
+            value = event.get(EVENT_FIELD.get(rule.group_by, rule.group_by))
+        checks.append({"key": rule.group_by, "op": "group_key", "expected": [], "actual": value, "ok": value is not None,
+                       "exception": None})
     return {
         "rule": rule.name, "matched": all(c["ok"] for c in checks), "checks": checks,
         "event": {k: event.get(k) for k in ("id", "ts", "host", "source", "channel", "provider", "event_id", "level",
