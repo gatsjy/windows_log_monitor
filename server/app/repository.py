@@ -1148,21 +1148,25 @@ async def due_notifiers(now: datetime) -> list[str]:
 async def escalation_candidates(since: datetime, builtin: list[str]) -> list[dict]:
     """에스컬레이션을 볼 알림 (B-43): since 이후 발생, 해결 안 됨, 무음·관찰 모드가 아니고 내장 알림(설정 변경·관리 작업·감시)도 아님.
     알림이 무음 중에 났으면 보내지 않았으므로 다시 알릴 것도 없다(점검 중 잡음)."""
+    # reopened_at = 확인 시간 초과로 마지막에 다시 연 시각 (B-43 2단계) — 그 전에 기한이 된 미확인 단계는 그때 확인돼 있었다
     return await db.fetch_all(
-        "SELECT id, rule, severity, group_key, fired_at, status FROM alerts WHERE fired_at >= %s AND status <> 'resolved'"
+        "SELECT id, rule, severity, group_key, fired_at, status,"
+        " (SELECT max(n.at) FROM alert_notes n WHERE n.alert_id = alerts.id AND n.action = 'ack_timeout') AS reopened_at"
+        " FROM alerts WHERE fired_at >= %s AND status <> 'resolved'"
         " AND silence_id IS NULL AND NOT coalesce((payload->>'observe')::boolean, false) AND NOT (rule = ANY(%s))"
         " ORDER BY id", (since, builtin))
 
 
-async def ack_timeout_candidates(acked_before: datetime, builtin: list[str]) -> list[dict]:
-    """확인 시간 초과를 볼 알림 (B-43 2단계): 확인한 채 acked_before 보다 먼저 확인된 것 — 무음·관찰·내장 알림은 빼고(에스컬레이션과 같음).
+async def ack_timeout_candidates(acked_before: datetime, acked_after: datetime, builtin: list[str]) -> list[dict]:
+    """확인 시간 초과를 볼 알림 (B-43 2단계): 확인한 채 (acked_after, acked_before] 에 확인된 것 — 무음·관찰·내장 알림은 빼고
+    (에스컬레이션과 같음). 아래 경계는 늦은 기한 상한 — 정책을 새로 켜거나 줄였을 때 몇 달 묵은 확인 알림이 한꺼번에 다시 열리지 않게.
     rounds = 지난 시간 초과 횟수(다음 회차 번호)."""
     return await db.fetch_all(
         "SELECT a.id, a.rule, a.severity, a.group_key, a.acked_at, a.acked_by,"
         " (SELECT count(*) FROM alert_notes n WHERE n.alert_id = a.id AND n.action = 'ack_timeout') AS rounds"
-        " FROM alerts a WHERE a.status = 'acked' AND a.acked_at <= %s AND a.silence_id IS NULL"
+        " FROM alerts a WHERE a.status = 'acked' AND a.acked_at <= %s AND a.acked_at > %s AND a.silence_id IS NULL"
         " AND NOT coalesce((a.payload->>'observe')::boolean, false) AND NOT (a.rule = ANY(%s)) ORDER BY a.id",
-        (acked_before, builtin))
+        (acked_before, acked_after, builtin))
 
 
 async def reopen_ack_timeout(alert_id: int, acked_before: datetime, notify: tuple[str, ...], action: str,

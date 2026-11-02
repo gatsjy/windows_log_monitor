@@ -163,3 +163,31 @@ def test_ack_timeout_reopens_and_renotifies_each_round(client):
     assert _stale({**job, "alert_status": "open"}, Notifier("x")) is None
     detail = client.get(f"/api/alerts/{late}").json()
     assert [n["action"] for n in detail["notes"]].count("ack_timeout") == 2
+
+
+def test_reopen_does_not_fire_steps_that_were_already_acked(client):
+    """다시 연 알림에 '15분 동안 아무도 확인하지 않음'을 늦게 보내지 않는다 — 그 기한에는 확인돼 있었다 (검토에서 재현: 틀린 처리 기록·겹친 알림)."""
+    from app.alerts.engine import engine
+
+    aid = _alert(130, status="acked")
+    sql("UPDATE alerts SET acked_by = 'kim', acked_at = fired_at + interval '5 minutes' WHERE id = %s", (aid,))
+    now = datetime.now(UTC)
+    assert client.portal.call(engine._ack_timeouts, now) >= 1
+    client.portal.call(engine._escalate, now)
+    actions = [a for a, _ in _rows(aid)]
+    assert "acktimeout:7200:1" in actions and "escalate:900:acked" not in actions
+    assert not sql("SELECT 1 FROM alert_notes WHERE alert_id = %s AND action = 'escalate' AND text LIKE '15분%%'", (aid,))
+
+
+def test_old_acked_alerts_are_not_reopened_in_bulk(client):
+    """기한이 지난 지 6시간 넘은 확인 알림은 다시 열지 않는다 — 정책을 새로 켜거나 줄였을 때 몇 달 묵은 알림이 쏟아지지 않게 (검토에서 재현)."""
+    from app.alerts.engine import engine
+
+    def acked(hours_ago):
+        aid = _alert(hours_ago * 60 + 10, status="acked")
+        sql("UPDATE alerts SET acked_by = 'kim', acked_at = now() - make_interval(hours => %s) WHERE id = %s", (hours_ago, aid))
+        return aid
+    ancient, stale, recent = acked(24 * 200), acked(10), acked(7)     # 기한(확인 + 2시간)이 4800일·8시간·5시간 전
+    client.portal.call(engine._ack_timeouts, datetime.now(UTC))
+    status = dict(sql("SELECT id, status FROM alerts WHERE id = ANY(%s)", ([ancient, stale, recent],)))
+    assert (status[ancient], status[stale], status[recent]) == ("acked", "acked", "open")

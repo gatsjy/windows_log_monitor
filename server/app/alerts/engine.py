@@ -628,6 +628,10 @@ class AlertEngine:
                         continue
                     if row["status"] == "resolved" or (step.unless == "acked" and row["status"] != "open"):
                         continue
+                    # 확인 시간 초과로 다시 연 알림 (B-43 2단계): 다시 열기 전에 기한이 된 미확인 단계는 그때 확인돼 있었다 — 늦게 보내면
+                    # '15분 동안 아무도 확인하지 않음'이라는 틀린 처리 기록과 겹친 다시 알림이 됐다(검토에서 재현)
+                    if step.unless == "acked" and row.get("reopened_at") and due <= row["reopened_at"]:
+                        continue
                     note = f"{escalation_text(int(step.after.total_seconds()), step.unless)} ({policy.name})"
                     queued += len(await repository.queue_escalation(row["id"], step.notify, step.action, note))
         if queued:
@@ -642,11 +646,14 @@ class AlertEngine:
         policies = [p for p in self.config.escalations if p.ack_timeout]
         if not policies:
             return 0
-        shortest = min(p.ack_timeout for p in policies)
+        shortest, longest = min(p.ack_timeout for p in policies), max(p.ack_timeout for p in policies)
         reopened = 0
-        for row in await repository.ack_timeout_candidates(now - shortest, sorted(BUILTIN_RULES)):
+        # 기한(확인 + ack_timeout)이 지난 지 ESCALATE_LATE_MAX 넘은 것은 다시 열지 않는다 — 에스컬레이션 단계와 같은 상한
+        # (정책을 새로 켜거나 줄이면 몇 달 묵은 확인 알림이 한꺼번에 다시 열리고 다시 알림이 쏟아졌다, 검토에서 재현)
+        rows = await repository.ack_timeout_candidates(now - shortest, now - longest - ESCALATE_LATE_MAX, sorted(BUILTIN_RULES))
+        for row in rows:
             matching = sorted((p for p in policies if p.matches(row["rule"], row["severity"])), key=lambda p: p.ack_timeout)
-            policy = next((p for p in matching if row["acked_at"] <= now - p.ack_timeout), None)
+            policy = next((p for p in matching if now - ESCALATE_LATE_MAX < row["acked_at"] + p.ack_timeout <= now), None)
             if policy is None:
                 continue
             seconds = int(policy.ack_timeout.total_seconds())
