@@ -731,6 +731,7 @@ docker compose exec api python -m app.cli verify-chain                 # 감사�
 | 외부 연동 | 웹훅(주소·보내는 형식 json/text/Slack/Teams/두레이/잔디·헤더, 주소로 형식 자동 선택, 예시 미리보기), Oracle DB(아래). 받을 최소 수준, 사용 여부, 테스트 |
 | 메일 서버 | SMTP 호스트·포트·보안(STARTTLS/SSL/없음)·계정·비밀번호·보내는 사람, 테스트 메일. 비워 두면 `.env` 의 `WLM_SMTP_*` |
 | 로그 보관 | **DB 백업·복구 시험 상태**(마지막 백업·복구 시험, 경고), 로테이션 정책, DB 월 파티션·보관 파일 현황, 지금 실행, 무결성 확인, 다시 불러오기 (§9, §13) |
+| 보안 연결 (B-31) | 읽기 전용: 화면 http/https, 수집 포트(TLS·평문), 인증서 이름·만료 D-n·CA 지문·에이전트가 믿는가·HSTS, 문제, 최근 7일 평문으로 보내는 PC. **CA 인증서 내려받기**(인증서만, 감사로그 `settings.tls.ca_download`). API `GET /api/settings/tls`·`GET /api/settings/tls/ca.crt` |
 
 ### 8.1 Oracle 연동
 

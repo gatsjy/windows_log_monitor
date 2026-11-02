@@ -482,6 +482,42 @@ async def save_report_settings(request: Request, admin: User = Depends(require_p
     return {"ok": True, "config": cfg}
 
 
+@router.get("/api/settings/tls")
+async def tls_overview():
+    """보안 연결 (B-31 1단계, 읽기 전용): 리스너·인증서 이름·만료 D-n·CA 지문·문제, 평문으로 보내는 PC.
+    바꾸는 것은 .env·인증서 파일·cli(tls-init·tls-renew) — 화면은 지금 상태를 보이기만 한다(AIRGAP.md §7.5)."""
+    from .. import repository, tlsutil
+
+    st = tlsutil.status(settings)
+    agents = await repository.agents(datetime.now(UTC) - timedelta(days=7))
+    plain = sorted(a["host"] for a in agents if a.get("last_transport") in ("plain", "web"))
+    return {
+        **st.as_dict(), "cert_sha256": st.cert_sha256,
+        "listeners": {"web": "https" if st.enabled else "http", "ingest_port": settings.ingest_public_port,
+                      "ingest_tls_port": settings.ingest_tls_public_port, "ingest_plain": settings.ingest_plain or not st.enabled},
+        "hsts_max_age": settings.hsts_max_age, "plain_pcs": plain, "pcs": len(agents),
+        "ca_download": bool(st.enabled and st.ca_sha256),
+    }
+
+
+@router.get("/api/settings/tls/ca.crt")
+async def tls_ca(request: Request, user: User = Depends(require_permission("settings.manage"))):
+    """CA 인증서 (B-31) — 브라우저·사내 PC 에 신뢰를 배포할 때. 인증서만 다시 써서(개인키가 섞인 파일도 새지 않게), 감사로그."""
+    from fastapi.responses import Response
+
+    from .. import tlsutil
+
+    st = tlsutil.status(settings)
+    if not st.enabled or not st.ca_sha256:
+        raise HTTPException(404, "TLS 가 꺼져 있거나 CA 인증서가 없습니다")
+    try:
+        pem = tlsutil.ca_bundle_pem(settings.tls_ca_file)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, f"CA 인증서를 읽을 수 없습니다: {exc}") from exc
+    await db.audit(user.username, "settings.tls.ca_download", "ca.crt", {"ca_sha256": st.ca_sha256}, actor_ip=client_ip(request))
+    return Response(pem, media_type="application/x-pem-file", headers={"Content-Disposition": 'attachment; filename="logmon-ca.crt"'})
+
+
 @router.get("/api/settings/retention")
 async def retention_status():
     """로그 로테이션 정책과 현재 DB 파티션·보관 파일·DB 백업 (설정 값은 .env, 화면은 조회만)."""

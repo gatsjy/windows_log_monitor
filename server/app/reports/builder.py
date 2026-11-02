@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 
-from .. import archive, assets, backups, clock, db, partitions, repository
+from .. import archive, assets, backups, clock, db, partitions, repository, tlsutil
 from ..alerts import coverage, health
 from ..alerts.builtin import ADMIN_RULE
 from ..alerts.engine import engine
@@ -168,6 +168,18 @@ async def _alerts(start: datetime, end: datetime) -> dict[str, Any]:
         "wide_silences_total": len(silences),
         "config_error": engine.config_error,
     }
+
+
+async def _tls(now: datetime) -> dict[str, Any]:
+    """보안 연결 (B-31): 인증서 만료·문제, 평문으로 보내는 PC — '점검 필요'에. 끈 서버는 enabled 만."""
+    st = tlsutil.status(settings, now)
+    if not st.enabled:
+        return {"enabled": False}
+    agents = await repository.agents(now - timedelta(days=7))
+    plain = sorted(a["host"] for a in agents if a.get("last_transport") in ("plain", "web"))
+    return {"enabled": True, "days_left": st.days_left, "not_after": _iso(st.not_after),
+            "errors": [t for lv, t in st.problems if lv == "error"][:3], "plain_pcs": len(plain), "plain_names": plain[:10],
+            "ingest_plain": settings.ingest_plain}
 
 
 async def _agents(now: datetime) -> dict[str, Any]:
@@ -334,6 +346,17 @@ def _attention(p: dict[str, Any]) -> list[dict[str, str]]:
         out.append({"level": "warn", "text": f"로그가 오지 않는 중요 시스템 {listed['critical_missing']}대: {names} — 에이전트 설치·연결 확인"})
     if p["agents"]["offline"]:
         out.append({"level": "warn", "text": f"연락이 끊긴 PC {p['agents']['offline']:,}대"})
+    tls = p.get("tls")   # B-31 이전 보고서에는 없다
+    if tls and tls.get("enabled"):
+        for err in tls["errors"]:
+            out.append({"level": "bad", "text": f"보안 연결(TLS): {err}"})
+        if tls["days_left"] is not None and tls["days_left"] <= 30:
+            out.append({"level": "bad" if tls["days_left"] <= 7 else "warn",
+                        "text": f"서버 인증서가 {tls['days_left']}일 뒤 만료됩니다 — 만료되면 에이전트가 보내지 못합니다 "
+                                "(python -m app.cli tls-renew, AIRGAP.md §13)"})
+        if tls["plain_pcs"]:
+            names = ", ".join(tls["plain_names"][:3]) + (f" 외 {tls['plain_pcs'] - 3:,}대" if tls["plain_pcs"] > 3 else "")
+            out.append({"level": "warn", "text": f"TLS 를 켰는데 아직 평문으로 보내는 PC {tls['plain_pcs']:,}대: {names} — 새 설치 묶음으로 다시 설치"})
     clk = p["agents"].get("clock")   # B-57 이전 보고서에는 없다
     if clk and clk["server_suspect"]:
         out.append({"level": "bad", "text": f"시계: {clk['server_suspect']['text']}"})
@@ -396,6 +419,7 @@ async def build(kind: str, start: datetime, end: datetime, now: datetime | None 
         "security": await _security(start, end),
         "alerts": await _alerts(start, end),
         "agents": await _agents(now),
+        "tls": await _tls(now),
         # 수집 거절·격리 (B-40) — 에이전트 쪽 로그는 같은 출력이라 서버로 오지 못하니 여기서만 보인다
         "ingest": await repository.ingest_problem_counts(start, end),
         # 알림 기능 자체 (ADR-045) — 보고서를 만든 시각 기준. 평가·전송이 멈췄으면 그 사이 알림은 오지 않았다

@@ -8,7 +8,7 @@ import { confirmModal, errorBox, fmtNum, fmtRelative, fmtTime, html, navigate, p
 
 const TABS = [
   ['contacts', '수신자'], ['groups', '수신 그룹'], ['channels', '외부 연동 (웹훅·Oracle)'], ['smtp', '메일 서버'],
-  ['reports', '점검 보고서'], ['retention', '로그 보관'],
+  ['reports', '점검 보고서'], ['retention', '로그 보관'], ['tls', '보안 연결'],
 ];
 const SECRET_HINT = '저장되어 있음 — 바꿀 때만 입력';
 const MIN_SEVERITY = [['info', '모든 알림 (정보 이상)'], ['warning', '경고 이상'], ['error', '오류 이상'], ['critical', '심각만']];
@@ -73,7 +73,7 @@ export async function mount(root, params, sub) {
       서버에 <code>WLM_SECRET_KEY</code> 가 없어 비밀번호(메일 서버·Oracle)와 웹훅 주소를 저장할 수 없습니다. <code>.env</code> 에 설정 후 서버를 다시 시작하세요.</div>`;
   }
 
-  const renderers = { contacts, groups, channels, smtp, reports: reportSettings, retention };
+  const renderers = { contacts, groups, channels, smtp, reports: reportSettings, retention, tls: tlsSettings };
   await renderers[tab](body, meta);
 }
 
@@ -730,6 +730,52 @@ function integrityCard(g) {
     <div class="toolbar"><button class="btn sm" type="button" data-chain-verify>지금 검증</button>
       <span class="muted" style="font-size:12.5px">서버에서는 <code>python -m app.cli verify-chain</code> (복제본 앵커로도: <code>--anchors 폴더</code>)</span></div>
   </div></section>`;
+}
+
+// ================================================================ 보안 연결 (B-31 1단계, 읽기 전용)
+// 바꾸는 것은 .env·인증서 파일·cli — 여기서는 지금 상태와 평문으로 보내는 PC 를 보인다
+async function tlsSettings(body) {
+  const t = await api.get('/api/settings/tls');
+  const row = (label, value) => html`<dt>${label}</dt><dd>${value ?? '–'}</dd>`;
+  body.innerHTML = html`<section class="card" style="margin-bottom:14px"><div class="card-body">
+      <div class="section-title" style="margin-top:0">전송 구간 암호화 (TLS)</div>
+      ${t.enabled ? '' : html`<p class="hint-box">TLS 가 꺼져 있습니다 — 화면은 http, 에이전트는 평문(6976)으로 보냅니다. 켜는 방법: docs/AIRGAP.md §7.5 (<code>WLM_TLS=on</code>).</p>`}
+      ${t.problems?.length ? html`${t.problems.map((p) => html`<div class="${p.level === 'error' ? 'error-box' : 'hint-box'}" style="margin-bottom:8px">${p.text}</div>`)}` : ''}
+      <dl class="kv">
+        ${row('화면', t.listeners.web)}
+        ${row('수집 포트', html`${t.enabled ? `TLS ${t.listeners.ingest_tls_port}` : ''}${t.listeners.ingest_plain ? `${t.enabled ? ' · ' : ''}평문 ${t.listeners.ingest_port}` : ' (평문 닫힘)'}`)}
+        ${t.enabled ? html`${row('인증서 이름', [...t.dns_names, ...t.ip_names].join(', '))}
+          ${row('만료', t.not_after ? html`${fmtTime(t.not_after, { seconds: false })} <span class="${t.days_left <= 30 ? 'tag-bad' : 'muted'}">(${t.days_left}일 남음)</span>` : '–')}
+          ${row('CA 지문 (SHA-256)', html`<code style="overflow-wrap:anywhere">${t.ca_sha256 || '–'}</code>`)}
+          ${row('에이전트가 이 CA·이름으로 서버를 믿는가', t.ca_ok ? '예' : html`<span class="tag-bad">아니오</span>`)}
+          ${row('HSTS', t.hsts_max_age == null ? '보내지 않음' : `max-age=${t.hsts_max_age}`)}` : ''}
+      </dl>
+      ${t.ca_download ? html`<div class="toolbar" style="margin-top:10px"><button class="btn" data-ca>CA 인증서 내려받기</button>
+        <span class="muted" style="font-size:12.5px">브라우저·사내 PC 에 이 CA 를 신뢰하게 배포할 때 (감사로그에 남음)</span></div>` : ''}
+    </div></section>
+    <section class="card"><div class="card-body">
+      <div class="section-title" style="margin-top:0">평문으로 보내는 PC <span class="muted">최근 7일 · 전체 ${fmtNum(t.pcs)}대</span></div>
+      ${t.plain_pcs.length ? html`<p class="${t.enabled ? 'tag-bad' : 'muted'}" style="margin:0 0 6px">${fmtNum(t.plain_pcs.length)}대${t.enabled
+        ? ' — 새 설치 묶음(TLS)으로 다시 설치한 뒤 평문 수집을 닫습니다(AIRGAP.md §7.5)' : ''}</p>
+        <div class="chips">${t.plain_pcs.slice(0, 200).map((h) => html`<span class="chip">${h}</span>`)}</div>`
+        : html`<p class="muted" style="margin:0">없습니다.</p>`}
+    </div></section>`;
+  body.querySelector('[data-ca]')?.addEventListener('click', async (e) => {
+    const ok = await confirmModal({ title: 'CA 인증서 내려받기', message: '이 서버의 CA 인증서(공개 인증서만)를 내려받습니다. 감사로그에 남습니다.', confirmText: '내려받기' });
+    if (!ok) return;
+    e.target.disabled = true;
+    try {
+      const res = await fetch('/api/settings/tls/ca.crt', { headers: { 'X-WLM-CSRF': '1' } });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+      const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await res.blob()), download: 'logmon-ca.crt' });
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+    } catch (err) {
+      toast(err.message, { type: 'error' });
+    } finally {
+      e.target.disabled = false;
+    }
+  });
 }
 
 async function retention(body) {
