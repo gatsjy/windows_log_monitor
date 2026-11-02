@@ -226,6 +226,29 @@ def test_dashboard_widget_sentence_is_checked(ctx):
     assert ctx["admin"].put("/api/dashboards/querylang-test", json=doc, headers=CSRF).status_code == 200
 
 
+def test_add_widget_from_search_appends_on_the_server(ctx, monkeypatch):
+    """검색 화면의 [대시보드에 추가] (B-07 1단계): 서버가 파일을 읽어 맨 뒤에 덧붙인다 — 다른 사람이 그 사이 저장한 위젯을 지우지 않는다.
+    문장 검사·권한·감사로그는 저장과 같다."""
+    import json
+    from pathlib import Path
+
+    admin = ctx["admin"]
+    base = {"title": "추가 시험", "widgets": [{"type": "text", "text": "처음"}]}
+    assert admin.put("/api/dashboards/add-test", json=base, headers=CSRF).status_code == 200
+    widget = {"type": "top", "title": "실패 계정", "w": 4, "field": "user", "limit": 8, "query": {"query": "event_id:4625"}}
+    r = admin.post("/api/dashboards/add-test/widgets", json=widget, headers=CSRF)
+    assert r.status_code == 200 and r.json()["index"] == 1
+    saved = json.loads((Path(os.environ["WLM_DASHBOARD_DIR"]) / "add-test.json").read_text(encoding="utf-8"))
+    assert saved["widgets"] == [{"type": "text", "text": "처음"}, widget] and saved["title"] == "추가 시험"
+    bad = admin.post("/api/dashboards/add-test/widgets", json={**widget, "query": {"query": "hots:x"}}, headers=CSRF)
+    assert bad.status_code == 422 and len(admin.get("/api/dashboards/add-test").json()["widgets"]) == 2   # 저장하지 않음
+    assert admin.post("/api/dashboards/nope/widgets", json=widget, headers=CSRF).status_code == 404
+    assert ctx["viewer"].post("/api/dashboards/add-test/widgets", json=widget, headers=CSRF).status_code == 403
+    with psycopg.connect(os.environ["WLM_DATABASE_URL"]) as conn:
+        [(detail,)] = conn.execute("SELECT detail FROM audit_log WHERE action = 'dashboard.widget_add'").fetchall()
+    assert detail["title"] == "실패 계정" and detail["widgets"] == 2
+
+
 def test_alert_rule_with_sentence(ctx):
     admin = ctx["admin"]
     rule = {"name": "문장 규칙", "kind": "count", "severity": "warning", "notify": ["운영팀"], "group_by": "host",

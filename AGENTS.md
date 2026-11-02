@@ -87,6 +87,7 @@ web/js/
   filterbar.js       검색·실시간 필터 막대 (문장이 정본, 드롭다운·수준 칩은 문장을 고치는 창)
   savedsearch.js     저장한 검색 패널 (저장·적용·더하기·최근 검색)
   livefilter.js      대시보드 실시간 갱신용 조건 판단 (querylang.compileQuery 에 맡김)
+  dashadd.js         검색 화면 [대시보드에 추가] — 위젯 JSON(buildWidget)·POST /api/dashboards/<이름>/widgets
   dashvars.js        대시보드 변수 → 위젯 문장에 addTerm (B-07, import·DOM 없음 — node 로 시험, 서버 키 목록 routers/dashboards.VAR_KEYS 와 같게)
   responsive.js      좁은 화면 보정: 표 칸에 data-label(모바일 카드), 카드 격자 줄 단위 재배치 (MutationObserver)
   ruleform.js        알림 규칙 편집 패널 (Snort 식 규칙 문장·우리말 요약·미리보기)

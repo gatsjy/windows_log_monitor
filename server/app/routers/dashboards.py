@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -113,14 +114,10 @@ async def get_dashboard(name: str):
         raise HTTPException(500, f"{path.name} JSON 오류: {exc}") from exc
 
 
-@router.put("/api/dashboards/{name}")
-async def save_dashboard(name: str, request: Request, doc: dict = Body(...),
-                         admin: User = Depends(require_permission("dashboards.edit"))):
-    path = _path(name)
-    _validate(doc)
+def _write(path: Path, doc: dict) -> str:
+    """원자적 저장: 임시파일에 쓴 뒤 교체. 쓴 글을 돌려준다(감사로그 해시)."""
     text = json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
-    # 원자적 저장: 임시파일에 쓴 뒤 교체
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -129,6 +126,20 @@ async def save_dashboard(name: str, request: Request, doc: dict = Body(...),
     except OSError as exc:
         Path(tmp).unlink(missing_ok=True)
         raise HTTPException(500, f"저장 실패: {exc}") from exc
+    return text
+
+
+# 위젯 더하기는 파일을 읽어 덧붙이고 쓴다 — 같은 대시보드에 두 사람이 동시에 더해도 하나가 사라지지 않게 (워커 1개, ADR-006)
+_APPEND_LOCK = asyncio.Lock()
+
+
+@router.put("/api/dashboards/{name}")
+async def save_dashboard(name: str, request: Request, doc: dict = Body(...),
+                         admin: User = Depends(require_permission("dashboards.edit"))):
+    path = _path(name)
+    _validate(doc)
+    async with _APPEND_LOCK:
+        text = _write(path, doc)
     await db.audit(
         admin.username,
         "dashboard.save",
@@ -137,3 +148,26 @@ async def save_dashboard(name: str, request: Request, doc: dict = Body(...),
         actor_ip=client_ip(request),
     )
     return doc
+
+
+@router.post("/api/dashboards/{name}/widgets")
+async def add_widget(name: str, request: Request, widget: dict = Body(...),
+                     admin: User = Depends(require_permission("dashboards.edit"))):
+    """검색 화면의 [대시보드에 추가] (B-07 1단계): 위젯 하나를 맨 뒤에 — 파일을 서버에서 읽어 덧붙인다(화면이 옛 JSON 을 통째로
+    덮어 다른 사람의 변경을 지우지 않게). 검증·감사로그는 저장과 같다."""
+    path = _path(name)
+    async with _APPEND_LOCK:
+        if not path.exists():
+            raise HTTPException(404, "대시보드가 없습니다")
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise HTTPException(409, f"{path.name} JSON 오류 — 편집기에서 먼저 고치세요: {exc}") from exc
+        doc = {**doc, "widgets": [*(doc.get("widgets") or []), widget]}
+        _validate(doc)
+        text = _write(path, doc)
+    await db.audit(admin.username, "dashboard.widget_add", name,
+                   {"type": widget.get("type"), "title": widget.get("title"), "query": widget.get("query"),
+                    "widgets": len(doc["widgets"]), "sha256": hashlib.sha256(text.encode()).hexdigest()},
+                   actor_ip=client_ip(request))
+    return {"ok": True, "index": len(doc["widgets"]) - 1}

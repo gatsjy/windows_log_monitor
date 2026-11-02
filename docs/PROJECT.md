@@ -241,6 +241,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/suggest?key=&prefix=&since=&limit=` | 값 자동완성 (B-65): `key` = host·user·ip·channel·provider·source, 기간·조회 범위 안에서 `prefix` 로 시작하는(대소문자 무시, LIKE 특수 글자는 글자로) 값을 많은 순. 문장 조건은 보지 않음. 시간 상한 3초. 사용자·IP 는 접속기록(`events.stats`, `suggest:<key>`) |
 | `GET /api/search/parse?query=` | 검색 문장 해석만 (`terms`·정규형 `canonical`·모순 `never`). 데이터 조회 없음 — 실시간 화면이 오류 위치를 받는 데 쓴다 |
 | `GET/PUT /api/dashboards/{name}` | 대시보드 JSON 읽기/저장 (저장은 audit_log 기록) |
+| `POST /api/dashboards/{name}/widgets` | 위젯 하나를 맨 뒤에 (B-07 1단계, 검색 화면 [대시보드에 추가]) — 서버가 파일을 읽어 덧붙임(옛 JSON 으로 덮지 않게), 검증·`dashboards.edit`·감사로그 `dashboard.widget_add` |
 | `GET /api/alerts?since=&rule=&severity=&host=&status=` | 알림 이력 (전송·처리 상태 포함) + `counts`(기간 안 처리 상태별 수). `status` = `open`·`acked`·`resolved`·`unresolved` |
 | `GET /api/alerts?format=csv` | 알림 이력 CSV (처리 상태·처리자·처리 시각·무음·전송·처리 기록, 최대 1만 건 — 넘으면 마지막 줄·`X-WLM-Truncated`·감사로그에 표시). 수식 주입 방지 — 감사로그 `alerts.export` |
 | `GET /api/alerts/{id}` | 알림 상세 (payload: 본문, 최근 이벤트 샘플, 처리 기록 `notes`, 무음 `silence`, 같은 규칙·대상의 해결 안 된 다른 알림 수 `related_unresolved`) |
@@ -364,6 +365,9 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
 
 모든 위젯이 받는 공통 옵션은 `title`, `w`(1~12칸), `query`(필터 객체), `since`(위젯별 기간)입니다.
 `query` 안에 `"query": "event_id:4625 -user:svc_backup"` 로 검색 문장(§4.1)을 쓸 수 있고 다른 조건과 AND 입니다. 저장할 때 문장을 확인합니다(틀리면 422 + 위치).
+
+**검색에서 추가 (B-07 1단계):** 이벤트 검색의 [대시보드에 추가](목록 → 시간대별 막대·최근 로그 표·건수, 필드 탭 카드의 ＋대시보드 → 상위 값)가 지금 검색 문장으로 위젯을 만들어
+고른 대시보드 맨 뒤에 붙입니다. 기간은 대시보드를 따르고(원하면 상대 기간만 고정), 막대로 고른 절대 구간은 저장하지 않습니다. `dashboards.edit` 권한.
 
 **대시보드 변수 (B-07 2단계):** `"variables": [{"name": "host", "key": "host", "label": "PC", "default": ""}]`(5개까지) — 화면 위 입력 칸(지금 기간의 실제 값 제안)·
 주소 `#/dashboard/server?var-host=EMR-DB-01` 의 값을 모든 위젯 조건에 `host:EMR-DB-01` 로 더합니다(비우면 조건 없음). 문자열 치환이 아니라 검색 문장 편집(`addTerm`)이라

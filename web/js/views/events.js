@@ -1,6 +1,8 @@
 // 이벤트 검색 화면: 필터(검색 문장) → 시간대 분포 → 결과 표 (더 보기).
 // 옛 링크(host=…&q=a|b)로 들어오면 문장으로 접어 주소를 바꾼다 (filterState). 같은 주소 = 같은 조건.
 import * as api from '../api.js';
+import { can } from '../auth.js';
+import { openAddToDashboard } from '../dashadd.js';
 import { columnChart, legend, seriesColors, seriesLabel } from '../charts.js';
 import { closeDrawer, openDrawer, openEvent, setSearchContext } from '../drawer.js';
 import { bindRows, eventHead, eventRow } from '../eventtable.js';
@@ -52,7 +54,9 @@ export async function mount(root, params) {
     <section class="card" style="margin-bottom:14px"><div class="card-body" data-hist><div class="skeleton" style="height:150px"></div></div></section>
     <div class="toolbar" style="margin-bottom:10px;justify-content:space-between">
       <div class="seg" data-tab><button data-v="list" class="on">목록</button><button data-v="stats">통계</button><button data-v="sessions">세션</button><button data-v="fields">필드</button></div>
-      <div class="toolbar" style="gap:6px"><button class="btn sm" type="button" data-cols title="목록에 사용자·IP·원본 필드 열 더하기">열</button>
+      <div class="toolbar" style="gap:6px">${can('dashboards.edit') ? html`<button class="btn sm" type="button" data-dash-add
+          title="지금 검색 문장으로 대시보드 위젯 만들기">대시보드에 추가</button>` : ''}
+        <button class="btn sm" type="button" data-cols title="목록에 사용자·IP·원본 필드 열 더하기">열</button>
         <button class="btn sm" type="button" data-csv>CSV 내려받기</button></div>
     </div>
     <section class="card" data-list>
@@ -224,6 +228,9 @@ export async function mount(root, params) {
     else exportCsv('/api/events', { ...state, cols: cols.join(',') }, { what: '로그 목록(최대 1만 건)' });
   });
   root.querySelector('[data-cols]').addEventListener('click', openCols);
+  // 대시보드에 추가 (B-07 1단계): 목록·통계는 시간대별 막대, 필드 탭은 그 카드의 상위 값
+  root.querySelector('[data-dash-add]')?.addEventListener('click', () =>
+    openAddToDashboard({ query: bar?.query ?? state.query ?? '', since: state.since, kind: tab === 'list' ? 'timeseries' : tab === 'fields' ? 'top' : 'timeseries' }));
 
   // ---- 열 고르기 (B-65 3단계)
   async function openCols() {
@@ -335,7 +342,8 @@ export async function mount(root, params) {
       const rows = full[field] ?? topOfLoaded(field);
       const total = full[field] ? null : items.length;
       return html`<div class="field-card"><div class="field-card-head"><b>${label}</b>
-          ${full[field] ? html`<span class="muted">전체 기준</span>` : html`<button type="button" class="btn ghost sm" data-full="${field}">전체 기준</button>`}</div>
+          ${full[field] ? html`<span class="muted">전체 기준</span>` : html`<button type="button" class="btn ghost sm" data-full="${field}">전체 기준</button>`}
+          ${can('dashboards.edit') ? html`<button type="button" class="btn ghost sm" data-dash-field="${field}" title="이 필드의 상위 값 위젯을 대시보드에">＋대시보드</button>` : ''}</div>
         ${rows.length ? html`<ul>${rows.map((r) => html`<li><span class="field-val" title="${r.value}">${SHOW[field] ? SHOW[field](r.value) : r.value}</span>
           <span class="num muted">${fmtNum(r.n)}${total ? ` · ${Math.round((r.n / total) * 100)}%` : ''}</span>
           <button type="button" class="btn ghost sm" data-narrow="${field}" data-v="${r.value}" title="이 값으로 좁히기">+</button>
@@ -357,6 +365,8 @@ export async function mount(root, params) {
         b.replaceWith(Object.assign(document.createElement('span'), { className: 'tag-bad', textContent: err.message }));
       }
     }));
+    fieldsOut.querySelectorAll('[data-dash-field]').forEach((b) => b.addEventListener('click', () =>
+      openAddToDashboard({ query: bar?.query ?? state.query ?? '', since: state.since, kind: 'top', field: b.dataset.dashField })));
     const apply = (field, value, neg) => {
       if (value === '') return;
       const term = { key: field, values: [INT_FIELDS.has(field) ? Number(value) : value], ...(neg ? { neg: true } : {}) };
