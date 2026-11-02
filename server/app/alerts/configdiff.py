@@ -204,6 +204,14 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
         changes.append({"rule": None, "sid": None, "key": None, "change": "interval",
                         "weakens": new.interval_sec > old.interval_sec,
                         "text": f"평가 주기 {old.interval_sec}초 → {new.interval_sec}초"})
+    if (old.group_wait_sec, old.group_interval_sec) != (new.group_wait_sec, new.group_interval_sec):
+        # 묶음 전송 (B-41): 모으는 시간·간격이 늘면 알림이 늦게 간다 — 약해짐. 0(묶지 않음)으로 바꾸는 것은 더 자주 보낼 뿐
+        def text(c: AlertConfig) -> str:
+            return f"{c.group_wait_sec}초 모음·{c.group_interval_sec}초 간격" if c.group_interval_sec else "묶지 않음"
+        changes.append({"rule": None, "sid": None, "key": None, "change": "grouping",
+                        "weakens": new.group_interval_sec > 0 and (new.group_wait_sec > old.group_wait_sec
+                                                                   or new.group_interval_sec > old.group_interval_sec),
+                        "text": f"묶음 전송 {text(old)} → {text(new)}"})
     if old.fallback_notify != new.fallback_notify:
         gone = [n for n in old.fallback_notify if n not in new.fallback_notify]
         changes.append({"rule": None, "sid": None, "key": None, "change": "fallback", "weakens": bool(gone),

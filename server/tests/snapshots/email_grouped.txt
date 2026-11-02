@@ -1,0 +1,48 @@
+Subject: [Log Monitor] [경고] 로그온 실패 급증 · 25대 (PC-000, PC-001, PC-002 외 22대)
+
+[경고] 로그온 실패 급증 · 25대 (PC-000, PC-001, PC-002 외 22대)
+
+같은 규칙의 알림 25건을 묶어 보냅니다 — 25대에서 최근 10분 동안 조건에 맞는 이벤트 (기준 20건 이상), 모두 800건
+
+- PC-000 · 20건 · 2026-10-03 14:00:00 · #100
+- PC-001 · 21건 · 2026-10-03 14:00:01 · #101
+- PC-002 · 22건 · 2026-10-03 14:00:02 · #102
+- PC-003 · 23건 · 2026-10-03 14:00:03 · #103
+- PC-004 · 24건 · 2026-10-03 14:00:04 · #104
+- PC-005 · 25건 · 2026-10-03 14:00:05 · #105
+- PC-006 · 26건 · 2026-10-03 14:00:06 · #106
+- PC-007 · 27건 · 2026-10-03 14:00:07 · #107
+- PC-008 · 28건 · 2026-10-03 14:00:08 · #108
+- PC-009 · 29건 · 2026-10-03 14:00:09 · #109
+- PC-010 · 30건 · 2026-10-03 14:00:10 · #110
+- PC-011 · 31건 · 2026-10-03 14:00:11 · #111
+- PC-012 · 32건 · 2026-10-03 14:00:12 · #112
+- PC-013 · 33건 · 2026-10-03 14:00:13 · #113
+- PC-014 · 34건 · 2026-10-03 14:00:14 · #114
+- PC-015 · 35건 · 2026-10-03 14:00:15 · #115
+- PC-016 · 36건 · 2026-10-03 14:00:16 · #116
+- PC-017 · 37건 · 2026-10-03 14:00:17 · #117
+- PC-018 · 38건 · 2026-10-03 14:00:18 · #118
+- PC-019 · 39건 · 2026-10-03 14:00:19 · #119
+… 외 5건 — 전체는 알림 화면에서
+
+짧은 시간에 로그온 실패가 몰렸습니다
+
+태그: MITRE T1110, ISMS 2.11.3
+
+발생 시각: 2026-10-03 14:00:00 ~ 2026-10-03 14:00:24
+이벤트 시각: 2026-10-03 13:51:00 ~ 2026-10-03 14:00:00
+
+최근 이벤트:
+- 2026-10-03 14:00:00 [경고] PC-000 Security 4625 — 계정을 로그온하지 못했습니다.
+- 2026-10-03 14:00:00 [경고] PC-001 Security 4625 — 계정을 로그온하지 못했습니다.
+- 2026-10-03 14:00:00 [경고] PC-002 Security 4625 — 계정을 로그온하지 못했습니다.
+- 2026-10-03 14:00:00 [경고] PC-003 Security 4625 — 계정을 로그온하지 못했습니다.
+- 2026-10-03 14:00:00 [경고] PC-004 Security 4625 — 계정을 로그온하지 못했습니다.
+
+자세히 보기: http://logmon.local:8080/#/alerts?since=7d&rule=%EB%A1%9C%EA%B7%B8%EC%98%A8
+
+— Log Monitor
+
+---
+<div style='font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;color:#0b0b0b;max-width:760px'><div style='border-left:4px solid #fab219;padding:4px 0 4px 12px'><div style='font-size:12px;color:#52514e'>경고 · 2026-10-03 14:00:00 ~ 2026-10-03 14:00:24</div><div style='font-size:17px;font-weight:600'>[경고] 로그온 실패 급증 · 25대 (PC-000, PC-001, PC-002 외 22대)</div></div><p>같은 규칙의 알림 25건을 묶어 보냅니다 — 25대에서 최근 10분 동안 조건에 맞는 이벤트 (기준 20건 이상), 모두 800건</p><p style='color:#52514e'>- PC-000 · 20건 · 2026-10-03 14:00:00 · #100<br>- PC-001 · 21건 · 2026-10-03 14:00:01 · #101<br>- PC-002 · 22건 · 2026-10-03 14:00:02 · #102<br>- PC-003 · 23건 · 2026-10-03 14:00:03 · #103<br>- PC-004 · 24건 · 2026-10-03 14:00:04 · #104<br>- PC-005 · 25건 · 2026-10-03 14:00:05 · #105<br>- PC-006 · 26건 · 2026-10-03 14:00:06 · #106<br>- PC-007 · 27건 · 2026-10-03 14:00:07 · #107<br>- PC-008 · 28건 · 2026-10-03 14:00:08 · #108<br>- PC-009 · 29건 · 2026-10-03 14:00:09 · #109<br>- PC-010 · 30건 · 2026-10-03 14:00:10 · #110<br>- PC-011 · 31건 · 2026-10-03 14:00:11 · #111<br>- PC-012 · 32건 · 2026-10-03 14:00:12 · #112<br>- PC-013 · 33건 · 2026-10-03 14:00:13 · #113<br>- PC-014 · 34건 · 2026-10-03 14:00:14 · #114<br>- PC-015 · 35건 · 2026-10-03 14:00:15 · #115<br>- PC-016 · 36건 · 2026-10-03 14:00:16 · #116<br>- PC-017 · 37건 · 2026-10-03 14:00:17 · #117<br>- PC-018 · 38건 · 2026-10-03 14:00:18 · #118<br>- PC-019 · 39건 · 2026-10-03 14:00:19 · #119<br>… 외 5건 — 전체는 알림 화면에서<br><br>짧은 시간에 로그온 실패가 몰렸습니다</p><p style='font-size:12px;color:#52514e'>태그: MITRE T1110, ISMS 2.11.3</p><table style='border-collapse:collapse;font-size:13px;margin-top:8px'><tr><td style='padding:4px 8px;color:#52514e;white-space:nowrap'>2026-10-03 14:00:00</td><td style='padding:4px 8px;white-space:nowrap'>경고</td><td style='padding:4px 8px;white-space:nowrap'>PC-000</td><td style='padding:4px 8px;white-space:nowrap'>Security 4625</td><td style='padding:4px 8px'>계정을 로그온하지 못했습니다.</td></tr><tr><td style='padding:4px 8px;color:#52514e;white-space:nowrap'>2026-10-03 14:00:00</td><td style='padding:4px 8px;white-space:nowrap'>경고</td><td style='padding:4px 8px;white-space:nowrap'>PC-001</td><td style='padding:4px 8px;white-space:nowrap'>Security 4625</td><td style='padding:4px 8px'>계정을 로그온하지 못했습니다.</td></tr><tr><td style='padding:4px 8px;color:#52514e;white-space:nowrap'>2026-10-03 14:00:00</td><td style='padding:4px 8px;white-space:nowrap'>경고</td><td style='padding:4px 8px;white-space:nowrap'>PC-002</td><td style='padding:4px 8px;white-space:nowrap'>Security 4625</td><td style='padding:4px 8px'>계정을 로그온하지 못했습니다.</td></tr><tr><td style='padding:4px 8px;color:#52514e;white-space:nowrap'>2026-10-03 14:00:00</td><td style='padding:4px 8px;white-space:nowrap'>경고</td><td style='padding:4px 8px;white-space:nowrap'>PC-003</td><td style='padding:4px 8px;white-space:nowrap'>Security 4625</td><td style='padding:4px 8px'>계정을 로그온하지 못했습니다.</td></tr><tr><td style='padding:4px 8px;color:#52514e;white-space:nowrap'>2026-10-03 14:00:00</td><td style='padding:4px 8px;white-space:nowrap'>경고</td><td style='padding:4px 8px;white-space:nowrap'>PC-004</td><td style='padding:4px 8px;white-space:nowrap'>Security 4625</td><td style='padding:4px 8px'>계정을 로그온하지 못했습니다.</td></tr></table><p><a href='http://logmon.local:8080/#/alerts?since=7d&amp;rule=%EB%A1%9C%EA%B7%B8%EC%98%A8' style='color:#1c5cab'>Log Monitor 에서 자세히 보기 →</a></p><p style='font-size:12px;color:#898781'>— Log Monitor</p></div>

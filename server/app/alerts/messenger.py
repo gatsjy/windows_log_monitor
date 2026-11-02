@@ -58,12 +58,14 @@ def _link(m: AlertMessage) -> str:
 
 def _facts(m: AlertMessage) -> list[tuple[str, str]]:
     """(항목, 값) — 모든 형식이 같은 순서로 쓴다. 값은 비어 있지 않다(빈 글자를 거부하는 서비스가 있다)."""
-    facts = [("발생 시각", local(m.fired_at))]
+    facts = [("발생 시각", m.fired_text())]
     if m.resolved_at:
         facts.append(("해소 시각", local(m.resolved_at)))
     if m.first_event_at:
         facts.append(("이벤트 시각", f"{local(m.first_event_at)} ~ {local(m.last_event_at)}"))
-    if m.kind in ("config", "system"):   # 내장 알림(ADR-043·045)에는 건수 기준이 없다 — 내용 줄 수
+    if m.grouped:   # 묶음 알림 (B-41): 알림 수·이벤트 합. 대상은 제목과 본문 목록에
+        facts.append(("알림", f"{len(m.grouped):,}건" + (f" · 이벤트 {m.event_count:,}건" if m.kind == "count" and not m.resolved else "")))
+    elif m.kind in ("config", "system"):   # 내장 알림(ADR-043·045)에는 건수 기준이 없다 — 내용 줄 수
         facts.append(("변경", f"{m.event_count:,}건"))
     elif m.kind not in ("agent_silent", "stream_silent") and not m.test and not m.resolved:
         facts.append(("건수", f"{m.event_count:,}건 (기준 {m.threshold:,}건 이상)"))
@@ -168,7 +170,7 @@ def build_teams(m: AlertMessage) -> dict[str, Any]:
     head: list[dict[str, Any]] = [
         {"type": "TextBlock", "text": _no_md_link(_title(m)), "weight": "Bolder",
          "size": "Large" if m.severity == "critical" else "Medium", "wrap": True},
-        {"type": "TextBlock", "text": local(m.resolved_at if m.resolved else m.fired_at), "isSubtle": True,
+        {"type": "TextBlock", "text": local(m.resolved_at) if m.resolved else m.fired_text(), "isSubtle": True,
          "spacing": "None", "wrap": True},
     ]
     body: list[dict[str, Any]] = [
@@ -308,10 +310,12 @@ class WebhookFormat:
     https_only: bool = False                     # 클라우드 메신저: 주소의 토큰이 평문으로 나가지 않게 (http 로도 받아 버림)
     min_interval_sec: float = 0.0                # 같은 주소로 보내는 최소 간격 (넘으면 버리거나 429 를 주는 서비스)
     notice: Callable[[Notice], dict[str, Any]] = notice_json  # 공지(점검 보고서) 본문
+    # 묶음 전송 (B-41): 사람이 읽는 형식만 같은 규칙 알림을 한 통으로. json 은 기계가 알림마다 dedup_key 로 티켓을 여닫는다
+    groups: bool = True
 
 
 FORMATS: dict[str, WebhookFormat] = {f.key: f for f in (
-    WebhookFormat("json", "json — 알림 전체 데이터 (사내 시스템 연동)", build_json),
+    WebhookFormat("json", "json — 알림 전체 데이터 (사내 시스템 연동)", build_json, groups=False),
     WebhookFormat("text", "text — {\"text\": \"...\"} (Mattermost·Rocket.Chat 등)", build_text, notice=notice_text),
     WebhookFormat("slack", "Slack — 수신 웹훅 (색 막대·항목·최근 이벤트)", build_slack,
                   ("hooks.slack.com", "hooks.slack-gov.com"), https_only=True, min_interval_sec=1.0, notice=notice_slack),

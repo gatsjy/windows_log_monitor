@@ -65,6 +65,11 @@ class Notifier:
         """다시 알림(에스컬레이션, B-43)을 받을 수 없으면 그 이유. 사람이 읽는 메일·메신저는 언제나 받는다."""
         return None
 
+    def groups(self) -> bool:
+        """같은 규칙 알림을 묶어 한 통으로 받나 (B-41). 사람이 읽는 메일·메신저만 — json 웹훅·Oracle 은 알림마다
+        dedup_key·알림 번호로 사고를 여닫는 연동이라 하나씩."""
+        return False
+
     def target(self) -> str:
         """화면 표시용 대상 설명 (비밀값 제외)."""
         return ""
@@ -100,6 +105,9 @@ class EmailNotifier(Notifier):
 
     def target(self) -> str:
         return ", ".join(self.to) or "(수신자 없음)"
+
+    def groups(self) -> bool:
+        return True
 
     def build(self, message: AlertMessage) -> EmailMessage:
         mail = EmailMessage()
@@ -209,6 +217,9 @@ class WebhookNotifier(Notifier):
 
     def payload(self, message: AlertMessage) -> dict[str, Any]:
         return FORMATS[self.format].build(message)
+
+    def groups(self) -> bool:
+        return FORMATS[self.format].groups
 
     def request_headers(self) -> dict[str, str]:
         """기본 → 형식이 요구하는 헤더(잔디 Accept 등) → 사용자가 넣은 헤더 순으로 덮어쓴다."""

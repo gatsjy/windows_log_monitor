@@ -33,6 +33,8 @@ export async function mount(root, params, sub) {
   let status = STATUS_FILTERS.some(([k]) => k === params.status) ? params.status : '';
   // 처리할 알림 목록(처리 안 됨·확인함)은 오래된 것까지 봐야 하므로 기본 기간을 '전체'로 (사이드바 숫자와 맞춤)
   let since = params.since || (status === 'open' || status === 'acked' ? '3650d' : '7d');
+  // 규칙 하나만 (B-41): 묶음 알림 메일·메신저의 '자세히 보기'가 그 규칙의 알림 목록으로 온다
+  let ruleFilter = tab ? '' : (params.rule || '');
   let config = null;
   let timer;
   const selected = new Set(); // 이력에서 체크한 알림 id (자동 새로고침해도 유지)
@@ -58,7 +60,7 @@ export async function mount(root, params, sub) {
   root.querySelectorAll('[data-seg] button').forEach((b) => b.addEventListener('click', () => {
     since = b.dataset.v;
     root.querySelectorAll('[data-seg] button').forEach((x) => x.classList.toggle('on', x === b));
-    replaceParams(`alerts${tab ? `/${tab}` : ''}`, { since, status: tab ? '' : status });
+    replaceParams(`alerts${tab ? `/${tab}` : ''}`, { since, status: tab ? '' : status, rule: tab ? '' : ruleFilter });
     root.querySelectorAll('.tabs a').forEach((a) => { a.href = a.href.replace(/since=[^&]*/, `since=${since}`); });
     load();
   }));
@@ -84,7 +86,9 @@ export async function mount(root, params, sub) {
         <span class="status ${cls}"><span class="dot"></span>${label}</span>
         <span class="muted">${config.interval_sec}초마다 평가 · 마지막 평가 ${config.last_run_at ? fmtRelative(config.last_run_at) : '대기 중'}
           ${config.cycle_sec != null ? html`(한 바퀴 ${config.cycle_sec < 10 ? config.cycle_sec.toFixed(1) : Math.round(config.cycle_sec)}초)` : ''}
-          · 전송 대기 ${fmtNum(waiting)}건 · 규칙 ${active}/${config.rules.length}개 사용 중 · 알림 대상 ${config.notifiers.length}개</span>
+          · 전송 대기 ${fmtNum(waiting)}건 · 규칙 ${active}/${config.rules.length}개 사용 중 · 알림 대상 ${config.notifiers.length}개
+          ${config.grouping ? html`· <span title="메일·메신저는 같은 규칙 알림을 모아 한 통으로 보냅니다 (심각은 바로, 간격 1분). json 웹훅·Oracle 은 알림마다">${config.grouping.interval_sec
+            ? `묶어 보내기 ${fmtDuration(config.grouping.wait_sec)} 모음·${fmtDuration(config.grouping.interval_sec)} 간격` : '묶지 않음'}</span>` : ''}</span>
         ${config.silences_active ? html`<a class="ast silenced" href="#/alerts/silences?since=${since}">무음 ${config.silences_active}개 적용 중</a>` : ''}
       </div>
       ${problems.map((p) => html`<div class="${p.level === 'bad' ? 'error-box' : 'hint-box'}" style="margin-top:8px">${p.text}</div>`)}`;
@@ -104,14 +108,16 @@ export async function mount(root, params, sub) {
   // ---------------------------------------------------------------- 이력
   function viewToggle() {
     return html`<div class="seg" data-view aria-label="보기">${[['list', '알림마다'], ['groups', '규칙 › 대상으로 묶어']].map(([v, l]) => html`
-      <button type="button" data-v="${v}" class="${v === view ? 'on' : ''}">${l}</button>`)}</div>`;
+      <button type="button" data-v="${v}" class="${v === view ? 'on' : ''}">${l}</button>`)}</div>
+      ${ruleFilter ? html`<span class="chip on">규칙: ${ruleFilter}
+        <button type="button" class="btn ghost sm x" data-rule-clear aria-label="규칙 조건 해제">✕</button></span>` : ''}`;
   }
 
   function bindHistoryToolbar(el) {
     el.querySelectorAll('[data-status] button').forEach((b) => b.addEventListener('click', () => {
       status = b.dataset.v;
       selected.clear();
-      replaceParams('alerts', { since, status });
+      replaceParams('alerts', { since, status, rule: ruleFilter });
       root.querySelector('.tabs a').href = `#/alerts?since=${since}${status ? `&status=${status}` : ''}`;
       load();
     }));
@@ -122,6 +128,12 @@ export async function mount(root, params, sub) {
       selected.clear();
       load();
     }));
+    el.querySelector('[data-rule-clear]')?.addEventListener('click', () => {
+      ruleFilter = '';
+      selected.clear();
+      replaceParams('alerts', { since, status });
+      load();
+    });
   }
 
   /** 묶어 보기 (B-44): 규칙 › 대상마다 한 줄. 행을 누르면 그 묶음의 가장 최근 알림 — 상세의 '함께 해결'이 묶음 전체를 처리한다 */
@@ -743,10 +755,10 @@ export async function mount(root, params, sub) {
       // 다른 탭에서도 이력 탭의 숫자(기간 안 전체)를 보여 주려고 counts 만 가볍게 받는다
       const [cfg, history, silences] = await Promise.all([
         api.get('/api/alerts/config', { since }),
-        api.get('/api/alerts', tab || view === 'groups' ? { since, limit: 1 } : { since, status, limit: HISTORY_LIMIT }),
+        api.get('/api/alerts', tab || view === 'groups' ? { since, limit: 1 } : { since, status, rule: ruleFilter, limit: HISTORY_LIMIT }),
         tab === 'silences' ? api.get('/api/alerts/silences', { since })
           : tab === 'exceptions' ? api.get('/api/alerts/exceptions')
-            : !tab && view === 'groups' ? api.get('/api/alerts/groups', { since, status }) : null,
+            : !tab && view === 'groups' ? api.get('/api/alerts/groups', { since, status, rule: ruleFilter }) : null,
       ]);
       config = cfg;
       renderStatus();

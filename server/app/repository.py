@@ -1112,45 +1112,110 @@ async def queue_escalation(alert_id: int, notify: tuple[str, ...], action: str, 
     return added
 
 
+_CLAIM_ORDER = (
+    # 덜 실패한 것부터 — 받는 곳이 계속 거절하는 알림 하나가 매번 먼저 잡혀 다른 알림의 차례를 막지 않게
+    " ORDER BY d.attempts, CASE a.severity WHEN 'critical' THEN 4 WHEN 'error' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END DESC,"
+    # 같은 알림이면 알림(trigger)을 해소(resolve)보다 먼저
+    " d.next_attempt_at, d.alert_id, d.action DESC")
+_CLAIM_RETURNING = (
+    " RETURNING d.alert_id, d.notifier, d.action, d.attempts, d.claimed_at, d.queued_at, a.rule, a.severity, a.payload,"
+    " a.status AS alert_status, a.resolved_at, a.auto_resolved,"
+    # 해소 통지만 (B-35 2단계, dispatcher._stale): 같은 대상에 더 새 알림이 있나(있으면 지난 해소가 새 사고를 닫는다 — 같은
+    # dedup_key), 이 곳으로 이번 문제의 알림이 실제로 전해졌나(같이 자동 해결된 알림들 = 같은 resolved_at), 문제의 시작
+    " CASE WHEN d.action = 'resolve' THEN EXISTS (SELECT 1 FROM alerts n WHERE n.rule = a.rule"
+    "   AND n.group_key = a.group_key AND n.id > a.id) END AS newer,"
+    " CASE WHEN d.action = 'resolve' THEN EXISTS (SELECT 1 FROM alert_deliveries t JOIN alerts b ON b.id = t.alert_id"
+    "   WHERE t.notifier = d.notifier AND t.action = 'trigger' AND t.status = 'sent' AND b.rule = a.rule"
+    "   AND b.group_key = a.group_key AND b.auto_resolved AND b.resolved_at = a.resolved_at) END AS delivered,"
+    " CASE WHEN d.action = 'resolve' THEN (SELECT min(b.fired_at) FROM alerts b WHERE b.rule = a.rule"
+    "   AND b.group_key = a.group_key AND b.auto_resolved AND b.resolved_at = a.resolved_at) END AS started_at")
+
+
 async def claim_delivery(notifier: str, now: datetime) -> dict[str, Any] | None:
     """한 행을 잡는다 — 덜 실패한 것·심각한 것·오래 기다린 것부터. 다른 쪽이 잡고 있는 행은 건너뛴다(SKIP LOCKED)."""
     return await db.fetch_one(
         f"WITH pick AS (SELECT d.alert_id, d.notifier, d.action FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id"
-        f" WHERE d.notifier = %s AND {_DUE}"
-        # 덜 실패한 것부터 — 받는 곳이 계속 거절하는 알림 하나가 매번 먼저 잡혀 다른 알림의 차례를 막지 않게
-        " ORDER BY d.attempts, CASE a.severity WHEN 'critical' THEN 4 WHEN 'error' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END DESC,"
-        # 같은 알림이면 알림(trigger)을 해소(resolve)보다 먼저
-        " d.next_attempt_at, d.alert_id, d.action DESC LIMIT 1 FOR UPDATE OF d SKIP LOCKED)"
+        f" WHERE d.notifier = %s AND {_DUE}{_CLAIM_ORDER} LIMIT 1 FOR UPDATE OF d SKIP LOCKED)"
         " UPDATE alert_deliveries d SET claimed_at = clock_timestamp() FROM pick, alerts a"
         " WHERE d.alert_id = pick.alert_id AND d.notifier = pick.notifier AND d.action = pick.action AND a.id = d.alert_id"
-        " RETURNING d.alert_id, d.notifier, d.action, d.attempts, d.claimed_at, a.severity, a.payload,"
-        " a.status AS alert_status, a.resolved_at, a.auto_resolved,"
-        # 해소 통지만 (B-35 2단계, dispatcher._stale): 같은 대상에 더 새 알림이 있나(있으면 지난 해소가 새 사고를 닫는다 — 같은
-        # dedup_key), 이 곳으로 이번 문제의 알림이 실제로 전해졌나(같이 자동 해결된 알림들 = 같은 resolved_at), 문제의 시작
-        " CASE WHEN d.action = 'resolve' THEN EXISTS (SELECT 1 FROM alerts n WHERE n.rule = a.rule"
-        "   AND n.group_key = a.group_key AND n.id > a.id) END AS newer,"
-        " CASE WHEN d.action = 'resolve' THEN EXISTS (SELECT 1 FROM alert_deliveries t JOIN alerts b ON b.id = t.alert_id"
-        "   WHERE t.notifier = d.notifier AND t.action = 'trigger' AND t.status = 'sent' AND b.rule = a.rule"
-        "   AND b.group_key = a.group_key AND b.auto_resolved AND b.resolved_at = a.resolved_at) END AS delivered,"
-        " CASE WHEN d.action = 'resolve' THEN (SELECT min(b.fired_at) FROM alerts b WHERE b.rule = a.rule"
-        "   AND b.group_key = a.group_key AND b.auto_resolved AND b.resolved_at = a.resolved_at) END AS started_at",
-        (notifier, now))
+        + _CLAIM_RETURNING, (notifier, now))
+
+
+async def claim_group(notifier: str, now: datetime, limit: int) -> list[dict[str, Any]]:
+    """묶음 전송 (B-41): 차례인 한 행(claim_delivery 와 같은 순서)과 같은 규칙·종류(action)의 다른 대기 행을 함께 잡는다.
+    함께 잡는 행 = 차례가 됐거나, 아직 한 번도 보내지 않은 pending(모으는 중·간격을 기다리는 중). 재시도를 기다리는 failed 는
+    제 차례에만 — 실패 간격을 건너뛰지 않게. 첫 행이 늘 들어가도록 따로 더한다(상한에 밀리지 않게)."""
+    rows = await db.fetch_all(
+        "WITH first AS (SELECT d.alert_id, d.notifier, d.action, a.rule FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id"
+        f" WHERE d.notifier = %s AND {_DUE}{_CLAIM_ORDER} LIMIT 1 FOR UPDATE OF d SKIP LOCKED),"
+        " mates AS (SELECT d.alert_id, d.notifier, d.action FROM first f JOIN alert_deliveries d"
+        "   ON d.notifier = f.notifier AND d.action = f.action JOIN alerts a ON a.id = d.alert_id AND a.rule = f.rule"
+        "   WHERE d.status IN ('pending', 'failed') AND d.claimed_at IS NULL"
+        "   AND (d.next_attempt_at <= %s OR (d.status = 'pending' AND d.attempts = 0))"
+        "   ORDER BY d.alert_id LIMIT %s FOR UPDATE OF d SKIP LOCKED),"
+        " pick AS (SELECT alert_id, notifier, action FROM first UNION SELECT alert_id, notifier, action FROM mates)"
+        " UPDATE alert_deliveries d SET claimed_at = clock_timestamp() FROM pick, alerts a"
+        " WHERE d.alert_id = pick.alert_id AND d.notifier = pick.notifier AND d.action = pick.action AND a.id = d.alert_id"
+        + _CLAIM_RETURNING, (notifier, now, now, max(limit - 1, 1)))
+    return sorted(rows, key=lambda r: r["alert_id"])
+
+
+async def last_group_sent(notifier: str, rule: str, action: str, since: datetime) -> datetime | None:
+    """이 받는 곳에 같은 규칙·종류로 since 뒤 마지막으로 보낸 시각 (묶음 간격, B-41)."""
+    row = await db.fetch_one(
+        "SELECT max(d.sent_at) AS at FROM alert_deliveries d JOIN alerts a ON a.id = d.alert_id"
+        " WHERE d.notifier = %s AND d.status = 'sent' AND d.sent_at >= %s AND d.action = %s AND a.rule = %s",
+        (notifier, since, action, rule))
+    return row["at"] if row else None
+
+
+async def hold_deliveries(jobs: list[dict[str, Any]], until: datetime) -> None:
+    """잡은 행을 시도로 세지 않고 until 까지 미룬다 — 같은 규칙 알림을 모으는 중·묶음 간격 안 (B-41)."""
+    await db.fetch_all(
+        "UPDATE alert_deliveries d SET claimed_at = NULL, next_attempt_at = %s, updated_at = now()"
+        " FROM unnest(%s::bigint[], %s::text[], %s::text[], %s::timestamptz[]) AS j(alert_id, notifier, action, claimed_at)"
+        " WHERE d.alert_id = j.alert_id AND d.notifier = j.notifier AND d.action = j.action AND d.claimed_at = j.claimed_at"
+        " RETURNING d.alert_id",
+        (until, [j["alert_id"] for j in jobs], [j["notifier"] for j in jobs], [j.get("action", "trigger") for j in jobs],
+         [j["claimed_at"] for j in jobs]))
 
 
 async def finish_delivery(job: dict[str, Any], status: str, error: str | None,
-                          next_attempt_at: datetime | None = None, tried: int = 1) -> bool:
-    """잡은 행의 결과. claimed_at 이 그대로일 때만 바꾼다 — 잡은 뒤 풀려 다른 쪽이 다시 잡았으면 늦게 온 결과는 버린다."""
+                          next_attempt_at: datetime | None = None, tried: int = 1, batch_size: int | None = None) -> bool:
+    """잡은 행의 결과. claimed_at 이 그대로일 때만 바꾼다 — 잡은 뒤 풀려 다른 쪽이 다시 잡았으면 늦게 온 결과는 버린다.
+    batch_size = 그 통에 함께 간 알림 수 (B-41, 보냈을 때만)."""
     row = await db.fetch_one(
         "UPDATE alert_deliveries SET status = %s, last_error = %s, attempts = attempts + %s,"
         " next_attempt_at = COALESCE(%s, next_attempt_at), sent_at = CASE WHEN %s = 'sent' THEN now() ELSE sent_at END,"
+        " batch_size = COALESCE(%s, batch_size),"
         " claimed_at = NULL, updated_at = now() WHERE alert_id = %s AND notifier = %s AND action = %s AND claimed_at = %s"
         " RETURNING alert_id",
         # 오류 문구는 받는 쪽 응답에서 온다 — NUL 하나로 결과를 못 써 같은 행을 끝없이 다시 잡지 않게
-        (status, _printable(error, 1000) if error else None, tried, next_attempt_at, status, job["alert_id"], job["notifier"],
-         job.get("action", "trigger"), job["claimed_at"]))
+        (status, _printable(error, 1000) if error else None, tried, next_attempt_at, status, batch_size, job["alert_id"],
+         job["notifier"], job.get("action", "trigger"), job["claimed_at"]))
     if row is None:
         log.warning("알림 #%s → %s: 이미 풀린 행의 결과라 버립니다", job["alert_id"], job["notifier"])
     return row is not None
+
+
+async def finish_deliveries(jobs: list[dict[str, Any]], status: str, error: str | None,
+                            next_attempt_at: datetime | None = None, tried: int = 1, batch_size: int | None = None) -> int:
+    """묶어 보낸 행들의 결과를 한 문장으로 (B-41, finish_delivery 와 같은 조건 — claimed_at 이 그대로인 것만). 바꾼 행 수."""
+    if not jobs:
+        return 0
+    rows = await db.fetch_all(
+        "UPDATE alert_deliveries d SET status = %s, last_error = %s, attempts = d.attempts + %s,"
+        " next_attempt_at = COALESCE(%s, d.next_attempt_at), sent_at = CASE WHEN %s = 'sent' THEN now() ELSE d.sent_at END,"
+        " batch_size = COALESCE(%s, d.batch_size), claimed_at = NULL, updated_at = now()"
+        " FROM unnest(%s::bigint[], %s::text[], %s::text[], %s::timestamptz[]) AS j(alert_id, notifier, action, claimed_at)"
+        " WHERE d.alert_id = j.alert_id AND d.notifier = j.notifier AND d.action = j.action AND d.claimed_at = j.claimed_at"
+        " RETURNING d.alert_id",
+        (status, _printable(error, 1000) if error else None, tried, next_attempt_at, status, batch_size,
+         [j["alert_id"] for j in jobs], [j["notifier"] for j in jobs], [j.get("action", "trigger") for j in jobs],
+         [j["claimed_at"] for j in jobs]))
+    if len(rows) < len(jobs):
+        log.warning("알림 %d건 → %s: 이미 풀린 행의 결과라 버립니다", len(jobs) - len(rows), jobs[0]["notifier"])
+    return len(rows)
 
 
 async def fail_due_deliveries(notifier: str, error: str, now: datetime, backoff_sec: list[int], max_attempts: int) -> int:
@@ -1260,7 +1325,8 @@ _ALERT_COLUMNS = (
     " (SELECT count(*) FROM alert_notes n WHERE n.alert_id = a.id AND n.action = 'note') AS note_count,"
     " (SELECT COALESCE(json_agg(json_build_object('notifier', d.notifier, 'action', d.action, 'status', d.status,"
     "        'attempts', d.attempts, 'last_error', d.last_error, 'sent_at', d.sent_at,"
-    "        'claimed_at', d.claimed_at, 'next_attempt_at', d.next_attempt_at) ORDER BY d.notifier, d.action DESC), '[]')"
+    "        'claimed_at', d.claimed_at, 'next_attempt_at', d.next_attempt_at, 'batch_size', d.batch_size)"
+    "        ORDER BY d.notifier, d.action DESC), '[]')"
     "    FROM alert_deliveries d WHERE d.alert_id = a.id) AS deliveries"
 )
 

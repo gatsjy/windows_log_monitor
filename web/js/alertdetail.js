@@ -69,7 +69,9 @@ export function deliveryChips(deliveries = []) {
   if (!deliveries.length) return html`<span class="muted">대상 없음</span>`;
   return html`${deliveries.map((d) => {
     const [mark, label] = d.claimed_at ? ['↗', '보내는 중'] : DELIVERY[d.status] ?? ['?', d.status];
-    const next = d.status === 'failed' && d.next_attempt_at ? ` · 다음 시도 ${fmtTime(d.next_attempt_at, { date: false })}` : '';
+    const held = d.status === 'pending' && !d.claimed_at && d.next_attempt_at && new Date(d.next_attempt_at) > Date.now();
+    const next = d.status === 'failed' && d.next_attempt_at ? ` · 다음 시도 ${fmtTime(d.next_attempt_at, { date: false })}`
+      : held ? ` · 같은 규칙 알림을 모아 ${fmtTime(d.next_attempt_at, { date: false })}에 보냄` : d.batch_size > 1 ? ` · ${d.batch_size}건을 묶어 한 통으로` : '';
     const what = d.action === 'resolve' ? '해소 통지 ' : isEscalation(d) ? '다시 알림(에스컬레이션) ' : '';   // 해소 통지 (B-35 2단계)
     return html`<span class="dlv ${d.status}" title="${what}${label}${next}${d.last_error ? `: ${d.last_error}` : ''}">${mark} ${d.notifier}${d.action === 'resolve' ? ' · 해소' : isEscalation(d) ? ' · 다시' : ''}</span>`;
   })}`;
@@ -227,7 +229,7 @@ export async function openAlert(id, { onChange } = {}) {
             : isEscalation(d) ? html` <span class="muted">다시 알림 (${fmtDuration(Number(d.action.split(':')[1]))} ${d.action.endsWith(':acked') ? '미확인' : '미해결'})</span>` : ''}</td>
           <td class="nowrap">${deliveryChips([d])}</td>
           <td class="r num">${d.attempts}</td>
-          <td class="nowrap muted">${d.sent_at ? fmtTime(d.sent_at) : '–'}</td>
+          <td class="nowrap muted">${d.sent_at ? fmtTime(d.sent_at) : '–'}${d.batch_size > 1 ? html` <span title="같은 규칙 알림을 한 통으로 (B-41)">· ${d.batch_size}건 묶음</span>` : ''}</td>
           <td class="ink-2" style="overflow-wrap:anywhere">${d.last_error || ''}</td>
         </tr>`)}</tbody></table></div>
       ${samples.length ? html`

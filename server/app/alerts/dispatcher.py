@@ -23,8 +23,9 @@ from typing import Any
 from .. import db, repository
 from ..config import settings
 from . import targets
-from .message import AlertMessage, escalation_from_action
+from .message import SEVERITY_RANK, AlertMessage, escalation_from_action
 from .notifiers import SEVERITY_LABELS, Notifier, NotifierError
+from .rules import AlertConfig
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ HOUSEKEEPING_SEC = 60
 RELEASE_ERROR = "서버가 보내는 도중 멈춰 다시 보냅니다 (같은 알림을 두 번 받을 수 있음)"
 EXPIRE_ERROR = "하루가 지나 보내지 않았습니다"
 DOWN_NOTE = " (같은 곳으로 방금 보낸 알림이 실패해 이번에는 시도하지 않음)"
+GROUP_MAX = 500   # 묶음 한 통에 담는 알림 상한 (B-41) — 넘는 것은 다음 묶음 간격에 '추가 n건'으로
 
 
 @dataclass
@@ -211,25 +213,35 @@ class Dispatcher:
                 return
 
     async def _send_one(self, name: str, notifier: Notifier) -> bool:
-        """한 건. 돌려주는 값 = 이 줄을 끝낼까 (보낼 것이 없거나 받는 곳 자체가 안 됨)."""
-        job = await repository.claim_delivery(name, datetime.now(UTC))
-        if job is None:
+        """한 통. 묶음을 받는 곳(B-41)이면 같은 규칙·종류의 대기 행을 함께 잡아 한 통으로 — 모으는 시간·묶음 간격 안이면
+        시도로 세지 않고 미룬다. 돌려주는 값 = 이 줄을 끝낼까 (보낼 것이 없거나 받는 곳 자체가 안 됨)."""
+        now = datetime.now(UTC)
+        config = _config()
+        grouping = notifier.groups() and config.group_interval_sec > 0
+        if grouping:
+            jobs = await repository.claim_group(name, now, GROUP_MAX)
+        else:
+            job = await repository.claim_delivery(name, now)
+            jobs = [job] if job else []
+        if not jobs:
             return True
         try:
-            if not notifier.accepts(job["severity"]):
-                reason = f"받을 최소 수준({SEVERITY_LABELS[notifier.min_severity]} 이상)보다 낮은 알림"
-                await repository.finish_delivery(job, "skipped", reason, tried=0)
+            if grouping:
+                hold = await _group_hold(name, jobs, config, now)
+                if hold is not None:
+                    await repository.hold_deliveries(jobs, hold)
+                    return False
+            ready = []
+            for job in jobs:
+                skip = (None if notifier.accepts(job["severity"])
+                        else f"받을 최소 수준({SEVERITY_LABELS[notifier.min_severity]} 이상)보다 낮은 알림") or _stale(job, notifier)
+                if skip:
+                    await repository.finish_delivery(job, "skipped", skip, tried=0)
+                else:
+                    ready.append(job)
+            if not ready:
                 return False
-            skip = _stale(job, notifier)
-            if skip:
-                await repository.finish_delivery(job, "skipped", skip, tried=0)
-                return False
-            message = AlertMessage.from_dict(job["payload"])
-            message.alert_id = job["alert_id"]
-            if job.get("action") == "resolve":
-                message.event_action, message.resolved_at = "resolve", job["resolved_at"]
-                message.started_at = job.get("started_at")
-            message.escalation = escalation_from_action(job.get("action") or "") or ""   # B-43: 다시 알림 머리말
+            message = _message(ready)
             try:
                 await asyncio.wait_for(notifier.send(message), timeout=SEND_TIMEOUT_SEC)
             except asyncio.CancelledError:
@@ -237,31 +249,31 @@ class Dispatcher:
             except Exception as exc:  # noqa: BLE001 - 어떤 실패든 기록하고 재시도 대상으로
                 timed_out = isinstance(exc, TimeoutError)
                 error = "전송 시간 초과" if timed_out else str(exc)[:1000]
-                attempts = job["attempts"] + 1
                 now = datetime.now(UTC)
-                retry_at = now + RETRY_BACKOFF[min(attempts - 1, 3)]
-                if attempts >= MAX_ATTEMPTS:
-                    await repository.finish_delivery(job, "gave_up", error)
-                else:
-                    await repository.finish_delivery(job, "failed", error, next_attempt_at=retry_at)
+                # 묶음은 함께 다시 보내도록 같은 때로 (첫 행의 실패 간격), 다섯 번째 실패한 행만 gave_up
+                retry_at = now + RETRY_BACKOFF[min(ready[0]["attempts"], 3)]
+                await repository.finish_deliveries([j for j in ready if j["attempts"] + 1 >= MAX_ATTEMPTS], "gave_up", error)
+                await repository.finish_deliveries([j for j in ready if j["attempts"] + 1 < MAX_ATTEMPTS], "failed", error,
+                                                   next_attempt_at=retry_at)
                 self.health(name).fail(now, error)
-                log.warning("알림 #%s → %s 전송 실패: %s", job["alert_id"], name, error)
+                log.warning("알림 %s → %s 전송 실패: %s", _ids(ready), name, error)
                 if timed_out or getattr(exc, "target_down", False):
                     # 나머지는 시도로 세지 않고 미루기만 — 알림 하나를 받는 곳이 계속 거절해(500) 보지도 않은 다른 알림까지
                     # 다섯 번 실패로 버려지던 것을 막는다(검토에서 재현). 미룬 행도 하루가 지나면 만료된다
                     await repository.defer_due_deliveries(name, error[:900] + DOWN_NOTE, now, retry_at)
                     return True
                 return False
-            await repository.finish_delivery(job, "sent", None)
+            await repository.finish_deliveries(ready, "sent", None, batch_size=len(ready))
             self.health(name).ok(datetime.now(UTC))
             return False
         except asyncio.CancelledError:
             raise
         except Exception:
             # 결과를 쓰다가 DB 가 끊기는 등: '보내는 중'으로 남기지 않고 풀어 둔다 (못 풀면 오래된 잡힘 정리가 푼다)
-            log.exception("알림 #%s → %s 처리 중 오류 — 다시 보낼 차례로 되돌립니다", job["alert_id"], name)
+            log.exception("알림 %s → %s 처리 중 오류 — 다시 보낼 차례로 되돌립니다", _ids(jobs), name)
             try:
-                await repository.unclaim_delivery(job)
+                for job in jobs:
+                    await repository.unclaim_delivery(job)
             except Exception:
                 log.exception("되돌리기 실패 (잠시 뒤 오래된 잡힘 정리가 푼다)")
             return True
@@ -272,6 +284,49 @@ class Dispatcher:
                 "running": running,
                 "sending": sorted(n for n, t in self._lanes.items() if not t.done()),
                 "targets": {n: h.as_dict() for n, h in self.targets.items()}}
+
+
+def _config() -> AlertConfig:
+    from .engine import engine  # 엔진이 이 모듈을 가져온다 — 순환을 피해 부를 때
+
+    return engine.config
+
+
+async def _group_hold(name: str, jobs: list[dict[str, Any]], config: AlertConfig, now: datetime) -> datetime | None:
+    """묶음을 언제까지 미룰까 (B-41, Alertmanager group_wait·group_interval). None = 지금 보낸다.
+    - 모으는 시간: 아직 한 번도 보내지 않은 행 중 가장 먼저 들어온 것부터 wait 초 — 그 사이 같은 규칙 알림을 모은다.
+    - 묶음 간격: 이 받는 곳에 같은 규칙·종류를 마지막으로 보낸 뒤 interval 초 안이면 그때까지 — '추가 n건' 한 통.
+    심각은 바로 보내고 간격도 짧다(group_timing). 재시도 차례인 행(실패한 것)은 모으지 않는다."""
+    severity = max((j["severity"] for j in jobs), key=lambda s: SEVERITY_RANK.get(s, 1))
+    wait, interval = config.group_timing(severity)
+    hold = None
+    fresh = [j["queued_at"] for j in jobs if j["attempts"] == 0]
+    if wait and fresh:
+        hold = min(fresh) + timedelta(seconds=wait)
+    if interval:
+        last = await repository.last_group_sent(name, jobs[0]["rule"], jobs[0]["action"], now - timedelta(seconds=interval))
+        if last is not None:
+            hold = max(hold or last, last + timedelta(seconds=interval))
+    return hold if hold is not None and hold > now else None
+
+
+def _message(jobs: list[dict[str, Any]]) -> AlertMessage:
+    """잡은 행 → 보낼 메시지. 하나면 예전과 같은 알림, 여럿이면 묶음 알림(AlertMessage.group)."""
+    messages = []
+    for job in jobs:
+        message = AlertMessage.from_dict(job["payload"])
+        message.alert_id = job["alert_id"]
+        if job.get("action") == "resolve":
+            message.event_action, message.resolved_at = "resolve", job["resolved_at"]
+            message.started_at = job.get("started_at")
+        message.escalation = escalation_from_action(job.get("action") or "") or ""   # B-43: 다시 알림 머리말
+        messages.append(message)
+    return messages[0] if len(messages) == 1 else AlertMessage.group(messages)
+
+
+def _ids(jobs: list[dict[str, Any]]) -> str:
+    ids = [f"#{j['alert_id']}" for j in jobs[:5]]
+    return ", ".join(ids) + (f" 외 {len(jobs) - 5}건" if len(jobs) > 5 else "")
 
 
 def _stale(job: dict[str, Any], notifier: Notifier) -> str | None:

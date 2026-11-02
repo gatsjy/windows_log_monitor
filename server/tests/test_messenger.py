@@ -23,7 +23,7 @@ import pytest
 
 from app.alerts.message import SEVERITY_COLORS, AlertMessage
 from app.alerts.messenger import FORMATS, JANDI_SHOWN_MAX, LINK_TITLE
-from app.alerts.notifiers import NotifierError, WebhookNotifier
+from app.alerts.notifiers import EmailNotifier, NotifierError, SmtpConfig, WebhookNotifier
 
 NOW = datetime(2026, 10, 3, 5, 0, 0, tzinfo=UTC)
 SNAPSHOTS = Path(__file__).resolve().parent / "snapshots"
@@ -64,6 +64,44 @@ def test_snapshot(fmt):
     # 스냅샷이 없으면 만들고 통과하지 않는다 — 저장소에서 빠진 것을 조용히 넘기지 않게
     assert path.exists(), f"스냅샷 없음: {path.name} — WLM_UPDATE_SNAPSHOTS=1 로 만들고 내용을 확인한 뒤 커밋하세요"
     assert actual == path.read_text(encoding="utf-8")
+
+
+def grouped(n: int = 25) -> AlertMessage:
+    """같은 규칙 알림 n건을 묶은 한 통 (B-41) — PC 마다 건수·시각이 다르다."""
+    items = [message(group_key=f"PC-{i:03d}", alert_id=100 + i, event_count=20 + i, fired_at=NOW + timedelta(seconds=i),
+                     samples=[{"id": 100 + i, "ts": NOW.isoformat(), "host": f"PC-{i:03d}", "level": 3, "channel": "Security",
+                               "event_id": 4625, "message": "계정을 로그온하지 못했습니다."}]) for i in range(n)]
+    g = AlertMessage.group(items)
+    g.link = "http://logmon.local:8080/#/alerts?since=7d&rule=%EB%A1%9C%EA%B7%B8%EC%98%A8"
+    return g
+
+
+@pytest.mark.parametrize("fmt", sorted(set(FORMATS) - {"json"}))
+def test_grouped_snapshot(fmt):
+    """묶음 알림 (B-41): 제목에 대상 수·앞 이름 셋, 본문에 대상 목록(20줄까지 + '외 n건'), 알림 화면 링크."""
+    actual = json.dumps(body(fmt, grouped()), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    path = SNAPSHOTS / f"webhook_{fmt}_grouped.json"
+    if os.environ.get("WLM_UPDATE_SNAPSHOTS") == "1":
+        path.write_text(actual, encoding="utf-8")
+    assert path.exists(), f"스냅샷 없음: {path.name} — WLM_UPDATE_SNAPSHOTS=1 로 만들고 내용을 확인한 뒤 커밋하세요"
+    assert actual == path.read_text(encoding="utf-8")
+
+
+def test_grouped_email_snapshot():
+    mail = EmailNotifier("메일", ["a@hosp.local"], SmtpConfig(host="smtp"), "[Log Monitor]").build(grouped())
+    actual = f"Subject: {mail['Subject']}\n\n{mail.get_body(('plain',)).get_content()}\n---\n{mail.get_body(('html',)).get_content()}"
+    path = SNAPSHOTS / "email_grouped.txt"
+    if os.environ.get("WLM_UPDATE_SNAPSHOTS") == "1":
+        path.write_text(actual, encoding="utf-8")
+    assert path.exists(), f"스냅샷 없음: {path.name} — WLM_UPDATE_SNAPSHOTS=1 로 만들고 내용을 확인한 뒤 커밋하세요"
+    assert actual == path.read_text(encoding="utf-8")
+
+
+def test_only_human_formats_group():
+    """json 웹훅·Oracle 은 알림마다 dedup_key·알림 번호로 사고를 여닫는 연동이라 묶지 않는다 (B-41)."""
+    assert {f: WebhookNotifier("w", "https://h.example.com/x", f).groups() for f in FORMATS} == {
+        "json": False, "text": True, "slack": True, "teams": True, "dooray": True, "jandi": True}
+    assert EmailNotifier("메일", [], SmtpConfig(host="smtp")).groups()
 
 
 def test_json_format_keeps_full_alert():

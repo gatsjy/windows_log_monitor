@@ -134,6 +134,13 @@ class Route:
         return True
 
 
+GROUP_WAIT_DEFAULT = 30
+GROUP_INTERVAL_DEFAULT = 300
+GROUP_WAIT_MAX = 300
+GROUP_INTERVAL_MAX = 3600
+CRITICAL_GROUP_INTERVAL = 60
+
+
 @dataclass(frozen=True)
 class AlertConfig:
     interval_sec: int = 30
@@ -142,6 +149,17 @@ class AlertConfig:
     fallback_notify: tuple[str, ...] = ()
     escalations: tuple[Escalation, ...] = ()
     routes: tuple[Route, ...] = ()
+    # 묶음 전송 (B-41, ADR-057): 사람이 읽는 받는 곳(메일·메신저)에 같은 규칙 알림을 모아 한 통으로. interval 0 = 묶지 않음(예전처럼)
+    group_wait_sec: int = GROUP_WAIT_DEFAULT
+    group_interval_sec: int = GROUP_INTERVAL_DEFAULT
+
+    def group_timing(self, severity: str) -> tuple[int, int]:
+        """(모으는 시간, 묶음 간격) 초. 심각은 바로 보내고 간격도 짧게 — 한 통이 이미 갔으니 같은 규칙의 다음 대상은 1분 안에."""
+        if self.group_interval_sec == 0:
+            return 0, 0
+        if severity == "critical":
+            return 0, min(CRITICAL_GROUP_INTERVAL, self.group_interval_sec)
+        return self.group_wait_sec, self.group_interval_sec
 
     def targets_for(self, rule: Rule, key: str | None = None) -> tuple[tuple[str, ...], list[str]]:
         """이 규칙·대상의 알림을 받을 곳과 거친 경로 이름 (B-26). 경로가 없으면 규칙의 notify 그대로(예전과 같음)."""
@@ -448,6 +466,12 @@ def parse(doc: Any) -> AlertConfig:
     interval = settings.get("interval_sec", 30)
     if not isinstance(interval, int) or not 5 <= interval <= 3600:
         raise ConfigError("settings.interval_sec 는 5~3600 사이 정수")
+    group_wait = settings.get("group_wait_sec", GROUP_WAIT_DEFAULT)
+    if isinstance(group_wait, bool) or not isinstance(group_wait, int) or not 0 <= group_wait <= GROUP_WAIT_MAX:
+        raise ConfigError(f"settings.group_wait_sec 는 0~{GROUP_WAIT_MAX} 사이 정수 (같은 규칙 알림을 모으는 시간)")
+    group_interval = settings.get("group_interval_sec", GROUP_INTERVAL_DEFAULT)
+    if isinstance(group_interval, bool) or not isinstance(group_interval, int) or not 0 <= group_interval <= GROUP_INTERVAL_MAX:
+        raise ConfigError(f"settings.group_interval_sec 는 0~{GROUP_INTERVAL_MAX} 사이 정수 (0 = 묶지 않음)")
 
     if doc.get("notifiers"):
         raise ConfigError("notifiers 항목은 환경설정 화면(수신 그룹·외부 연동)으로 옮겨졌습니다. alerts.yaml 에서 지우세요")
@@ -468,7 +492,7 @@ def parse(doc: Any) -> AlertConfig:
     escalations = _check_escalations(doc.get("escalations"), set(names))
     routes = _check_routes(doc.get("routes"), set(names))
     return AlertConfig(interval_sec=interval, rules=tuple(rules), fallback_notify=fallback, escalations=escalations,
-                       routes=routes)
+                       routes=routes, group_wait_sec=group_wait, group_interval_sec=group_interval)
 
 
 def parse_text(text: str) -> AlertConfig:

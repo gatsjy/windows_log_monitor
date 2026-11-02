@@ -7,7 +7,7 @@ import html
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from ..config import display_zone, settings
 
@@ -42,6 +42,12 @@ def escalation_from_action(action: str) -> str | None:
     """alert_deliveries.action 'escalate:<초>:<acked|resolved>' → 문구. 에스컬레이션이 아니면 None."""
     parts = action.split(":") if action.startswith("escalate:") else []
     return escalation_text(int(parts[1]), parts[2]) if len(parts) == 3 and parts[1].isdigit() else None
+
+
+SEVERITY_RANK = {"info": 1, "warning": 2, "error": 3, "critical": 4}
+GROUP_LIST_MAX = 20      # 묶음 알림 본문에 대상을 몇 줄까지 (나머지는 '외 n건' + 알림 화면 링크)
+GROUP_TITLE_KEYS = 3     # 제목에 보일 대상 이름 수
+GROUP_SAMPLES = 5        # 묶음 알림의 최근 이벤트 (알림마다 하나씩, 앞에서부터)
 
 
 # 서로 다른 값 수 규칙의 필드 이름 (화면 web/js/ruleform.js GROUP_LABELS 와 같은 말)
@@ -87,6 +93,8 @@ class AlertMessage:
     observe: bool = False   # 관찰 모드 규칙의 알림 (B-52) — 기록만, 보내지 않음
     escalation: str = ""    # 에스컬레이션으로 다시 보내는 알림 (B-43) — 문구(escalation_text). 저장되는 payload 에는 없음(전송 때만)
     routes: list[str] = field(default_factory=list)   # 받는 곳을 정한 경로 이름 (B-26) — 증적, 경로가 없으면 빈 목록
+    # 묶음 알림 (B-41): 같은 규칙의 알림 여럿을 한 통으로 — [{id, group_key, event_count, fired_at}]. 전송 때만 만든다(저장 안 함)
+    grouped: list[dict[str, Any]] = field(default_factory=list)
 
     # ------------------------------------------------------------ 직렬화
     def to_dict(self) -> dict[str, Any]:
@@ -102,6 +110,8 @@ class AlertMessage:
             data.pop("escalation")
         if not self.routes:
             data.pop("routes")
+        if not self.grouped:
+            data.pop("grouped")
         if not self.distinct_field:   # 건수 규칙의 본문(웹훅 json·저장된 payload)은 예전과 같게
             for key in ("distinct_field", "distinct_min", "distinct_count", "distinct_values"):
                 data.pop(key)
@@ -112,6 +122,32 @@ class AlertMessage:
             if key in data:
                 data[key] = data[key].isoformat() if data[key] else None
         return data
+
+    @classmethod
+    def group(cls, items: list[AlertMessage]) -> AlertMessage:
+        """같은 규칙·종류의 알림 여럿 → 한 통 (B-41). 가장 심각한·이른 알림을 바탕으로 건수는 합, 시각은 처음~마지막,
+        최근 이벤트는 알림마다 하나씩. 알림 번호는 없다(각 알림의 증적은 alert_deliveries 에 그대로)."""
+        items = sorted(items, key=lambda m: (-SEVERITY_RANK.get(m.severity, 1), m.fired_at, m.alert_id or 0))
+        base = items[0]
+        merged = cls.from_dict(base.to_dict())
+        merged.event_action, merged.resolved_at, merged.started_at = base.event_action, base.resolved_at, base.started_at
+        merged.escalation = base.escalation
+        firsts = [m.first_event_at for m in items if m.first_event_at]
+        lasts = [m.last_event_at for m in items if m.last_event_at]
+        resolved = [m.resolved_at for m in items if m.resolved_at]
+        merged.alert_id, merged.group_key = None, ""
+        merged.event_count = sum(m.event_count for m in items)
+        merged.fired_at = min(m.fired_at for m in items)
+        merged.first_event_at, merged.last_event_at = (min(firsts) if firsts else None), (max(lasts) if lasts else None)
+        merged.resolved_at = max(resolved) if resolved else merged.resolved_at
+        merged.samples = [m.samples[0] for m in items if m.samples][:GROUP_SAMPLES]
+        merged.previous_id, merged.previous_fired_at, merged.since_previous, merged.recurred = None, None, 0, False
+        merged.distinct_count, merged.distinct_values, merged.stream = 0, [], None
+        merged.routes = sorted({r for m in items for r in m.routes})
+        merged.link = alerts_link(base.rule)
+        merged.grouped = [{"id": m.alert_id, "group_key": m.group_key, "event_count": m.event_count,
+                           "fired_at": m.fired_at.isoformat()} for m in sorted(items, key=lambda m: (m.fired_at, m.alert_id or 0))]
+        return merged
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AlertMessage:
@@ -143,6 +179,11 @@ class AlertMessage:
 
     def title(self) -> str:
         target = f" · {self.group_key}" if self.group_key else ""
+        if self.grouped:   # '[오류] 서비스 비정상 종료 · 37대 (PC-001, PC-002, PC-003 외 34대)'
+            keys = [_short(g["group_key"] or "-", 40) for g in self.grouped[:GROUP_TITLE_KEYS]]
+            rest = len(self.grouped) - len(keys)
+            unit = self.group_unit
+            target = f" · {len(self.grouped)}{unit} ({', '.join(keys)}{f' 외 {rest}{unit}' if rest > 0 else ''})"
         prefix = ("[테스트] " if self.test else "[해소] " if self.resolved
                   else f"[다시 알림 — {self.escalation}] " if self.escalation else "")
         return f"{prefix}[{self.severity_label}] {self.rule}{target}"
@@ -153,9 +194,24 @@ class AlertMessage:
             return f"{self.escalation} — 담당자가 확인하세요. {text}"
         return text
 
+    @property
+    def group_unit(self) -> str:
+        """묶음 알림의 대상 세는 말 — PC 면 '대', 그 밖(사용자·IP·채널 등)은 '건'."""
+        return "대" if self.group_by == "host" or self.kind == "agent_silent" else "건"
+
+    def fired_text(self) -> str:
+        """발생 시각 — 묶음이면 처음 ~ 마지막."""
+        if self.grouped:
+            times = [t for g in self.grouped if (t := _dt(g.get("fired_at")))]
+            if times and min(times) != max(times):
+                return f"{local(min(times))} ~ {local(max(times))}"
+        return local(self.fired_at)
+
     def _summary(self) -> str:
         if self.test:
             return "알림 대상 연결 확인용 테스트 메시지입니다."
+        if self.grouped:
+            return self._group_summary()
         if self.resolved:
             if self.kind == "agent_silent":
                 return f"{self.group_key} 에서 로그/하트비트가 다시 들어옵니다 — 자동으로 해결했습니다 ({local(self.resolved_at)})"
@@ -182,9 +238,35 @@ class AlertMessage:
         return (f"{target}최근 {_window_text(self.window_sec)} 동안 조건에 맞는 이벤트 {self.event_count:,}건 "
                 f"(기준 {self.threshold:,}건 이상)")
 
+    def _group_summary(self) -> str:
+        n, unit = len(self.grouped), self.group_unit
+        if self.resolved:
+            return f"{n}{unit}의 알림이 조건이 풀려 자동으로 해결됐습니다 ({local(self.resolved_at)})"
+        if self.kind == "agent_silent":
+            return f"{n}대에서 {_window_text(self.window_sec)} 이상 로그/하트비트가 들어오지 않았습니다"
+        if self.kind == "stream_silent":
+            return (f"{n}{unit}의 로그가 {_window_text(self.window_sec)} 넘게 들어오지 않습니다 — PC 는 살아 있습니다. "
+                    "감사 정책·에이전트 설정을 확인하세요")
+        if self.kind in ("config", "system"):
+            return f"같은 알림 {n}건을 묶어 보냅니다 — 내용은 알림 화면에서 확인하세요"
+        basis = (f"서로 다른 {DISTINCT_LABELS.get(self.distinct_field, self.distinct_field)} {self.distinct_min:,}개 이상"
+                 if self.distinct_field else f"기준 {self.threshold:,}건 이상")
+        return (f"같은 규칙의 알림 {n}건을 묶어 보냅니다 — {n}{unit}에서 최근 {_window_text(self.window_sec)} 동안 조건에 맞는 "
+                f"이벤트 ({basis}), 모두 {self.event_count:,}건")
+
+    def group_lines(self) -> list[str]:
+        """묶음 알림의 대상 목록 — '- PC-001 · 12건 · 2026-11-02 10:01:02 · #1234', 넘치면 '… 외 n건'."""
+        lines = []
+        for g in self.grouped[:GROUP_LIST_MAX]:
+            count = f" · {int(g.get('event_count') or 0):,}건" if self.kind == "count" and not self.resolved else ""
+            lines.append(f"- {_short(g['group_key'] or '-', 120)}{count} · {local(_dt(g.get('fired_at')))} · #{g['id']}")
+        if len(self.grouped) > GROUP_LIST_MAX:
+            lines.append(f"… 외 {len(self.grouped) - GROUP_LIST_MAX:,}건 — 전체는 알림 화면에서")
+        return lines
+
     def distinct_line(self) -> str:
-        """'서로 다른 사용자: a, b, c … 외 4' (서로 다른 값 수 규칙만)"""
-        if not self.distinct_field or not self.distinct_values:
+        """'서로 다른 사용자: a, b, c … 외 4' (서로 다른 값 수 규칙만, 묶음 알림은 알림마다 달라 빼고)"""
+        if not self.distinct_field or not self.distinct_values or self.grouped:
             return ""
         label = DISTINCT_LABELS.get(self.distinct_field, self.distinct_field.removeprefix("f."))
         more = self.distinct_count - len(self.distinct_values)
@@ -222,7 +304,11 @@ class AlertMessage:
     @property
     def detail(self) -> str:
         """요약 아래에 붙는 설명. 설정 변경 알림은 첫 줄(요약)을 뺀 변경 목록.
-        앞 알림과의 관계·지연 수신 줄을 앞에 붙인다 — 메일·메신저 형식이 모두 이것을 쓴다."""
+        앞 알림과의 관계·지연 수신 줄을 앞에 붙인다 — 메일·메신저 형식이 모두 이것을 쓴다.
+        묶음 알림(B-41)은 대상 목록과 규칙 설명 (앞 알림 관계·지연 줄은 알림마다 달라 상세 화면에서)."""
+        if self.grouped:
+            extra = "" if self.resolved or self.kind in ("config", "system") else self.description
+            return "\n".join(self.group_lines()) + (f"\n\n{extra}" if extra else "")
         if self.resolved:
             return self.resolved_line()
         if self.kind in ("config", "system"):
@@ -237,7 +323,7 @@ class AlertMessage:
             lines += ["", self.detail]
         if self.tags:
             lines += ["", "태그: " + ", ".join(self.tags)]
-        lines += ["", f"발생 시각: {local(self.fired_at)}"]
+        lines += ["", f"발생 시각: {self.fired_text()}"]
         if self.resolved_at:
             lines.append(f"해소 시각: {local(self.resolved_at)}")
         if self.first_event_at:
@@ -280,7 +366,7 @@ class AlertMessage:
             "<div style='font-family:system-ui,-apple-system,\"Malgun Gothic\",sans-serif;color:#0b0b0b;max-width:760px'>"
             f"<div style='border-left:4px solid {self.color};padding:4px 0 4px 12px'>"
             f"<div style='font-size:12px;color:#52514e'>{e(self.severity_label)} · "
-            f"{e(local(self.resolved_at if self.resolved else self.fired_at))}</div>"
+            f"{e(local(self.resolved_at) if self.resolved else self.fired_text())}</div>"
             f"<div style='font-size:17px;font-weight:600'>{e(self.title())}</div></div>"
             f"<p>{e(self.summary())}</p>{desc}{table}{link}"
             "<p style='font-size:12px;color:#898781'>— Log Monitor</p></div>"
@@ -321,6 +407,15 @@ def _dt(value: Any) -> datetime | None:
         return datetime.fromisoformat(value) if value else None
     except ValueError:
         return None
+
+
+def _short(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def alerts_link(rule: str) -> str:
+    """그 규칙의 알림 목록 (최근 7일 — 하루 뒤 다시 알림도 담기게) — 묶음 알림의 '자세히 보기'."""
+    return f"{settings.public_url}/#/alerts?since=7d&rule={quote(rule, safe='')}"
 
 
 def search_link(params: dict[str, str]) -> str:

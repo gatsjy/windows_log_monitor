@@ -215,6 +215,8 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
         "escalations": [{"name": p.name, "severities": list(p.severities), "rules": list(p.rules),
                          "steps": [{"after_sec": int(s.after.total_seconds()), "unless": s.unless, "notify": list(s.notify)}
                                    for s in p.steps]} for p in engine.config.escalations],
+        # 묶음 전송 (B-41) — 상태 띠에 한 줄 (고치는 것은 YAML 의 settings)
+        "grouping": {"wait_sec": engine.config.group_wait_sec, "interval_sec": engine.config.group_interval_sec},
         "by_severity": stats["by_severity"],
         "yaml": path.read_text(encoding="utf-8") if user.can("alerts.manage") and path.exists() else None,
     }

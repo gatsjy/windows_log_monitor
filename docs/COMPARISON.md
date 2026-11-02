@@ -146,7 +146,7 @@
 | 해결 뒤 재발 | Elastic(닫으면 억제 초기화), Zabbix 복구 식 | ❌ `last_alert` 가 처리 상태를 읽지 않아 해결 직후 재발도 간격(5분~2시간) 동안 침묵 | B-35 |
 | 지연 수신분 | Loki·VictoriaLogs 는 오래된 표본을 버림, Elastic 은 gap 채우기 | △ 받아서 평가하지만, 몰려 들어온 몇 시간치가 창 하나에 세어져 오탐 | B-35 |
 | 자동 해소·복구 통지 | Prometheus `keep_firing_for`, Alertmanager `send_resolved`, Zabbix 복구, PagerDuty `dedup_key` | ❌ 해결은 사람만, `agent_silent` 회복도 기록 없음, 외부 티켓용 고정 키 없음 | B-35 2단계 |
-| 묶음 전송 | Alertmanager `group_wait`·`group_interval`, Grafana 알림 정책 | ❌ 대상 키마다 한 통(300대면 300통) | B-41 |
+| 묶음 전송 | Alertmanager `group_wait`·`group_interval`, Grafana 알림 정책 | ○ 메일·메신저는 받는 곳·규칙마다 모아 한 통(30초 모음·5분 간격, 심각은 바로·1분), json·Oracle 은 알림마다 | B-41 |
 | 반복 점검·라벨 무음 | Alertmanager `time_interval`·라벨 매처 무음, Grafana mute timing, Zabbix 점검 기간 | △ 1회성 무음(30일 이내, 규칙·대상 단위) | B-42 |
 | 에스컬레이션 | PagerDuty 에스컬레이션 정책·확인 시간 초과, Zabbix 액션 단계 | △ 미확인·미해결 단계별 다시 알림(보낼 때 다시 확인). 확인 시간 초과·당직표는 아직 | B-43 |
 | 받는 곳 경로 | Alertmanager route 트리(matchers·continue) | ○ 순서 있는 `routes`(묶음·태그·심각도·규칙·PC 패턴, continue·replace), payload 에 경로 기록 | B-26 |
