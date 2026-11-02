@@ -81,7 +81,7 @@ async def list_alerts(
     start, user = _since(since), request.state.user
     groups = await repository.alert_group_counts(start)
     # 조회 범위가 있으면 보이는 (규칙, 대상)만 SQL 에서 거른다 — LIMIT 뒤에 거르면 오래된 내 알림이 목록에서 빠진다
-    pairs = None if user.scopes is None else sorted({(g["rule"], g["group_key"]) for g in groups if alert_visible(user, g)})
+    pairs = _visible_targets(user, groups)
     filters = {"rule": rule, "severity": severity, "group_key": host, "status": status}
     if format == "csv":
         return await _alerts_csv(request, user, start, since, pairs, filters, export_reason(reason))
@@ -102,10 +102,17 @@ async def alert_groups(
     """알림 이력 묶어 보기 (B-44): 규칙 › 대상마다 한 줄. 조회 범위는 GROUP BY 전에(목록과 같은 pairs)."""
     start, user = _since(since), request.state.user
     groups = await repository.alert_group_counts(start)
-    pairs = None if user.scopes is None else sorted({(g["rule"], g["group_key"]) for g in groups if alert_visible(user, g)})
+    pairs = _visible_targets(user, groups)
     rows = await repository.alert_groups(start, limit + 1, rule=rule, severity=severity, group_key=host, status=status,
                                          pairs=pairs)
     return {"items": rows[:limit], "truncated": len(rows) > limit, "limit": limit}
+
+
+def _visible_targets(user: User, groups: list[dict[str, Any]]) -> list[tuple[str, str, str]] | None:
+    """조회 범위가 있으면 보이는 (규칙, 대상, 처음 보는 값의 PC) — 둘만 넘기면 같은 값 조합의 범위 밖 PC 알림이 섞였다(검토에서 재현)."""
+    if user.scopes is None:
+        return None
+    return sorted({(g["rule"], g["group_key"], g.get("terms_host") or "") for g in groups if alert_visible(user, g)})
 
 
 CSV_LIMIT = 10000
@@ -113,7 +120,7 @@ QUALITY_WINDOW = timedelta(days=90)
 
 
 async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
-                      pairs: list[tuple[str, str]] | None, filters: dict[str, str | None], reason: str) -> Response:
+                      pairs: list[tuple[str, str, str]] | None, filters: dict[str, str | None], reason: str) -> Response:
     rows = await repository.list_alerts(start, CSV_LIMIT + 1, pairs=pairs, **filters)
     truncated = len(rows) > CSV_LIMIT  # 잘렸다는 사실을 파일·응답 머리글·감사로그에 모두 남긴다 (증적이 몰래 빠지지 않게)
     rows = rows[:CSV_LIMIT]
@@ -819,7 +826,7 @@ async def handle_alerts(body: HandleBody, request: Request, user: User = Depends
     if body.action == "resolve" and body.resolution is None:
         # 닫을 때 정탐·오탐을 남겨야 규칙을 고치거나 끌지 데이터로 정한다 (B-44)
         raise HTTPException(422, "종료 분류를 고르세요 (정탐·오탐·판단 불가)")
-    # 같은 규칙·대상의 알림은 보이는지 여부도 같다 → 보이는 알림에서 넓혀도 범위를 벗어나지 않는다
+    # 같은 규칙·대상·PC(처음 보는 값의 payload 의 PC)의 알림은 보이는지 여부도 같다 → 보이는 알림에서 넓혀도 범위를 벗어나지 않는다
     changed = await repository.handle_alerts(visible, body.action, user.username, note, with_related=body.with_related,
                                              resolution=body.resolution if body.action == "resolve" else None)
     unchanged = [i for i in visible if i not in changed]

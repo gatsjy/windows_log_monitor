@@ -178,6 +178,8 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 알림은 `engine.fire_rule(rule, message, claim=…)` — `insert_alert` 가 같은 트랜잭션에서 pending → alerted·aggregated 로 바꾸지 못하면 알림을 넣지 않는다. 다른 경로로 '처음 보는 값' 알림을 넣지 않는다.
   - `learn_until` 은 앞으로만 늘리고 조건이 바뀌어도 `cursor_at` 까지만(아직 훑지 않은 구간은 알릴 수 있게). 거슬러 배우는 동안은 알리지 않고, 진행은 구간마다 남긴다. 상한을 넘으면 지우지 말고 `CappedError` — **이번 평가의** 넘은 수로(누적하면 영영 오류).
   - 처음 본 PC·시각은 같은 첫 행(가장 작은 id)에서. 알림을 돌려주는 새 쿼리가 `alert_visible` 에 행을 넘기면 `payload->'terms'->>'host' AS terms_host` 도 뽑는다(대상 이름이 값 조합이라 PC 가 거기에만 있다). PC 표본으로 받는 곳을 셀 때는 `AlertConfig.sample_targets`.
+  - 알림의 '같은 대상'은 (rule, group_key, `repository.ALERT_HOST`) 셋 — 조회 범위 목록(`_visible_targets`)·'함께 해결'·같은 대상 수에 새 쿼리를 더할 때도 셋으로. 둘만 보면 범위 밖 PC 알림이 섞인다.
+  - 상한 오류(`overflow_n`)는 자리가 다시 생길 때까지 남긴다(한 평가만이면 감시가 못 알림, 끝없이면 상한을 올려도 안 풀림).
   - 시험은 `engine.evaluate` 를 직접 부르고 받은 시각을 앞당긴 로그를 넣는다(`test_api_new_terms.logon`) — 며칠 전 로그는 지난달 파티션이 필요하다(픽스처가 만든다).
 - 알림 규칙이 감시하는 분류는 `Rule.categories`(match.category + match.query 의 `category:`)입니다. 조회 범위 판단(`alerts/visibility.py`)은 이것만 봅니다.
 - **새 API 의 권한:** 관리자만이면 `require_admin`, 그룹으로 위임할 수 있는 기능이면 `require_permission("권한")`(auth/groups.py PERMISSIONS 에 추가). 화면은 `auth.can("권한")` 으로 버튼을 숨긴다.

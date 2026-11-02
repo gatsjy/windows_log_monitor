@@ -35,6 +35,10 @@ PURGE_EVERY = timedelta(hours=6)
 KEY_VALUE_MAX = 100                     # 대상 이름에 넣는 값 하나의 글자 수 — 알림 색인(btree 2704 바이트)을 넘지 않게 (값 전체는 payload 에)
 FIRST_WINDOW = timedelta(hours=1)       # 알릴 때 다시 보는 구간: 처음 본 때부터 — 오래 미뤄 둔 조합이 며칠 치를 훑지 않게
 HOSTS_MAX = 50
+RECENT = timedelta(days=1)              # 알릴 때 PC 를 보는 최근 구간 (처음 본 때의 한 시간과 함께 — 오래 미뤘거나 무음 뒤 다시 연 조합)
+SPREAD_EVERY = timedelta(minutes=5)     # PC 무음으로 보내지 않은 조합이 다른 PC 로 번졌나 보는 간격
+SPREAD_MAX = 50
+_spread: dict[int, datetime] = {}
 _purged: dict[int, datetime] = {}       # 메모리 (워커 1개) — 다시 시작하면 한 번 더 지울 뿐
 _ceiling: dict[int, int] = {}           # 시간 초과가 난 구간 크기 — 다시 그만큼 키우지 않는다 (다시 시작하면 한 번 더 겪을 뿐)
 
@@ -67,22 +71,32 @@ async def _state(rule: Rule, saved: str | None, now: datetime) -> dict[str, Any]
         # DB 에 있는 만큼 거슬러 배우고 모자란 만큼 앞으로 배운다
         learn_until = max(now, now + rule.learn - (now - start))
         return await repository.create_new_terms_state(key, fields, sig, now, learn_until, start, now, "처음")
-    if state["filter_sig"] != sig:
-        # 조건이 바뀜: 본 값은 두고 새 조건으로 다시 거슬러 배운다(그동안 알림은 미룸). 아직 훑지 않은 [cursor_at, 지금) 은 배우는 기간이
-        # 아니다 — learn_until 을 지금으로 당기면 바꾸기 직전에 들어온 새 값이 조용히 '배운 값'이 됐다(검토에서 재현)
-        await repository.update_new_terms_state(state["id"], filter_sig=sig, backfill_from=max(now - rule.learn, oldest),
-                                                backfill_to=now, learn_until=max(state["learn_until"], state["cursor_at"]),
-                                                relearn_reason="조건 바뀜")
-        return await repository.new_terms_state(key, fields)
     if now - state["cursor_at"] > CATCHUP_MAX:
-        # 오래 멈춤: 그 사이는 배우기만(밀린 것을 한꺼번에 '처음 보는 값'으로 알리지 않게). history 안이면 멈춘 때부터 —
-        # 거슬러 배우던 중이었으면 그 남은 구간까지(덮어쓰면 조건을 바꾸고 다시 배우던 앞부분을 영영 배우지 않았다, 검토에서 재현)
+        # 오래 멈춤(조건도 바뀌었으면 함께): 그 사이는 배우기만(밀린 것을 한꺼번에 '처음 보는 값'으로 알리지 않게). history 안이면 멈춘 때부터,
+        # 조건이 바뀌었으면 새 조건으로 배우는 기간까지, 거슬러 배우던 중이었으면 그 남은 구간까지(덮어쓰면 앞부분을 영영 배우지 않았다).
+        # 조건 바뀜을 먼저 보면 멈춘 동안 들어온 값이 모두 알림이 됐다(검토에서 재현)
+        changed = state["filter_sig"] != sig
         frm = max(state["cursor_at"], now - rule.history)
+        if changed:
+            frm = min(frm, max(now - rule.learn, oldest))
         if state["backfill_to"] is not None and state["backfill_from"] is not None:
             frm = min(frm, state["backfill_from"])
-        await repository.update_new_terms_state(state["id"], cursor_at=now, backfill_from=frm, backfill_to=now,
+        await repository.update_new_terms_state(state["id"], filter_sig=sig, cursor_at=now, backfill_from=frm, backfill_to=now,
                                                 learn_until=max(state["learn_until"], now),
-                                                relearn_reason=f"{(now - state['cursor_at']).days}일 멈춤")
+                                                relearn_reason=f"{(now - state['cursor_at']).days}일 멈춤"
+                                                + (" · 조건 바뀜" if changed else ""))
+        return await repository.new_terms_state(key, fields)
+    if state["filter_sig"] != sig:
+        # 조건이 바뀜: 본 값은 두고 새 조건으로 이미 훑은 곳(cursor_at)까지 다시 거슬러 배운다(그동안 알림은 미룸). 아직 훑지 않은
+        # [cursor_at, 지금) 은 배우는 기간이 아니다 — 지금부터 거슬러 배우면 이어서 훑기보다 먼저 그 구간의 새 값을 '배운 값'으로 만들었다
+        # (검토에서 재현). 그 구간의 값도 더 먼저 본 것이 있으면 거슬러 배우기가 배운 값으로 돌린다
+        to = state["cursor_at"]
+        frm = max(to - rule.learn, oldest)
+        if state["backfill_to"] is not None and state["backfill_from"] is not None:
+            frm = min(frm, state["backfill_from"])
+        await repository.update_new_terms_state(state["id"], filter_sig=sig, backfill_from=min(frm, to), backfill_to=to,
+                                                learn_until=max(state["learn_until"], state["cursor_at"]),
+                                                relearn_reason="조건 바뀜")
         return await repository.new_terms_state(key, fields)
     return state
 
@@ -97,21 +111,25 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     ns, fields = state["id"], list(rule.terms_fields)
     started = time.monotonic()
     chunk = state["chunk_sec"]
-    over = 0   # 이번 평가에서 상한 때문에 두지 못한 새 조합 — 누적하면 상한을 올려도 오류가 영영 남았다(검토에서 재현)
+    if state["overflow_n"] and state["terms_n"] < rule.max_terms:
+        # 상한 오류는 자리가 다시 생길 때(max_terms 를 올림·오래된 값 정리)까지 — 한 평가만 오류로 두면 평가 간격이 길 때 감시가 알리지
+        # 못한 채 두지 못한 값이 조용히 사라졌고(검토에서 재현), 끝없이 누적하면 상한을 올려도 오류가 영영 남았다
+        await repository.update_new_terms_state(ns, overflow_n=0)
 
-    async def scan(start: datetime, end: datetime, learning: bool, cursor: datetime | None) -> dict[str, int]:
-        nonlocal chunk, over
+    async def scan(start: datetime, end: datetime, learning: bool, cursor: datetime | None,
+                   count_from: datetime | None = None) -> dict[str, int]:
+        nonlocal chunk
         t0 = time.monotonic()
         held = (await repository.new_terms_state(rule_key(rule), fields))["terms_n"]
         try:
             out = await repository.scan_new_terms(ns, base, fields, start, end, history=rule.history, learning=learning,
-                                                  learn_until=state["learn_until"], room=max(0, rule.max_terms - held), cursor=cursor)
+                                                  learn_until=state["learn_until"], room=max(0, rule.max_terms - held), cursor=cursor,
+                                                  count_from=count_from)
         except db.QueryTimeout:
             _ceiling[ns] = min(_ceiling.get(ns, chunk), chunk)
             chunk = _clamp_chunk(chunk / 2)
             await repository.update_new_terms_state(ns, chunk_sec=chunk)
             raise
-        over += out["over"]
         # 꽉 찬 구간을 빨리 끝냈을 때만 키운다 — 이어서 훑기는 겹친 2분 남짓이라 늘 빨라서, 시간 초과로 줄인 크기를 다음 주기마다
         # 되돌려 거슬러 배우기가 같은 자리에서 영영 멈췄다(검토에서 재현). 시간 초과가 난 크기까지는 다시 키우지 않는다
         if end - start >= timedelta(seconds=chunk) and time.monotonic() - t0 < 2 and chunk * 2 < _ceiling.get(ns, CHUNK_MAX * 2):
@@ -122,7 +140,7 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     cursor = state["cursor_at"]
     while cursor < now and time.monotonic() - started < SCAN_BUDGET_SEC:
         end = min(cursor + timedelta(seconds=chunk), now)
-        await scan(cursor - OVERLAP, end, False, end)
+        await scan(cursor - OVERLAP, end, False, end, count_from=cursor)   # 겹쳐 본 2분의 넘친 값은 앞 구간에서 셌다
         cursor = end
     # 2) 거슬러 배우기 (알리지 않음) — 최근부터 거꾸로, 구간마다 진행을 남긴다(시간 초과 한 번에 그 주기의 진행을 모두 잃지 않게)
     backfilling = state["backfill_to"] is not None
@@ -135,14 +153,16 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
             if to > frm:
                 await repository.update_new_terms_state(ns, backfill_to=to, chunk_sec=chunk)
         backfilling = to > frm
-    await repository.update_new_terms_state(ns, chunk_sec=chunk, overflow_n=over,
+    await repository.update_new_terms_state(ns, chunk_sec=chunk,
                                             **({} if backfilling else {"backfill_to": None, "backfill_from": None}))
     if (last := _purged.get(ns)) is None or now - last > PURGE_EVERY:
         # 기준은 이어서 훑은 곳까지 — 지금으로 하면 아직 훑지 못한(밀린) 구간에 다시 보인 값을 지워 거짓 '처음 보는 값'이 됐다
         await repository.purge_seen_terms(ns, min(cursor, now) - rule.history - timedelta(days=1))
         _purged[ns] = now
     await repository.reopen_silenced_terms(ns, now)
+    await _reopen_spread(rule, ns, base, now)
     current = await repository.new_terms_state(rule_key(rule), fields)
+    over = current["overflow_n"]
     if run is not None:
         run.terms = {"terms": current["terms_n"], "max": rule.max_terms, "overflow": over,
                      "learn_until": current["learn_until"], "backfilling": backfilling,
@@ -154,7 +174,7 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     if not backfilling:
         fired = await _fire(engine, rule, ns, base, saved, exceptions, now)
     if over:
-        raise CappedError(f"값 조합 상한(max_terms {rule.max_terms:,}개)에 닿아 이번 평가에서 새 값 {over:,}개를 두지 못했습니다 — "
+        raise CappedError(f"값 조합 상한(max_terms {rule.max_terms:,}개)에 닿아 새 값을 두지 못하고 있습니다(지금까지 {over:,}번) — "
                           "그 값들은 알리지 않습니다. 조건을 좁히거나 max_terms 를 늘리세요")
     return fired
 
@@ -173,8 +193,49 @@ def _scoped(rule: Rule, base, values: list[str]):
 TERM_SHOWN = 256   # seen_terms.term 에 두는 값 하나의 글자 수 (마이그레이션 039 의 left(v, 256))
 
 
-def _key(values: list[str]) -> str:
-    return " · ".join(v if len(v) <= KEY_VALUE_MAX else v[:KEY_VALUE_MAX] + "…" for v in values)
+def _key(values: list[str], term_hash: bytes) -> str:
+    """대상 이름 — 값을 자르면 조합 열쇠(전체 값의 해시) 앞 10자리를 붙인다. 앞 100자가 같은 다른 값(인코딩한 PowerShell 등)이 같은
+    대상이 되어 한쪽에 건 무음·함께 해결·중복 제거가 다른 쪽을 가렸다(검토에서 재현)."""
+    cut = any(len(v) > KEY_VALUE_MAX for v in values)
+    text = " · ".join(v if len(v) <= KEY_VALUE_MAX else v[:KEY_VALUE_MAX] + "…" for v in values)
+    return f"{text} #{bytes(term_hash).hex()[:10]}" if cut else text
+
+
+async def _hosts(rule: Rule, base, values: list[str], first_seen: datetime, now: datetime) -> list[str] | None:
+    """그 조합을 본 PC — 처음 본 때부터 한 시간과 최근 하루. 없으면 [] (지금 조건에 맞는 로그 없음), 시간 초과면 None(모름)."""
+    windows = [(first_seen - timedelta(minutes=1), first_seen + FIRST_WINDOW)]
+    if first_seen + FIRST_WINDOW < now:
+        windows.append((max(first_seen + FIRST_WINDOW, now - RECENT), now + timedelta(seconds=1)))
+    hosts: dict[str, None] = {}
+    try:
+        for since, until in windows:
+            f = replace(_scoped(rule, base, values), received_since=since, received_before=until)
+            hosts.update(dict.fromkeys(r["value"] for r in await repository.top(f, "host", HOSTS_MAX) if r["value"]))
+    except db.QueryTimeout:
+        return None
+    return list(hosts)
+
+
+async def _reopen_spread(rule: Rule, ns: int, base, now: datetime) -> None:
+    """PC 로 건 무음으로만 보내지 않은 조합이 그 뒤 무음이 없는 PC 에서도 보이면 다시 알릴 차례로 (5분마다, 50개까지).
+    한 PC 의 점검 무음이 나중에 다른 PC 로 번진 새 값을 무음이 끝날 때까지 가렸다(검토에서 재현)."""
+    if "host" in rule.terms_fields or (now - _spread.get(ns, now - SPREAD_EVERY)) < SPREAD_EVERY:
+        return
+    _spread[ns] = now
+    reopen = []
+    for row in await repository.host_silenced_terms(ns, now, SPREAD_MAX):
+        values = list(row["term"])
+        f = replace(_scoped(rule, base, values), received_since=max(row["fired_at"] - OVERLAP, now - RECENT))
+        try:
+            hosts = [r["value"] for r in await repository.top(f, "host", HOSTS_MAX) if r["value"]]
+        except db.QueryTimeout:
+            continue
+        for h in hosts:
+            if await repository.active_silence(rule.name, row["group_key"], now, h) is None:
+                reopen.append(row["term_hash"])
+                break
+    if reopen:
+        await repository.reopen_terms(ns, reopen)
 
 
 def _link(rule: Rule, values: list[str], since: datetime, saved: str | None, exceptions: list[str]) -> str:
@@ -215,11 +276,9 @@ async def _fire(engine: Any, rule: Rule, ns: int, base, saved: str | None, excep
         values = list(p["term"])
         first = replace(_scoped(rule, base, values), received_since=p["first_seen"] - timedelta(minutes=1),
                         received_before=p["first_seen"] + FIRST_WINDOW)
-        # 다시 보기: 미뤄 둔 동안(거슬러 배우는 중) 예외를 걸었거나 조건을 바꿨으면 지금 조건에 맞는 로그가 없다 — 알리지 않고 배운 것으로
-        try:
-            hosts = [r["value"] for r in await repository.top(first, "host", HOSTS_MAX) if r["value"]]
-        except db.QueryTimeout:
-            hosts = None   # 모르면 알린다(놓치는 쪽보다)
+        # 다시 보기: 미뤄 둔 동안(거슬러 배우는 중) 예외를 걸었거나 조건을 바꿨으면 지금 조건에 맞는 로그가 없다 — 알리지 않고 배운 것으로.
+        # 시간 초과면 모르니 알린다(놓치는 쪽보다)
+        hosts = await _hosts(rule, base, values, p["first_seen"], now)
         if hosts == []:
             await repository.settle_terms(ns, [p["term_hash"]], "learned")
             continue
@@ -233,7 +292,7 @@ async def _fire(engine: Any, rule: Rule, ns: int, base, saved: str | None, excep
         except db.QueryTimeout:
             samples = []
         message = AlertMessage(
-            **common, group_key=_key(values), event_count=1, first_event_at=p["first_ts"], last_event_at=p["first_ts"],
+            **common, group_key=_key(values, p["term_hash"]), event_count=1, first_event_at=p["first_ts"], last_event_at=p["first_ts"],
             samples=[_sample(s) for s in samples],
             terms={"fields": list(rule.terms_fields), "values": values, "host": host, "history_days": days,
                    "first_ts": p["first_ts"].isoformat() if p["first_ts"] else None,
