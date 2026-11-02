@@ -196,6 +196,11 @@ class AlertConfig:
                 break
         return tuple(dict.fromkeys(notify)), used
 
+    def sample_targets(self, rule: Rule, host: str | None) -> tuple[str, ...]:
+        """PC 표본 하나에서 이 규칙의 받는 곳 — 처음 보는 값(B-47)은 대상 이름이 값 조합이라 PC 를 host= 로 넘겨야 발생 때(fire_rule)와
+        같다(대상 이름 자리에 넣으면 PC 경로가 영영 맞지 않아 경로로 받는 팀이 설정 변경 알림·시험 전송에서 빠졌다, 검토에서 재현)."""
+        return self.targets_for(rule, host, host=host if rule.kind == "new_terms" else None)[0]
+
     def host_samples(self) -> tuple[str | None, ...]:
         """경로의 PC 패턴마다 그 패턴에 맞는 PC 이름 하나와, 어느 패턴에도 맞지 않는 경우(None).
         PC 마다 받는 곳을 다 볼 수 없어 패턴마다 대표 이름으로 본다 — 설정 변경 판단·시험 전송·상태 판단의 받는 곳."""
@@ -212,7 +217,7 @@ class AlertConfig:
         (보안 태그 → 보안팀)이 시험 전송·상태 판단·설정 변경 알림에서 빠졌다(검토에서 재현)."""
         out: dict[str, None] = {}
         for host in self.host_samples() if hosts is None else hosts:
-            out.update(dict.fromkeys(self.targets_for(rule, host)[0]))
+            out.update(dict.fromkeys(self.sample_targets(rule, host)))
         return tuple(out)
 
     def delivery_targets(self) -> tuple[str, ...]:

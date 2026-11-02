@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -135,7 +137,7 @@ def test_burst_becomes_one_summary(client):
     fired, _ = evaluate(client, rule)
     assert len(fired) == 1
     key, terms = alerts()[-1]
-    assert key == "처음 보는 값 5개" and terms["count"] == 5 and len(terms["items"]) == 5
+    assert key.startswith("처음 보는 값 5개 · ") and terms["count"] == 5 and len(terms["items"]) == 5
     assert sql("SELECT count(*) FROM seen_terms WHERE state = 'aggregated'") == [(5,)]
     assert evaluate(client, rule)[0] == []
 
@@ -150,7 +152,6 @@ def test_cap_counts_and_errors(client):
     with pytest.raises(CappedError, match="상한"):
         evaluate(client, rule)
     assert sql("SELECT terms_n <= 100, overflow_n > 0 FROM new_terms_state") == [(True, True)]
-    sql("UPDATE new_terms_state SET overflow_n = 0")
     sql("DELETE FROM seen_terms WHERE term[1] LIKE 'cap%%'")
     sql("DELETE FROM events WHERE username LIKE 'cap%%'")   # 다음 시험의 거슬러 배우기에 다시 잡히지 않게
     sql("UPDATE new_terms_state SET terms_n = (SELECT count(*) FROM seen_terms)")
@@ -213,5 +214,283 @@ def test_rule_api_preview_and_accesslog(client):
     p = client.post("/api/alerts/rules/preview", json={"rule": rule, "hours": 1}, headers=CSRF).json()
     assert p["kind"] == "new_terms" and p["new"] >= 1 and ["preview-user", "10.9.9.9"] in [i["values"] for i in p["items"]]
     assert sql("SELECT count(*) FROM audit_log WHERE action = 'alerts.preview' AND target = '새 출발지 화면'") == [(1,)]
+    # 누구의 정보를 봤는지 — 조건이 기록에 (규칙 이름은 고르는 사람이 정한다)
+    assert sql("SELECT detail->'match'->>'event_id' FROM audit_log WHERE action = 'alerts.preview'") == [("4624",)]
     bad = client.put("/api/alerts/rules", json={"rule": {**rule, "name": "잘못", "fields": []}}, headers=CSRF)
     assert bad.status_code == 422
+
+
+# ---------------------------------------------------------------- 검토 보완 (B-47 1차 검토) — 규칙마다 이벤트 ID 를 따로 써서 서로 섞이지 않게
+def own_rule(name, event_id, *, fields="[account, ip]", burst=20, max_terms=50000, learn="1d", extra="", match=None, sid=None):
+    from app.alerts.engine import engine
+
+    text = (f"settings:\n  interval_sec: 30\n{extra}rules:\n  - name: {name}\n" + (f"    sid: {sid}\n" if sid else "")
+            + f"    kind: new_terms\n    match: {match or '{ event_id: \"' + str(event_id) + '\" }'}\n    fields: {fields}\n"
+            f"    history: 30d\n    learn: {learn}\n    burst: {burst}\n    max_terms: {max_terms}\n    severity: warning\n"
+            "    notify: [운영팀]\n")
+    Path(os.environ["WLM_ALERTS_FILE"]).write_text(text, encoding="utf-8")
+    engine.reload(force=True)
+    return next(r for r in engine.config.rules if r.name == name)
+
+
+def ev(user, ip, event_id, host="DC-01", at=None, raw="{}"):
+    at = at or datetime.now(UTC)
+    sql("INSERT INTO events (received_at, ts, host, source, category, event_id, level, username, src_ip, message, raw)"
+        " VALUES (%s, %s, %s, 'winevtlog', 'security', %s, 4, %s, %s, '로그온', %s::jsonb)", (at, at, host, event_id, user, ip, raw))
+
+
+def state_of(name):
+    return sql("SELECT id, backfill_from, backfill_to, chunk_sec, overflow_n, cursor_at, rule_key FROM new_terms_state"
+               " WHERE rule_key = %s", (f"name:{name}",))[0]
+
+
+def rule_alerts(name):
+    return sql("SELECT id, group_key, silence_id, payload FROM alerts WHERE rule = %s ORDER BY id", (name,))
+
+
+def test_backfill_keeps_progress_and_chunk_after_timeout(client, monkeypatch):
+    """6시간 구간이 시간 초과면: 그 주기의 진행을 잃지 않고, 다음 주기에 시간 초과 난 크기로 다시 키우지 않는다 (검토에서 재현: 영영 멈춤)."""
+    from app import db, repository
+
+    real = repository.scan_new_terms
+
+    async def slow(ns, f, fields, start, end, **kw):
+        if kw["learning"] and end - start > timedelta(hours=2):
+            raise db.QueryTimeout(20)
+        return await real(ns, f, fields, start, end, **kw)
+
+    monkeypatch.setattr(repository, "scan_new_terms", slow)
+    rule = own_rule("느린 배움", 4811)
+    with pytest.raises(db.QueryTimeout):
+        evaluate(client, rule)
+    _, frm, to, chunk, *_ = state_of("느린 배움")
+    assert to is not None and to < datetime.now(UTC) - timedelta(hours=3) and chunk == 7200   # 진행은 남고 크기는 반
+    evaluate(client, rule)                                                                     # 2시간씩 — 다시 4시간으로 키우지 않음
+    _, frm, to, chunk, *_ = state_of("느린 배움")
+    assert to is None and frm is None and chunk == 7200
+
+
+def test_overflow_clears_when_max_terms_raised(client):
+    from app.alerts.newterms import CappedError
+
+    rule = own_rule("상한 시험", 4812, max_terms=100)
+    evaluate(client, rule)
+    for i in range(102):
+        ev(f"ov{i}", "10.12.0.1", 4812)
+    with pytest.raises(CappedError, match="이번 평가에서 새 값 2개"):
+        evaluate(client, rule)                              # 둔 100개는 한 통으로 알림
+    rule = own_rule("상한 시험", 4812, max_terms=1000)
+    fired, run = evaluate(client, rule)                     # 겹쳐 본 2분에서 두지 못한 2개를 두고 알린다 — 오류는 풀린다
+    assert len(fired) == 2 and run.terms["overflow"] == 0 and state_of("상한 시험")[4] == 0
+    assert [a[1] for a in rule_alerts("상한 시험")][-2:] == ["ov100 · 10.12.0.1", "ov101 · 10.12.0.1"]
+    assert evaluate(client, rule)[0] == []
+
+
+def test_filter_change_keeps_unscanned_values_alertable(client):
+    rule = own_rule("조건 바꿈 틈", 4813)
+    evaluate(client, rule)
+    ev("intruder", "198.51.100.7", 4813)                    # 다음 평가 전에 들어온 새 값
+    rule = own_rule("조건 바꿈 틈", 4813, match='{ event_id: "4813,4814" }')
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1 and rule_alerts("조건 바꿈 틈")[-1][1] == "intruder · 198.51.100.7"
+
+
+def test_late_commit_inside_overlap_stays_pending(client):
+    """겹쳐 보다 늦게 커밋된 더 이른 행을 찾아도 배우는 기간 뒤면 알릴 차례 그대로 (검토에서 재현: 배운 값으로 바뀜)."""
+    from app import repository
+    from app.alerts.engine import rule_filter
+
+    rule = own_rule("늦은 커밋", 4815)
+    evaluate(client, rule)
+    ns, *_ = state_of("늦은 커밋")
+    t1 = datetime.now(UTC)
+    learn_until = t1 - timedelta(minutes=1)              # 배우는 기간은 늦은 행(t1-30초)보다 앞에서 끝남
+    ev("late", "10.15.0.1", 4815, at=t1)
+    base = client.portal.call(rule_filter, rule, t1)
+
+    def scan():
+        client.portal.call(lambda: repository.scan_new_terms(ns, base, ["account", "ip"], t1 - timedelta(minutes=5),
+                                                             datetime.now(UTC) + timedelta(seconds=1), history=rule.history,
+                                                             learning=False, learn_until=learn_until, room=1000, cursor=None))
+
+    scan()
+    ev("late", "10.15.0.1", 4815, at=t1 - timedelta(seconds=30))
+    scan()
+    assert sql("SELECT state, first_seen FROM seen_terms WHERE ns = %s AND term[1] = 'late'", (ns,)) == [
+        ("pending", t1 - timedelta(seconds=30))]
+
+
+def test_purge_waits_for_lagging_cursor(client, monkeypatch):
+    from app.alerts import newterms
+
+    rule = own_rule("밀린 정리", 4816)
+    evaluate(client, rule)
+    ns, *_ = state_of("밀린 정리")
+    sql("INSERT INTO seen_terms (ns, term_hash, term, first_seen, last_seen, state) VALUES"
+        " (%s, wlm_terms_hash(ARRAY['y','10.16.0.1']), ARRAY['y','10.16.0.1'], now() - interval '40 days',"
+        " now() - interval '31 days 12 hours', 'learned')", (ns,))
+    sql("UPDATE new_terms_state SET cursor_at = now() - interval '2 days' WHERE id = %s", (ns,))
+    monkeypatch.setattr(newterms, "SCAN_BUDGET_SEC", 0)
+    newterms._purged.pop(ns, None)
+    evaluate(client, rule)
+    assert sql("SELECT count(*) FROM seen_terms WHERE ns = %s AND term[1] = 'y'", (ns,)) == [(1,)]
+
+
+def test_catchup_keeps_unfinished_relearn(client, monkeypatch):
+    from app.alerts import newterms
+
+    rule = own_rule("멈춘 뒤 다시", 4817)
+    evaluate(client, rule)
+    ns, *_ = state_of("멈춘 뒤 다시")
+    sql("UPDATE new_terms_state SET cursor_at = now() - interval '4 days', backfill_from = now() - interval '10 days',"
+        " backfill_to = now() - interval '5 days' WHERE id = %s", (ns,))
+    monkeypatch.setattr(newterms, "SCAN_BUDGET_SEC", 0)
+    evaluate(client, rule)
+    [(frm, reason)] = sql("SELECT backfill_from, relearn_reason FROM new_terms_state WHERE id = %s", (ns,))
+    assert frm < datetime.now(UTC) - timedelta(days=9) and reason == "4일 멈춤"
+
+
+def test_first_host_is_first_event_and_silence_needs_every_host(client):
+    """처음 본 PC 는 첫 로그의 PC(이름 순 최솟값이 아님), 한 PC 의 점검 무음이 다른 PC 에서도 보인 새 값을 가리지 않는다."""
+    rule = own_rule("여러 PC", 4818)
+    evaluate(client, rule)
+    sql("INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by)"
+        " VALUES (NULL, 'AA-MAINT', now() - interval '1 minute', now() + interval '1 hour', 'PC 점검', 'admin')")
+    t = datetime.now(UTC)
+    ev("roam", "10.18.0.1", 4818, host="WS-77", at=t)
+    ev("roam", "10.18.0.1", 4818, host="AA-MAINT", at=t + timedelta(seconds=1))
+    fired, _ = evaluate(client, rule)
+    [(_, _, silence_id, payload)] = rule_alerts("여러 PC")
+    assert len(fired) == 1 and payload["terms"]["host"] == "WS-77" and silence_id is None
+    assert {s["host"] for s in payload["samples"]} == {"WS-77"}               # 표본은 그 알림의 PC 것만
+    sql("UPDATE alert_silences SET ends_at = now() WHERE group_key = 'AA-MAINT'")
+
+
+def test_silenced_combo_alerts_again_after_silence(client):
+    rule = own_rule("무음 뒤", 4819)
+    evaluate(client, rule)
+    sql("INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by)"
+        " VALUES ('무음 뒤', NULL, now() - interval '1 minute', now() + interval '1 hour', '점검', 'admin')")
+    ev("quiet", "10.19.0.1", 4819)
+    evaluate(client, rule)
+    assert rule_alerts("무음 뒤")[-1][2] is not None                          # 무음 중 — 기록만
+    ns, *_ = state_of("무음 뒤")
+    sql("UPDATE alert_silences SET starts_at = now() - interval '3 hours', ends_at = now() - interval '30 minutes' WHERE rule = '무음 뒤'")
+    # 두 시간 전에 처음 보였고(무음 중) — 시험에서는 받은 시각을 옮겨 흉내 낸다
+    sql("UPDATE seen_terms SET last_seen = now() - interval '2 hours', first_seen = now() - interval '2 hours' WHERE ns = %s", (ns,))
+    sql("UPDATE events SET received_at = now() - interval '2 hours' WHERE event_id = 4819")
+    ev("quiet", "10.19.0.1", 4819)                                             # 무음이 끝난 뒤에도 계속
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1 and rule_alerts("무음 뒤")[-1][2] is None
+
+
+def test_exception_added_while_pending_is_respected(client):
+    rule = own_rule("미룬 동안 예외", 4820)
+    evaluate(client, rule)
+    ns, *_ = state_of("미룬 동안 예외")
+    ev("scanner", "10.20.0.200", 4820)
+    sql("INSERT INTO seen_terms (ns, term_hash, term, first_seen, last_seen, first_host, state) VALUES"
+        " (%s, wlm_terms_hash(ARRAY['scanner','10.20.0.200']), ARRAY['scanner','10.20.0.200'], now() - interval '10 seconds',"
+        " now(), 'DC-01', 'pending')", (ns,))
+    sql("INSERT INTO rule_exceptions (rule, term, reason, created_by) VALUES ('미룬 동안 예외', 'ip:10.20.0.200', '취약점 점검기', 'admin')")
+    sql("UPDATE new_terms_state SET cursor_at = now() WHERE id = %s", (ns,))
+    assert evaluate(client, rule)[0] == []
+    assert sql("SELECT state FROM seen_terms WHERE ns = %s AND term[1] = 'scanner'", (ns,)) == [("learned",)]
+
+
+def test_long_values_cap_key_and_keep_samples(client):
+    rule = own_rule("긴 값", 4821, fields="[host, f.cmd]")
+    evaluate(client, rule)
+    value = "\U00020000" * 300
+    ev("svc", "10.21.0.1", 4821, raw=json.dumps({"cmd": value}))
+    fired, _ = evaluate(client, rule)
+    [(_, key, _, payload)] = rule_alerts("긴 값")
+    assert len(fired) == 1 and key == "DC-01 · " + "\U00020000" * 100 + "…" and len(payload["samples"]) == 1
+    assert "f.cmd" not in payload["link"]
+
+
+def test_burst_keys_differ_by_time(client):
+    rule = own_rule("몰림", 4822, burst=2)
+    evaluate(client, rule)
+    for i in range(3):
+        ev(f"b{i}", "10.22.0.1", 4822)
+    evaluate(client, rule)
+    time.sleep(1.1)                                      # 다음 묶음은 다른 시각 — 수만 같은 다른 사고
+    for i in range(3):
+        ev(f"c{i}", "10.22.0.2", 4822)
+    evaluate(client, rule)
+    keys = [a[1] for a in rule_alerts("몰림")]
+    assert len(keys) == 2 and keys[0] != keys[1] and all(k.startswith("처음 보는 값 3개 · ") for k in keys)
+
+
+def test_scoped_user_sees_and_handles_in_list_paths(client):
+    """PC 범위 사용자: 목록·숫자·처리(alert_refs)도 상세처럼 처음 본 PC 로 본다 (검토에서 재현: 상세만 보임)."""
+    from app import repository
+    from app.alerts.visibility import alert_visible, count_by_status
+    from app.auth.service import User
+    from app.filters import Scope
+
+    [(alert_id, *_)] = rule_alerts("여러 PC")
+    user = User(id=99, username="ws", display_name="ws", role="viewer", must_change_password=False,
+                password_changed_at=datetime.now(UTC), scopes=(Scope(hosts=("WS-*",)),))
+    groups = client.portal.call(repository.alert_group_counts)
+    assert any(alert_visible(user, g) for g in groups if g["rule"] == "여러 PC")
+    assert count_by_status(user, [g for g in groups if g["rule"] == "여러 PC"])["open"] == 1
+    assert all(alert_visible(user, r) for r in client.portal.call(repository.alert_refs, [alert_id]))
+
+
+def test_reachable_uses_host_routes_and_compliance_lines():
+    from app.alerts.configdiff import diff
+    from app.alerts.rules import parse_text
+    from app.compliance import _rule_lines
+
+    def config(tags):
+        return parse_text(f"""routes:
+  - name: DC 서버팀
+    match: {{ hosts: [DC-*], tags: [RDP] }}
+    notify: [서버팀]
+rules:
+  - name: 새 출발지
+    kind: new_terms
+    match: {{ event_id: "4624" }}
+    fields: [account, ip]
+    tags: [{tags}]
+    notify: [운영팀]
+""")
+    old, new = config("RDP"), config("MITRE T1078")
+    assert "서버팀" in old.reachable(old.rules[0]) and "서버팀" in old.delivery_targets()
+    assert any("서버팀" in c["text"] for c in diff(old, new) if c["change"] == "route_targets")
+    text = _rule_lines(old.rules[0])
+    assert "끊김" not in text and "조건: event_id=4624" in text and "account + ip 값 조합이 최근 30일" in text
+
+
+def test_startup_purge_keeps_enabled_rules_and_rekeys_sid(client):
+    from app import partitions
+    from app.alerts.engine import engine
+
+    rule = own_rule("번호 붙음", 4823)
+    evaluate(client, rule)
+    sql("UPDATE new_terms_state SET updated_at = now() - interval '8 days'")
+    sql("INSERT INTO new_terms_state (rule_key, fields, filter_sig, cursor_at, learn_until, updated_at)"
+        " VALUES ('name:지운 규칙', ARRAY['ip'], 'x', now(), now(), now() - interval '8 days')")
+    engine.forget()                      # 기동 중 — 설정을 읽기 전에는 지우지 않는다
+    client.portal.call(partitions.purge_new_terms)
+    assert sql("SELECT count(*) FROM new_terms_state WHERE rule_key = 'name:지운 규칙'") == [(1,)]
+    rule = own_rule("번호 붙음", 4823)
+    client.portal.call(partitions.purge_new_terms)
+    keys = {k for (k,) in sql("SELECT rule_key FROM new_terms_state")}
+    assert "name:번호 붙음" in keys and "name:지운 규칙" not in keys
+    rule = own_rule("번호 붙음", 4823, sid=1009999)   # 화면에서 저장해 번호가 붙음 — 처음부터 다시 배우지 않고 옮긴다
+    evaluate(client, rule)
+    assert sql("SELECT relearn_reason FROM new_terms_state WHERE rule_key = 'sid:1009999'") == [("처음",)]
+    assert sql("SELECT count(*) FROM new_terms_state WHERE rule_key = 'name:번호 붙음'") == [(0,)]
+
+
+def test_stale_terms_cleared_for_other_kinds(client):
+    from app.alerts.engine import RuleRun, engine
+    from app.alerts.rules import parse_text
+
+    [rule] = parse_text("rules:\n  - name: 건수로 바꿈\n    match: {event_id: '1'}\n    notify: [운영팀]\n").rules
+    engine.runs[rule.name] = RuleRun(terms={"terms": 1})
+    client.portal.call(engine._run_rule, rule, datetime.now(UTC))
+    assert engine.runs[rule.name].terms is None

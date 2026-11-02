@@ -33,6 +33,7 @@ function expected(c) {
     case 'msg_not': return `${c.expected.map((v) => `'${v}'`).join(', ')} 없음`;
     case 'never': return '같은 키의 포함 조건이 겹치지 않아 어떤 로그도 맞지 않음';
     case 'group_key': return '묶음 기준 — 값이 있어야 셈 (없으면 알림이 나지 않음)';
+    case 'term_field': return '볼 값 — 값이 있어야 조합으로 셈 (없으면 세지 않음)';
     case 'scope': return c.expected.map((s) => [s.categories.join('·'), s.hosts.join('·')].filter(Boolean).join(' / ') || '전체').join(' 또는 ');
     default: return JSON.stringify(c.expected);
   }
@@ -50,13 +51,14 @@ export function renderTest(res) {
   const failed = res.checks.filter((c) => !c.ok);
   return html`
     <div class="hint-box ${res.matched ? '' : 'warn'}">${res.matched
-      ? html`✓ 이 로그는 <b>${res.rule}</b> 조건에 맞습니다${res.checks.length ? '' : ' (조건 없음 — 모든 로그)'}. 건수·기간을 채우면 알림이 납니다.`
+      ? html`✓ 이 로그는 <b>${res.rule}</b> 조건에 맞습니다${res.checks.length ? '' : ' (조건 없음 — 모든 로그)'}. ${res.kind === 'new_terms'
+        ? '볼 값 조합이 최근에 없던 것이면 알림이 납니다 (배우는 기간에는 기억만).' : '건수·기간을 채우면 알림이 납니다.'}`
       : html`✕ 이 로그는 <b>${res.rule}</b> 조건에 맞지 않습니다 — 조건 ${res.checks.length}개 중 ${failed.length}개가 맞지 않음.`}
       ${res.ingest_error ? html`<div class="tag-bad">정규화 오류: ${res.ingest_error}</div>` : ''}</div>
     ${res.checks.length ? html`<div class="table-wrap"><table class="table ctx-table rule-test">
       <thead><tr><th>조건</th><th>기대</th><th>이 로그</th><th></th></tr></thead>
       <tbody>${res.checks.map((c) => html`<tr class="${c.ok ? '' : 'rule-test-fail'}">
-        <td class="nowrap">${label(c.key)}${c.op === 'group_key' ? ' (묶음)' : ''}${c.exception ? html`<div class="muted" style="font-size:12px">규칙 예외 '${c.exception}'</div>` : ''}</td>
+        <td class="nowrap">${label(c.key)}${c.op === 'group_key' ? ' (묶음)' : c.op === 'term_field' ? ' (볼 값)' : ''}${c.exception ? html`<div class="muted" style="font-size:12px">규칙 예외 '${c.exception}'</div>` : ''}</td>
         <td>${expected(c)}</td>
         <td class="ctx-msg">${actual(c)}</td>
         <td class="nowrap ${c.ok ? 'tag-good' : 'tag-bad'}">${c.ok ? '✓ 맞음' : '✕ 아님'}</td></tr>`)}</tbody></table></div>` : ''}`;

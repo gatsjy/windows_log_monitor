@@ -175,8 +175,8 @@ def _routed_loss(old: AlertConfig, old_rule: Rule, new: AlertConfig, new_rule: R
     맞는 경로가 달라져 팀 하나가 조용히 빠졌다(검토에서 재현)."""
     lost: dict[str, None] = {}
     for host in hosts:
-        after = set(new.targets_for(new_rule, host)[0])
-        lost.update(dict.fromkeys(n for n in old.targets_for(old_rule, host)[0] if n not in after))
+        after = set(new.sample_targets(new_rule, host))
+        lost.update(dict.fromkeys(n for n in old.sample_targets(old_rule, host) if n not in after))
     return list(lost)
 
 

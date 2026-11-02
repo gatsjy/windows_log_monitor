@@ -255,10 +255,17 @@ async def purge_iis_layouts(now: datetime | None = None) -> None:
 
 
 async def purge_new_terms() -> None:
-    """지운·꺼 둔 처음 보는 값 규칙(B-47)의 상태와 본 값 — 7일 손대지 않았으면 지운다(다시 켜면 처음부터 다시 배움, ISMS.md)."""
+    """지운·꺼 둔 처음 보는 값 규칙(B-47)의 상태와 본 값 — 7일 손대지 않았으면 지운다(다시 켜면 처음부터 다시 배움, ISMS.md).
+    켜진 규칙의 것은 지우지 않는다 — 서버가 7일 넘게 멈췄다 뜨면 엔진이 돌기 전 기동 정리가 모두 지워 history 안의 값이 새 값이 됐다
+    (검토에서 재현). 설정을 아직 읽지 못했으면(기동 중) 건너뛴다."""
     from . import repository
+    from .alerts.configdiff import rule_key
+    from .alerts.engine import engine
 
-    deleted = await repository.purge_new_terms_states(datetime.now(UTC) - timedelta(days=7))
+    if not engine.loaded:
+        return
+    keep = [(rule_key(r), list(r.terms_fields)) for r in engine.config.rules if r.kind == "new_terms" and r.enabled]
+    deleted = await repository.purge_new_terms_states(datetime.now(UTC) - timedelta(days=7), keep)
     if deleted:
         log.info("쓰지 않는 처음 보는 값 상태 %s개를 지웠습니다", deleted)
 

@@ -68,6 +68,11 @@ async def summary(rules: tuple[Rule, ...], coverage: dict[str, dict[str, Any]], 
     return out
 
 
+def _days(delta) -> str:
+    sec = int(delta.total_seconds())
+    return f"{sec // 86400}일" if sec % 86400 == 0 else f"{sec}초"
+
+
 def _rule_lines(rule: Rule, exceptions: list[dict[str, Any]] = (), since: datetime | None = None,
                 until: datetime | None = None) -> str:
     """규칙 정의 — 심사에서 '무엇을 어떻게 탐지했나'를 보이는 글. 기준(건수·서로 다른 값·끊김)과 그 기간에 걸려 있던 예외까지(검토)."""
@@ -80,6 +85,10 @@ def _rule_lines(rule: Rule, exceptions: list[dict[str, Any]] = (), since: dateti
         distinct = f" · 서로 다른 {rule.distinct_field} {rule.distinct_min}개 이상" if rule.distinct_field else ""
         lines += [f"조건: {match}",
                   f"기준: {int(rule.window.total_seconds())}초 동안 {rule.threshold}건 이상{distinct} · 묶음 {rule.group_by}"]
+    elif rule.kind == "new_terms":   # 처음 보는 값 (B-47) — '끊김' 기준으로 적혀 심사 증적이 규칙을 틀리게 설명했다(검토에서 재현)
+        lines += [f"조건: {match}",
+                  (f"기준: {' + '.join(rule.terms_fields)} 값 조합이 최근 {_days(rule.history)} 동안 없던 것이면 조합마다 한 번"
+                   f" · 처음 {_days(rule.learn)}은 배우기만 · 한 주기에 {rule.burst}개 넘으면 한 통 · 둘 조합 상한 {rule.max_terms:,}개")]
     else:
         lines += [f"기준: {int(rule.silent_for.total_seconds())}초 동안 수신 없음" if rule.kind == "agent_silent"
                   else "기준: 늘 오던 채널이 평소보다 오래 끊김", f"대상 PC: {', '.join(rule.hosts) or '전체'}"]

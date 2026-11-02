@@ -415,6 +415,8 @@ class AlertEngine:
     async def _run_rule(self, rule: Rule, now: datetime) -> None:
         """규칙 하나 — 실패·시간 초과는 그 규칙에만 남기고 다음 규칙으로 (무거운 규칙 하나가 평가 전체를 멈추지 않게)."""
         run = self.runs.setdefault(rule.name, RuleRun())
+        if rule.kind != "new_terms":
+            run.terms = None   # 처음 보는 값 규칙을 다른 종류로 바꾸면 지난 상태가 남아 화면에 '배우는 중'이 계속 보였다
         self.current_rule, self.progress_at = rule.name, datetime.now(UTC)
         started = time.monotonic()
         error = kind = None
@@ -592,13 +594,20 @@ class AlertEngine:
         return fired
 
     # ------------------------------------------------------------ 전송
-    async def fire(self, message: AlertMessage, notify: tuple[str, ...], claim: dict | None = None) -> int | None:
+    async def fire(self, message: AlertMessage, notify: tuple[str, ...], claim: dict | None = None,
+                   hosts: list[str] | None = None) -> int | None:
         """알림을 기록하고 전송기를 깨운다 — 보내는 것은 전송기(dispatcher)다. 여기서는 네트워크를 쓰지 않는다 (ADR-045).
-        claim: 처음 보는 값(B-47)의 조합 — 다른 쪽이 이미 알렸으면 None."""
+        claim: 처음 보는 값(B-47)의 조합 — 다른 쪽이 이미 알렸으면 None.
+        hosts: 여러 PC 에서 보인 조합(B-47) — PC 로 건 무음은 그 PC 모두에 걸려야 무음(한 PC 의 점검 무음이 다른 PC 의 새 값을 가리지 않게)."""
         # 설정 변경 알림은 무음으로 막지 않는다 — '모든 규칙' 무음을 건 뒤 규칙을 끄면 아무도 모르게 된다
         host = (message.stream or {}).get("host") or (message.terms or {}).get("host")
-        silence = (None if message.kind == "config"
-                   else await repository.active_silence(message.rule, message.group_key, message.fired_at, host))
+        if message.kind == "config":
+            silence = None
+        elif hosts:
+            found = [await repository.active_silence(message.rule, message.group_key, message.fired_at, h) for h in hosts]
+            silence = None if any(x is None for x in found) else max(found, key=lambda x: x["ends_at"])
+        else:
+            silence = await repository.active_silence(message.rule, message.group_key, message.fired_at, host)
         # 관찰 모드(B-52): 무음처럼 기록만 한다. 시험 발송은 받는 곳을 시험하는 것이라 보낸다
         message.observe = not message.test and self.observing(message.rule)
         alert_id = await repository.insert_alert(message.to_dict(), notify, silence, observe=message.observe, claim=claim)
@@ -673,10 +682,16 @@ class AlertEngine:
             dispatcher.wake()
         return reopened
 
-    async def fire_rule(self, rule: Rule, message: AlertMessage, claim: dict | None = None) -> int | None:
+    async def fire_rule(self, rule: Rule, message: AlertMessage, claim: dict | None = None,
+                        hosts: list[str] | None = None) -> int | None:
         """규칙의 알림 — 받는 곳은 규칙의 notify 에 경로(routes, B-26)를 적용해서. 거친 경로 이름은 payload 에(증적)."""
         notify, message.routes = self.config.targets_for(rule, message.group_key, host=(message.terms or {}).get("host"))
-        return await self.fire(message, notify, claim)
+        return await self.fire(message, notify, claim, hosts)
+
+    @property
+    def loaded(self) -> bool:
+        """이번 실행에서 설정 파일을 제대로 읽었나 — 아직 읽기 전(기동 중)이거나 마지막 판본으로 도는 중이면 False."""
+        return self._loaded
 
     def observing(self, rule_name: str) -> bool:
         """관찰 모드 규칙인가 (B-52). 내장 알림(설정 변경·관리 작업·감시)은 규칙이 아니라 늘 보낸다."""

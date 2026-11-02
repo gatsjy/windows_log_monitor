@@ -155,7 +155,7 @@ function ruleTest(body, ev) {
     loaded = true;
     try {
       const cfg = await api.get('/api/alerts/config');
-      const rules = cfg.rules.filter((r) => r.kind === 'count');
+      const rules = cfg.rules.filter((r) => r.kind === 'count' || r.kind === 'new_terms');
       select.insertAdjacentHTML('beforeend', String(html`${rules.map((r) => html`<option value="${r.name}">${r.name}${r.enabled ? '' : ' (꺼짐)'}</option>`)}`));
     } catch (err) {
       body.querySelector('[data-rt-out]').innerHTML = errorBox(err);

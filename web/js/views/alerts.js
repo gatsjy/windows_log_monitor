@@ -414,7 +414,7 @@ export async function mount(root, params, sub) {
     const run = r.run || {};
     const tip = run.last_run_at ? `마지막 평가 ${fmtRelative(run.last_run_at)} · ${(run.duration_ms / 1000).toFixed(2)}초`
       + ` · 기준 넘은 묶음 ${fmtNum(run.candidates || 0)}개 · 알림 ${fmtNum(run.fired || 0)}건` : '';
-    return html`<span class="run-chip ${RUN_LEVEL[run.state] ?? ''}" title="${tip}">${run.label ?? '–'}</span>${termsChip(run.terms)}`;
+    return html`<span class="run-chip ${RUN_LEVEL[run.state] ?? ''}" title="${tip}">${run.label ?? '–'}</span>${r.kind === 'new_terms' && r.enabled ? termsChip(run.terms) : ''}`;
   }
 
   // 처음 보는 값 규칙(B-47): 배우는 중이면 알리지 않는다는 것을 보여 준다 — '조용함'을 '처음 보는 값 없음'으로 읽지 않게
@@ -422,15 +422,15 @@ export async function mount(root, params, sub) {
     if (!t) return '';
     const held = `값 ${fmtNum(t.terms)} / ${fmtNum(t.max)}`;
     if (t.backfilling) {
-      const done = t.backfill_span_sec ? Math.round(100 * (1 - t.backfill_left_sec / t.backfill_span_sec)) : 0;
-      return html`<div class="run-chip warn" title="${t.reason ?? ''} — 지난 로그로 배우는 동안 알림을 미룹니다">거슬러 배우는 중 ${Math.max(0, done)}% · ${held}</div>`;
+      // 남은 구간 — 주기마다 남은 것 기준의 % 는 거의 끝날 때까지 몇 %에 머물렀다(검토)
+      return html`<div class="run-chip warn" title="${t.reason ?? ''} — 지난 로그로 배우는 동안 알림을 미룹니다">거슬러 배우는 중 (${fmtDuration(t.backfill_left_sec)} 치 남음) · ${held}</div>`;
     }
     const learning = t.learn_until && new Date(t.learn_until) > new Date();
     if (learning) {
       const days = Math.ceil((new Date(t.learn_until) - new Date()) / 86400000);
       return html`<div class="run-chip warn" title="배우는 동안 처음 본 값은 알리지 않고 기억만 합니다">배우는 중 (${days}일 남음) · ${held}</div>`;
     }
-    return html`<div class="run-chip ${t.overflow ? 'bad' : ''}">${held}${t.overflow ? ` · 상한 넘음 ${fmtNum(t.overflow)}` : ''}</div>`;
+    return html`<div class="run-chip ${t.overflow ? 'bad' : ''}">${held}${t.overflow ? ` · 이번 평가에서 상한 넘음 ${fmtNum(t.overflow)}` : ''}</div>`;
   }
 
   function runError(r) {

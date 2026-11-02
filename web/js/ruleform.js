@@ -6,7 +6,7 @@ import { closeDrawer, openDrawer } from './drawer.js';
 import { CATEGORY_LABELS, LEVELS, SEVERITIES, categoryLabel, levelIcon, severityBadge } from './levels.js';
 import { queryBox } from './querybox.js';
 import { runTest } from './ruletest.js';
-import { confirmModal, errorBox, fmtNum, html, raw, toast } from './util.js';
+import { confirmModal, errorBox, fmtNum, fmtTime, html, raw, toast } from './util.js';
 
 const UNITS = [['s', '초', 1], ['m', '분', 60], ['h', '시간', 3600], ['d', '일', 86400]];
 const GROUP_BY = [['host', 'PC'], ['ip', '출발지 IP'], ['user', '사용자'], ['category', '분류'], ['event_id', '이벤트 ID'],
@@ -464,7 +464,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
           </div>
           ${p.items.length ? html`<div class="table-wrap"><table class="table no-stack">
             <thead><tr>${p.fields.map((k) => html`<th>${termLabel(k)}</th>`)}<th>처음</th><th class="r">건수</th></tr></thead>
-            <tbody>${p.items.map((i) => html`<tr>${i.values.map((v) => html`<td>${v}</td>`)}<td class="nowrap">${String(i.first).slice(5, 16).replace('T', ' ')}</td><td class="r num">${fmtNum(i.n)}</td></tr>`)}</tbody>
+            <tbody>${p.items.map((i) => html`<tr>${i.values.map((v) => html`<td>${v}</td>`)}<td class="nowrap">${fmtTime(i.first, { seconds: false })}</td><td class="r num">${fmtNum(i.n)}</td></tr>`)}</tbody>
           </table></div>` : ''}
           ${p.new > p.burst ? html`<p class="hint-box" style="margin-top:8px">하루 ${fmtNum(p.new)}개는 많습니다 — 한 번에 ${fmtNum(p.burst)}개가 넘으면 한 통으로 묶입니다. 조건을 좁히거나 값을 줄여 보세요.</p>` : ''}
           ${p.total > p.max_terms * 0.8 ? html`<p class="hint-box" style="margin-top:8px">조합이 상한에 가깝습니다 — 상한을 넘으면 새 값을 두지 못하고 규칙 오류로 알립니다.</p>` : ''}

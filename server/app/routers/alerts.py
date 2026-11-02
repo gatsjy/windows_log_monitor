@@ -25,6 +25,7 @@ from ..alerts.engine import (  # _with_group: 엔진과 같은 묶음 조건 (�
     _with_group,
     engine,
     rule_filter,
+    saved_text,
     stream_label,
 )
 from ..alerts.health import RULE_LABELS
@@ -520,8 +521,9 @@ async def preview_rule(body: PreviewBody, request: Request, admin: User = Depend
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if rule.kind == "new_terms":
-        # 처음 보는 값 (B-47): 앞의 며칠(배우는 기간, 7일까지)로 배웠다 치고 최근 N시간에 처음 보인 조합 — 실제는 history·만료까지 보니 근사
-        lookback = min(rule.learn, timedelta(days=7))
+        # 처음 보는 값 (B-47): 앞의 하루로 배웠다 치고 최근 N시간에 처음 보인 조합 — 실제는 learn·history 까지 보니 근사.
+        # 7일 치를 한 문장으로 묶으면 하루 100만 건 로그온에서 조회 시간 상한(30초)을 넘어 늘 503 이었다(검토에서 측정)
+        lookback = min(rule.learn, PREVIEW_LOOKBACK)
         since_new = now - timedelta(hours=body.hours)
         f = replace(rule_f, received_since=since_new - lookback, scopes=admin.scopes)
         out = await repository.new_terms_preview(f, list(rule.terms_fields), since_new, 50)
@@ -552,12 +554,20 @@ async def preview_rule(body: PreviewBody, request: Request, admin: User = Depend
     }
 
 
+PREVIEW_LOOKBACK = timedelta(days=1)
+
+
 async def _preview_accesslog(request: Request, admin: User, rule: Rule, fields: list[str], hours: int, rows: int) -> None:
-    """미리보기가 계정·IP 값을 보여 주면 접속기록 (B-47 — 처음 보는 값은 그 값 목록이 결과다). 건수는 key 에서 뺀다."""
+    """미리보기가 계정·IP 값을 보여 주면 접속기록 (B-47 — 처음 보는 값은 그 값 목록이 결과다). 건수는 key 에서 뺀다.
+    누구의 정보를 봤는지 알 수 있게 조건(match·저장한 검색의 지금 문장)을 기록에 남긴다 — 규칙 이름은 고르는 사람이 정한다."""
     if not any(k in PERSONAL_FIELDS or k.startswith("f.") for k in fields):
         return
-    await accesslog.record(request, admin.username, "alerts.preview", rule.name, {"fields": fields, "hours": hours, "rows": rows},
-                           key={"fields": fields, "hours": hours, "match": rule.match})
+    try:
+        saved = await saved_text(rule)
+    except ValueError:
+        saved = None
+    condition = {"fields": fields, "hours": hours, "match": rule.match, **({"saved_query": saved} if saved else {})}
+    await accesslog.record(request, admin.username, "alerts.preview", rule.name, {**condition, "rows": rows}, key=condition)
 
 
 # ------------------------------------------------------------ 규칙 시험기 (B-52)
@@ -647,7 +657,7 @@ async def test_rule(body: RuleTestBody, request: Request, user: User = Depends(r
         checks.append({"key": name, "op": "term_field", "expected": [], "actual": value, "ok": value not in (None, ""),
                        "exception": None})
     return {
-        "rule": rule.name, "matched": all(c["ok"] for c in checks), "checks": checks,
+        "rule": rule.name, "kind": rule.kind, "matched": all(c["ok"] for c in checks), "checks": checks,
         "event": {k: event.get(k) for k in ("id", "ts", "host", "source", "channel", "provider", "event_id", "level",
                                             "category", "username", "src_ip")},
         "ingest_error": ((event.get("raw") or {}).get("_ingest") or {}).get("error") if body.sample else None,

@@ -38,8 +38,12 @@ def alert_visible(user: User, alert: dict[str, Any]) -> bool:
         return False
     cats = _rule_categories(alert["rule"])
     rule = next((r for r in engine.config.rules if r.name == alert["rule"]), None)
-    if rule is not None and rule.kind == "new_terms":   # 대상 이름은 값 조합 — PC 는 payload 에 (없으면 PC 범위 사용자에게 안 보임)
-        host = ((alert.get("payload") or {}).get("terms") or {}).get("host")
+    # 처음 보는 값(B-47): 대상 이름은 값 조합 — PC 는 payload.terms.host. 목록·숫자·처리는 그 값만 뽑은 terms_host 로(같은 판단,
+    # 검토에서 재현: 상세에서는 보이는데 목록·확인·해결에서는 빠졌다). 규칙을 지우거나 이름을 바꿔도 같게 값이 있으면 그것으로.
+    # 없으면(몰려온 묶음) PC 범위 사용자에게 안 보임
+    terms_host = alert.get("terms_host") or ((alert.get("payload") or {}).get("terms") or {}).get("host")
+    if terms_host or (rule is not None and rule.kind == "new_terms"):
+        host = terms_host
     else:
         host = alert_host(alert["rule"], alert["group_key"])
     for scope in user.scopes:
