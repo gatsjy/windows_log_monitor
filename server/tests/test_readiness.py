@@ -33,6 +33,7 @@ def _facts(**overrides):
         "assets": {"total": 3, "collecting": 3, "missing_total": 0, "critical_missing": 0, "missing": []},
         "backup": {"problems": []}, "replica": True, "integrity": [], "weakened": [], "observing": [],
         "clock": {"known": 3, "off": [], "bad": 0, "warn": 0, "server_suspect": None},
+        "dormant": {"days": 90, "soon": [], "kept": []},
     }
     facts.update(overrides)
     return facts
@@ -81,6 +82,9 @@ def test_a_finished_install_is_all_green():
     ({"backup": {"problems": ["마지막 외부 저장소 복제가 40시간 전입니다"]}}, "replica", "bad", "40시간"),
     ({"weakened": [{"id": 7, "actor": "kim"}]}, "weakened", "warn", "#7 kim"),
     ({"observing": ["새 규칙"]}, "observing", "warn", "새 규칙"),
+    ({"dormant": {"days": 0, "soon": [], "kept": []}}, "dormant", "warn", "꺼져 있습니다"),
+    ({"dormant": {"days": 90, "soon": ["kim"], "kept": []}}, "dormant", "warn", "kim"),
+    ({"dormant": {"days": 90, "soon": [], "kept": ["admin"]}}, "dormant", "warn", "마지막 관리자"),
     ({"clock": {"known": 9, "off": [{"host": "DC-01", "text": "PC 시계가 6분 늦음", "level": "bad"}], "bad": 1, "warn": 0,
                 "server_suspect": None}}, "clock", "bad", "DC-01 PC 시계가 6분 늦음"),
     ({"clock": {"known": 0, "off": [], "bad": 0, "warn": 0, "server_suspect": None}}, "clock", "skip", "알려 준 PC 가 없"),

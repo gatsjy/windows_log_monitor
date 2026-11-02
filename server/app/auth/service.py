@@ -530,7 +530,7 @@ async def mfa_reset(user_id: int, actor: str, ip: str | None, reason: str = "") 
 
 async def list_users() -> list[dict]:
     return await db.fetch_all(
-        f"SELECT {_USER_COLUMNS}, is_active, failed_count, locked_until, created_at, created_by,"
+        f"SELECT {_USER_COLUMNS}, is_active, failed_count, locked_until, created_at, created_by, disabled_reason,"
         " (SELECT count(*) FROM sessions s WHERE s.user_id = users.id AND s.expires_at > now()"
         "   AND s.last_activity_at > now() - make_interval(mins => %s)) AS sessions"
         " FROM users ORDER BY username", (settings.session_idle_min,),
@@ -589,10 +589,47 @@ async def update_user(user_id: int, changes: dict[str, Any], actor: User, ip: st
     if not diff:
         return
     sets = ", ".join(f"{k} = %s" for k in diff)
+    if "is_active" in diff:
+        # 다시 켜면 장기 미사용 기준을 지금부터 (옛 마지막 로그인으로 다음 정리에서 바로 다시 잠기지 않게), 끈 까닭은 비운다 (B-72)
+        sets += ", disabled_reason = NULL" + (", reenabled_at = now()" if diff["is_active"]["to"] else "")
     await db.fetch_one(f"UPDATE users SET {sets} WHERE id = %s RETURNING id", (*[d["to"] for d in diff.values()], user_id))
     if allowed.get("is_active") is False:
         await db.fetch_all("DELETE FROM sessions WHERE user_id = %s RETURNING token_hash", (user_id,))
     await db.audit(actor.username, "user.update", row["username"], diff, actor_ip=ip)
+
+
+DORMANT_LAST_USE = "GREATEST(last_login_at, reenabled_at, created_at)"   # 마지막으로 쓴 때 (NULL 은 빼고 가장 늦은 것)
+
+
+async def lock_dormant(now: datetime) -> list[dict]:
+    """장기 미사용 계정을 끈다 (B-72 1단계, ISMS 2.5.6). 마지막 관리자는 남긴다 — 모두 잠그면 아무도 들어올 수 없다.
+    끈 계정은 세션도 지운다. 돌려주는 값 = 끈 계정(이름·마지막 사용) — 관리 작업 알림·감사로그는 부르는 쪽(정리 작업)이."""
+    if settings.dormant_days <= 0:
+        return []
+    cutoff = now - timedelta(days=settings.dormant_days)
+    rows = await db.fetch_all(f"SELECT id, username, role, {DORMANT_LAST_USE} AS last_used FROM users"
+                              f" WHERE is_active AND {DORMANT_LAST_USE} < %s ORDER BY last_used DESC, id", (cutoff,))
+    stale_admins = [r for r in rows if r["role"] == "admin"]
+    keep = None
+    if stale_admins and await _active_admins_besides([r["id"] for r in stale_admins]) == 0:
+        keep = stale_admins[0]["id"]   # 가장 최근에 쓴 관리자 하나는 남긴다 (화면·준비도가 따로 알린다)
+    locked = []
+    for r in rows:
+        if r["id"] == keep:
+            continue
+        done = await db.fetch_one("UPDATE users SET is_active = false, disabled_reason = 'dormant' WHERE id = %s AND is_active"
+                                  " RETURNING id", (r["id"],))
+        if done:
+            await db.fetch_all("DELETE FROM sessions WHERE user_id = %s RETURNING token_hash", (r["id"],))
+            await db.audit("system", "user.dormant_lock", r["username"],
+                           {"last_used": r["last_used"].isoformat(), "days": settings.dormant_days})
+            locked.append({"username": r["username"], "role": r["role"], "last_used": r["last_used"]})
+    return locked
+
+
+async def _active_admins_besides(ids: list[int]) -> int:
+    row = await db.fetch_one("SELECT count(*) AS n FROM users WHERE role = 'admin' AND is_active AND NOT (id = ANY(%s))", (ids,))
+    return row["n"]
 
 
 async def reset_password(user_id: int, actor: str, ip: str | None) -> tuple[str, str]:

@@ -119,6 +119,7 @@ class Settings:
     login_max_failures: int = _int("LOGIN_MAX_FAILURES", 5)       # 연속 실패 시 계정 잠금
     login_lockout_min: int = _int("LOGIN_LOCKOUT_MIN", 10)        # 잠금 시간
     password_max_age_days: int = _int("PASSWORD_MAX_AGE_DAYS", 90)  # 비밀번호 변경 주기 (0 = 사용 안 함)
+    dormant_days: int = _int("DORMANT_DAYS", 90)   # 이만큼 로그인하지 않은 계정은 매일 정리 때 끈다 (B-72, 0 = 사용 안 함)
     # 2단계 인증(TOTP, B-74)이 필수인 사람: privileged = 관리자와 관리 권한(알림 규칙·환경설정·감사로그·에이전트 배포) 그룹 구성원,
     # all = 모두, off = 아무도(각자 켤 수는 있음). WLM_SECRET_KEY 가 없으면 비밀값을 저장할 수 없어 강제하지 않는다(기동 로그 경고)
     mfa_required: str = _env("MFA_REQUIRED", "privileged").lower()

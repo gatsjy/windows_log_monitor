@@ -32,6 +32,16 @@ class Item:
     doc: str = ""          # 문서 (AIRGAP.md 절 등)
 
 
+def _dormant(users: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
+    days = settings.dormant_days
+    if days <= 0:
+        return {"days": 0, "soon": [], "kept": []}
+    active = [u for u in users if u["is_active"] and u["last_used"] is not None]
+    return {"days": days,
+            "soon": sorted(u["username"] for u in active if now - timedelta(days=days) <= u["last_used"] < now - timedelta(days=days - 14)),
+            "kept": sorted(u["username"] for u in active if u["role"] == "admin" and u["last_used"] < now - timedelta(days=days))}
+
+
 def _names(names: list[str], limit: int = 5) -> str:
     shown = ", ".join(names[:limit])
     return shown + (f" 외 {len(names) - limit}" if len(names) > limit else "")
@@ -47,7 +57,8 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
     from .reports import config as report_config
 
     now = now or datetime.now(UTC)
-    users = await db.fetch_all("SELECT username, role, is_active, must_change_password, mfa_enabled_at FROM users")
+    users = await db.fetch_all("SELECT username, role, is_active, must_change_password, mfa_enabled_at,"
+                               " GREATEST(last_login_at, reenabled_at, created_at) AS last_used FROM users")
     rules = engine.config.rules
     enabled = [r for r in rules if r.enabled]
     fallback = await watchdog.recipients()
@@ -62,6 +73,7 @@ async def collect(now: datetime | None = None) -> dict[str, Any]:
         "health": await health.current(now, fresh=True),
         "enabled_rules": len(enabled),
         "observing": [r.name for r in enabled if r.mode == "observe"],   # 관찰 모드 (B-52) — 기록만, 보내지 않음
+        "dormant": _dormant(users, now),   # 장기 미사용 (B-72)
         "clock": clock.assess(agents),   # 시계 차이 (B-57)
         "unknown_targets": sorted({n for r in enabled for n in r.notify if n not in notifiers and n not in errors}),
         "broken_targets": {n: e for n, e in errors.items() if n in used},
@@ -113,6 +125,17 @@ def judge(f: dict[str, Any]) -> list[Item]:
         detail = (f"아직 등록하지 않은 관리자: {_names(missing)} (다음 로그인 때 등록 화면)" if missing
                   else f"관리자 {len(admins)}명 모두 등록 (필수: {f['mfa_required']})")
     add(Item("mfa", "계정", "2단계 인증", status, detail, "#/users", "ADR-049, ISMS 2.5.x"))
+    d = f.get("dormant") or {"days": 0, "soon": [], "kept": []}
+    if d["days"] <= 0:
+        status, detail = "warn", "장기 미사용 계정 잠금이 꺼져 있습니다 (WLM_DORMANT_DAYS=0) — 퇴직·이동한 계정이 남습니다"
+    elif d["kept"]:
+        status, detail = "warn", (f"{d['days']}일 넘게 쓰지 않은 마지막 관리자 {_names(d['kept'])} 는 잠그지 않았습니다 — 담당 관리자 계정을 "
+                                  "만들고 로그인하세요")
+    elif d["soon"]:
+        status, detail = "warn", f"14일 안에 장기 미사용으로 꺼질 계정: {_names(d['soon'])}"
+    else:
+        status, detail = "ok", f"{d['days']}일 동안 로그인하지 않은 계정은 매일 정리 때 자동으로 끕니다"
+    add(Item("dormant", "계정", "장기 미사용 계정", status, detail, "#/users", "B-72, ISMS 2.5.6"))
 
     # ------------------------------------------------------------ 알림
     h = f["health"]

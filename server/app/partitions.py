@@ -229,6 +229,20 @@ async def purge_sessions() -> None:
     await service.purge_sessions()
 
 
+async def lock_dormant_accounts() -> None:
+    """장기 미사용 계정 끄기 (B-72 1단계) — 끈 것이 있으면 다른 관리자에게 '관리 작업 알림'(누가 왜 못 들어오는지 알게)."""
+    from datetime import UTC, datetime
+
+    from .alerts import adminwatch
+    from .auth import service
+    from .config import settings
+
+    locked = await service.lock_dormant(datetime.now(UTC))
+    if locked:
+        await adminwatch.notify("system", f"장기 미사용 계정 {len(locked)}개를 껐습니다 — {settings.dormant_days}일 동안 로그인하지 않음",
+                                [f"{u['username']} (마지막 사용 {u['last_used']:%Y-%m-%d})" for u in locked])
+
+
 async def run_maintenance(with_integrity: bool = True) -> None:
     """with_integrity=False: 기동 중(수집·화면을 열기 전)이나 수집 요청 안(새 달 파티션)에서 부를 때 — 감사로그 전체 검증·앵커(B-71)는
     건너뛰고 다음 정기 실행에서 한다(행이 많으면 기동이 그만큼 늦어 설치 스크립트의 기동 대기를 넘었다 — 검토에서 측정)."""
@@ -245,6 +259,7 @@ async def run_maintenance(with_integrity: bool = True) -> None:
             await purge_reports()
             await purge_iis_layouts()
             await purge_sessions()
+            await lock_dormant_accounts()
             await purge_ingest_problems()
             await purge_agent_streams()
             if with_integrity:
