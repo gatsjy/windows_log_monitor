@@ -1,0 +1,20 @@
+{
+  "title": "서버 상세",
+  "description": "PC 하나를 골라(위의 PC 칸 · 주소 ?var-host=이름) 그 서버의 로그만 봅니다 — 서버마다 대시보드를 복제하지 않습니다",
+  "time_range": "24h",
+  "refresh_sec": 60,
+  "variables": [
+    {"name": "host", "key": "host", "label": "PC", "default": ""}
+  ],
+  "widgets": [
+    {"type": "stat", "title": "전체 이벤트", "w": 3, "metric": "count"},
+    {"type": "stat", "title": "오류 (심각+오류)", "w": 3, "metric": "count", "query": {"query": "level:심각,오류"}, "up_is_good": false, "color": "var(--critical)"},
+    {"type": "stat", "title": "로그온 실패", "w": 3, "metric": "count", "query": {"query": "event_id:4625"}, "up_is_good": false},
+    {"type": "stat", "title": "경고", "w": 3, "metric": "count", "query": {"query": "level:경고"}, "up_is_good": false, "color": "var(--warning)"},
+    {"type": "timeseries", "title": "시간대별 이벤트 (수준별)", "w": 12, "group": "level"},
+    {"type": "top", "title": "자주 발생한 이벤트", "w": 4, "field": "event_id", "limit": 8},
+    {"type": "top", "title": "채널", "w": 4, "field": "channel", "limit": 8},
+    {"type": "top", "title": "로그온한 사용자", "w": 4, "field": "user", "limit": 8, "query": {"query": "event_id:4624,4625"}},
+    {"type": "events", "title": "최근 오류·경고", "w": 12, "limit": 20, "query": {"query": "level:심각,오류,경고"}}
+  ]
+}

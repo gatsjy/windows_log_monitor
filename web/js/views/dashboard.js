@@ -7,6 +7,7 @@
 //   DB 를 몇 초마다 다시 조회하지 않으므로 화면을 여러 개 띄워도 부하가 거의 없다.
 import * as api from '../api.js';
 import { can } from '../auth.js';
+import { applyVars, varValues } from '../dashvars.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
 import { levelIcon } from '../levels.js';
 import { matchesQuery } from '../livefilter.js';
@@ -36,6 +37,8 @@ const REFERENCE = html`
   <div class="section-title">대시보드 옵션</div>
   <ul class="ref-list">
     <li><code>time_range</code> 기본 기간, <code>refresh_sec</code> 전체 동기화 주기(초, 기본 60). 그 사이에는 실시간 스트림으로 갱신</li>
+    <li><code>variables</code> 변수(5개까지) — <code>[{"name":"host", "key":"host", "label":"PC", "default":""}]</code>. 화면 위 입력 칸·주소 <code>?var-host=EMR-DB-01</code> 의 값이
+      모든 위젯 조건에 <code>host:EMR-DB-01</code> 로 더해집니다(비우면 조건 없음). <code>key</code>: host·user·ip·channel·provider·source·category·event_id·level·f.경로 — 서버 한 대 상세 대시보드를 PC 마다 복제하지 않게</li>
   </ul>
   <p class="muted" style="font-size:12.5px">파일 위치: <code>config/dashboards/&lt;이름&gt;.json</code> — 편집기로 직접 고쳐도 된다.</p>`;
 
@@ -53,18 +56,24 @@ export async function mount(root, params, sub) {
   let liveOn = store.get('wlm.dashboard.live', true);
   let pending = [];
   let flushTimer = null;
+  let vars = {};          // 대시보드 변수 값 (B-07 2단계) — 주소 var-<name> 또는 default
+  let varErrors = [];
   const arrivals = []; // [수신 시각 ms, 건수] — 분당 속도
 
   async function load() {
     const [list, dashboard] = await Promise.all([api.get('/api/dashboards'), api.get(`/api/dashboards/${name}`)]);
     doc = dashboard;
     since ||= doc.time_range || '24h';
+    vars = varValues(doc.variables, { ...params, ...Object.fromEntries(Object.entries(vars).map(([k, v]) => [`var-${k}`, v])) });
     render(list.items);
   }
 
+  // 변수는 위젯 조회·실시간 매처·검색으로 넘기기 모두 같은 문장으로 (applyVars — 문장 편집이라 서버와 같은 뜻)
+  const withVars = (q) => applyVars(q, doc?.variables, vars).query;
+  const urlParams = () => ({ since, ...Object.fromEntries(Object.entries(vars).filter(([, v]) => v).map(([k, v]) => [`var-${k}`, v])) });
   const ctx = {
-    query: (cfg) => ({ since: cfg.since || since, ...(cfg.query || {}) }),
-    drill: (q) => navigate('events', { since, ...q }),
+    query: (cfg) => withVars({ since: cfg.since || since, ...(cfg.query || {}) }),
+    drill: (q) => navigate('events', withVars({ since, ...q })),
     /** 위젯이 실시간으로 맞출 수 없는 변화(새 구간, 새 PC 등)를 만나면 그 위젯만 다시 조회 */
     resync: (body) => renderOne(Number(body.dataset.w)),
     ratePerMin: () => {
@@ -144,6 +153,11 @@ export async function mount(root, params, sub) {
           ${can('dashboards.edit') ? html`<button class="btn" data-edit><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>편집</button>` : ''}
         </div>
       </div>
+      ${(doc.variables || []).length ? html`<div class="toolbar dash-vars" style="margin:-6px 0 14px;flex-wrap:wrap;gap:8px">
+        ${doc.variables.map((v) => html`<label class="field-inline"><span class="muted">${v.label || v.name}</span>
+          <input class="input" data-var="${v.name}" list="var-list-${v.name}" value="${vars[v.name] || ''}" placeholder="전체" style="width:170px"
+            aria-label="${v.label || v.name}"><datalist id="var-list-${v.name}"></datalist></label>`)}
+        <span data-var-error class="tag-bad" style="font-size:12.5px"></span></div>` : ''}
       <div class="grid">${(doc.widgets || []).map((w, i) => html`
         <section class="card" style="grid-column: span ${Math.min(12, Math.max(1, w.w || 12))}">
           ${w.title ? html`<div class="card-head"><h2 class="card-title">${iconFor(w)}${w.title}</h2></div>` : ''}
@@ -154,9 +168,31 @@ export async function mount(root, params, sub) {
     root.querySelector('[data-dash]').addEventListener('change', (e) => navigate(`dashboard/${e.target.value}`));
     root.querySelector('[data-since]').addEventListener('change', (e) => {
       since = e.target.value;
-      replaceParams(`dashboard/${name}`, { since });
+      replaceParams(`dashboard/${name}`, urlParams());
       renderWidgets();
     });
+    root.querySelectorAll('[data-var]').forEach((input) => {
+      const v = doc.variables.find((x) => x.name === input.dataset.var);
+      // 제안: 서버가 제안하는 키(PC·사용자·IP·채널·공급자·소스)는 지금 기간의 실제 값 (B-65 /api/suggest)
+      if (['host', 'user', 'ip', 'channel', 'provider', 'source'].includes(v.key)) {
+        input.addEventListener('focus', async () => {
+          const list = root.querySelector(`#var-list-${CSS.escape(v.name)}`);
+          if (list.dataset.loaded) return;
+          list.dataset.loaded = '1';
+          try {
+            const res = await api.get('/api/suggest', { key: v.key, prefix: '', since, limit: 50 });
+            list.innerHTML = html`${(res.items || []).map((x) => html`<option value="${x.value}"></option>`)}`;
+          } catch { delete list.dataset.loaded; }
+        });
+      }
+      input.addEventListener('change', () => {
+        vars = { ...vars, [v.name]: input.value.trim() };
+        replaceParams(`dashboard/${name}`, urlParams());
+        showVarErrors();
+        renderWidgets();
+      });
+    });
+    showVarErrors();
     root.querySelector('[data-refresh]').addEventListener('click', async (e) => {
       const btn = e.currentTarget;
       const svg = btn.querySelector('svg');
@@ -203,6 +239,12 @@ export async function mount(root, params, sub) {
 
   function renderWidgets() {
     (doc.widgets || []).forEach((_, i) => renderOne(i));
+  }
+
+  function showVarErrors() {
+    varErrors = applyVars({}, doc.variables, vars).errors;
+    const el = root.querySelector('[data-var-error]');
+    if (el) el.textContent = varErrors.join(' · ');
   }
 
   function openEditor() {

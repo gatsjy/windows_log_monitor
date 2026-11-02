@@ -916,6 +916,61 @@
   ]
  },
  {
+  "name": "dashboard: server[1] 오류 (심각+오류)",
+  "params": {
+   "query": "level:심각,오류"
+  },
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('level = ANY(%s::int[])')])",
+  "args": [
+   "2026-10-02 05:00:00+00:00",
+   "[1, 2]"
+  ]
+ },
+ {
+  "name": "dashboard: server[2] 로그온 실패",
+  "params": {
+   "query": "event_id:4625"
+  },
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
+  "args": [
+   "2026-10-02 05:00:00+00:00",
+   "[4625]"
+  ]
+ },
+ {
+  "name": "dashboard: server[3] 경고",
+  "params": {
+   "query": "level:경고"
+  },
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('level = ANY(%s::int[])')])",
+  "args": [
+   "2026-10-02 05:00:00+00:00",
+   "[3]"
+  ]
+ },
+ {
+  "name": "dashboard: server[7] 로그온한 사용자",
+  "params": {
+   "query": "event_id:4624,4625"
+  },
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
+  "args": [
+   "2026-10-02 05:00:00+00:00",
+   "[4624, 4625]"
+  ]
+ },
+ {
+  "name": "dashboard: server[8] 최근 오류·경고",
+  "params": {
+   "query": "level:심각,오류,경고"
+  },
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('level = ANY(%s::int[])')])",
+  "args": [
+   "2026-10-02 05:00:00+00:00",
+   "[1, 2, 3]"
+  ]
+ },
+ {
   "name": "filters: lists",
   "params": {
    "since": "1h",

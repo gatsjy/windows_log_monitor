@@ -19,7 +19,7 @@ from ..auth.deps import client_ip, require_permission
 from ..auth.service import User
 from ..config import settings
 from ..filters import MAX_FIELD_FILTERS, field_filters
-from ..querylang import QueryError, parse_terms
+from ..querylang import QueryError, format_value, parse_terms
 
 router = APIRouter(tags=["dashboards"])
 
@@ -33,9 +33,42 @@ def _path(name: str) -> Path:
     return Path(settings.dashboard_dir) / f"{name}.json"
 
 
+VAR_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+VAR_KEYS = ("host", "user", "ip", "channel", "provider", "source", "category", "event_id", "level")   # web/js/dashvars.js 와 같게
+MAX_VARS = 5
+
+
+def _validate_variables(raw: object) -> None:
+    """대시보드 변수 (B-07 2단계): [{name, key, label?, default?}] — key 는 검색 키 또는 f.<원본 경로>."""
+    if raw is None:
+        return
+    if not isinstance(raw, list) or len(raw) > MAX_VARS:
+        raise HTTPException(422, f"variables 는 {MAX_VARS}개까지의 배열이어야 합니다")
+    names = set()
+    for i, v in enumerate(raw):
+        where = f"variables[{i}]"
+        if not isinstance(v, dict) or not isinstance(v.get("name"), str) or not VAR_NAME_RE.match(v["name"]):
+            raise HTTPException(422, f"{where}.name 은 영문 소문자로 시작하는 32자 이내 이름이어야 합니다 (주소의 var-<이름>)")
+        if v["name"] in names:
+            raise HTTPException(422, f"{where}.name 이 겹칩니다 ({v['name']})")
+        names.add(v["name"])
+        key = v.get("key")
+        if not isinstance(key, str) or not (key in VAR_KEYS or (key.startswith("f.") and any(key[2:].split(".")))):
+            raise HTTPException(422, f"{where}.key 는 {', '.join(VAR_KEYS)} 또는 f.<원본 경로>")
+        for opt in ("label", "default"):
+            if opt in v and not isinstance(v[opt], str):
+                raise HTTPException(422, f"{where}.{opt} 는 문자열이어야 합니다")
+        if (v.get("default") or "").strip():   # 기본값도 그 키의 값이어야 한다 (화면이 문장에 더하는 것과 같은 모양으로 확인)
+            try:
+                parse_terms(f"{key}:{format_value(v['default'].strip())}")
+            except QueryError as exc:
+                raise HTTPException(422, f"{where}.default: {exc}") from exc
+
+
 def _validate(doc: dict) -> None:
     if not isinstance(doc, dict):
         raise HTTPException(422, "대시보드는 JSON 객체여야 합니다")
+    _validate_variables(doc.get("variables"))
     widgets = doc.get("widgets")
     if not isinstance(widgets, list):
         raise HTTPException(422, "widgets 배열이 필요합니다")

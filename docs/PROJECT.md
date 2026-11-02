@@ -365,7 +365,12 @@ event_id:4625 ip:10.0.0.5 -user:svc_backup level:오류,심각 "잘못된 암호
 모든 위젯이 받는 공통 옵션은 `title`, `w`(1~12칸), `query`(필터 객체), `since`(위젯별 기간)입니다.
 `query` 안에 `"query": "event_id:4625 -user:svc_backup"` 로 검색 문장(§4.1)을 쓸 수 있고 다른 조건과 AND 입니다. 저장할 때 문장을 확인합니다(틀리면 422 + 위치).
 
-**기본 대시보드:** `overview`(전체 현황), `iis`(웹 서버), `mssql`(DB), `security`(보안 감사 — 로그온 실패 계정·출발지 IP, RDP).
+**대시보드 변수 (B-07 2단계):** `"variables": [{"name": "host", "key": "host", "label": "PC", "default": ""}]`(5개까지) — 화면 위 입력 칸(지금 기간의 실제 값 제안)·
+주소 `#/dashboard/server?var-host=EMR-DB-01` 의 값을 모든 위젯 조건에 `host:EMR-DB-01` 로 더합니다(비우면 조건 없음). 문자열 치환이 아니라 검색 문장 편집(`addTerm`)이라
+서버 SQL·실시간 갱신·검색으로 넘기기가 같은 문장을 봅니다(ADR-033). 값은 한 값으로만 들어갑니다(`a,b`·`x -user:y` 가 다른 조건이 되지 않음).
+`key`: host·user·ip·channel·provider·source·category·event_id·level·`f.<경로>`, 기본값도 저장 때 확인합니다. 서버 한 대 상세 대시보드를 PC 마다 복제하지 않습니다.
+
+**기본 대시보드:** `overview`(전체 현황), `iis`(웹 서버), `mssql`(DB), `security`(보안 감사 — 로그온 실패 계정·출발지 IP, RDP), `server`(서버 상세 — PC 변수).
 
 ### 5.2 대시보드 실시간 갱신 (ADR-010)
 
