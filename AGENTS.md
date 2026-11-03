@@ -266,7 +266,8 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 설치 스크립트는 마이그레이션 중이면 30분까지 기다린다(`deploy/airgap/install.sh` 의 `migrating` — `db._MIGRATION_LOCK_ID` 잠금을 쥐고 있고 api 가 다시 뜨지 않았을 때. 잠금 번호를 바꾸면 그것도).
 - **상관 알림 (B-67 2단계, ADR-065):** 재료는 로그가 아니라 알림(`repository.correlation_sources` — 관찰·무음·끊김·내장·상관 알림 제외)과 알릴 때의 태그.
   전술 수는 `tactics.assign`(규칙·전술 최대 짝짓기) — 전술 합집합으로 세지 않는다(T1078 하나가 3개가 됨). 새 MITRE 기법 태그를 기본 규칙에 쓰면 `tactics.TECHNIQUES` 에도(`test_shipped_rules_have_only_known_mitre_tags`).
-  상관 알림은 범위가 없는 사용자만 본다(`visibility.alert_visible`) — 알림 종류를 새로 보이게 하려면 그 판단부터.
+  상관 알림은 범위가 없는 사용자만 본다(`visibility.alert_visible` — `alerts.kind`, 마이그레이션 047). `alert_visible` 에 행을 넘기는 새 쿼리는 `kind` 도 뽑는다(지운 상관 규칙의 알림이 PC 패턴에 맞아 보였다).
+  다시 알리지 않을지는 `payload.correlation.ids`(전부) — 보이는 `alerts`(30개)로 판단하지 않는다. 다른 규칙의 태그·켜기·관찰 변경은 `configdiff._feeder_changes` 가 상관 규칙의 약화로 본다.
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - **알림 설정 판본 (ADR-043):** 설정을 적용하면 `engine.reload()` 가 `_pending` 을 두고 `await engine.record()` 가 판본(`alert_config_versions`, 추가만)·감사로그·약화 알림을 남긴다. 설정을 바꾸는 새 API 는 `routers/alerts._store` 를 거친다(쓰기 전 파일 직접 수정부터 기록 → `reload(force=True, source="ui", actor=…)`).
   - 내장 규칙 이름 `engine.CONFIG_RULE`('알림 설정 변경', kind `config`)은 무음을 건너뛴다. 받는 곳은 바뀌기 전 설정의 규칙들 — 새 약화 판단은 `configdiff._rule_changes` 와 `test_configdiff.py` 의 표에 함께.

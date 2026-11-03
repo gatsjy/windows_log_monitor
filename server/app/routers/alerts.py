@@ -610,7 +610,7 @@ async def _preview_correlation(request: Request, admin: User, rule: Rule, now: d
     if admin.scopes is not None:
         raise HTTPException(403, "상관 알림은 모든 규칙·PC 의 알림을 묶어 봐서 조회 범위가 있는 사용자는 미리 볼 수 없습니다")
     rows = await repository.correlation_sources(now - timedelta(hours=hours), now, correlation.SOURCE_MAX + 1)
-    found = correlation.preview(correlation.with_tactics(rows[:correlation.SOURCE_MAX]), rule.entities, rule.min_tactics, rule.window)
+    found = correlation.preview(correlation.with_tactics(rows[-correlation.SOURCE_MAX:]), rule.entities, rule.min_tactics, rule.window)
     await _preview_accesslog(request, admin, rule, ["user" if e == "account" else e for e in rule.entities], hours, len(found))
     covered = [{"name": r.name, "tactics": [tactics.label(t) for t in tactics.of_tags(r.tags)],
                 "unknown": tactics.unknown_tags(r.tags)}

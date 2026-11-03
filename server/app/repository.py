@@ -1074,13 +1074,13 @@ async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict 
         cur = await conn.execute(
             "WITH p AS (SELECT %s::jsonb AS j)"
             " INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, first_event_at, last_event_at,"
-            " payload, silence_id, terms_host, entity_hosts, entity_accounts, entity_ips)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, (SELECT j FROM p), %s, %s,"
+            " payload, silence_id, terms_host, kind, entity_hosts, entity_accounts, entity_ips)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, (SELECT j FROM p), %s, %s, %s,"
             " (SELECT wlm_alert_entities(j, 'host', %s::text[]) FROM p), (SELECT wlm_alert_entities(j, 'account', %s::text[]) FROM p),"
             " (SELECT wlm_alert_entities(j, 'ip', %s::text[]) FROM p)) RETURNING id",
             (_json(message), message["fired_at"], message["rule"], message["severity"], message["group_key"],
              message["event_count"], message["first_event_at"], message["last_event_at"],
-             silence["id"] if silence else None, (message.get("terms") or {}).get("host"),
+             silence["id"] if silence else None, (message.get("terms") or {}).get("host"), message.get("kind"),
              *(observed.get(k) for k in ENTITY_KINDS)),
         )
         alert_id = (await cur.fetchone())["id"]
@@ -1846,7 +1846,7 @@ async def count_gave_up(since: datetime) -> int:
 
 
 _ALERT_COLUMNS = (
-    "a.id, a.fired_at, a.rule, a.severity, a.group_key, a.terms_host, a.event_count, a.first_event_at, a.last_event_at,"
+    "a.id, a.fired_at, a.rule, a.severity, a.group_key, a.terms_host, a.kind, a.event_count, a.first_event_at, a.last_event_at,"
     " a.status, a.acked_by, a.acked_at, a.resolved_by, a.resolved_at, a.auto_resolved, a.silence_id, a.resolution,"
     " a.entity_hosts, a.entity_accounts, a.entity_ips,"   # 알림의 개체 (B-67)
     " coalesce((a.payload->>'observe')::boolean, false) AS observed,"   # 관찰 모드 규칙의 알림 (B-52)
@@ -1905,7 +1905,7 @@ def _pairs_params(pairs: list[tuple[str, str, str]]) -> list[list[str]]:
 
 async def alert_entity_row(alert_id: int) -> dict | None:
     """관련 알림(B-67)의 기준: 범위 판단(규칙·대상·PC)·발생 시각·개체."""
-    return await db.fetch_one("SELECT id, rule, group_key, terms_host, fired_at, entity_hosts, entity_accounts, entity_ips"
+    return await db.fetch_one("SELECT id, rule, group_key, terms_host, kind, fired_at, entity_hosts, entity_accounts, entity_ips"
                               " FROM alerts WHERE id = %s", (alert_id,))
 
 
@@ -1943,23 +1943,29 @@ async def related_alerts(base: dict, start: datetime, end: datetime, limit: int,
 
 async def correlation_sources(since: datetime, until: datetime, limit: int) -> list[dict]:
     """상관 알림 (B-67 2단계, ADR-065)의 재료: (since, until] 에 발생한 건수·처음 보는 값 규칙의 알림과 그 개체·태그(알릴 때의 태그).
-    관찰 모드(시험 중인 규칙)·무음 중 알림(점검 잡음)은 빼고, 끊김·내장·상관 알림은 전술이 없어 뺀다."""
-    return await db.fetch_all(
-        "SELECT a.id, a.rule, a.severity, a.fired_at, a.group_key, a.terms_host, COALESCE(a.payload->'tags', '[]'::jsonb) AS tags,"
+    관찰 모드(시험 중인 규칙)·무음 중 알림(점검 잡음)은 빼고, 끊김·내장·상관 알림은 전술이 없어 뺀다. MITRE 태그가 없는 알림(운영 규칙)도
+    여기서 뺀다 — 상한(limit)을 운영 잡음이 채우지 않게. 넘치면 **최근 것**을 남긴다(오래된 것을 남기면 지금 진행 중인 흐름을 못 봤다,
+    검토에서 재현). 돌려줄 때는 발생 순."""
+    rows = await db.fetch_all(
+        "SELECT a.id, a.rule, a.severity, a.fired_at, a.group_key, a.terms_host, a.payload->'tags' AS tags,"
         " a.entity_hosts, a.entity_accounts, a.entity_ips FROM alerts a"
         " WHERE a.fired_at > %s AND a.fired_at <= %s AND a.silence_id IS NULL AND a.payload->>'kind' IN ('count', 'new_terms')"
-        " AND NOT coalesce((a.payload->>'observe')::boolean, false) AND jsonb_typeof(a.payload->'tags') = 'array'"
-        " ORDER BY a.fired_at, a.id LIMIT %s", (since, until, limit))
+        " AND NOT coalesce((a.payload->>'observe')::boolean, false)"
+        " AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(a.payload->'tags') = 'array'"
+        "   THEN a.payload->'tags' ELSE '[]'::jsonb END) t WHERE t ~* '^\\s*mitre\\s')"
+        " ORDER BY a.fired_at DESC, a.id DESC LIMIT %s", (since, until, limit))
+    return rows[::-1]
 
 
 async def recent_correlations(rule: str, since: datetime) -> list[dict]:
-    """이 상관 규칙이 since 뒤에 낸 알림의 대상과 묶은 알림 번호 — 재알림 간격·같은 알림들로 다른 개체에 또 울리지 않게."""
-    rows = await db.fetch_all(
-        "SELECT a.group_key, COALESCE((SELECT array_agg((x->>'id')::bigint) FROM jsonb_array_elements("
-        "  CASE WHEN jsonb_typeof(a.payload->'correlation'->'alerts') = 'array' THEN a.payload->'correlation'->'alerts' ELSE '[]' END) x"
-        "  WHERE x->>'id' ~ '^[0-9]+$'), '{}') AS ids"
+    """이 상관 규칙이 since 뒤에 낸 알림의 대상과 묶은 알림 번호 — 재알림 간격·같은 알림들로 다른 개체에 또 울리지 않게.
+    번호는 correlation.ids(묶은 알림 전부). 보이는 목록(correlation.alerts, 30개까지)으로 보면 31번째부터의 알림이 '새것'이 되어
+    다음 주기에 같은 흐름을 계정·IP 로 또 알렸다(검토에서 재현)."""
+    return await db.fetch_all(
+        "SELECT a.group_key, COALESCE((SELECT array_agg(x::bigint) FROM jsonb_array_elements_text("
+        "  CASE WHEN jsonb_typeof(a.payload->'correlation'->'ids') = 'array' THEN a.payload->'correlation'->'ids' ELSE '[]' END) x"
+        "  WHERE x ~ '^[0-9]+$'), '{}') AS ids"
         " FROM alerts a WHERE a.rule = %s AND a.fired_at >= %s", (rule, since))
-    return rows
 
 
 async def entity_alerts(kind: str, value: str, since: datetime, limit: int,
@@ -2018,7 +2024,7 @@ async def get_alert(alert_id: int) -> dict | None:
 
 async def alert_refs(ids: list[int]) -> list[dict]:
     """처리 권한 확인용 최소 정보."""
-    return await db.fetch_all("SELECT id, rule, group_key, status, terms_host FROM alerts WHERE id = ANY(%s)", (ids,))
+    return await db.fetch_all("SELECT id, rule, group_key, status, terms_host, kind FROM alerts WHERE id = ANY(%s)", (ids,))
 
 
 async def alert_notes_for(ids: list[int]) -> dict[int, list[dict]]:
@@ -2094,8 +2100,8 @@ async def alert_group_counts(since: datetime | None = None, status: str | None =
         clauses.append(ALERT_STATUS_FILTERS[status])
     return await db.fetch_all(
         # terms_host: 처음 보는 값(B-47)의 PC — 대상 이름이 값 조합이라 조회 범위를 이것으로 본다(상세만 payload 를 봐서 목록·처리에서 빠졌다)
-        f"SELECT a.rule, a.group_key, a.status, a.terms_host, count(*) AS n FROM alerts a"
-        f" WHERE {' AND '.join(clauses)} GROUP BY 1, 2, 3, 4",
+        f"SELECT a.rule, a.group_key, a.status, a.terms_host, a.kind, count(*) AS n FROM alerts a"
+        f" WHERE {' AND '.join(clauses)} GROUP BY 1, 2, 3, 4, 5",
         params,
     )
 
@@ -2370,9 +2376,9 @@ async def alert_rule_groups(since: datetime) -> list[dict]:
     """(규칙, 대상, 심각도)별 since 이후 수·마지막 발생과 전체 기간 마지막 발생 — 조회 범위가 있는 사용자의 알림 화면 숫자를
     보이는 (규칙, 대상)만으로 다시 셀 때 (B-27, alerts/visibility.alert_visible 로 거른다)."""
     return await db.fetch_all(
-        "SELECT rule, group_key, severity, terms_host, count(*) FILTER (WHERE fired_at >= %s) AS n,"
+        "SELECT rule, group_key, severity, terms_host, kind, count(*) FILTER (WHERE fired_at >= %s) AS n,"
         " max(fired_at) FILTER (WHERE fired_at >= %s) AS last_recent, max(fired_at) AS last_ever"
-        " FROM alerts GROUP BY 1, 2, 3, 4", (since, since))
+        " FROM alerts GROUP BY 1, 2, 3, 4, 5", (since, since))
 
 
 async def count_alerts(since: datetime) -> int:

@@ -36,6 +36,8 @@ def alert_visible(user: User, alert: dict[str, Any]) -> bool:
         return True
     if alert["rule"] in BUILTIN_RULES:   # 설정 변경 등 내장 알림은 이 시스템 관리 정보 — 범위가 없는 사용자만 (ADR-043)
         return False
+    if alert.get("kind") == "correlation":   # 상관 알림 (B-67 2단계) — 알림에 남은 종류로(규칙을 지우거나 이름을 바꿔도, 마이그레이션 047)
+        return False
     cats = _rule_categories(alert["rule"])
     rule = next((r for r in engine.config.rules if r.name == alert["rule"]), None)
     if rule is not None and rule.kind == "correlation":

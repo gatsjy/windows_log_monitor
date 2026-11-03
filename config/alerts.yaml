@@ -158,7 +158,8 @@ rules:
     threshold: 10
     cooldown: 1h
     severity: error
-    tags: [MITRE T1110.001, MITRE T1021.001, ISMS 2.11.3]
+    # 실패한 원격 로그온은 자격 증명 대입이지 내부 이동(T1021)이 아니다 — 상관 알림(B-67)에서 실패만으로 단계 둘이 되지 않게
+    tags: [MITRE T1110.001, ISMS 2.11.3]
     notify: [운영팀]
 
   # 서로 다른 값 수 규칙 (ADR-041): 건수만으로는 공용 PC·교대 근무의 오타와 공격을 가를 수 없다
@@ -187,7 +188,8 @@ rules:
     distinct: { field: user, min: 4 }
     cooldown: 1h
     severity: warning
-    tags: [MITRE T1110, MITRE T1087, ISMS 2.11.3]
+    # 로그온으로 이름을 맞혀 보는 것은 대입의 일부 — 계정 탐색(T1087)으로 따로 세지 않는다(상관 알림, B-67)
+    tags: [MITRE T1110, ISMS 2.11.3]
     notify: [운영팀]
 
   - name: 한 계정이 여러 서버에 원격 데스크톱

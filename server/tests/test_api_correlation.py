@@ -96,8 +96,9 @@ def ctx():
             engine.reload(force=True)
             medic = _viewer(admin, app, "medic", {"name": "의료", "scope_hosts": ["MED-*"]})
             manager = _viewer(admin, app, "manager", {"name": "의료 규칙", "scope_hosts": ["MED-*"], "permissions": ["alerts.manage"]})
+            desk = _viewer(admin, app, "desk", {"name": "PC 지원", "scope_hosts": ["PC*"]})
             accesslog.forget()
-            yield {"admin": admin, "medic": medic, "manager": manager}
+            yield {"admin": admin, "medic": medic, "manager": manager, "desk": desk}
     finally:
         Path(os.environ["WLM_ALERTS_FILE"]).write_text("settings:\n  interval_sec: 30\n\nrules:\n", encoding="utf-8")
         engine.reload(force=True)
@@ -225,3 +226,56 @@ def test_save_from_the_form(ctx):
     bad = admin.put("/api/alerts/rules", json={"rule": {**rule, "name": "흐름 3", "window_sec": 3600, "cooldown_sec": 600}}, headers=CSRF)
     assert bad.status_code == 422
     assert admin.post("/api/alerts/rules/test", json={"name": "흐름 2", "event_id": 1}, headers=CSRF).status_code == 400
+
+
+
+# ------------------------------------------------------------------ 검토 보완 (1차)
+
+def test_long_chain_is_not_announced_again_on_another_entity(ctx, now):
+    """묶은 알림이 30개를 넘어도 다음 주기에 같은 흐름을 계정으로 또 알리지 않는다 — 다시 알리지 않을지는 보이는 30개가 아니라 전부로
+    (검토에서 재현). 보이는 목록에는 단계마다 센 알림(새 서비스·로그 삭제)이 들어 있다."""
+    for i in range(31):
+        put(now, "대입", -55 + i, ["MITRE T1110"], hosts=["RDS-01"], accounts=["adm"], ips=[f"203.0.113.{i}"])
+    service = put(now, "새 서비스", -10, ["MITRE T1543.003"], hosts=["RDS-01"], accounts=["adm"])
+    clear = put(now, "로그 삭제", -5, ["MITRE T1070.001"], hosts=["RDS-01"], accounts=["adm"])
+    assert len(evaluate(ctx["admin"], now)) == 1
+    [(_, payload, *_)] = corr("PC RDS-01")
+    chain = payload["correlation"]
+    assert len(chain["ids"]) == 33 and len(chain["alerts"]) == 30 and {service, clear} <= {a["id"] for a in chain["alerts"]}
+    assert evaluate(ctx["admin"], now + timedelta(seconds=30)) == [] and corr("계정 adm") == []
+
+
+def test_newest_alerts_win_when_over_the_limit(ctx, now):
+    """기간 안 알림이 상한을 넘으면 최근 것을 본다 — MITRE 태그 없는 운영 알림은 세지도 않는다 (검토에서 재현)."""
+    from app.alerts import correlation
+
+    sql("INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, payload)"
+        " SELECT %s, '시스템 심각 오류', 'error', 'N-' || g, 1, '{\"kind\": \"count\", \"tags\": [\"ISMS 2.9.2\"]}'"
+        " FROM generate_series(1, %s) g", (now - timedelta(minutes=55), correlation.SOURCE_MAX + 1))
+    sql("INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, payload, entity_hosts)"
+        " SELECT %s, '옛 대입', 'warning', 'O-' || g, 1, '{\"kind\": \"count\", \"tags\": [\"MITRE T1110\"]}', ARRAY['O-' || g]"
+        " FROM generate_series(1, %s) g", (now - timedelta(minutes=50), correlation.SOURCE_MAX + 1))
+    for minutes, rule, tag in ((-5, "대입", "MITRE T1110"), (-3, "새 서비스", "MITRE T1543.003"), (-1, "로그 삭제", "MITRE T1070.001")):
+        put(now, rule, minutes, [tag], hosts=["Q"])
+    assert len(evaluate(ctx["admin"], now)) == 1 and len(corr("PC Q")) == 1
+
+
+def test_deleted_correlation_rule_stays_hidden_from_scoped_users(ctx, now):
+    """상관 규칙을 지우거나 이름을 바꿔도 그 알림('PC PC-77')은 PC 패턴 'PC*' 범위의 사용자에게 보이지 않는다 — 알림에 남은 종류로 (검토에서 재현)."""
+    from app.alerts.engine import engine
+
+    admin, desk = ctx["admin"], ctx["desk"]
+    for minutes, rule, tag in ((-30, "대입", "MITRE T1110"), (-20, "새 서비스", "MITRE T1543.003"), (-10, "로그 삭제", "MITRE T1070.001")):
+        put(now, rule, minutes, [tag], hosts=["PC-77"])
+    [alert_id] = evaluate(admin, now)
+    assert sql("SELECT kind FROM alerts WHERE id = %s", (alert_id,)) == [("correlation",)]
+    path = Path(os.environ["WLM_ALERTS_FILE"])
+    try:
+        path.write_text(RULES.replace("  - name: 공격 흐름\n", "  - name: 공격 흐름 (예전)\n", 1), encoding="utf-8")
+        engine.reload(force=True)
+        assert desk.get(f"/api/alerts/{alert_id}").status_code == 404
+        assert alert_id not in {a["id"] for a in desk.get("/api/alerts", params={"since": "1d"}).json()["items"]}
+        assert admin.get(f"/api/alerts/{alert_id}").status_code == 200
+    finally:
+        path.write_text(RULES, encoding="utf-8")
+        engine.reload(force=True)

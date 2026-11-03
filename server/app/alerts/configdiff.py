@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from . import tactics
 from .message import SEVERITY_LABELS
 from .rules import SEVERITIES, AlertConfig, Rule
 
@@ -293,6 +294,7 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
             if lost:
                 changes.append(_change(rule, key, "route_targets", f"경로로 받던 곳이 빠짐: {', '.join(lost)}", True,
                                        new_rule.name))
+    changes += _feeder_changes(old, before, matched)
     for key in added_by_name.values():
         rule = after[key]
         changes.append(_change(rule, key, "added", "추가" + ("" if rule.enabled else " (꺼짐)"), False))
@@ -301,6 +303,30 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
                         for change, text, weakens in _rule_changes(base[0], rule) if change not in ("enabled", "disabled")]
             changes += _routed_change(old, base, new, rule, hosts, key, "다시 추가")
     return changes
+
+
+def _contributes(rule: Rule | None) -> set[str]:
+    """상관 알림(B-67 2단계)에 이 규칙이 보태는 전술 — 켜져 있고 보내는(관찰 아님) 건수·처음 보는 값 규칙의 태그에서."""
+    if rule is None or not rule.enabled or rule.mode == "observe" or rule.kind not in ("count", "new_terms"):
+        return set()
+    return set(tactics.of_tags(rule.tags))
+
+
+def _feeder_changes(old: AlertConfig, before: dict[str, Rule], matched: dict[str, Rule]) -> list[dict]:
+    """상관 알림이 세던 규칙에서 전술이 빠짐 — 태그를 지우거나 모르는 기법으로 바꾸거나·끄거나·관찰로 돌리거나·지우면 그 단계가 흐름에서
+    빠져 공격 흐름이 기준 아래가 된다. 그 규칙 자체의 변경으로는 약해짐이 아니어도(태그) 상관 규칙의 받는 곳에 알린다(검토에서 재현)."""
+    watchers = [(k, r) for k, r in before.items() if r.kind == "correlation" and r.enabled]
+    if not watchers:
+        return []
+    lost_by_rule = []
+    for key, rule in before.items():
+        lost = _contributes(rule) - _contributes(matched.get(key))
+        if lost:
+            lost_by_rule.append(f"'{rule.name}' 의 {', '.join(tactics.label(t) for t in sorted(lost, key=tactics.ORDER.__getitem__))}")
+    if not lost_by_rule:
+        return []
+    text = f"이 세던 전술이 빠짐: {'; '.join(lost_by_rule)}"
+    return [_change(r, k, "feeder_tactics", text, True, matched[k].name if k in matched else r.name) for k, r in watchers]
 
 
 def affected(old: AlertConfig | None, new: AlertConfig, changes: list[dict],

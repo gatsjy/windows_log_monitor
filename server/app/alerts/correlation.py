@@ -21,7 +21,7 @@ from . import tactics
 from .message import AlertMessage, alerts_link
 from .rules import Rule
 
-SOURCE_MAX = 5000   # 한 번에 보는 알림 수 — 넘으면 앞(오래된 것)부터 이만큼만(run.truncated)
+SOURCE_MAX = 5000   # 한 번에 보는 MITRE 태그 알림 수 — 넘으면 최근 것만 이만큼(run.truncated)
 ITEMS_MAX = 30      # 알림 본문·payload 에 남길 묶은 알림 수
 ENTITY_LABELS = {"host": "PC", "account": "계정", "ip": "IP"}
 COLUMNS = {"host": "entity_hosts", "account": "entity_accounts", "ip": "entity_ips"}
@@ -105,7 +105,7 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     rows = await repository.correlation_sources(now - rule.window, now, SOURCE_MAX + 1)
     if run is not None:
         run.candidates, run.truncated = min(len(rows), SOURCE_MAX), len(rows) > SOURCE_MAX
-    found = chains(with_tactics(rows[:SOURCE_MAX]), rule.entities, rule.min_tactics)
+    found = chains(with_tactics(rows[-SOURCE_MAX:]), rule.entities, rule.min_tactics)
     if not found:
         return []
     recent = await repository.recent_correlations(rule.name, now - rule.cooldown)
@@ -131,13 +131,21 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
 def _message(rule: Rule, chain: dict[str, Any], key: str, now: datetime) -> AlertMessage:
     rows = chain["rows"]
     flow = [{k: v for k, v in s.items() if k != "at"} for s in steps(chain)]
+    # 보이는 목록: 단계마다 센 알림을 먼저 두고 남은 자리는 최근 것으로(오래된 30개만 두면 앞쪽 무차별 대입 줄만 남고 새 서비스·로그 삭제가
+    # 빠졌다, 검토). 다시 알리지 않을지 판단은 ids(전부)로
+    keep = {s["alert_id"] for s in flow}
+    for row in reversed(rows):
+        if len(keep) >= ITEMS_MAX:
+            break
+        keep.add(row["id"])
+    shown = [row for row in rows if row["id"] in keep]
     items = [{"id": row["id"], "rule": row["rule"], "severity": row["severity"], "fired_at": row["fired_at"].isoformat(),
               "group_key": row["group_key"], "tactics": [tactics.label(t) for t in row["tactics"]]}
-             for row in rows[:ITEMS_MAX]]
+             for row in shown]
     return AlertMessage(
         rule=rule.name, severity=rule.severity, kind="correlation", group_by=chain["kind"], group_key=key,
         event_count=len(rows), threshold=rule.min_tactics, window_sec=int(rule.window.total_seconds()), fired_at=now,
         description=rule.description, first_event_at=min(r["fired_at"] for r in rows),
         last_event_at=max(r["fired_at"] for r in rows), link=alerts_link(rule.name), tags=list(rule.tags),
         correlation={"entity": {"kind": chain["kind"], "value": chain["value"]}, "tactics": flow, "alerts": items,
-                     "count": len(rows)})
+                     "count": len(rows), "ids": [row["id"] for row in rows]})
