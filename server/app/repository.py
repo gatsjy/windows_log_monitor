@@ -1198,60 +1198,74 @@ async def reopen_silenced_terms(ns: int, now: datetime, limit: int = 1000) -> in
     return len(rows)
 
 
-async def host_silenced_terms(ns: int, now: datetime, limit: int, before: tuple[int, bytes] | None = None) -> list[dict[str, Any]]:
-    """PC 로 건 무음(대상 = PC 이름)으로만 보내지 않은 조합 중 그 무음이 아직 걸린 것 — 그 사이 다른 PC 에서도 보였는지 볼 것.
-    한 PC 의 점검 무음이 나중에 다른 PC 로 번진 새 값을 무음이 끝날 때까지 가렸다(검토에서 재현). 몰려 한 통으로 묶은 것도.
-    before: 앞 차례에서 본 마지막 (알림 번호, 열쇠) — 늘 최근 limit 개만 보면 오래된 조합이 영영 차례가 오지 않았다(검토에서 재현).
-    묶음 알림은 조합이 여럿이라 알림 번호만으로 넘기면 경계의 조합을 건너뛴다."""
-    after = "" if before is None else " AND (a.id, s.term_hash) < (%s, %s)"
+async def host_silenced_alerts(ns: int, now: datetime, limit: int, *, after_id: int | None = None,
+                               before_id: int | None = None) -> list[dict[str, Any]]:
+    """PC 로 건 무음(대상 = PC 이름)으로 보내지 않은 처음 보는 값 알림 — 알림마다 한 줄(묶음이면 조합 열쇠들). 그 무음이 아직 걸렸거나
+    끝난 지(또는 알림이 난 지) 한 시간이 안 된 것: last_seen 은 한 시간마다라 무음 뒤 다시 열기가 그동안 못 본다(검토에서 재현).
+    after_id: 앞 차례 뒤에 난 새 알림 먼저, before_id: 그다음 차례 돌기(늘 최근 limit 개만 보면 오래된 것은 차례가 오지 않았다)."""
+    clauses, params = [], [ns, now, now - timedelta(hours=1, minutes=5)]
+    if after_id is not None:
+        clauses.append("a.id > %s")
+        params.append(after_id)
+    if before_id is not None:
+        clauses.append("a.id < %s")
+        params.append(before_id)
     return await db.fetch_all(
-        "SELECT s.term_hash, s.term, s.state, a.id AS alert_id, a.fired_at, a.group_key FROM seen_terms s"
-        " JOIN alerts a ON a.id = s.alert_id JOIN alert_silences si ON si.id = a.silence_id"
-        " WHERE s.ns = %s AND s.state IN ('alerted', 'aggregated') AND si.ends_at > %s AND si.group_key IS NOT NULL"
-        f" AND si.group_key <> a.group_key{after} ORDER BY a.id DESC, s.term_hash DESC LIMIT %s",
-        (ns, now, *(before or ()), limit))
+        "SELECT a.id AS alert_id, a.fired_at, a.group_key, array_agg(s.term_hash ORDER BY s.term_hash) AS hashes"
+        " FROM seen_terms s JOIN alerts a ON a.id = s.alert_id JOIN alert_silences si ON si.id = a.silence_id"
+        " WHERE s.ns = %s AND s.state IN ('alerted', 'aggregated') AND si.group_key IS NOT NULL AND si.group_key <> a.group_key"
+        " AND (si.ends_at > %s OR GREATEST(si.ends_at, a.fired_at) > %s)"
+        + "".join(f" AND {c}" for c in clauses) + " GROUP BY a.id ORDER BY a.id DESC LIMIT %s", [*params, limit])
 
 
-async def reopen_terms(ns: int, spread: list[tuple[bytes, str]]) -> None:
-    """다른 PC 로 번진 조합을 다시 알릴 차례로 — 알림의 PC 는 번진 PC 로(점검 중인 첫 PC 로 두면 그 PC 의 경로·조회 범위로 가서
-    번진 PC 쪽 사람은 못 봤다, 검토에서 재현). 몰려 한 통으로 묶었던 것은 그 알림의 조합을 모두 함께(다시 한 통으로)."""
+async def reopen_terms(ns: int, alert_id: int, term_hash: bytes, host: str, at: datetime) -> None:
+    """다른 PC(또는 무음이 끝난 뒤 같은 PC)에서 본 알림을 다시 알릴 차례로 — 그 알림의 조합 모두(묶음은 다시 한 통으로). 본 조합의 PC 는
+    본 PC 로(점검 중인 첫 PC 로 두면 그 PC 의 경로·조회 범위로 갔다), last_seen 도 그때로(늦은 무음 판단이 옛 시각을 쓰지 않게)."""
     await db.fetch_all(
-        "WITH x AS (SELECT * FROM unnest(%s::bytea[], %s::text[]) x(term_hash, host)),"
-        " ids AS (SELECT DISTINCT s.alert_id FROM seen_terms s JOIN x ON x.term_hash = s.term_hash WHERE s.ns = %s)"
-        " UPDATE seen_terms s SET state = 'pending', alert_id = NULL,"
-        " first_host = COALESCE((SELECT x.host FROM x WHERE x.term_hash = s.term_hash), s.first_host)"
-        " WHERE s.ns = %s AND s.alert_id IN (SELECT alert_id FROM ids) AND s.state IN ('alerted', 'aggregated') RETURNING s.ns",
-        ([h for h, _ in spread], [host for _, host in spread], ns, ns))
+        "UPDATE seen_terms SET state = 'pending', alert_id = NULL,"
+        " first_host = CASE WHEN term_hash = %s THEN %s ELSE first_host END,"
+        " last_seen = CASE WHEN term_hash = %s THEN GREATEST(last_seen, %s) ELSE last_seen END"
+        " WHERE ns = %s AND alert_id = %s AND state IN ('alerted', 'aggregated') RETURNING ns",
+        (term_hash, host, term_hash, at, ns, alert_id))
 
 
-async def recheck_pending_terms(ns: int, f: EventFilter, fields: list[str]) -> list[bytes]:
-    """알릴 차례(pending)인 조합 중 지금 조건(예외·저장한 검색·바꾼 match)에 맞는 로그가 처음 본 때 뒤로 있는 것의 열쇠 — 몰려와
-    한 통으로 묶을 때 한꺼번에 다시 본다(하나씩 보던 것을 묶음에서는 건너뛰어, 미뤄 둔 동안 예외를 건 값도 '처음 보는 값 n개'에 들어갔다).
-    전체 값으로 만든 열쇠(wlm_terms_hash)로 맞춰 256자 잘림과 무관하다."""
-    exprs = [_field_expr(x) for x in fields]
-    first = await db.fetch_one("SELECT min(first_seen) AS at FROM seen_terms WHERE ns = %s AND state = 'pending'", (ns,))
-    if first is None or first["at"] is None:
+async def term_sightings(f: EventFilter, fields: list[str], hashes: list[bytes],
+                         ranges: list[tuple[datetime, datetime | None]], limit: int) -> list[dict[str, Any]]:
+    """그 조합들(전체 값 열쇠)을 본 (열쇠, PC, 그 PC 에서 마지막으로 받은 때) — 받은 시각 구간(ranges)만. 몰려온 묶음을 알리기 전 다시 보기·
+    무음 판단과 번짐 확인이 같이 쓴다(seen_terms 의 첫 PC·한 시간 단위 last_seen 으로 대신하면 다른 PC 를 못 보고 옛 시각으로 판단했다)."""
+    if not hashes or not ranges:
         return []
-    where, where_params = where_clause(replace(f, received_since=first["at"] - timedelta(minutes=1)))
+    exprs = [_field_expr(x) for x in fields]
+    where, where_params = where_clause(replace(f, received_since=min(a for a, _ in ranges)))
     term = sql.SQL("ARRAY[{}]::text[]").format(sql.SQL(", ").join(e for e, _ in exprs))
     nonempty = sql.SQL(" AND ").join(sql.SQL("{} <> ''").format(e) for e, _ in exprs)
     expr_params = [p for _, ps in exprs for p in ps]
-    rows = await db.fetch_all(sql.SQL(
-        "SELECT DISTINCT wlm_terms_hash({term}) AS h FROM events WHERE {where} AND {nonempty}"
-        " AND wlm_terms_hash({term}) IN (SELECT term_hash FROM seen_terms WHERE ns = %s AND state = 'pending')").format(
-            term=term, where=where, nonempty=nonempty), [*expr_params, *where_params, *expr_params, *expr_params, ns])
-    return [bytes(r["h"]) for r in rows]
+    within = sql.SQL(" OR ").join(sql.SQL("(received_at >= %s" + ("" if b is None else " AND received_at < %s") + ")")
+                                  for _, b in ranges)
+    range_params = [x for a, b in ranges for x in ((a,) if b is None else (a, b))]
+    return await db.fetch_all(sql.SQL(
+        "SELECT wlm_terms_hash({term}) AS h, host, max(received_at) AS at FROM events WHERE {where} AND {nonempty}"
+        " AND ({within}) AND host IS NOT NULL AND wlm_terms_hash({term}) = ANY(%s) GROUP BY 1, 2 LIMIT %s").format(
+            term=term, where=where, nonempty=nonempty, within=within),
+        [*expr_params, *where_params, *expr_params, *range_params, *expr_params, hashes, limit])
 
 
-async def pending_hosts(ns: int, hashes: list[bytes], limit: int) -> list[dict[str, Any]] | None:
-    """몰려온 묶음의 PC 와 그 PC 에서 마지막으로 본 때 — PC 점검 무음이 묶음에도 걸리게(모든 PC 가 무음일 때만). PC 를 모르는 조합이
-    있거나 너무 많으면 None(무음으로 가리지 않음)."""
-    rows = await db.fetch_all(
-        "SELECT first_host AS host, max(last_seen) AS at FROM seen_terms WHERE ns = %s AND term_hash = ANY(%s) GROUP BY 1"
-        " LIMIT %s", (ns, hashes, limit + 1))
-    if not rows or len(rows) > limit or any(r["host"] is None for r in rows):
-        return None
-    return rows
+async def pending_windows(ns: int, now: datetime, recent: timedelta, first_window: timedelta) -> tuple[list[bytes], list]:
+    """알릴 차례인 조합의 열쇠와 다시 볼 받은 시각 구간 — 최근 하루(끝 없음)와, 그보다 오래 미뤄 둔 조합은 처음 본 때부터 한 시간씩
+    (겹치면 합침). 가장 오래된 처음 본 때부터 한 문장으로 훑으면 며칠 치라 시간 초과로 모두 알렸다(검토에서 재현)."""
+    rows = await db.fetch_all("SELECT term_hash, first_seen FROM seen_terms WHERE ns = %s AND state = 'pending'", (ns,))
+    if not rows:
+        return [], []
+    lo = now - recent
+    ranges: list[list] = []
+    for fs in sorted(r["first_seen"] for r in rows if r["first_seen"] - timedelta(minutes=1) < lo):
+        a, b = fs - timedelta(minutes=1), min(fs + first_window, lo)
+        if ranges and a <= ranges[-1][1]:
+            ranges[-1][1] = max(ranges[-1][1], b)
+        else:
+            ranges.append([a, b])
+    start = max(min(r["first_seen"] for r in rows) - timedelta(minutes=1), lo)
+    return [bytes(r["term_hash"]) for r in rows], [(a, b) for a, b in ranges if a < b] + [(start, None)]
 
 
 async def hosts_last_seen(f: EventFilter, limit: int) -> list[dict[str, Any]]:
@@ -1855,20 +1869,30 @@ async def alert_group_counts(since: datetime | None = None, status: str | None =
 # ------------------------------------------------------------------ alert silences (무음)
 
 _SILENCE_COLUMNS = (
-    "s.id, s.rule, s.group_key, s.starts_at, s.ends_at, s.reason, s.created_by, s.created_at, s.ended_by,"
+    "s.id, s.rule, s.group_key, s.host_only, s.starts_at, s.ends_at, s.reason, s.created_by, s.created_at, s.ended_by,"
     " (SELECT count(*) FROM alerts a WHERE a.silence_id = s.id) AS suppressed"
 )
 
 
-async def active_silence(rule: str, group_key: str, at: datetime, host: str | None = None) -> dict | None:
+async def active_silence(rule: str, group_key: str, at: datetime, host: str | None = None, pc: str | None = None) -> dict | None:
     """이 규칙·대상에 걸린 무음 (여러 개면 가장 늦게 끝나는 것). rule·group_key 가 NULL 인 무음은 전부에 걸린다.
-    host: 대상 이름이 PC 이름이 아닌 알림(채널 끊김 'PC · 채널')의 PC — 'DB-01' 로 건 PC 점검 무음도 걸리게(검토)."""
+    host: 대상 이름이 PC 이름이 아닌 알림(채널 끊김 'PC · 채널')의 PC — 'DB-01' 로 건 PC 점검 무음도 걸리게(검토).
+    pc: 이 알림의 PC (대상 이름이 PC 인 알림이면 그 이름) — PC 로만 맞추는 무음(host_only, 마이그레이션 041)은 이것과만 맞춘다."""
     return await db.fetch_one(
         "SELECT id, reason, ends_at FROM alert_silences WHERE starts_at <= %s AND ends_at > %s"
-        " AND (rule IS NULL OR rule = %s) AND (group_key IS NULL OR group_key = %s OR group_key = %s)"
-        " ORDER BY ends_at DESC LIMIT 1",
-        (at, at, rule, group_key, host if host is not None else group_key),
+        " AND (rule IS NULL OR rule = %s) AND (group_key IS NULL OR (NOT host_only AND (group_key = %s OR group_key = %s))"
+        " OR (host_only AND group_key = %s)) ORDER BY ends_at DESC LIMIT 1",
+        (at, at, rule, group_key, host if host is not None else group_key, pc if pc is not None else host),
     )
+
+
+async def pc_silence(rule: str, pc: str, at: datetime, key: str) -> dict | None:
+    """그 PC 로 건 무음만 (규칙·대상·전체 무음은 빼고) — 처음 보는 값(B-47)의 PC 를 본 때로 판단한다. 대상 이름(값 조합)과 같은 글자인
+    무음은 대상 무음이라 빼고(그건 지금으로 판단), 규칙·전체 무음을 본 때로 보면 이미 끝난 무음으로 알림이 묻혔다(검토에서 재현)."""
+    return await db.fetch_one(
+        "SELECT id, reason, ends_at FROM alert_silences WHERE starts_at <= %s AND ends_at > %s"
+        " AND (rule IS NULL OR rule = %s) AND group_key = %s AND group_key <> %s ORDER BY ends_at DESC LIMIT 1",
+        (at, at, rule, pc, key))
 
 
 async def list_silences(ended_since: datetime) -> list[dict]:
@@ -1885,11 +1909,11 @@ async def get_silence(silence_id: int) -> dict | None:
 
 
 async def insert_silence(rule: str | None, group_key: str | None, starts_at: datetime, ends_at: datetime,
-                         reason: str, created_by: str) -> int:
+                         reason: str, created_by: str, host_only: bool = False) -> int:
     row = await db.fetch_one(
-        "INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by)"
-        " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-        (rule, group_key, starts_at, ends_at, reason, created_by),
+        "INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by, host_only)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (rule, group_key, starts_at, ends_at, reason, created_by, host_only),
     )
     return row["id"]
 

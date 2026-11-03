@@ -38,8 +38,11 @@ HOSTS_MAX = 50
 RECENT = timedelta(days=1)              # 알릴 때 PC 를 보는 최근 구간 (처음 본 때의 한 시간과 함께 — 오래 미뤘거나 무음 뒤 다시 연 조합)
 SPREAD_EVERY = timedelta(minutes=5)     # PC 무음으로 보내지 않은 조합이 다른 PC 로 번졌나 보는 간격
 SPREAD_MAX = 50
+SIGHTINGS_MAX = 20000                   # 다시 볼 때 (조합, PC) 줄 상한 — 넘으면 모르는 것으로(놓치는 쪽보다 알림)
 _spread: dict[int, datetime] = {}
-_spread_cursor: dict[int, tuple[int, bytes] | None] = {}
+_spread_top: dict[int, int] = {}            # 앞 차례에서 본 가장 큰 알림 번호 — 그 뒤에 난 알림을 먼저 본다(5분 안에)
+_spread_cursor: dict[int, int | None] = {}  # 차례 돌기 — 다음은 이 알림 번호 앞부터, 끝까지 봤으면 처음부터
+_spread_checked: dict[int, datetime] = {}   # 알림 번호 → 마지막으로 본 때 (그 뒤 받은 로그만 다시 본다 — 차례가 늦어도 놓치지 않게)
 _purged: dict[int, datetime] = {}       # 메모리 (워커 1개) — 다시 시작하면 한 번 더 지울 뿐
 _ceiling: dict[int, int] = {}           # 시간 초과가 난 구간 크기 — 다시 그만큼 키우지 않는다 (다시 시작하면 한 번 더 겪을 뿐)
 
@@ -223,31 +226,40 @@ async def _hosts(rule: Rule, base, values: list[str], first_seen: datetime, now:
 async def _unsilenced(rule: Rule, key: str, sightings: list[tuple[str, datetime]]) -> list[str]:
     """그 PC 를 마지막으로 본 때 무음이 없던 PC — 무음은 지금이 아니라 본 때로 판단한다(점검 중에만 보인 값이 다른 PC 의 무음이
     먼저 끝나는 순간 알림이 됐다, 검토에서 재현)."""
-    return [h for h, at in sightings if await repository.active_silence(rule.name, key, at, h) is None]
+    return [h for h, at in sightings if await repository.pc_silence(rule.name, h, at, key) is None]
 
 
 async def _reopen_spread(rule: Rule, ns: int, base, now: datetime) -> None:
-    """PC 로 건 무음으로만 보내지 않은 조합이 그 뒤 무음이 없는 PC 에서도 보이면 다시 알릴 차례로 (5분마다 50개씩 차례로 돌아가며).
+    """PC 로 건 무음으로 보내지 않은 알림이 그 뒤 무음이 없는 PC(또는 무음이 끝난 같은 PC)에서 보이면 다시 알릴 차례로 (5분마다).
+    알림 단위(묶음은 한 번에), 새 알림 먼저·나머지는 차례로 돌며, 알림마다 지난번에 본 뒤 받은 로그만 본다.
     한 PC 의 점검 무음이 나중에 다른 PC 로 번진 새 값을 무음이 끝날 때까지 가렸다(검토에서 재현)."""
     if "host" in rule.terms_fields or (now - _spread.get(ns, now - SPREAD_EVERY)) < SPREAD_EVERY:
         return
     _spread[ns] = now
-    rows = await repository.host_silenced_terms(ns, now, SPREAD_MAX, _spread_cursor.get(ns))
-    # 다음 차례는 이번에 본 가장 작은 알림 번호 앞부터, 끝까지 봤으면 처음부터 — 늘 최근 50개만 보면 오래된 조합은 차례가 오지 않았다
-    _spread_cursor[ns] = (rows[-1]["alert_id"], bytes(rows[-1]["term_hash"])) if len(rows) == SPREAD_MAX else None
-    reopen = []
+    top = _spread_top.get(ns)
+    rows = await repository.host_silenced_alerts(ns, now, SPREAD_MAX, after_id=top) if top is not None else []
+    if len(rows) < SPREAD_MAX:
+        rest = SPREAD_MAX - len(rows)
+        turn = await repository.host_silenced_alerts(ns, now, rest, before_id=_spread_cursor.get(ns))
+        _spread_cursor[ns] = turn[-1]["alert_id"] if len(turn) == rest else None
+        seen = {r["alert_id"] for r in rows}
+        rows += [r for r in turn if r["alert_id"] not in seen]
+    if rows:   # 처음에는 차례 돌기만 — 0 으로 두면 다음 차례에 모든 알림이 '새 알림'이 되어 오래된 것이 밀렸다
+        _spread_top[ns] = max([top or 0, *(r["alert_id"] for r in rows)])
+    if len(_spread_checked) > 50000:
+        _spread_checked.clear()
     for row in rows:
-        values = list(row["term"])
-        f = replace(_scoped(rule, base, values), received_since=max(row["fired_at"] - OVERLAP, now - RECENT))
+        since = max(_spread_checked.get(row["alert_id"], row["fired_at"]) - OVERLAP, now - RECENT)
         try:
-            sightings = [(r["host"], r["at"]) for r in await repository.hosts_last_seen(f, HOSTS_MAX)]
+            sights = await repository.term_sightings(base, list(rule.terms_fields), [bytes(h) for h in row["hashes"]],
+                                                     [(since, None)], SIGHTINGS_MAX)
         except db.QueryTimeout:
             continue
-        free = await _unsilenced(rule, row["group_key"], sightings)
-        if free:
-            reopen.append((row["term_hash"], free[0]))
-    if reopen:
-        await repository.reopen_terms(ns, reopen)
+        _spread_checked[row["alert_id"]] = now
+        for x in sorted(sights, key=lambda x: x["at"], reverse=True):
+            if await repository.pc_silence(rule.name, x["host"], x["at"], row["group_key"]) is None:
+                await repository.reopen_terms(ns, row["alert_id"], bytes(x["h"]), x["host"], x["at"])
+                break
 
 
 def _link(rule: Rule, values: list[str], since: datetime, saved: str | None, exceptions: list[str]) -> str:
@@ -270,15 +282,20 @@ async def _fire(engine: Any, rule: Rule, ns: int, base, saved: str | None, excep
     common = {"rule": rule.name, "severity": rule.severity, "kind": "new_terms", "description": rule.description,
               "group_by": "none", "threshold": 1, "window_sec": int(rule.history.total_seconds()), "fired_at": now,
               "tags": list(rule.tags)}
-    hashes = None
+    hashes, sights = None, None
     if len(pending) > rule.burst:
         # 묶기 전에 한꺼번에 다시 보기 — 미뤄 둔 동안 예외를 걸었거나 조건을 좁혔으면 지금 조건에 맞는 로그가 없는 조합은 배운 것으로
-        # (하나씩 알릴 때만 다시 봐서 묶음에는 들어갔다, 검토에서 재현). 시간 초과면 모르니 모두 알린다
+        # (하나씩 알릴 때만 다시 봐서 묶음에는 들어갔다, 검토에서 재현). 하나씩과 같은 구간(처음 한 시간 + 최근 하루), 같은 열쇠로.
+        # 시간 초과·줄 상한이면 모르니 모두 알리고 PC 무음으로 가리지 않는다
+        all_hashes, ranges = await repository.pending_windows(ns, now, RECENT, FIRST_WINDOW)
         try:
-            hashes = await repository.recheck_pending_terms(ns, base, list(rule.terms_fields))
+            sights = await repository.term_sightings(base, list(rule.terms_fields), all_hashes, ranges, SIGHTINGS_MAX)
         except db.QueryTimeout:
-            hashes = None
-        if hashes is not None:
+            sights = None
+        if sights is not None and len(sights) >= SIGHTINGS_MAX:
+            sights = None
+        if sights is not None:
+            hashes = sorted({bytes(x["h"]) for x in sights})
             await repository.settle_terms_except(ns, hashes, "learned")
             pending = await repository.pending_terms(ns, max(rule.burst + 1, SUMMARY_ITEMS))
             if not pending:
@@ -294,10 +311,14 @@ async def _fire(engine: Any, rule: Rule, ns: int, base, saved: str | None, excep
                                event_count=total, first_event_at=pending[0]["first_ts"], last_event_at=pending[-1]["first_ts"],
                                terms={"fields": list(rule.terms_fields), "count": total, "items": items, "history_days": days},
                                link=_link(rule, [], since - timedelta(minutes=1), saved, exceptions))
-        # 묶음의 PC 마다 마지막으로 본 때 — PC 점검 무음이 묶음에도 걸리게(모든 PC 가 그때 무음일 때만, 한 대씩 올 때와 같게)
-        hosts = await repository.pending_hosts(ns, hashes, HOSTS_MAX) if hashes is not None else None
-        alert_id = await engine.fire_rule(rule, message, claim={"ns": ns, "hashes": hashes, "state": "aggregated"},
-                                          hosts=[(h["host"], h["at"]) for h in hosts] if hosts else None)
+        # 묶음의 PC 마다 마지막으로 본 때(로그에서) — PC 점검 무음이 묶음에도 걸리게(모든 PC 가 그때 무음일 때만, 한 대씩 올 때와 같게)
+        hosts = None
+        if sights:
+            latest: dict[str, datetime] = {}
+            for x in sights:
+                latest[x["host"]] = max(latest.get(x["host"], x["at"]), x["at"])
+            hosts = list(latest.items()) if len(latest) <= HOSTS_MAX else None
+        alert_id = await engine.fire_rule(rule, message, claim={"ns": ns, "hashes": hashes, "state": "aggregated"}, hosts=hosts)
         return [alert_id] if alert_id else []
     fired = []
     for p in pending:

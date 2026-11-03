@@ -895,11 +895,12 @@ def _coverage(spans: list[dict[str, Any]], starts_at: datetime, ends_at: datetim
     return max(lo, now), hi
 
 
-def _check_silence_scope(user: User, rule: str | None, group_key: str | None) -> None:
-    """조회 범위가 있는 사용자는 자기가 볼 수 있는 규칙·대상에만 무음을 걸고 풀 수 있다 (남의 알림까지 막지 않게)."""
+def _check_silence_scope(user: User, rule: str | None, group_key: str | None, host_only: bool = True) -> None:
+    """조회 범위가 있는 사용자는 자기가 볼 수 있는 규칙·대상에만 무음을 걸고 풀 수 있다 (남의 알림까지 막지 않게).
+    그 사람이 거는 무음은 PC 로만 맞춘다(host_only) — 처음 보는 값의 값 조합이 PC 모양이어도 범위 밖 PC 의 알림을 막지 않게."""
     if user.scopes is None:
         return
-    if not silence_target_visible(user, rule, group_key):
+    if not silence_target_visible(user, rule, group_key, host_only):
         raise HTTPException(403, "조회 범위가 정해진 사용자는 볼 수 있는 규칙·대상 한 개에만 무음을 걸 수 있습니다")
 
 
@@ -949,11 +950,13 @@ async def create_silence(body: SilenceBody, request: Request, user: User = Depen
     # 24시간짜리를 이어 붙이면 한 줄씩은 짧아도 한 달을 막을 수 있었다(검토에서 재현)
     covered_from, covered_until = _coverage(await repository.covering_silences(rule, group_key, now), starts_at, ends_at, now)
     wide = (rule is None and group_key is None) or covered_until - covered_from > configdiff.WIDE_SILENCE
-    silence_id = await repository.insert_silence(rule, group_key, starts_at, ends_at, reason, user.username)
+    # 범위가 정해진 사용자의 무음은 PC 로만 맞춘다 (마이그레이션 041 — 대상 이름이 같은 글자인 범위 밖 알림을 막지 않게)
+    silence_id = await repository.insert_silence(rule, group_key, starts_at, ends_at, reason, user.username,
+                                                 host_only=user.scopes is not None)
     target = f"{rule or '모든 규칙'} · {group_key if group_key is not None else '모든 대상'}"
     await db.audit(user.username, "alerts.silence.create", target,
                    {"id": silence_id, "rule": rule, "group_key": group_key, "starts_at": starts_at.isoformat(),
-                    "ends_at": ends_at.isoformat(), "reason": reason, "wide": wide,
+                    "ends_at": ends_at.isoformat(), "reason": reason, "wide": wide, "host_only": user.scopes is not None,
                     "covered_until": covered_until.isoformat()}, actor_ip=client_ip(request))
     if wide:
         # 그 규칙들의 받는 곳에 알린다. 실패해도 무음은 걸린다
@@ -975,7 +978,7 @@ async def end_silence(silence_id: int, request: Request, user: User = Depends(re
     silence = await repository.get_silence(silence_id)
     if silence is None or not silence_visible(user, silence):
         raise HTTPException(404, "무음을 찾을 수 없습니다")
-    _check_silence_scope(user, silence["rule"], silence["group_key"])
+    _check_silence_scope(user, silence["rule"], silence["group_key"], silence["host_only"])
     if not await repository.end_silence(silence_id, user.username):
         raise HTTPException(409, "이미 끝난 무음입니다")
     await db.audit(user.username, "alerts.silence.end", f"무음 #{silence_id}",
@@ -1021,7 +1024,7 @@ async def get_alert(alert_id: int, request: Request):
     if row is None or not alert_visible(user, row):
         raise HTTPException(404, "알림을 찾을 수 없습니다")
     if row["silence"]:
-        row["silence"] = scrub_silence(user, row["silence"])
+        row["silence"] = scrub_silence(user, row["silence"], row)
     row["followup"] = await _followup(row)
     return row  # related_unresolved: 같은 규칙·대상의 해결 안 된 다른 알림 수 — 함께 해결할 수 있게 (재발은 따로 기록, ADR-029)
 

@@ -74,26 +74,30 @@ def silence_visible(user: User, silence: dict[str, Any]) -> bool:
 
 
 def _as_alert(silence: dict[str, Any]) -> dict[str, Any]:
-    """규칙·대상을 정한 무음을 알림처럼 — 처음 보는 값(B-47) 규칙의 대상 자리는 PC 이름으로도 걸린다(active_silence 가 PC 로도 맞춘다).
-    그래서 PC 로 보아 범위를 판단한다 — 값 조합 이름은 PC 모양이 아니라 그대로 안 보인다(그 무음은 모든 PC 에 걸리므로 맞다)."""
-    rule = next((r for r in engine.config.rules if r.name == silence["rule"]), None)
-    if rule is not None and rule.kind == "new_terms":
+    """규칙·대상을 정한 무음을 알림처럼. PC 로만 맞추는 무음(host_only — 범위가 정해진 사용자가 건 것)은 대상 자리가 PC 라 PC 로 본다
+    (처음 보는 값 규칙도 그 PC 의 알림에만 걸린다). 관리자가 건 처음 보는 값 규칙의 무음은 값 조합으로도 맞아 모든 PC 에 걸리므로
+    범위가 정해진 사용자에게 안 보인다 — PC 모양인 값(계정 'ws-ops'·IP)으로 범위 밖 PC 의 알림을 막을 수 있었다(검토에서 재현)."""
+    if silence.get("host_only"):
         return {"rule": silence["rule"], "group_key": silence["group_key"], "terms_host": silence["group_key"]}
     return silence
 
 
-def silence_target_visible(user: User, rule: str | None, group_key: str | None) -> bool:
-    """무음을 걸고 풀 수 있는 범위(routers/alerts._check_silence_scope) — 규칙·대상 한 개, 위와 같은 판단."""
+def silence_target_visible(user: User, rule: str | None, group_key: str | None, host_only: bool = True) -> bool:
+    """무음을 걸고 풀 수 있는 범위(routers/alerts._check_silence_scope) — 규칙·대상 한 개, 위와 같은 판단. 범위가 정해진 사용자가
+    거는 무음은 PC 로만 맞춘다(host_only)."""
     if user.scopes is None:
         return True
-    return rule is not None and group_key is not None and alert_visible(user, _as_alert({"rule": rule, "group_key": group_key}))
+    return rule is not None and group_key is not None and alert_visible(
+        user, _as_alert({"rule": rule, "group_key": group_key, "host_only": host_only}))
 
 
-def scrub_silence(user: User, silence: dict[str, Any]) -> dict[str, Any]:
+def scrub_silence(user: User, silence: dict[str, Any], alert: dict[str, Any] | None = None) -> dict[str, Any]:
     """범위가 있는 사용자에게 넓은 무음의 '보내지 않은 알림 수'는 감춘다 — 범위 밖 알림까지 센 숫자라서.
     볼 수 없는 무음(처음 보는 값 알림이 여러 PC 의 점검 무음에 걸렸을 때 다른 PC 의 것)은 무음이었다는 것과 기간만 —
     범위 밖 PC 이름·사유·건 사람이 알림 상세로 샜다(검토에서 재현)."""
-    if user.scopes is not None and not silence_visible(user, silence):
+    # 이 알림의 규칙·대상 그대로 건 무음은 보인다(알림을 보는 사람에게 새 정보가 아니다 — '다른 대상'이라 하면 틀린 말이었다, 검토)
+    own = alert is not None and silence["rule"] in (None, alert["rule"]) and silence["group_key"] in (None, alert["group_key"])
+    if user.scopes is not None and not own and not silence_visible(user, silence):
         return {"id": silence["id"], "starts_at": silence["starts_at"], "ends_at": silence["ends_at"], "rule": None,
                 "group_key": None, "reason": None, "created_by": None, "suppressed": None, "hidden": True}
     if user.scopes is not None and (silence["rule"] is None or silence["group_key"] is None):

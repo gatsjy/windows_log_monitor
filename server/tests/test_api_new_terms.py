@@ -780,6 +780,97 @@ def test_hidden_silence_and_scoped_pc_silence(client):
     shown = scrub_silence(user, row["silence"])
     assert shown["hidden"] and shown["reason"] is None and shown["group_key"] is None
     assert silence_target_visible(user, "두 PC 점검", "WS-55") and not silence_target_visible(user, "두 PC 점검", "SRV-55")
-    assert silence_visible(user, {"rule": "두 PC 점검", "group_key": "WS-55"})
+    # 범위가 정해진 사용자가 건 무음(PC 로만)은 보이고, 관리자가 건 처음 보는 값 규칙의 무음은 값 조합으로도 맞아 안 보인다
+    assert silence_visible(user, {"rule": "두 PC 점검", "group_key": "WS-55", "host_only": True})
+    assert not silence_visible(user, {"rule": "두 PC 점검", "group_key": "WS-55", "host_only": False})
+    # 이 알림의 규칙·대상 그대로 건 무음은 '다른 대상'이 아니다
+    own = {"id": 9, "rule": "두 PC 점검", "group_key": row["group_key"], "host_only": False, "starts_at": t, "ends_at": t,
+           "reason": "알려진 VPN", "created_by": "admin", "suppressed": 1}
+    assert scrub_silence(user, own, row)["reason"] == "알려진 VPN"
     assert row["terms_host"] == "WS-55"                    # 목록·CSV 에도 PC
     sql("UPDATE alert_silences SET ends_at = now() WHERE group_key IN ('WS-55', 'SRV-55')")
+
+
+# ---------------------------------------------------------------- 4차 검토 보완
+def pending_row(ns, values, first_seen_sql, host):
+    sql("INSERT INTO seen_terms (ns, term_hash, term, first_seen, last_seen, first_host, state) VALUES"
+        f" (%s, wlm_terms_hash(%s::text[]), %s::text[], {first_seen_sql}, {first_seen_sql}, %s, 'pending')", (ns, values, values, host))
+
+
+def test_burst_pc_silence_reads_events_not_first_host(client):
+    """몰려온 묶음의 PC 무음은 로그에서 — 첫 PC 만 보면 무음 없는 PC 에서도 본 값이 묶음째 묻혔다(재현)."""
+    rule = own_rule("묶음 PC", 4861, burst=2)
+    evaluate(client, rule)
+    ns, *_ = state_of("묶음 PC")
+    silence(None, "MH-61", 60, started_minutes_ago=30)
+    at = datetime.now(UTC) - timedelta(minutes=4)
+    for i in range(3):
+        ev(f"m{i}", "10.61.0.1", 4861, host="MH-61", at=at)
+        pending_row(ns, [f"m{i}", "10.61.0.1"], "now() - interval '4 minutes'", "MH-61")
+    ev("m0", "10.61.0.1", 4861, host="WS-61", at=at + timedelta(seconds=1))
+    sql("UPDATE new_terms_state SET cursor_at = now() WHERE id = %s", (ns,))
+    evaluate(client, rule)
+    [(_, key, silence_id, _)] = rule_alerts("묶음 PC")
+    assert key.startswith("처음 보는 값 3개") and silence_id is None
+    sql("UPDATE alert_silences SET ends_at = now() WHERE group_key = 'MH-61'")
+
+
+def test_alert_silenced_by_ended_silence_reopens_on_new_pc_once(client):
+    """이미 끝난 PC 무음 중에 본 값의 알림 — 한 시간 안에 무음 없는 PC 에서 보이면 다시 알리고, 그 뒤 되풀이하지 않는다(재현)."""
+    from app.alerts import newterms
+
+    rule = own_rule("끝난 무음", 4862)
+    evaluate(client, rule)
+    ns, *_ = state_of("끝난 무음")
+    silence(None, "MX-62", -5, started_minutes_ago=30)
+    ev("patch", "10.62.0.1", 4862, host="MX-62", at=datetime.now(UTC) - timedelta(minutes=20))
+    pending_row(ns, ["patch", "10.62.0.1"], "now() - interval '20 minutes'", "MX-62")
+    sql("UPDATE new_terms_state SET cursor_at = now() WHERE id = %s", (ns,))
+    evaluate(client, rule)
+    assert rule_alerts("끝난 무음")[-1][2] is not None             # 본 때는 점검 중
+    ev("patch", "10.62.0.1", 4862, host="WS-62")
+    newterms._spread.pop(ns, None)
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1 and rule_alerts("끝난 무음")[-1][2] is None and rule_alerts("끝난 무음")[-1][3]["terms"]["host"] == "WS-62"
+    newterms._spread.pop(ns, None)
+    assert evaluate(client, rule)[0] == []                         # 다시 무음 알림을 되풀이하지 않는다
+
+
+def test_rule_silence_is_judged_now_not_at_sighting(client):
+    rule = own_rule("끝난 규칙 무음", 4863)
+    evaluate(client, rule)
+    ns, *_ = state_of("끝난 규칙 무음")
+    silence("끝난 규칙 무음", None, -5, started_minutes_ago=30)
+    ev("svc", "10.63.0.2", 4863, host="DC-63", at=datetime.now(UTC) - timedelta(minutes=10))
+    pending_row(ns, ["svc", "10.63.0.2"], "now() - interval '10 minutes'", "DC-63")
+    sql("UPDATE new_terms_state SET cursor_at = now() WHERE id = %s", (ns,))
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1 and rule_alerts("끝난 규칙 무음")[-1][2] is None
+
+
+def test_old_pending_rows_rechecked_in_their_own_window(client):
+    """오래 미뤄 둔 조합은 처음 본 때의 한 시간으로 다시 본다 — 예외 걸린 값만 배운 것으로, 나머지는 알린다."""
+    rule = own_rule("오래 미룸", 4864, burst=1)
+    evaluate(client, rule)
+    ns, *_ = state_of("오래 미룸")
+    old = datetime.now(UTC) - timedelta(days=3)
+    ev("keep", "10.64.0.1", 4864, at=old)
+    ev("drop", "10.64.0.200", 4864, at=old)
+    pending_row(ns, ["keep", "10.64.0.1"], "now() - interval '3 days'", "DC-01")
+    pending_row(ns, ["drop", "10.64.0.200"], "now() - interval '3 days'", "DC-01")
+    sql("INSERT INTO rule_exceptions (rule, term, reason, created_by) VALUES ('오래 미룸', 'ip:10.64.0.200', '점검기', 'admin')")
+    sql("UPDATE new_terms_state SET cursor_at = now() WHERE id = %s", (ns,))
+    evaluate(client, rule)
+    assert [a[1] for a in rule_alerts("오래 미룸")] == ["keep · 10.64.0.1"]
+    assert sql("SELECT state FROM seen_terms WHERE ns = %s AND term[1] = 'drop'", (ns,)) == [("learned",)]
+
+
+def test_scoped_users_pc_silence_does_not_match_value_combination(client):
+    """범위가 정해진 사용자의 무음(PC 로만)은 같은 글자인 값 조합의 범위 밖 알림을 막지 않는다(재현: 계정 'WS-OPS')."""
+    rule = own_rule("값이 PC 모양", 4865, fields="[account]")
+    evaluate(client, rule)
+    sql("INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by, host_only)"
+        " VALUES ('값이 PC 모양', 'ws-ops', now() - interval '1 minute', now() + interval '1 hour', '내 PC 점검', 'ws', true)")
+    ev("WS-OPS", "10.65.0.1", 4865, host="DC-65")
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1 and rule_alerts("값이 PC 모양")[-1][2] is None
