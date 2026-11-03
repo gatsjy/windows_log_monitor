@@ -1958,20 +1958,21 @@ async def correlation_sources(since: datetime, until: datetime, limit: int) -> l
 
 
 async def recent_correlations(rule: str, since: datetime) -> list[dict]:
-    """이 상관 규칙이 since 뒤에 낸 알림의 대상, 묶은 알림 번호와 (PC, 단계) 짝 — 재알림 간격·같은 흐름을 다른 개체로 또 울리지 않게.
+    """이 상관 규칙이 since 뒤에 낸 알림의 대상·개체·묶은 알림 번호·PC 마다 단계(host_steps) — 재알림 간격·같은 흐름을 다른 개체로 또 울리지 않게.
     번호는 correlation.ids(묶은 알림 전부). 보이는 목록(correlation.alerts, 30개까지)으로 보면 31번째부터의 알림이 '새것'이 되어
     다음 주기에 같은 흐름을 계정·IP 로 또 알렸다(검토에서 재현)."""
     def arr(name: str, cast: str = "") -> str:
         return (f"COALESCE((SELECT array_agg(x{cast}) FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(a.payload->'correlation'->'{name}')"
                 f" = 'array' THEN a.payload->'correlation'->'{name}' ELSE '[]' END) x"
                 + (" WHERE x ~ '^[0-9]+$'" if cast else "") + "), '{}')")
-    # (PC, 단계) 짝은 'PC\x1f전술' 글자로 (correlation._nothing_new 가 나눈다)
-    pairs = ("COALESCE((SELECT array_agg((x->>0) || chr(31) || (x->>1)) FROM jsonb_array_elements(CASE WHEN"
-             " jsonb_typeof(a.payload->'correlation'->'host_tactics') = 'array' THEN a.payload->'correlation'->'host_tactics'"
-             " ELSE '[]' END) x WHERE jsonb_typeof(x) = 'array' AND x->>0 IS NOT NULL AND x->>1 IS NOT NULL), '{}')")
-    return await db.fetch_all(
-        f"SELECT a.group_key, {arr('ids', '::bigint')} AS ids, {pairs} AS pairs"
+    rows = await db.fetch_all(
+        f"SELECT a.group_key, {arr('ids', '::bigint')} AS ids, a.payload->'correlation'->'entity'->>'kind' AS entity_kind,"
+        " a.payload->'correlation'->'entity'->>'value' AS entity_value, a.payload->'correlation'->'host_steps' AS host_steps"
         " FROM alerts a WHERE a.rule = %s AND a.fired_at >= %s", (rule, since))
+    for row in rows:
+        kind, value = row.pop("entity_kind"), row.pop("entity_value")
+        row["entity"] = (kind, value) if kind and value else None
+    return rows
 
 
 async def entity_alerts(kind: str, value: str, since: datetime, limit: int,

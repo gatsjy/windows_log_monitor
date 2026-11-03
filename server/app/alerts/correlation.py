@@ -24,7 +24,7 @@ from .rules import Rule
 
 SOURCE_MAX = 5000   # 한 번에 보는 MITRE 태그 알림 수 — 넘으면 최근 것만 이만큼(run.truncated)
 ITEMS_MAX = 30      # 알림 본문·payload 에 남길 묶은 알림 수
-PAIRS_MAX = 2000    # payload 에 남길 (PC, 단계) 짝 수
+STEPS_MAX = 2000    # payload 에 남길 (PC, 규칙) 수
 ENTITY_LABELS = {"host": "PC", "account": "계정", "ip": "IP"}
 COLUMNS = {"host": "entity_hosts", "account": "entity_accounts", "ip": "entity_ips"}
 
@@ -118,7 +118,7 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     found = chains(with_tactics(rows[-SOURCE_MAX:]), rule.entities, rule.min_tactics, rule.hub_hosts)
     if not found:
         return []
-    recent = [{"key": r["group_key"], "ids": set(r["ids"]), "pairs": {tuple(p.split("\x1f", 1)) for p in r["pairs"]}}
+    recent = [{"key": r["group_key"], "ids": set(r["ids"]), "entity": r["entity"], "steps": _parse_steps(r["host_steps"])}
               for r in await repository.recent_correlations(rule.name, now - rule.cooldown)]
     fired = []
     for chain in found:
@@ -131,7 +131,8 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
                                           host=chain["value"] if chain["kind"] == "host" else None)
         if alert_id:
             fired.append(alert_id)
-        recent.append({"key": key, "ids": {row["id"] for row in chain["rows"]}, "pairs": _pairs(chain["rows"])})
+        recent.append({"key": key, "ids": {row["id"] for row in chain["rows"]}, "entity": (chain["kind"], chain["value"]),
+                       "steps": _host_steps(chain["rows"])})
     return fired
 
 
@@ -141,23 +142,67 @@ def _spread(chain: dict[str, Any]) -> dict[str, set[str]]:
             "tactics": {t for row in chain["rows"] for t in row["tactics"]}}
 
 
-def _pairs(rows: list[dict[str, Any]]) -> set[tuple[str, str]]:
-    """알림마다 (PC, 전술) — PC 가 없는 알림은 ''. 흐름이 어느 PC 에서 어느 단계를 했는지."""
-    return {(h, t) for row in rows for h in (row["entity_hosts"] or [""]) for t in row["tactics"]}
+def _host_steps(rows: list[dict[str, Any]]) -> dict[str, dict[str, set[str]]]:
+    """PC 마다 규칙 → 그 규칙 알림의 전술 (PC 가 없는 알림은 ''). 흐름이 어느 PC 에서 어떤 단계를 했는지."""
+    out: dict[str, dict[str, set[str]]] = {}
+    for row in rows:
+        for host in row["entity_hosts"] or [""]:
+            out.setdefault(host, {}).setdefault(row["rule"], set()).update(row["tactics"])
+    return out
+
+
+def _parse_steps(raw: Any) -> dict[str, dict[str, set[str]]]:
+    out: dict[str, dict[str, set[str]]] = {}
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, list) and len(item) == 3 and isinstance(item[0], str) and isinstance(item[1], str) and isinstance(item[2], list):
+            out.setdefault(item[0], {}).setdefault(item[1], set()).update(t for t in item[2] if t in tactics.ORDER)
+    return out
+
+
+def _count(steps: dict[str, set[str]]) -> int:
+    """한 PC 의 서로 다른 단계 수 — 흐름을 셀 때와 같은 규칙(규칙 하나는 전술 하나, tactics.assign)."""
+    return len(tactics.assign({r: tuple(sorted(t, key=tactics.ORDER.__getitem__)) for r, t in steps.items() if t}))
+
+
+def _same_flow(chain: dict[str, Any], ids: set[int], announced: dict[str, Any]) -> bool:
+    """이미 알린 흐름과 같은 흐름인가 — 알림을 나누거나, 그 알림의 개체(PC·계정·IP)가 이 흐름의 알림에 걸려 있으면.
+    알림 번호로만 보면 오래 이어지는 흐름은 앞 알림의 알림들이 기간 밖으로 나간 뒤 PC → 계정 → IP 로 이름을 바꿔 가며
+    재알림 간격마다 다시 왔다(검토에서 재현)."""
+    if announced["ids"] & ids:
+        return True
+    entity = announced["entity"]
+    if not entity:
+        return False
+    kind, value = entity
+    return kind in COLUMNS and any(value in (row[COLUMNS[kind]] or []) for row in chain["rows"])
 
 
 def _nothing_new(chain: dict[str, Any], recent: list[dict[str, Any]]) -> bool:
-    """이미 알린 흐름(재알림 간격 안)과 알림을 나누는데, 그 흐름에 없던 알림들이 새 (PC, 단계)를 더하지 않으면 다른 개체로 다시 알리지 않는다 —
-    같은 흐름이 PC·계정·IP 로 세 번 오지 않게. 알림 번호로만 보면 이미 센 규칙이 같은 PC 에서 한 번 더 울려도(봇이 IP 를 바꿈) 계정으로 또
-    알렸고(검토), 흐름 전체의 PC·단계 집합으로 보면 여러 PC 를 적은 알림 하나(한 계정이 여러 서버에 원격 데스크톱) 때문에 둘째 서버의 침해가
-    영영 묻혔다(검토에서 재현). 새 알림의 (PC, 단계) 짝으로 본다."""
+    """이미 알린 흐름(재알림 간격 안)과 같은 흐름이면, 그 흐름에 없던 알림들이 어느 PC 에서든 센 단계 수를 늘리지 않을 때 다른 개체로 다시
+    알리지 않는다 — 같은 흐름이 PC·계정·IP 로 세 번 오지 않게. 판단은 PC 마다 흐름을 셀 때와 같은 규칙(규칙 하나는 전술 하나)으로:
+    알림 번호만 보면 같은 PC 의 대입이 한 번 더 나도(봇이 IP 를 바꿈) 또 알렸고, 흐름 전체의 PC·단계 집합이나 전술을 모두 늘어놓은
+    (PC, 전술) 짝으로 보면 여러 서버를 적은 알림 하나·여러 전술에 속한 기법(T1078) 하나가 둘째 서버의 침해를 묻었다(검토에서 재현)."""
     ids = {row["id"] for row in chain["rows"]}
-    overlap = [r for r in recent if r["ids"] & ids]
-    if not overlap:
+    same = [r for r in recent if _same_flow(chain, ids, r)]
+    if not same:
         return False
-    seen = set().union(*(r["ids"] for r in overlap))
+    seen = set().union(*(r["ids"] for r in same))
     fresh = [row for row in chain["rows"] if row["id"] not in seen]
-    return not fresh or _pairs(fresh) <= set().union(*(r["pairs"] for r in overlap))
+    if not fresh:
+        return True
+    announced: dict[str, dict[str, set[str]]] = {}
+    for r in same:
+        for host, rules in r["steps"].items():
+            for name, ts in rules.items():
+                announced.setdefault(host, {}).setdefault(name, set()).update(ts)
+    for host, rules in _host_steps(fresh).items():
+        before = announced.get(host, {})
+        merged = {name: set(ts) for name, ts in before.items()}
+        for name, ts in rules.items():
+            merged.setdefault(name, set()).update(ts)
+        if _count(merged) > _count(before):
+            return False
+    return True
 
 
 def _message(rule: Rule, chain: dict[str, Any], key: str, now: datetime) -> AlertMessage:
@@ -183,5 +228,6 @@ def _message(rule: Rule, chain: dict[str, Any], key: str, now: datetime) -> Aler
         correlation={"entity": {"kind": chain["kind"], "value": chain["value"]}, "tactics": flow, "alerts": items,
                      "count": len(rows), "ids": [row["id"] for row in rows],
                      "hosts": sorted(spread["hosts"]), "tactic_ids": sorted(spread["tactics"], key=tactics.ORDER.__getitem__),
-                     # 다시 알리지 않을지 판단용 — 묶은 알림의 (PC, 단계) 짝 (_nothing_new). 넘치면 자른다(그러면 새것으로 보아 알릴 뿐)
-                     "host_tactics": sorted([h, t] for h, t in _pairs(rows))[:PAIRS_MAX]})
+                     # 다시 알리지 않을지 판단용 — PC 마다 규칙과 그 전술 (_nothing_new). 넘치면 자른다(그러면 새것으로 보아 알릴 뿐)
+                     "host_steps": [[h, name, sorted(ts, key=tactics.ORDER.__getitem__)]
+                                    for h, rules in sorted(_host_steps(rows).items()) for name, ts in sorted(rules.items())][:STEPS_MAX]})

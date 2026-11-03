@@ -315,4 +315,33 @@ def test_second_server_listed_by_a_shared_alert_still_alerts(ctx, now):
     put(now, "로그 삭제", 10, ["MITRE T1070.001"], hosts=["SRV-B"], accounts=["evil"])   # 같은 PC 에서 같은 단계 반복
     assert evaluate(admin, now + timedelta(minutes=11)) == []
     [(_, payload, *_)] = corr("PC SRV-B")
-    assert ["SRV-B", "TA0003"] in payload["correlation"]["host_tactics"]
+    assert ["SRV-B", "새 서비스", ["TA0003", "TA0004"]] in payload["correlation"]["host_steps"]
+
+
+
+# ------------------------------------------------------------------ 검토 보완 (4차)
+
+def test_multi_tactic_technique_does_not_bury_the_next_server(ctx, now):
+    """여러 전술에 속한 기법(T1078 유효한 계정 + T1021.001 — 기본 팩 '원격 데스크톱 새 출발지')의 알림 하나가 둘째 서버의 단계들을
+    미리 '알린 것'으로 만들지 않는다 — PC 마다 흐름을 셀 때와 같은 규칙(규칙 하나는 전술 하나)으로 늘었는지 본다 (검토에서 재현)."""
+    admin = ctx["admin"]
+    put(now, "대입", -40, ["MITRE T1110"], hosts=["SRV-M"], accounts=["evil3"])
+    put(now, "새 서비스", -30, ["MITRE T1543.003"], hosts=["SRV-M"], accounts=["evil3"])
+    put(now, "새 출발지", -20, ["MITRE T1078", "MITRE T1021.001"], hosts=["SRV-N"], accounts=["evil3"])
+    assert len(evaluate(admin, now)) == 1 and len(corr("계정 evil3")) == 1
+    put(now, "새 서비스", 5, ["MITRE T1543.003"], hosts=["SRV-N"], accounts=["evil3"])
+    put(now, "로그 삭제", 8, ["MITRE T1070.001"], hosts=["SRV-N"], accounts=["evil3"])
+    assert len(evaluate(admin, now + timedelta(minutes=9))) == 1 and len(corr("PC SRV-N")) == 1
+
+
+def test_long_flow_does_not_rotate_through_entity_names(ctx, now):
+    """기간보다 오래 이어지는 같은 흐름(같은 PC·계정·IP 에서 같은 규칙들)은 재알림 간격마다 PC 로만 다시 알린다 — 앞 알림의 알림들이
+    기간 밖으로 나가도 개체가 같으면 같은 흐름 (계정 → IP 로 이름을 바꿔 가며 왔다, 검토에서 재현)."""
+    admin = ctx["admin"]
+    cycle = (("대입", "MITRE T1110"), ("새 서비스", "MITRE T1543.003"), ("로그 삭제", "MITRE T1070.001"))
+    for step in range(16):
+        rule, tag = cycle[step % 3]
+        put(now, rule, step * 10, [tag], hosts=["SRV-LONG"], accounts=["evil4"], ips=["203.0.113.9"])
+        evaluate(admin, now + timedelta(minutes=step * 10, seconds=30))
+    keys = [k for (k,) in sql("SELECT group_key FROM alerts WHERE rule = %s AND fired_at > %s ORDER BY id", (CORR, now - timedelta(minutes=1)))]
+    assert set(keys) == {"PC SRV-LONG"} and 2 <= len(keys) <= 3
