@@ -245,7 +245,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/alerts?since=&rule=&severity=&host=&status=` | 알림 이력 (전송·처리 상태 포함) + `counts`(기간 안 처리 상태별 수). `status` = `open`·`acked`·`resolved`·`unresolved` |
 | `GET /api/alerts?format=csv` | 알림 이력 CSV (처리 상태·처리자·처리 시각·무음·전송·처리 기록, 최대 1만 건 — 넘으면 마지막 줄·`X-WLM-Truncated`·감사로그에 표시). 수식 주입 방지 — 감사로그 `alerts.export` |
 | `GET /api/alerts/{id}` | 알림 상세 (payload: 본문, 최근 이벤트 샘플, 처리 기록 `notes`, 무음 `silence`, 같은 규칙·대상의 해결 안 된 다른 알림 수 `related_unresolved`) |
-| `GET /api/alerts/{id}/related` | 관련 알림 (B-67, ADR-064): 발생 시각 앞뒤 1시간에 PC·계정·IP 가 하나라도 겹치는 다른 알림(최대 50, `shared_host`·`shared_account`·`shared_ip`), `entities`(이 알림의 개체). 조회 범위는 목록과 같게 LIMIT 전에 |
+| `GET /api/alerts/{id}/related` | 관련 알림 (B-67, ADR-064): 발생 시각 앞뒤 1시간에 PC·계정·IP 가 하나라도 겹치는 다른 알림(최대 50 — 계정·IP 겹침·겹친 값 수·가까운 시각 순으로 고른 뒤 발생 순서로, `shared_host`·`shared_account`·`shared_ip`), `entities`(잇는 데 쓴 이 알림의 개체 — 조회 범위 밖 PC·기본 계정 뺌), `truncated`. 조회 범위는 목록과 같게 LIMIT 전에 |
 | `GET /api/entities/{host\|user\|ip}/{값}?since=7d&limit=` | 개체 페이지 (B-67): 그 개체가 걸린 기간 안 알림(최근 것부터, 조회 범위 반영)·`query`(그 개체를 찾는 검색 문장 — 사용자는 표기 통일 열쇠 `account:`)·`agent`(PC 수신 정보, PC 범위 안일 때만). 접속기록 `entity.view` |
 | `POST /api/alerts/handle` | `{ids, action, note, with_related?, resolution?}` 확인(`ack`, 볼 수 있으면 누구나)·해결(`resolve`)·다시 열기(`reopen`: 확인함·해결됨 → 처리 안 됨, `alerts.handle`). 최대 1000건(`with_related` 면 같은 규칙·대상 전부), 결과 `changed/unchanged/missing`. 해결은 종료 분류 `resolution` 필수(B-44: `tp_malicious`·`tp_expected`·`fp_rule`·`fp_data`·`undetermined`, 없으면 422 — `auto` 는 엔진만), 다시 열면 비움. 감사로그에 분류·대상 수 |
 | `GET /api/alerts/groups?since=&status=&rule=&severity=&host=&limit=` | 묶어 보기 (B-44): (규칙, 대상)마다 수·상태별 수·가장 높은 심각도·처음/마지막 발생·`last_id`. 처리 안 된·심각한 묶음부터. 조회 범위는 GROUP BY·LIMIT 전에 |

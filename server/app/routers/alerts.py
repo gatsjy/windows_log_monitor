@@ -1086,10 +1086,10 @@ async def related_alerts(alert_id: int, request: Request):
     base["entity_accounts"] = [a for a in base["entity_accounts"] if not repository.machine_account(a)]
     start, end = base["fired_at"] - RELATED_WINDOW, base["fired_at"] + RELATED_WINDOW
     pairs = _visible_targets(user, await repository.alert_group_counts(start, until=end)) if user.scopes is not None else None
-    rows = await repository.related_alerts(base, start, end, RELATED_LIMIT + 1, pairs)
+    rows = await repository.related_alerts(base, start, end, RELATED_LIMIT + 1, pairs)   # 강하게 이어진 것부터
     truncated = len(rows) > RELATED_LIMIT
     items = []
-    for row in rows[:RELATED_LIMIT]:
+    for row in sorted(rows[:RELATED_LIMIT], key=lambda r: (r["fired_at"], r["id"])):   # 자른 뒤 발생 순서로(흐름을 읽는 순서)
         scrub_entities(user, row)
         # 그 알림의 규칙으로는 볼 수 없는 PC 로만 이어졌으면 보이지 않는다(겹친 개체가 비어 보이는 줄이 범위 밖 PC 를 알려 준다)
         if row["shared_host"] or row["shared_account"] or row["shared_ip"]:

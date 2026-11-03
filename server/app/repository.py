@@ -1912,7 +1912,11 @@ async def alert_entity_row(alert_id: int) -> dict | None:
 async def related_alerts(base: dict, start: datetime, end: datetime, limit: int,
                          pairs: list[tuple[str, str, str]] | None = None) -> list[dict]:
     """관련 알림 (B-67): start~end 에 발생했고 base 와 PC·계정·IP 가 하나라도 겹치는 다른 알림. shared_* = 겹친 값.
-    base 의 개체는 부르는 쪽이 잇는 데 쓸 것만 남겨 넘긴다(조회 범위 밖 PC·기본 계정 뺌). pairs 는 목록과 같은 조회 범위 — LIMIT 전에 거른다."""
+    base 의 개체는 부르는 쪽이 잇는 데 쓸 것만 남겨 넘긴다(조회 범위 밖 PC·기본 계정 뺌). pairs 는 목록과 같은 조회 범위 — LIMIT 전에 거른다.
+    상한(limit)은 강하게 이어진 것부터 채운다 — 계정·IP 가 겹친 것, 겹친 값이 많은 것, 시각이 가까운 것. 발생 순서로 채우면 도메인 컨트롤러처럼
+    여러 사람의 알림(계정 잠금 등)이 모이는 PC 로만 이어진 앞 시각 알림들이 자리를 차지해 5분 뒤 같은 계정의 감사 로그 삭제가 빠졌다(검토에서 재현).
+    고른 순서(강한 것부터)로 돌려준다 — 상한으로 자른 뒤 발생 순서로 보이는 것은 부르는 쪽이(발생 순서로 돌려주면 자를 때 가장 늦은,
+    즉 가까운 뒤 시각의 강한 연결이 빠졌다)."""
     if pairs is not None and not pairs:
         return []
     values = [base["entity_hosts"], base["entity_accounts"], base["entity_ips"]]
@@ -1926,9 +1930,15 @@ async def related_alerts(base: dict, start: datetime, end: datetime, limit: int,
         params += _pairs_params(pairs)
     shared = ", ".join(f"ARRAY(SELECT x FROM unnest(a.{c}) x WHERE x = ANY(%s::text[]) ORDER BY x) AS shared_{k}"
                        for k, c in ENTITY_COLUMNS.items())
+    # 고르기는 id·겹친 값만으로(전송 상태 등 _ALERT_COLUMNS 의 하위 쿼리를 후보 전부에 돌리지 않게), 칸은 고른 것에만
     return await db.fetch_all(
-        f"SELECT {_ALERT_COLUMNS}, {shared} FROM alerts a WHERE {' AND '.join(clauses)} ORDER BY a.fired_at, a.id LIMIT %s",
-        [*values, *params, limit])
+        f"WITH cand AS (SELECT a.id, a.fired_at, {shared} FROM alerts a WHERE {' AND '.join(clauses)}),"
+        " ranked AS (SELECT c.*, row_number() OVER (ORDER BY (cardinality(c.shared_account) + cardinality(c.shared_ip) > 0) DESC,"
+        "  cardinality(c.shared_host) + cardinality(c.shared_account) + cardinality(c.shared_ip) DESC,"
+        "  abs(EXTRACT(EPOCH FROM c.fired_at - %s)), c.id) AS rk FROM cand c)"
+        f" SELECT {_ALERT_COLUMNS}, p.shared_host, p.shared_account, p.shared_ip FROM ranked p JOIN alerts a ON a.id = p.id"
+        " WHERE p.rk <= %s ORDER BY p.rk",
+        [*values, *params, base["fired_at"], limit])
 
 
 async def entity_alerts(kind: str, value: str, since: datetime, limit: int,

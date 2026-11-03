@@ -202,7 +202,7 @@ async function relatedSection(box, alert, onChange) {
     return;
   }
   box.innerHTML = res.items.length ? html`${relatedList(res.items)}
-    ${res.truncated ? html`<p class="muted" style="font-size:12.5px">앞에서부터 ${fmtNum(res.items.length)}건만 보입니다 — 개체 칩을 눌러 개체 페이지에서 모두 보세요.</p>` : ''}`
+    ${res.truncated ? html`<p class="muted" style="font-size:12.5px">가깝게 이어진 ${fmtNum(res.items.length)}건만 보입니다(계정·IP 가 겹친 것, 겹친 값이 많은 것, 시각이 가까운 것부터) — 개체 칩을 눌러 개체 페이지에서 모두 보세요.</p>` : ''}`
     : html`<p class="muted" style="font-size:13px">앞뒤 ${fmtDuration(res.window_sec)} 안에 같은 PC·계정·IP 가 걸린 다른 알림이 없습니다.</p>`;
   bindAlertRows(box, onChange);
 }

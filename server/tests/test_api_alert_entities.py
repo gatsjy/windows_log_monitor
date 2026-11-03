@@ -397,3 +397,27 @@ def test_machine_accounts_do_not_link_alerts(ctx):
     body = admin.get(f"/api/alerts/{ids[0]}/related").json()
     assert body["entities"]["account"] == [] and ids[1] not in {i["id"] for i in body["items"]}
     assert one not in {i["id"] for i in admin.get(f"/api/alerts/{_alert('새 서비스', 'SVC-2')[0]}/related").json()["items"]}
+
+
+# ------------------------------------------------------------------ 검토 보완 (2차)
+
+def test_related_cap_keeps_strongest_links(ctx):
+    """도메인 컨트롤러처럼 여러 사람의 알림이 모이는 PC — PC 로만 이어진 앞 시각 알림 55개가 상한을 채워도, 5분 뒤 같은 계정·PC 의
+    알림이 남는다(계정·IP 겹침 → 겹친 값 수 → 가까운 시각 순으로 고르고, 발생 순서로 돌려준다, 검토에서 재현)."""
+    admin = ctx["admin"]
+
+    def put(minutes, hosts, accounts, rule="계정 잠금"):
+        return sql("INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, payload, entity_hosts, entity_accounts)"
+                   " VALUES (now() + %s, %s, 'warning', %s, 1, '{}', %s, %s) RETURNING id",
+                   (timedelta(minutes=minutes), rule, accounts[0] if accounts else "", hosts, accounts))[0][0]
+
+    for i in range(55):
+        put(-50 + i * 0.5, ["HUB-DC"], [f"nurse{i}"])
+    base = put(0, ["HUB-DC"], ["eviladmin"], rule="관리자 그룹 추가")
+    after = put(5, ["HUB-DC"], ["eviladmin"], rule="감사 로그 삭제")
+    body = admin.get(f"/api/alerts/{base}/related").json()
+    ids = [i["id"] for i in body["items"]]
+    assert body["truncated"] and len(ids) == 50 and after in ids
+    assert [i["fired_at"] for i in body["items"]] == sorted(i["fired_at"] for i in body["items"])   # 발생 순서로
+    # PC 로만 이어진 것은 가까운 시각부터 — 가장 먼 앞 시각(-50분)은 빠진다
+    assert sql("SELECT id FROM alerts WHERE rule = '계정 잠금' AND group_key = 'nurse0'")[0][0] not in ids
