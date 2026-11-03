@@ -86,7 +86,18 @@ async def _state(rule: Rule, saved: str | None, now: datetime) -> dict[str, Any]
         start = max(now - rule.learn, oldest)
         # DB 에 있는 만큼 거슬러 배우고 모자란 만큼 앞으로 배운다
         learn_until = max(now, now + rule.learn - (now - start))
-        return await repository.create_new_terms_state(key, fields, sig, now, learn_until, start, now, "처음")
+        return await repository.create_new_terms_state(key, fields, sig, now, learn_until, start, now, "처음",
+                                                       learn_from=start, learn_sec=int(rule.learn.total_seconds()))
+    learn_sec = int(rule.learn.total_seconds())
+    if state["learn_sec"] != learn_sec:
+        # learn 을 바꿈: 배우는 중이면 시작(learn_from)부터 새 길이로 줄이거나 늘린다 — 처음 정한 끝이 그대로면 learn 을 고쳐도 '배우는
+        # 중'이 이어졌다(검토에서 재현). 이미 끝났으면 다시 배우지 않는다(값을 지우지 않으니 늘려도 덜 새로워질 뿐). 예전 상태(NULL)는 채우기만
+        frm = state["learn_from"] or state["learn_until"] - (timedelta(seconds=state["learn_sec"]) if state["learn_sec"] else rule.learn)
+        values: dict[str, Any] = {"learn_sec": learn_sec, "learn_from": frm}
+        if state["learn_sec"] is not None and state["learn_until"] > now:
+            values["learn_until"] = frm + rule.learn
+        await repository.update_new_terms_state(state["id"], **values)
+        state = await repository.new_terms_state(key, fields)
     if now - state["cursor_at"] > CATCHUP_MAX:
         # 오래 멈춤(조건도 바뀌었으면 함께): 그 사이는 배우기만(밀린 것을 한꺼번에 '처음 보는 값'으로 알리지 않게). history 안이면 멈춘 때부터,
         # 조건이 바뀌었으면 새 조건으로 배우는 기간까지, 거슬러 배우던 중이었으면 그 남은 구간까지(덮어쓰면 앞부분을 영영 배우지 않았다).

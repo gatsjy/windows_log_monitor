@@ -1182,3 +1182,38 @@ def test_alerts_held_while_fit_pending(client, monkeypatch):
     assert evaluate(client, rule)[0] == []                        # 맞춤 — 그 값은 배우는 기간 안이라 배운 값
     assert sql("SELECT state FROM seen_terms s JOIN new_terms_state n ON n.id = s.ns"
                " WHERE n.rule_key = 'name:맞추기 전' AND s.term[1] = 'modality'") == [("learned",)]
+
+
+# ---------------------------------------------------------------- 12차 검토 보완
+def test_learn_edit_applies_to_learning_in_progress(client):
+    """배우는 중에 learn 을 줄이면 그 길이로 끝난다(재현: 처음 정한 끝이 그대로라 새 출발지를 배운 값으로 삼킴)."""
+    rule = own_rule("learn 바꿈", 4896, learn="14d")
+    evaluate(client, rule)
+    # 나흘 전부터 배우는 중(14일 중 10일 남음) — 시험 DB 는 앞 시험들의 오래된 로그가 있어 직접 둔다
+    sql("UPDATE new_terms_state SET learn_from = now() - interval '4 days', learn_until = now() + interval '10 days'"
+        " WHERE rule_key = 'name:learn 바꿈'")
+    [(frm,)] = sql("SELECT learn_from FROM new_terms_state WHERE rule_key = 'name:learn 바꿈'")
+    ev("before", "10.96.0.1", 4896)
+    assert evaluate(client, rule)[0] == []                        # 배우는 중 — 알리지 않음
+    rule = own_rule("learn 바꿈", 4896, learn="1d")
+    evaluate(client, rule)
+    assert sql("SELECT learn_until FROM new_terms_state WHERE rule_key = 'name:learn 바꿈'") == [(frm + timedelta(days=1),)]
+    ev("stolen", "203.0.113.96", 4896)
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1
+
+
+def test_fresh_install_rule_before_agents_learns_from_first_agent(client):
+    """새로 설치한 서버(로그도 수집 PC 표도 빔)에서 규칙을 먼저 만들고 에이전트를 나중에 붙임 — 첫 정상 값을 알리지 않는다(재현)."""
+    from app.alerts import newterms
+
+    sql("DELETE FROM agent_streams")
+    sql("DELETE FROM events")
+    rule = own_rule("새 서버 설치", 4895, seed=False, match='{ source: fresh, event_id: "4895" }')
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    sql("UPDATE new_terms_state SET learn_until = now() - interval '1 minute' WHERE rule_key = 'name:새 서버 설치'")
+    stream_since("fresh", datetime.now(UTC), host="DC-95")
+    for i in range(3):
+        ev(f"svc{i}", "10.95.0.1", 4895, host="DC-95", source="fresh")
+    assert evaluate(client, rule)[0] == []

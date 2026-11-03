@@ -94,7 +94,7 @@ def _rule_changes(old: Rule, new: Rule) -> list[tuple[str, str, bool]]:
         # 상한·한꺼번에 기준을 줄이면 놓치거나 묶여 하나하나 보지 못한다
         if old.terms_fields != new.terms_fields:
             out.append(("fields", f"볼 값 {', '.join(old.terms_fields)} → {', '.join(new.terms_fields)} (다시 배움)", True))
-        for attr, label, weaker_if_more in (("history", "다시 새로 볼 기간", True), ("learn", "배우는 기간", True)):
+        for attr, label, weaker_if_more in (("history", "다시 새로 볼 기간", True), ("learn", "배우는 기간(배우는 중이면 바로 적용)", True)):
             before, after = getattr(old, attr), getattr(new, attr)
             if before != after:
                 out.append((attr, f"{label} {_dur(before)} → {_dur(after)}", (after > before) == weaker_if_more))

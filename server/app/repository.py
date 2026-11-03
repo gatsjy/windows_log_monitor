@@ -1066,16 +1066,18 @@ async def new_terms_state(rule_key: str, fields: list[str]) -> dict[str, Any] | 
 
 
 async def create_new_terms_state(rule_key: str, fields: list[str], filter_sig: str, cursor_at: datetime, learn_until: datetime,
-                                 backfill_from: datetime | None, backfill_to: datetime | None, reason: str) -> dict[str, Any]:
+                                 backfill_from: datetime | None, backfill_to: datetime | None, reason: str,
+                                 learn_from: datetime | None = None, learn_sec: int | None = None) -> dict[str, Any]:
     row = await db.fetch_one(
         "INSERT INTO new_terms_state (rule_key, fields, filter_sig, cursor_at, learn_until, backfill_from, backfill_to, relearn_reason,"
-        " fit_pending) VALUES (%s, %s::text[], %s, %s, %s, %s, %s, %s, true) ON CONFLICT (rule_key, fields) DO NOTHING RETURNING *",
-        (rule_key, fields, filter_sig, cursor_at, learn_until, backfill_from, backfill_to, reason))
+        " fit_pending, learn_from, learn_sec) VALUES (%s, %s::text[], %s, %s, %s, %s, %s, %s, true, %s, %s)"
+        " ON CONFLICT (rule_key, fields) DO NOTHING RETURNING *",
+        (rule_key, fields, filter_sig, cursor_at, learn_until, backfill_from, backfill_to, reason, learn_from, learn_sec))
     return row or await new_terms_state(rule_key, fields)
 
 
 NEW_TERMS_STATE_COLUMNS = frozenset({"filter_sig", "cursor_at", "learn_until", "backfill_from", "backfill_to", "chunk_sec",
-                                     "relearn_reason", "overflow_n", "learn_dropped", "fit_pending"})
+                                     "relearn_reason", "overflow_n", "learn_dropped", "fit_pending", "learn_from", "learn_sec"})
 
 
 async def update_new_terms_state(ns: int, **values: Any) -> None:
@@ -1104,12 +1106,18 @@ async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, start: d
     first = row["first"] if row else None
     if first is None:
         return False   # 아직 그 소스를 받지 않았다 — 들어오면 그때부터 배운다
-    if first < start or known is None or first.date() <= known + timedelta(days=1):
-        return True    # 배우는 기간 전부터(또는 표가 알 수 있는 때부터) 모아 온 소스 — DB 에 있는 만큼 배웠다
+    if first < start:
+        return True    # 배우는 기간 전부터 모아 온 소스 — DB 에 있는 만큼 배웠다
+    if known is not None and first.date() <= known + timedelta(days=1):
+        # 표가 아는 가장 이른 날과 같다 — 그보다 오래된 로그가 DB 에 있으면(정리 35일·올린 날) 실제 시작을 모르니 예전부터로 본다.
+        # 새로 설치한 서버는 그 날이 모든 수집의 시작이라 그대로 맞춘다(그렇지 않으면 규칙을 먼저 만든 새 서버에서 첫 정상 값이 알림, 재현)
+        oldest = await oldest_received()
+        if oldest is not None and oldest < datetime.combine(known, datetime.min.time(), UTC) - timedelta(days=1):
+            return True
     await db.fetch_all(
-        "WITH u AS (UPDATE new_terms_state SET learn_until = GREATEST(learn_until, %s) WHERE id = %s RETURNING learn_until)"
+        "WITH u AS (UPDATE new_terms_state SET learn_until = GREATEST(learn_until, %s), learn_from = %s WHERE id = %s RETURNING learn_until)"
         " UPDATE seen_terms SET state = 'learned' WHERE ns = %s AND state = 'pending' AND first_seen < (SELECT learn_until FROM u)"
-        " RETURNING ns", (first + learn, ns, ns))
+        " RETURNING ns", (first + learn, first, ns, ns))
     return True
 
 
