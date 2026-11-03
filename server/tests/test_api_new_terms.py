@@ -221,12 +221,13 @@ def test_rule_api_preview_and_accesslog(client):
 
 
 # ---------------------------------------------------------------- 검토 보완 (B-47 1차 검토) — 규칙마다 이벤트 ID 를 따로 써서 서로 섞이지 않게
-def own_rule(name, event_id, *, fields="[account, ip]", burst=20, max_terms=50000, learn="1d", extra="", match=None, sid=None):
+def own_rule(name, event_id, *, fields="[account, ip]", burst=20, max_terms=50000, learn="1d", extra="", match=None, sid=None,
+             history="30d"):
     from app.alerts.engine import engine
 
     text = (f"settings:\n  interval_sec: 30\n{extra}rules:\n  - name: {name}\n" + (f"    sid: {sid}\n" if sid else "")
             + f"    kind: new_terms\n    match: {match or '{ event_id: \"' + str(event_id) + '\" }'}\n    fields: {fields}\n"
-            f"    history: 30d\n    learn: {learn}\n    burst: {burst}\n    max_terms: {max_terms}\n    severity: warning\n"
+            f"    history: {history}\n    learn: {learn}\n    burst: {burst}\n    max_terms: {max_terms}\n    severity: warning\n"
             "    notify: [운영팀]\n")
     Path(os.environ["WLM_ALERTS_FILE"]).write_text(text, encoding="utf-8")
     engine.reload(force=True)
@@ -497,17 +498,6 @@ def test_stale_terms_cleared_for_other_kinds(client):
 
 
 # ---------------------------------------------------------------- 2차 검토 보완
-class SlowClock:
-    """이어서 훑기는 예산(8초)을 넘긴 것으로, 거슬러 배우기는 아직(16초 안) — 큰 DB 에서 이어서 훑기가 밀린 경우."""
-
-    def __init__(self):
-        self.calls = 0
-
-    def monotonic(self):
-        self.calls += 1
-        return 0.0 if self.calls == 1 else 10.0
-
-
 def test_cap_error_lasts_until_room_returns(client):
     """두지 못한 값이 겹쳐 보는 2분을 벗어나도 자리가 다시 생길 때까지 오류 — 평가 간격이 길면 감시가 알리지 못했다(검토에서 재현)."""
     from app.alerts.newterms import CappedError
@@ -539,10 +529,13 @@ def test_filter_change_with_lagging_cursor_does_not_learn_unscanned(client, monk
     sql("UPDATE new_terms_state SET cursor_at = now() - interval '6 hours', learn_until = now() - interval '7 hours'"
         " WHERE id = %s", (ns,))
     ev("intruder", "198.51.100.32", 4832, at=datetime.now(UTC) - timedelta(minutes=10))
+    [(old_cursor,)] = sql("SELECT cursor_at FROM new_terms_state WHERE id = %s", (ns,))
     rule = own_rule("밀린 조건 바꿈", 4832, match='{ event_id: "4832,4833" }')
-    monkeypatch.setattr(newterms, "time", SlowClock())   # 이번 주기는 거슬러 배우기만 돈다
+    monkeypatch.setattr(newterms, "SCAN_BUDGET_SEC", 0)  # 이번 주기는 훑지 않음 — 다시 배울 구간만 본다
     evaluate(client, rule)
     monkeypatch.undo()
+    # 거슬러 배우기는 이미 훑은 곳까지만 — 지금부터 거슬러 배우면 밀린 이어서 훑기보다 먼저 새 값을 배웠다
+    assert sql("SELECT backfill_to FROM new_terms_state WHERE id = %s", (ns,)) == [(old_cursor,)]
     assert sql("SELECT state FROM seen_terms WHERE ns = %s AND term[1] = 'intruder'", (ns,)) == []
     for _ in range(3):
         evaluate(client, rule)
@@ -917,7 +910,9 @@ def test_scoped_silences_keep_working_for_other_rule_kinds(client):
     for rule_name, key in (("IP 묶음", "10.1.2.3"), ("새 값", "kim · 10.0.0.9")):   # PC 로만 맞추는 무음은 PC 가 아닌 대상에 못 건다
         with pytest.raises(HTTPException):
             _check_host_only_target(rule_name, key)
-    _check_host_only_target("새 값", "WS-05")
+    with pytest.raises(HTTPException):                         # 값 하나짜리 조합(IP·계정)은 모양으로 PC 와 구분할 수 없다 — 'PC' 로 골라야
+        _check_host_only_target("새 값", "WS-05")
+    _check_host_only_target("새 값", "WS-05", "pc")
     _check_host_only_target("채널 끊김", "WS-02 · Security")
     now = datetime.now(UTC)
     sql("INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by, host_only) VALUES"
@@ -953,3 +948,93 @@ def test_values_dropped_while_learning_are_relearned_when_room_returns(client):
     for i in range(105):
         ev(f"usual{i}", "10.70.0.1", 4870)                   # 늘 보이던 값이 다시 — 알리지 않는다
     assert evaluate(client, rule)[0] == [] and rule_alerts("배우다 넘침") == []
+
+
+# ---------------------------------------------------------------- 7차 검토 보완
+def test_spread_timeout_does_not_starve_older_alerts(client, monkeypatch):
+    """번짐 확인이 늘 시간 초과 나는 알림이 맨 앞에서 예산을 다 써도 그 뒤 알림의 차례가 온다(재현: 영영 안 옴)."""
+    from app import db, repository
+    from app.alerts import newterms
+
+    rule = own_rule("굶김", 4871, burst=100)
+    evaluate(client, rule)
+    silence(None, "MZ-71", 3 * 24 * 60)
+    ev("older", "10.71.0.1", 4871, host="MZ-71")
+    evaluate(client, rule)
+    ev("heavy", "10.71.0.2", 4871, host="MZ-71")
+    evaluate(client, rule)
+    ns, *_ = state_of("굶김")
+    ev("older", "10.71.0.1", 4871, host="WS-71")
+    real = repository.term_sightings
+
+    async def slow(f, fields, hashes, ranges, limit):
+        if f.accounts == ["heavy"]:
+            raise db.QueryTimeout(20)
+        return await real(f, fields, hashes, ranges, limit)
+
+    monkeypatch.setattr(repository, "term_sightings", slow)
+    for d in (newterms._spread_top, newterms._spread_cursor, newterms._spread_checked, newterms._spread_deferred):
+        d.clear()
+    fired = []
+    for _ in range(3):
+        newterms._spread.pop(ns, None)
+        fired += evaluate(client, rule)[0]
+    assert len(fired) == 1 and rule_alerts("굶김")[-1][3]["terms"]["host"] == "WS-71"
+    sql("UPDATE alert_silences SET ends_at = now() WHERE group_key = 'MZ-71'")
+
+
+def test_relearn_after_cap_stays_within_history(client):
+    rule = own_rule("오래전 넘침", 4872, max_terms=100, history="1d")
+    ev("old", "10.72.0.1", 4872, at=datetime.now(UTC) - timedelta(days=3))   # DB 에는 사흘 전 로그까지 있다
+    evaluate(client, rule)
+    ns, *_ = state_of("오래전 넘침")
+    # 배우는 기간이 이틀 전에 끝났다 — history(1일)보다 오래라 다시 배우지 않는다(다시 넣으면 정리가 지워 6시간마다 되풀이)
+    sql("UPDATE new_terms_state SET overflow_n = 3, learn_dropped = true, learn_until = now() - interval '2 days',"
+        " backfill_to = NULL, backfill_from = NULL WHERE id = %s", (ns,))
+    evaluate(client, rule)
+    assert sql("SELECT overflow_n, learn_dropped, backfill_to, relearn_reason FROM new_terms_state WHERE id = %s", (ns,)) == [
+        (0, False, None, "처음")]
+
+
+def test_earlier_sighting_beyond_history_does_not_learn_new_value(client):
+    """거슬러 배우다 history 보다 먼 옛 기록을 찾아도 history 넘게 안 보이던 새 값을 배운 값으로 돌리지 않는다."""
+    from app import repository
+    from app.alerts.engine import rule_filter
+
+    rule = own_rule("먼 옛 기록", 4873, history="1d")
+    evaluate(client, rule)
+    ns, *_ = state_of("먼 옛 기록")
+    now = datetime.now(UTC)
+    ev("back", "10.73.0.1", 4873, at=now - timedelta(days=3))
+    pending_row(ns, ["back", "10.73.0.1"], "now()", "DC-01")
+    base = client.portal.call(rule_filter, rule, now)
+    client.portal.call(lambda: repository.scan_new_terms(ns, base, ["account", "ip"], now - timedelta(days=4), now - timedelta(days=2),
+                                                         history=rule.history, learning=True, learn_until=now, room=1000,
+                                                         cursor=None))
+    assert sql("SELECT state FROM seen_terms WHERE ns = %s AND term[1] = 'back'", (ns,)) == [("pending",)]
+
+
+def test_rule_save_does_not_inherit_or_lose_state(client):
+    """새 규칙이 지운 규칙의 번호를 다시 받아도 그 상태를 이어받지 않고, 손으로 쓴 규칙은 처음 저장(이름 바꿈 포함)해도 상태를 옮긴다."""
+    rule = own_rule("손 규칙", 4874)
+    evaluate(client, rule)
+    [(ns,)] = sql("SELECT id FROM new_terms_state WHERE rule_key = 'name:손 규칙'")
+    body = {"name": "손 규칙 2", "kind": "new_terms", "severity": "warning", "notify": ["운영팀"], "match": {"event_id": "4874"},
+            "fields": ["account", "ip"], "history_sec": 30 * 86400, "learn_sec": 86400}
+    r = client.put("/api/alerts/rules", json={"original": "손 규칙", "rule": body}, headers=CSRF)
+    assert r.status_code == 200, r.text
+    sid = r.json()["sid"]
+    assert sql("SELECT id FROM new_terms_state WHERE rule_key = %s", (f"sid:{sid}",)) == [(ns,)]
+    stale = sql("INSERT INTO new_terms_state (rule_key, fields, filter_sig, cursor_at, learn_until)"
+                " VALUES (%s, ARRAY['account','ip'], 'x', now(), now()) RETURNING id", (f"sid:{sid + 1}",))[0][0]
+    r = client.put("/api/alerts/rules", json={"rule": {**body, "name": "새로 만든 규칙"}}, headers=CSRF)
+    assert r.status_code == 200 and r.json()["sid"] == sid + 1
+    assert sql("SELECT count(*) FROM new_terms_state WHERE id = %s", (stale,)) == [(0,)]
+
+
+def test_budget_stays_under_slow_threshold():
+    from app.alerts import newterms
+    from app.config import settings
+
+    assert newterms._budget() <= newterms.SCAN_BUDGET_SEC
+    assert newterms._budget() < max(5, settings.alert_rule_timeout_sec * 0.5)   # health.rule_state 의 '느림' 기준

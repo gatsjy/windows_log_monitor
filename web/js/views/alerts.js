@@ -430,7 +430,8 @@ export async function mount(root, params, sub) {
       const days = Math.ceil((new Date(t.learn_until) - new Date()) / 86400000);
       return html`<div class="run-chip warn" title="배우는 동안 처음 본 값은 알리지 않고 기억만 합니다">배우는 중 (${days}일 남음) · ${held}</div>`;
     }
-    return html`<div class="run-chip ${t.overflow ? 'bad' : ''}">${held}${t.overflow ? ` · 이번 평가에서 상한 넘음 ${fmtNum(t.overflow)}` : ''}</div>`;
+    return html`<div class="run-chip ${t.overflow ? 'bad' : t.spread_timeouts ? 'warn' : ''}">${held}${t.overflow ? ` · 상한 넘음 ${fmtNum(t.overflow)}` : ''}${
+      t.spread_timeouts ? html` · <span title="PC 점검 무음으로 보내지 않은 알림이 다른 PC 로 번졌는지 보다가 시간 초과 — 조건을 좁히세요">번짐 확인 시간 초과 ${fmtNum(t.spread_timeouts)}</span>` : ''}</div>`;
   }
 
   function runError(r) {

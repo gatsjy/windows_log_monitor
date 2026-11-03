@@ -457,6 +457,14 @@ async def save_rule(body: RuleBody, request: Request, admin: User = Depends(requ
     except ruleedit.EditError as exc:
         raise HTTPException(422, str(exc)) from exc
     await _validate(new_text)
+    # 처음 보는 값(B-47)의 상태는 규칙 열쇠(sid: 또는 name:)로 찾는다 — 저장해서 열쇠가 바뀌면 여기서 정리한다(엔진이 새 설정으로 돌기 전에)
+    before = next((r for r in engine.config.rules if r.name == body.original), None) if body.original else None
+    if body.original is None:
+        # 새 규칙: 지운 규칙의 번호를 다시 받았으면 그 규칙의 상태(본 값·배운 기간)를 이어받지 않게 — 이어받으면 바로 알리거나 놓쳤다
+        await repository.drop_new_terms_states(f"sid:{rule['sid']}")
+    elif before is not None and before.sid is None:
+        # 손으로 쓴 규칙(번호 없음)을 처음 저장: 번호가 붙어 열쇠가 바뀐다 — 이름을 함께 바꿔도 옛 이름의 상태를 옮긴다
+        await repository.rekey_new_terms_states(f"name:{body.original}", f"sid:{rule['sid']}")
     await _store(new_text, admin, request, "alerts.rule.save",
                  {"rule": rule["name"], "sid": rule["sid"], "original": body.original})
     return {"ok": True, "name": rule["name"], "sid": rule["sid"]}
@@ -871,6 +879,7 @@ class SilenceBody(BaseModel):
     ends_at: datetime | None = None
     duration_sec: int | None = Field(default=None, ge=60, le=int(MAX_SILENCE.total_seconds()))
     reason: str = Field(min_length=1, max_length=500)
+    target: Literal["pc"] | None = None   # 처음 보는 값 알림에 PC 로 거는 무음(대상 자리가 PC 이름) — 값 조합과 구분
 
 
 def _silence_state(s: dict[str, Any], now: datetime) -> str:
@@ -906,13 +915,14 @@ def _silence_host_only(user: User, rule: str | None) -> bool:
     return not any(not s.hosts and (not s.categories or bool(cats & set(s.categories))) for s in user.scopes)
 
 
-def _check_host_only_target(rule: str | None, group_key: str | None) -> None:
-    """PC 로만 맞추는 무음은 대상 자리가 PC 여야 걸린다 — 걸리지 않을 무음을 '적용 중'으로 남기지 않게 미리 거절한다."""
+def _check_host_only_target(rule: str | None, group_key: str | None, target: str | None = None) -> None:
+    """PC 로만 맞추는 무음은 대상 자리가 PC 여야 걸린다 — 걸리지 않을 무음을 '적용 중'으로 남기지 않게 미리 거절한다.
+    처음 보는 값은 모양으로 PC 를 알 수 없어(값 하나짜리 IP·계정) 'PC' 로 고른 것(target=pc)이나 볼 값이 PC 하나인 규칙만(검토에서 재현)."""
     found = next((r for r in engine.config.rules if r.name == rule), None)
     if found is None or group_key is None:
         return
     pc_target = (found.kind in ("agent_silent", "stream_silent") or (found.kind == "count" and found.group_by == "host")
-                 or (found.kind == "new_terms" and " · " not in group_key))
+                 or (found.kind == "new_terms" and (target == "pc" or tuple(found.terms_fields) == ("host",))))
     if not pc_target:
         raise HTTPException(422, "조회 범위가 PC 로 정해진 사용자의 무음은 PC 에만 걸립니다 — 이 대상은 PC 가 아닙니다"
                                  "(처음 보는 값 알림이면 'PC' 범위를 고르세요)")
@@ -947,7 +957,7 @@ async def create_silence(body: SilenceBody, request: Request, user: User = Depen
         raise HTTPException(422, f"없는 규칙입니다: {rule}")
     host_only = _silence_host_only(user, rule)
     if host_only:
-        _check_host_only_target(rule, group_key)
+        _check_host_only_target(rule, group_key, body.target)
     _check_silence_scope(user, rule, group_key, host_only)
     now = datetime.now(UTC)
     for value in (body.starts_at, body.ends_at):

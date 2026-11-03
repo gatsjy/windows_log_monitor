@@ -1086,6 +1086,18 @@ async def update_new_terms_state(ns: int, **values: Any) -> None:
                        [*values.values(), ns])
 
 
+async def drop_new_terms_states(rule_key: str) -> int:
+    """그 열쇠의 상태(본 값과 함께)를 지운다 — 새로 만든 규칙이 지운 규칙의 번호를 다시 받아 그 상태를 이어받지 않게(검토에서 재현)."""
+    return len(await db.fetch_all("DELETE FROM new_terms_state WHERE rule_key = %s RETURNING id", (rule_key,)))
+
+
+async def rekey_new_terms_states(old_key: str, new_key: str) -> int:
+    """규칙의 상태를 새 열쇠로 옮긴다(이름 → 번호). 새 열쇠에 같은 볼 값의 상태가 이미 있으면 그대로 둔다."""
+    return len(await db.fetch_all(
+        "UPDATE new_terms_state s SET rule_key = %s WHERE s.rule_key = %s AND NOT EXISTS (SELECT 1 FROM new_terms_state x"
+        " WHERE x.rule_key = %s AND x.fields = s.fields) RETURNING id", (new_key, old_key, new_key)))
+
+
 async def rekey_new_terms_state(ns: int, rule_key: str) -> None:
     """규칙 번호가 새로 붙어(화면에서 저장) 열쇠가 name: → sid: 로 바뀐 상태를 옮긴다 — 처음부터 다시 배우면 history 안의 값이 새 값이 된다."""
     await db.fetch_all("UPDATE new_terms_state SET rule_key = %s WHERE id = %s RETURNING id", (rule_key, ns))
@@ -1121,14 +1133,18 @@ WITH t AS (
 ), d AS (
   SELECT t.*, x.th, s.term_hash IS NULL AS fresh, s.first_seen AS s_first, s.last_seen AS s_last, s.prev_last_seen AS s_prev,
          s.first_ts AS s_fts, s.first_event_id AS s_fid, s.first_host AS s_fhost, s.state AS s_state, s.alert_id AS s_alert,
-         (s.term_hash IS NOT NULL AND s.last_seen < t.frx - %s) AS expired
+         (s.term_hash IS NOT NULL AND s.last_seen < t.frx - %s) AS expired,
+         -- 더 먼저 본 것 — 단 그 사이가 history 안일 때만(오래전 기록을 거슬러 배우다 찾아 history 넘게 안 보이던 새 값을 배운 값으로
+         -- 돌리지 않게, 검토에서 재현). 그보다 멀면 그 행은 건드리지 않는다
+         (s.term_hash IS NOT NULL AND NOT (s.last_seen < t.frx - %s) AND t.frx < s.first_seen
+          AND s.first_seen - t.lrx <= %s) AS earlier
   FROM t CROSS JOIN LATERAL (SELECT wlm_terms_hash(t.term) AS th) x
   LEFT JOIN seen_terms s ON s.ns = %s AND s.term_hash = x.th
 ), r AS (
-  SELECT d.*, (fresh OR expired) AS renew, (NOT fresh AND NOT expired AND frx < s_first) AS earlier,
+  SELECT d.*, (fresh OR expired) AS renew,
          CASE WHEN fresh THEN row_number() OVER (PARTITION BY fresh ORDER BY frx, th) END AS rn,
          CASE WHEN %s OR frx < %s THEN 'learned' ELSE 'pending' END AS new_state
-  FROM d WHERE fresh OR expired OR s_last < lrx - interval '1 hour' OR frx < s_first
+  FROM d WHERE fresh OR expired OR s_last < lrx - interval '1 hour' OR earlier
 ), w AS (
   SELECT r.*, (fresh AND rn > %s) AS over FROM r
 ), ins AS (
@@ -1160,7 +1176,7 @@ WITH t AS (
 SELECT (SELECT count(*) FROM ins) AS written, (SELECT count(*) FROM ins WHERE inserted) AS inserted,
        (SELECT terms_n FROM st) AS terms_n, (SELECT overflow_n FROM st) AS overflow_n, (SELECT count(*) FROM w WHERE over) AS over
 """).format(term=term, where=where, nonempty=nonempty)
-    params = [*expr_params, *where_params, *expr_params, history, ns, learning, learn_until, room, ns, start, end,
+    params = [*expr_params, *where_params, *expr_params, history, history, history, ns, learning, learn_until, room, ns, start, end,
               count_from or start, cursor, ns]
     return await db.fetch_one(query, params)
 

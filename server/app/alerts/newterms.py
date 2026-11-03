@@ -44,6 +44,7 @@ _spread_top: dict[int, int] = {}            # 앞 차례에서 본 가장 큰 �
 _spread_cursor: dict[int, int | None] = {}  # 차례 돌기 — 다음은 이 알림 번호 앞부터, 끝까지 봤으면 처음부터
 _spread_checked: dict[int, datetime] = {}   # 알림 번호 → 마지막으로 본 때 (그 뒤 받은 로그만 다시 본다 — 차례가 늦어도 놓치지 않게)
 _spread_timeouts: dict[int, int] = {}       # 번짐 확인이 시간 초과로 건너뛴 수 (규칙 상태에 보임)
+_spread_deferred: dict[int, set[int]] = {}  # 번짐 확인이 시간 초과 난 알림 — 다음 차례에 맨 뒤로
 _purged: dict[int, datetime] = {}       # 메모리 (워커 1개) — 다시 시작하면 한 번 더 지울 뿐
 _ceiling: dict[int, int] = {}           # 시간 초과가 난 구간 크기 — 다시 그만큼 키우지 않는다 (다시 시작하면 한 번 더 겪을 뿐)
 
@@ -55,6 +56,14 @@ class CappedError(RuntimeError):
 def filter_sig(rule: Rule, saved: str | None) -> str:
     """조건의 지문 — 저장한 검색 문장 + match. 예외(B-46)는 넣지 않는다(예외를 바꿀 때마다 다시 배우지 않게)."""
     return hashlib.sha256(json.dumps([saved or "", sorted(rule.match.items())], ensure_ascii=False).encode()).hexdigest()
+
+
+def _budget() -> float:
+    """한 평가에 이 규칙이 훑는 시간 — 이어서 훑기·거슬러 배우기·번짐 확인이 함께 쓴다. 규칙 시간 상한의 절반(느림 판단 기준)보다 넉넉히
+    아래로: 거슬러 배우기만 16초를 쓰면 배우는 동안 내내 '느림'으로 보이고 알림 기능 상태가 경고였다(검토에서 재현)."""
+    from ..config import settings
+
+    return min(SCAN_BUDGET_SEC, max(5, settings.alert_rule_timeout_sec * 0.5) * 0.6)
 
 
 def _clamp_chunk(sec: float) -> int:
@@ -115,6 +124,7 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     state = await _state(rule, saved, now)
     ns, fields = state["id"], list(rule.terms_fields)
     started = time.monotonic()
+    budget = _budget()
     chunk = state["chunk_sec"]
     if state["overflow_n"] and state["terms_n"] < rule.max_terms:
         # 상한 오류는 자리가 다시 생길 때(max_terms 를 올림·오래된 값 정리)까지 — 한 평가만 오류로 두면 평가 간격이 길 때 감시가 알리지
@@ -123,8 +133,10 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
         if state["learn_dropped"]:
             # 배우는 동안 두지 못한 값이 있었다 — 배우는 기간을 다시 거슬러 배운다(그동안 알림은 미룸). 하지 않으면 늘 보이던 값이 상한을
             # 올린 뒤 '처음 보는 값'으로 거짓 알림이 됐다(검토에서 재현). 배운 뒤에 두지 못한 값(알렸어야 할 것)은 그 기간 밖이라 다시 보면 새 값
+            # history 보다 오래된 구간은 다시 배우지 않는다 — 그 값은 다시 보이면 새 값이 맞고, 다시 넣으면 정리가 지워 자리가 생겨
+            # 6시간마다 다시 배우기를 되풀이했다(검토에서 재현)
             end = min(state["learn_until"], state["cursor_at"])
-            frm = max(end - rule.learn, await repository.oldest_received() or end)
+            frm = max(end - rule.learn, await repository.oldest_received() or end, state["cursor_at"] - rule.history)
             if state["backfill_to"] is not None and state["backfill_from"] is not None:
                 frm, end = min(frm, state["backfill_from"]), max(end, state["backfill_to"])
             if frm < end:
@@ -155,7 +167,7 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
 
     # 1) 이어서 훑기 (알릴 것)
     cursor = state["cursor_at"]
-    while cursor < now and time.monotonic() - started < SCAN_BUDGET_SEC:
+    while cursor < now and time.monotonic() - started < budget:
         end = min(cursor + timedelta(seconds=chunk), now)
         await scan(cursor - OVERLAP, end, False, end, count_from=cursor)   # 겹쳐 본 2분의 넘친 값은 앞 구간에서 셌다
         cursor = end
@@ -163,7 +175,7 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     backfilling = state["backfill_to"] is not None
     if backfilling:
         to, frm = state["backfill_to"], state["backfill_from"]
-        while to > frm and time.monotonic() - started < SCAN_BUDGET_SEC * 2:
+        while to > frm and time.monotonic() - started < budget:   # 이어서 훑기가 남긴 시간만 (한 평가 전체가 한 예산)
             start = max(frm, to - timedelta(seconds=chunk))
             await scan(start, to, True, None)
             to = start
@@ -177,7 +189,8 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
         await repository.purge_seen_terms(ns, min(cursor, now) - rule.history - timedelta(days=1))
         _purged[ns] = now
     await repository.reopen_silenced_terms(ns, now)
-    await _reopen_spread(rule, ns, base, now)
+    if time.monotonic() - started < budget:
+        await _reopen_spread(rule, ns, base, now, started + budget)
     current = await repository.new_terms_state(rule_key(rule), fields)
     over = current["overflow_n"]
     if run is not None:
@@ -243,43 +256,55 @@ async def _unsilenced(rule: Rule, key: str, sightings: list[tuple[str, datetime]
     return [h for h, at in sightings if await repository.pc_silence(rule.name, h, at, key) is None]
 
 
-async def _reopen_spread(rule: Rule, ns: int, base, now: datetime) -> None:
+async def _reopen_spread(rule: Rule, ns: int, base, now: datetime, deadline: float) -> None:
     """PC 로 건 무음으로 보내지 않은 알림이 그 뒤 무음이 없는 PC(또는 무음이 끝난 같은 PC)에서 보이면 다시 알릴 차례로 (5분마다).
-    알림 단위(묶음은 한 번에), 새 알림 먼저·나머지는 차례로 돌며, 알림마다 지난번에 본 뒤 받은 로그만 본다.
+    알림 단위(묶음은 한 번에), 새 알림 먼저·나머지는 차례로 돌며, 알림마다 지난번에 본 뒤 받은 로그만 본다. 시간이 다 되면 본 데까지만
+    차례를 넘긴다 — 시간 초과가 나는 알림은 다음 차례에 맨 뒤로(매번 맨 앞에서 시간을 다 써 그 뒤 알림이 영영 차례가 안 왔다, 검토에서 재현).
     한 PC 의 점검 무음이 나중에 다른 PC 로 번진 새 값을 무음이 끝날 때까지 가렸다(검토에서 재현)."""
     if "host" in rule.terms_fields or (now - _spread.get(ns, now - SPREAD_EVERY)) < SPREAD_EVERY:
         return
     _spread[ns] = now
-    top = _spread_top.get(ns)
-    rows = await repository.host_silenced_alerts(ns, now, SPREAD_MAX, after_id=top) if top is not None else []
-    if len(rows) < SPREAD_MAX:
-        rest = SPREAD_MAX - len(rows)
-        turn = await repository.host_silenced_alerts(ns, now, rest, before_id=_spread_cursor.get(ns))
-        _spread_cursor[ns] = turn[-1]["alert_id"] if len(turn) == rest else None
-        seen = {r["alert_id"] for r in rows}
-        rows += [r for r in turn if r["alert_id"] not in seen]
-    if rows:   # 처음에는 차례 돌기만 — 0 으로 두면 다음 차례에 모든 알림이 '새 알림'이 되어 오래된 것이 밀렸다
-        _spread_top[ns] = max([top or 0, *(r["alert_id"] for r in rows)])
+    top, cursor = _spread_top.get(ns), _spread_cursor.get(ns)
+    fresh = await repository.host_silenced_alerts(ns, now, SPREAD_MAX, after_id=top) if top is not None else []
+    turn = []
+    if len(fresh) < SPREAD_MAX:
+        turn = await repository.host_silenced_alerts(ns, now, SPREAD_MAX - len(fresh), before_id=cursor)
+    ids = {r["alert_id"] for r in fresh}
+    deferred = _spread_deferred.setdefault(ns, set())
+    rows = sorted([*fresh, *(r for r in turn if r["alert_id"] not in ids)], key=lambda r: r["alert_id"] in deferred)
     if len(_spread_checked) > 50000:
         _spread_checked.clear()
-    started = time.monotonic()
+    done: set[int] = set()
     for row in rows:
-        if time.monotonic() - started > SCAN_BUDGET_SEC:
+        if time.monotonic() > deadline:
             break   # 나머지는 다음 차례 — 규칙 하나가 평가 주기를 붙잡지 않게
         since = max(_spread_checked.get(row["alert_id"], row["fired_at"]) - OVERLAP, now - RECENT)
         # 조합 하나면 그 값으로 좁혀(색인) 찾는다 — 열쇠만으로는 그 구간의 조건에 맞는 로그를 모두 풀어 봤다(검토에서 측정)
         f = _scoped(rule, base, json.loads(row["term_json"])) if row["term_json"] else base
+        done.add(row["alert_id"])
         try:
             sights = await repository.term_sightings(f, list(rule.terms_fields), [bytes(h) for h in row["hashes"]],
                                                      [(since, None)], SIGHTINGS_MAX)
         except db.QueryTimeout:
             _spread_timeouts[ns] = _spread_timeouts.get(ns, 0) + 1   # 규칙 상태에 보인다(run.terms)
+            deferred.add(row["alert_id"])
             continue
+        deferred.discard(row["alert_id"])
         _spread_checked[row["alert_id"]] = now
         for x in sorted(sights, key=lambda x: x["at"], reverse=True):
             if await repository.pc_silence(rule.name, x["host"], x["at"], row["group_key"]) is None:
                 await repository.reopen_terms(ns, row["alert_id"], bytes(x["h"]), x["host"], x["at"])
                 break
+    # 차례는 본 데까지만 넘긴다 — 새 알림은 다 봤을 때만 '본 것'으로, 차례 돌기는 본 마지막 알림 뒤부터
+    if fresh and all(r["alert_id"] in done for r in fresh):
+        _spread_top[ns] = max(r["alert_id"] for r in fresh)
+    elif top is None and rows:
+        _spread_top[ns] = max(r["alert_id"] for r in rows if r["alert_id"] in done) if done else top
+    seen_turn = [r for r in turn if r["alert_id"] in done]
+    if len(seen_turn) == len(turn):
+        _spread_cursor[ns] = turn[-1]["alert_id"] if turn and len(turn) == SPREAD_MAX - len(fresh) else None
+    elif seen_turn:
+        _spread_cursor[ns] = min(r["alert_id"] for r in seen_turn)
 
 
 def _link(rule: Rule, values: list[str], since: datetime, saved: str | None, exceptions: list[str]) -> str:

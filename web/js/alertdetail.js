@@ -423,6 +423,7 @@ function silenceForm(box, alert, done) {
     try {
       await api.send('POST', '/api/alerts/silences', {
         rule: alert.rule, group_key: scope === 'pc' ? pc : scope === 'one' ? alert.group_key : null, reason,
+        ...(scope === 'pc' ? { target: 'pc' } : {}),
         duration_sec: Number(box.querySelector('[data-dur] .on').dataset.v),
       });
       box.innerHTML = html`<div class="hint-box">✓ 무음을 걸었습니다. 알림 화면의 '무음' 탭에서 보거나 해제합니다.</div>`;
