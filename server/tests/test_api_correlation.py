@@ -345,3 +345,46 @@ def test_long_flow_does_not_rotate_through_entity_names(ctx, now):
         evaluate(admin, now + timedelta(minutes=step * 10, seconds=30))
     keys = [k for (k,) in sql("SELECT group_key FROM alerts WHERE rule = %s AND fired_at > %s ORDER BY id", (CORR, now - timedelta(minutes=1)))]
     assert set(keys) == {"PC SRV-LONG"} and 2 <= len(keys) <= 3
+
+
+# ------------------------------------------------------------------ 검토 보완 (5차)
+
+def test_hub_host_rows_are_not_a_spread(ctx, now):
+    """hub_hosts(DC)의 계정 잠금(이미 센 단계)은 'DC 로 번짐'이 아니다 — 같은 흐름을 계정으로 또 알리지 않는다. DC 에서 처음 생긴 단계는 알린다 (검토에서 재현)."""
+    from app.alerts.engine import engine
+
+    admin = ctx["admin"]
+    path = Path(os.environ["WLM_ALERTS_FILE"])
+    try:
+        path.write_text(RULES.replace("    min_tactics: 3\n", "    min_tactics: 3\n    hub_hosts: [DC-*]\n", 1), encoding="utf-8")
+        engine.reload(force=True)
+        put(now, "RDP 대입", -40, ["MITRE T1110.001"], hosts=["SRV-H"], accounts=["kimh"])
+        put(now, "계정 잠금", -38, ["MITRE T1110"], hosts=["DC-01"], accounts=["kimh"])
+        put(now, "새 서비스", -30, ["MITRE T1543.003"], hosts=["SRV-H"], accounts=["kimh"])
+        put(now, "로그 삭제", -20, ["MITRE T1070.001"], hosts=["SRV-H"], accounts=["kimh"])
+        assert len(evaluate(admin, now)) == 1 and len(corr("PC SRV-H")) == 1 and corr("계정 kimh") == []
+        put(now, "계정 잠금", 1, ["MITRE T1110"], hosts=["DC-01"], accounts=["kimh"])
+        assert evaluate(admin, now + timedelta(minutes=2)) == []
+        put(now, "계정 탐색", 3, ["MITRE T1087"], hosts=["DC-01"], accounts=["kimh"])   # DC 에서 처음 생긴 단계
+        assert len(evaluate(admin, now + timedelta(minutes=4))) == 1 and len(corr("계정 kimh")) == 1
+    finally:
+        path.write_text(RULES, encoding="utf-8")
+        engine.reload(force=True)
+
+
+def test_resolved_correlation_alert_does_not_block_a_recurrence(ctx, now):
+    """해결한 상관 알림은 그 뒤 새 단계가 더해지면 재알림 간격 안이어도 다시 알린다(해결 뒤 재발, 건수 규칙과 같게). 해결 앞의 단계만
+    되풀이되면 조용하다 (검토에서 재현)."""
+    admin = ctx["admin"]
+    for minutes, rule, tag in ((-30, "대입", "MITRE T1110"), (-25, "새 서비스", "MITRE T1543.003"), (-20, "로그 삭제", "MITRE T1070.001")):
+        put(now, rule, minutes, [tag], hosts=["RZ-1"])
+    [first] = evaluate(admin, now)
+    r = admin.post("/api/alerts/handle", json={"ids": [first], "action": "resolve", "note": "격리", "with_related": False,
+                                               "resolution": "tp_malicious"}, headers=CSRF)
+    assert r.status_code == 200, r.text
+    put(now, "대입", 15, ["MITRE T1110"], hosts=["RZ-1"])                     # 해결 앞에 이미 센 단계 — 조용
+    assert evaluate(admin, now + timedelta(minutes=16)) == []
+    put(now, "PowerShell", 20, ["MITRE T1059.001"], hosts=["RZ-1"])
+    [again] = evaluate(admin, now + timedelta(minutes=21))
+    [(_, payload, *_)] = [x for x in corr("PC RZ-1") if x[0] == again]
+    assert payload["recurred"] is True and payload["previous_id"] == first

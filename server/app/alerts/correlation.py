@@ -118,21 +118,26 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     found = chains(with_tactics(rows[-SOURCE_MAX:]), rule.entities, rule.min_tactics, rule.hub_hosts)
     if not found:
         return []
-    recent = [{"key": r["group_key"], "ids": set(r["ids"]), "entity": r["entity"], "steps": _parse_steps(r["host_steps"])}
+    recent = [{"key": r["group_key"], "ids": set(r["ids"]), "entity": r["entity"], "steps": _parse_steps(r["host_steps"]),
+               "id": r["id"], "fired_at": r["fired_at"], "resolved_at": r["resolved_at"]}
               for r in await repository.recent_correlations(rule.name, now - rule.cooldown)]
     fired = []
     for chain in found:
         key = key_of(chain["kind"], chain["value"])
-        if any(r["key"] == key for r in recent) or _nothing_new(chain, recent):
+        # 해결한 상관 알림은 그 뒤에 새 단계가 더해지면 막지 않는다 — 건수 규칙의 '해결 뒤 재발'(B-35)과 같게. 해결 앞의 알림만으로는 다시 울리지 않는다
+        live = [r for r in recent if not _reopened(chain, r, rule.hub_hosts)]
+        if any(r["key"] == key for r in live) or _nothing_new(chain, live, rule.hub_hosts):
             continue
         message = _message(rule, chain, key, now)
+        if previous := max((r for r in recent if r["key"] == key and r.get("id")), key=lambda r: r["fired_at"], default=None):
+            message.previous_id, message.previous_fired_at, message.recurred = previous["id"], previous["fired_at"], True
         observed = {k: ([chain["value"]] if k == chain["kind"] else []) for k in COLUMNS}
         alert_id = await engine.fire_rule(rule, message, observed=observed,
                                           host=chain["value"] if chain["kind"] == "host" else None)
         if alert_id:
             fired.append(alert_id)
         recent.append({"key": key, "ids": {row["id"] for row in chain["rows"]}, "entity": (chain["kind"], chain["value"]),
-                       "steps": _host_steps(chain["rows"])})
+                       "steps": _host_steps(chain["rows"]), "resolved_at": None})
     return fired
 
 
@@ -177,11 +182,49 @@ def _same_flow(chain: dict[str, Any], ids: set[int], announced: dict[str, Any]) 
     return kind in COLUMNS and any(value in (row[COLUMNS[kind]] or []) for row in chain["rows"])
 
 
-def _nothing_new(chain: dict[str, Any], recent: list[dict[str, Any]]) -> bool:
-    """이미 알린 흐름(재알림 간격 안)과 같은 흐름이면, 그 흐름에 없던 알림들이 어느 PC 에서든 센 단계 수를 늘리지 않을 때 다른 개체로 다시
-    알리지 않는다 — 같은 흐름이 PC·계정·IP 로 세 번 오지 않게. 판단은 PC 마다 흐름을 셀 때와 같은 규칙(규칙 하나는 전술 하나)으로:
-    알림 번호만 보면 같은 PC 의 대입이 한 번 더 나도(봇이 IP 를 바꿈) 또 알렸고, 흐름 전체의 PC·단계 집합이나 전술을 모두 늘어놓은
-    (PC, 전술) 짝으로 보면 여러 서버를 적은 알림 하나·여러 전술에 속한 기법(T1078) 하나가 둘째 서버의 침해를 묻었다(검토에서 재현)."""
+def _grows(before: dict[str, set[str]], add: dict[str, set[str]]) -> bool:
+    merged = {name: set(ts) for name, ts in before.items()}
+    for name, ts in add.items():
+        merged.setdefault(name, set()).update(ts)
+    return _count(merged) > _count(before)
+
+
+def _adds_steps(fresh: list[dict[str, Any]], announced: dict[str, dict[str, set[str]]], hubs: tuple[str, ...]) -> bool:
+    """새 알림들이 이미 알린 흐름의 단계를 늘리나 — PC 마다 센 단계 수로(규칙 하나는 전술 하나). 여러 사람의 일이 모이는 서버(hub_hosts)는 PC 로
+    보지 않고 흐름 전체의 단계 수로: DC 의 계정 잠금(이미 센 자격 증명 접근)이 'DC 로 번짐'이 되어 같은 흐름을 계정으로 또 알렸다(검토에서 재현).
+    DC 에서 처음 생긴 단계(도메인 관리자 추가 등)는 늘어난 것이다."""
+    hub_add: dict[str, set[str]] = {}
+    for host, rules in _host_steps(fresh).items():
+        if host and hubs and host_matches(hubs, host):
+            for name, ts in rules.items():
+                hub_add.setdefault(name, set()).update(ts)
+            continue
+        if _grows(announced.get(host, {}), rules):
+            return True
+    if not hub_add:
+        return False
+    flow: dict[str, set[str]] = {}
+    for rules in announced.values():
+        for name, ts in rules.items():
+            flow.setdefault(name, set()).update(ts)
+    return _grows(flow, hub_add)
+
+
+def _reopened(chain: dict[str, Any], announced: dict[str, Any], hubs: tuple[str, ...]) -> bool:
+    """해결한 상관 알림 뒤에 이 흐름에 새 단계가 더해졌나 — 그 알림이 재알림 간격 동안 같은 PC·계정·IP 를 막지 않게(해결 뒤 재발).
+    해결 앞의 알림은 늘어난 것으로 세지 않는다(이미 처리한 것으로 다시 울리지 않게)."""
+    resolved = announced.get("resolved_at")
+    if resolved is None:
+        return False
+    after = [row for row in chain["rows"] if row["fired_at"] > resolved and row["id"] not in announced["ids"]]
+    return bool(after) and _adds_steps(after, announced["steps"], hubs)
+
+
+def _nothing_new(chain: dict[str, Any], recent: list[dict[str, Any]], hubs: tuple[str, ...] = ()) -> bool:
+    """이미 알린 흐름(재알림 간격 안)과 같은 흐름이면, 그 흐름에 없던 알림들이 단계를 늘리지 않을 때(_adds_steps) 다른 개체로 다시 알리지 않는다 —
+    같은 흐름이 PC·계정·IP 로 세 번 오지 않게. 알림 번호만 보면 같은 PC 의 대입이 한 번 더 나도(봇이 IP 를 바꿈) 또 알렸고, 흐름 전체의 PC·단계
+    집합이나 전술을 모두 늘어놓은 (PC, 전술) 짝으로 보면 여러 서버를 적은 알림 하나·여러 전술에 속한 기법(T1078) 하나가 둘째 서버의 침해를
+    묻었다(검토에서 재현)."""
     ids = {row["id"] for row in chain["rows"]}
     same = [r for r in recent if _same_flow(chain, ids, r)]
     if not same:
@@ -195,14 +238,7 @@ def _nothing_new(chain: dict[str, Any], recent: list[dict[str, Any]]) -> bool:
         for host, rules in r["steps"].items():
             for name, ts in rules.items():
                 announced.setdefault(host, {}).setdefault(name, set()).update(ts)
-    for host, rules in _host_steps(fresh).items():
-        before = announced.get(host, {})
-        merged = {name: set(ts) for name, ts in before.items()}
-        for name, ts in rules.items():
-            merged.setdefault(name, set()).update(ts)
-        if _count(merged) > _count(before):
-            return False
-    return True
+    return not _adds_steps(fresh, announced, hubs)
 
 
 def _message(rule: Rule, chain: dict[str, Any], key: str, now: datetime) -> AlertMessage:
