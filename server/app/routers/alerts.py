@@ -895,6 +895,13 @@ def _coverage(spans: list[dict[str, Any]], starts_at: datetime, ends_at: datetim
     return max(lo, now), hi
 
 
+def _silence_host_only(user: User) -> bool:
+    """PC 범위가 정해진 사용자의 무음은 PC 로만 맞춘다 (마이그레이션 041) — 처음 보는 값의 PC 모양인 값 조합(계정 'ws-ops'·IP)으로 범위 밖
+    PC 의 알림을 막지 않게. 분류만 정해진 사용자는 모든 PC 를 보므로 예전처럼(대상 이름 그대로) — 모두 PC 로만 맞추면 IP·사용자로 묶은
+    알림에 건 무음이 아무 데도 걸리지 않았다(검토에서 재현)."""
+    return user.scopes is not None and any(scope.hosts for scope in user.scopes)
+
+
 def _check_silence_scope(user: User, rule: str | None, group_key: str | None, host_only: bool = True) -> None:
     """조회 범위가 있는 사용자는 자기가 볼 수 있는 규칙·대상에만 무음을 걸고 풀 수 있다 (남의 알림까지 막지 않게).
     그 사람이 거는 무음은 PC 로만 맞춘다(host_only) — 처음 보는 값의 값 조합이 PC 모양이어도 범위 밖 PC 의 알림을 막지 않게."""
@@ -922,7 +929,7 @@ async def create_silence(body: SilenceBody, request: Request, user: User = Depen
     # 알림 기능 자체의 알림(엔진 멈춤 등)도 무음으로 막을 수 있다 — 메일 서버 점검처럼 예정된 일. 설정 변경 알림은 안 됨 (ADR-043)
     if rule is not None and rule not in {r.name for r in engine.config.rules} | SYSTEM_RULES:
         raise HTTPException(422, f"없는 규칙입니다: {rule}")
-    _check_silence_scope(user, rule, group_key)
+    _check_silence_scope(user, rule, group_key, _silence_host_only(user))
     now = datetime.now(UTC)
     for value in (body.starts_at, body.ends_at):
         if value is not None and value.tzinfo is None:
@@ -950,13 +957,12 @@ async def create_silence(body: SilenceBody, request: Request, user: User = Depen
     # 24시간짜리를 이어 붙이면 한 줄씩은 짧아도 한 달을 막을 수 있었다(검토에서 재현)
     covered_from, covered_until = _coverage(await repository.covering_silences(rule, group_key, now), starts_at, ends_at, now)
     wide = (rule is None and group_key is None) or covered_until - covered_from > configdiff.WIDE_SILENCE
-    # 범위가 정해진 사용자의 무음은 PC 로만 맞춘다 (마이그레이션 041 — 대상 이름이 같은 글자인 범위 밖 알림을 막지 않게)
     silence_id = await repository.insert_silence(rule, group_key, starts_at, ends_at, reason, user.username,
-                                                 host_only=user.scopes is not None)
+                                                 host_only=_silence_host_only(user))
     target = f"{rule or '모든 규칙'} · {group_key if group_key is not None else '모든 대상'}"
     await db.audit(user.username, "alerts.silence.create", target,
                    {"id": silence_id, "rule": rule, "group_key": group_key, "starts_at": starts_at.isoformat(),
-                    "ends_at": ends_at.isoformat(), "reason": reason, "wide": wide, "host_only": user.scopes is not None,
+                    "ends_at": ends_at.isoformat(), "reason": reason, "wide": wide, "host_only": _silence_host_only(user),
                     "covered_until": covered_until.isoformat()}, actor_ip=client_ip(request))
     if wide:
         # 그 규칙들의 받는 곳에 알린다. 실패해도 무음은 걸린다

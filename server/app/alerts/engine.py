@@ -534,8 +534,10 @@ class AlertEngine:
 
     async def _resolve(self, rule: Rule, key: str, now: datetime, reason: str) -> None:
         # 지금 무음이면 해소 통지도 보내지 않는다 — 점검 중에는 알림처럼 해소도 잡음이다. 관찰 모드(B-52)도 마찬가지
-        pc = _key_host(rule, key) or (key if rule.kind == "agent_silent" or rule.group_by == "host" else None)
-        silenced = rule.mode == "observe" or await repository.active_silence(rule.name, key, now, _key_host(rule, key), pc) is not None
+        key_is_pc = rule.kind in ("agent_silent", "stream_silent") or (rule.kind == "count" and rule.group_by == "host")
+        pc = _key_host(rule, key) or (key if key_is_pc else None)
+        silenced = rule.mode == "observe" or await repository.active_silence(rule.name, key, now, _key_host(rule, key), pc,
+                                                                               key_is_pc) is not None
         changed, queued = await repository.auto_resolve(rule.name, key, reason,
                                                         notify=() if silenced else self.config.targets_for(rule, key)[0],
                                                         at=now, notify_since=now - RECOVERY_NOTICE_MAX_AGE)
@@ -611,9 +613,10 @@ class AlertEngine:
                 found = [await repository.pc_silence(message.rule, h, at, message.group_key) for h, at in hosts]
                 silence = None if any(x is None for x in found) else max(found, key=lambda x: x["ends_at"])
         else:
-            # PC 로만 맞추는 무음(host_only)은 알림의 PC 와만 — 대상 이름이 PC 인 알림(PC 별 묶음·끊김)이면 그 이름
-            pc = host or (message.group_key if message.kind == "agent_silent" or message.group_by == "host" else None)
-            silence = await repository.active_silence(message.rule, message.group_key, message.fired_at, host, pc)
+            # PC 로만 맞추는 무음(host_only)은 알림의 PC 와 — 대상 이름이 PC 에서 나온 알림(PC 별 묶음·끊김·채널 끊김)이면 대상 이름과도
+            key_is_pc = message.kind in ("agent_silent", "stream_silent") or (message.kind == "count" and message.group_by == "host")
+            pc = host or (message.group_key if key_is_pc else None)
+            silence = await repository.active_silence(message.rule, message.group_key, message.fired_at, host, pc, key_is_pc)
         # 관찰 모드(B-52): 무음처럼 기록만 한다. 시험 발송은 받는 곳을 시험하는 것이라 보낸다
         message.observe = not message.test and self.observing(message.rule)
         alert_id = await repository.insert_alert(message.to_dict(), notify, silence, observe=message.observe, claim=claim)

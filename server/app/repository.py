@@ -1874,15 +1874,18 @@ _SILENCE_COLUMNS = (
 )
 
 
-async def active_silence(rule: str, group_key: str, at: datetime, host: str | None = None, pc: str | None = None) -> dict | None:
+async def active_silence(rule: str, group_key: str, at: datetime, host: str | None = None, pc: str | None = None,
+                         key_is_pc: bool = False) -> dict | None:
     """이 규칙·대상에 걸린 무음 (여러 개면 가장 늦게 끝나는 것). rule·group_key 가 NULL 인 무음은 전부에 걸린다.
     host: 대상 이름이 PC 이름이 아닌 알림(채널 끊김 'PC · 채널')의 PC — 'DB-01' 로 건 PC 점검 무음도 걸리게(검토).
-    pc: 이 알림의 PC (대상 이름이 PC 인 알림이면 그 이름) — PC 로만 맞추는 무음(host_only, 마이그레이션 041)은 이것과만 맞춘다."""
+    PC 로만 맞추는 무음(host_only, 마이그레이션 041 — PC 범위가 정해진 사용자가 건 것)은 이 알림의 PC(pc)와, 또는 대상 이름이 PC 에서
+    나온 알림(key_is_pc: PC 별 묶음·끊김·채널 끊김 'PC · 채널')이면 대상 이름과도 맞춘다 — 처음 보는 값의 값 조합과는 맞추지 않는다."""
     return await db.fetch_one(
         "SELECT id, reason, ends_at FROM alert_silences WHERE starts_at <= %s AND ends_at > %s"
         " AND (rule IS NULL OR rule = %s) AND (group_key IS NULL OR (NOT host_only AND (group_key = %s OR group_key = %s))"
-        " OR (host_only AND group_key = %s)) ORDER BY ends_at DESC LIMIT 1",
-        (at, at, rule, group_key, host if host is not None else group_key, pc if pc is not None else host),
+        " OR (host_only AND (group_key = %s OR (%s AND group_key = %s)))) ORDER BY ends_at DESC LIMIT 1",
+        (at, at, rule, group_key, host if host is not None else group_key, pc if pc is not None else host, key_is_pc,
+         group_key),
     )
 
 
@@ -1932,7 +1935,7 @@ async def end_silence(silence_id: int, actor: str) -> bool:
 async def active_silence_refs(at: datetime) -> list[dict]:
     """지금 적용 중인 무음의 범위 (화면 상단 '무음 N개 적용 중' — 라우터가 조회 범위로 걸러서 센다)."""
     return await db.fetch_all(
-        "SELECT rule, group_key FROM alert_silences WHERE starts_at <= %s AND ends_at > %s", (at, at)
+        "SELECT rule, group_key, host_only FROM alert_silences WHERE starts_at <= %s AND ends_at > %s", (at, at)
     )
 
 

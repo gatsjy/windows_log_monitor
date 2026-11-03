@@ -77,9 +77,10 @@ def _as_alert(silence: dict[str, Any]) -> dict[str, Any]:
     """규칙·대상을 정한 무음을 알림처럼. PC 로만 맞추는 무음(host_only — 범위가 정해진 사용자가 건 것)은 대상 자리가 PC 라 PC 로 본다
     (처음 보는 값 규칙도 그 PC 의 알림에만 걸린다). 관리자가 건 처음 보는 값 규칙의 무음은 값 조합으로도 맞아 모든 PC 에 걸리므로
     범위가 정해진 사용자에게 안 보인다 — PC 모양인 값(계정 'ws-ops'·IP)으로 범위 밖 PC 의 알림을 막을 수 있었다(검토에서 재현)."""
-    if silence.get("host_only"):
+    rule = next((r for r in engine.config.rules if r.name == silence["rule"]), None)
+    if silence.get("host_only") and rule is not None and rule.kind == "new_terms":
         return {"rule": silence["rule"], "group_key": silence["group_key"], "terms_host": silence["group_key"]}
-    return silence
+    return silence   # 다른 규칙은 알림처럼(채널 끊김 'PC · 채널' 은 alert_host 가 PC 를 뗀다)
 
 
 def silence_target_visible(user: User, rule: str | None, group_key: str | None, host_only: bool = True) -> bool:

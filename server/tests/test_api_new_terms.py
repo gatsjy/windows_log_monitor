@@ -874,3 +874,49 @@ def test_scoped_users_pc_silence_does_not_match_value_combination(client):
     ev("WS-OPS", "10.65.0.1", 4865, host="DC-65")
     fired, _ = evaluate(client, rule)
     assert len(fired) == 1 and rule_alerts("값이 PC 모양")[-1][2] is None
+
+
+# ---------------------------------------------------------------- 5차 검토 보완
+def test_scoped_silences_keep_working_for_other_rule_kinds(client):
+    """PC 로만 맞추는 무음은 PC 범위 사용자만 — 분류만 정해진 사용자의 IP 묶음 무음·채널 끊김 'PC · 채널' 무음이 아무 데도 안 걸렸다(재현)."""
+    from app import repository
+    from app.alerts.engine import engine
+    from app.alerts.rules import parse_text
+    from app.alerts.visibility import silence_target_visible, silence_visible
+    from app.auth.service import User
+    from app.filters import Scope
+    from app.routers.alerts import _silence_host_only
+
+    def user(**scope):
+        return User(id=96, username="u", display_name="u", role="viewer", must_change_password=False,
+                    password_changed_at=datetime.now(UTC), scopes=(Scope(**scope),))
+
+    dba, ward, dc = user(categories=("security",)), user(hosts=("WS-*",)), user(hosts=("DC-01",))
+    assert not _silence_host_only(dba) and _silence_host_only(ward) and _silence_host_only(dc)
+    engine.config = parse_text("""rules:
+  - name: IP 묶음
+    match: { category: security }
+    group_by: ip
+    notify: [운영팀]
+  - name: 채널 끊김
+    kind: stream_silent
+    notify: [운영팀]
+  - name: 새 값
+    kind: new_terms
+    match: { event_id: "4624" }
+    fields: [account]
+    notify: [운영팀]
+""")
+    now = datetime.now(UTC)
+    sql("INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by, host_only) VALUES"
+        " ('IP 묶음', '10.1.2.3', now() - interval '1 minute', now() + interval '1 hour', '스캐너', 'dba', false),"
+        " ('채널 끊김', 'WS-02 · Security', now() - interval '1 minute', now() + interval '1 hour', '점검', 'ward', true),"
+        " ('새 값', 'WS-05', now() - interval '1 minute', now() + interval '1 hour', '내 PC 점검', 'ward', true)")
+    assert client.portal.call(lambda: repository.active_silence("IP 묶음", "10.1.2.3", now)) is not None
+    assert client.portal.call(lambda: repository.active_silence("채널 끊김", "WS-02 · Security", now, "WS-02", "WS-02", True)) is not None
+    assert silence_target_visible(dc, "채널 끊김", "DC-01 · Security", True)      # 정확한 PC 범위도 'PC · 채널' 에 무음을 건다
+    # 무음 수 표시(active_silence_refs)도 PC 로만 맞추는 무음을 목록과 같게 센다
+    refs = client.portal.call(repository.active_silence_refs, now)
+    assert {r["group_key"] for r in refs if r["rule"] in ("채널 끊김", "새 값") and silence_visible(ward, r)} == {
+        "WS-02 · Security", "WS-05"}
+    sql("UPDATE alert_silences SET ends_at = now() WHERE rule IN ('IP 묶음', '채널 끊김', '새 값')")
