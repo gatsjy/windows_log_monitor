@@ -297,3 +297,22 @@ def test_repeat_on_the_announced_pc_is_not_announced_again_but_spread_is(ctx, no
     assert len(evaluate(admin, now + timedelta(seconds=60))) == 1
     [(_, payload, *_)] = corr("계정 evil")
     assert payload["correlation"]["hosts"] == ["SRV-X", "SRV-Y"]
+
+
+# ------------------------------------------------------------------ 검토 보완 (3차)
+
+def test_second_server_listed_by_a_shared_alert_still_alerts(ctx, now):
+    """여러 서버를 적은 알림 하나(한 계정이 여러 서버에 원격 데스크톱)가 첫 흐름에 섞여도, 둘째 서버의 침해는 그 서버로 알린다 — 새 알림의
+    (PC, 단계) 짝으로 판단 (흐름 전체의 PC 집합으로 보면 묻혔다, 검토에서 재현). 같은 PC 에서 같은 단계가 반복되면 여전히 조용하다."""
+    admin = ctx["admin"]
+    put(now, "여러 서버 원격", -30, ["MITRE T1021.001"], hosts=["SRV-A", "SRV-B", "SRV-C"], accounts=["evil"])
+    put(now, "새 서비스", -25, ["MITRE T1543.003"], hosts=["SRV-A"], accounts=["evil"])
+    put(now, "로그 삭제", -20, ["MITRE T1070.001"], hosts=["SRV-A"], accounts=["evil"])
+    assert len(evaluate(admin, now)) == 1 and len(corr("PC SRV-A")) == 1
+    put(now, "새 서비스", 5, ["MITRE T1543.003"], hosts=["SRV-B"], accounts=["evil"])
+    put(now, "로그 삭제", 8, ["MITRE T1070.001"], hosts=["SRV-B"], accounts=["evil"])
+    assert len(evaluate(admin, now + timedelta(minutes=9))) == 1 and len(corr("PC SRV-B")) == 1
+    put(now, "로그 삭제", 10, ["MITRE T1070.001"], hosts=["SRV-B"], accounts=["evil"])   # 같은 PC 에서 같은 단계 반복
+    assert evaluate(admin, now + timedelta(minutes=11)) == []
+    [(_, payload, *_)] = corr("PC SRV-B")
+    assert ["SRV-B", "TA0003"] in payload["correlation"]["host_tactics"]
