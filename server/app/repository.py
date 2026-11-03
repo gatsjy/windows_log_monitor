@@ -1958,8 +1958,8 @@ async def correlation_sources(since: datetime, until: datetime, limit: int) -> l
 
 
 async def recent_correlations(rule: str, since: datetime) -> list[dict]:
-    """이 상관 규칙이 since 뒤에 낸 알림의 대상·개체·묶은 알림 번호·PC 마다 단계(host_steps)·해결 시각 — 재알림 간격·같은 흐름을 다른 개체로 또
-    울리지 않게(해결한 것은 그 뒤 새 단계가 더해지면 막지 않는다).
+    """이 상관 규칙이 since 뒤에 낸 알림의 대상·개체·묶은 알림 번호·PC 마다 단계(host_steps)·해결 시각·무음 끝 — 재알림 간격·같은 흐름을 다른 개체로
+    또 울리지 않게(해결했거나 무음이 끝난 것은 그 뒤 새 단계가 더해지면 같은 대상을 막지 않는다).
     번호는 correlation.ids(묶은 알림 전부). 보이는 목록(correlation.alerts, 30개까지)으로 보면 31번째부터의 알림이 '새것'이 되어
     다음 주기에 같은 흐름을 계정·IP 로 또 알렸다(검토에서 재현)."""
     def arr(name: str, cast: str = "") -> str:
@@ -1968,6 +1968,7 @@ async def recent_correlations(rule: str, since: datetime) -> list[dict]:
                 + (" WHERE x ~ '^[0-9]+$'" if cast else "") + "), '{}')")
     rows = await db.fetch_all(
         f"SELECT a.id, a.fired_at, CASE WHEN a.status = 'resolved' THEN a.resolved_at END AS resolved_at,"
+        " (SELECT s.ends_at FROM alert_silences s WHERE s.id = a.silence_id) AS silenced_until,"
         f" a.group_key, {arr('ids', '::bigint')} AS ids, a.payload->'correlation'->'entity'->>'kind' AS entity_kind,"
         " a.payload->'correlation'->'entity'->>'value' AS entity_value, a.payload->'correlation'->'host_steps' AS host_steps"
         " FROM alerts a WHERE a.rule = %s AND a.fired_at >= %s", (rule, since))

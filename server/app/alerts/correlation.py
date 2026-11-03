@@ -119,25 +119,28 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     if not found:
         return []
     recent = [{"key": r["group_key"], "ids": set(r["ids"]), "entity": r["entity"], "steps": _parse_steps(r["host_steps"]),
-               "id": r["id"], "fired_at": r["fired_at"], "resolved_at": r["resolved_at"]}
+               "id": r["id"], "fired_at": r["fired_at"], "resolved_at": r["resolved_at"], "silenced_until": r["silenced_until"]}
               for r in await repository.recent_correlations(rule.name, now - rule.cooldown)]
     fired = []
     for chain in found:
         key = key_of(chain["kind"], chain["value"])
-        # 해결한 상관 알림은 그 뒤에 새 단계가 더해지면 막지 않는다 — 건수 규칙의 '해결 뒤 재발'(B-35)과 같게. 해결 앞의 알림만으로는 다시 울리지 않는다
-        live = [r for r in recent if not _reopened(chain, r, rule.hub_hosts)]
-        if any(r["key"] == key for r in live) or _nothing_new(chain, live, rule.hub_hosts):
+        # 해결했거나 무음이 끝난 상관 알림은 그 뒤 새 단계가 더해지면 같은 대상의 재알림 간격으로 막지 않는다 — 건수 규칙의 '해결 뒤 재발'(B-35)·
+        # '무음이 끝나면 간격을 기다리지 않음'과 같게. 같은 흐름 판단(_nothing_new)에는 그대로 둔다: 빼면 해결 앞의 알림이 새것이 되어 한 단계가
+        # PC·계정·IP 로 따로 왔다(검토에서 재현)
+        live = [r for r in recent if not _reopened(chain, r, rule.hub_hosts, now)]
+        if any(r["key"] == key for r in live) or _nothing_new(chain, recent, rule.hub_hosts):
             continue
         message = _message(rule, chain, key, now)
         if previous := max((r for r in recent if r["key"] == key and r.get("id")), key=lambda r: r["fired_at"], default=None):
-            message.previous_id, message.previous_fired_at, message.recurred = previous["id"], previous["fired_at"], True
+            message.previous_id, message.previous_fired_at = previous["id"], previous["fired_at"]
+            message.recurred = previous["resolved_at"] is not None
         observed = {k: ([chain["value"]] if k == chain["kind"] else []) for k in COLUMNS}
         alert_id = await engine.fire_rule(rule, message, observed=observed,
                                           host=chain["value"] if chain["kind"] == "host" else None)
         if alert_id:
             fired.append(alert_id)
         recent.append({"key": key, "ids": {row["id"] for row in chain["rows"]}, "entity": (chain["kind"], chain["value"]),
-                       "steps": _host_steps(chain["rows"]), "resolved_at": None})
+                       "steps": _host_steps(chain["rows"]), "resolved_at": None, "silenced_until": None})
     return fired
 
 
@@ -210,13 +213,16 @@ def _adds_steps(fresh: list[dict[str, Any]], announced: dict[str, dict[str, set[
     return _grows(flow, hub_add)
 
 
-def _reopened(chain: dict[str, Any], announced: dict[str, Any], hubs: tuple[str, ...]) -> bool:
-    """해결한 상관 알림 뒤에 이 흐름에 새 단계가 더해졌나 — 그 알림이 재알림 간격 동안 같은 PC·계정·IP 를 막지 않게(해결 뒤 재발).
-    해결 앞의 알림은 늘어난 것으로 세지 않는다(이미 처리한 것으로 다시 울리지 않게)."""
-    resolved = announced.get("resolved_at")
-    if resolved is None:
+def _reopened(chain: dict[str, Any], announced: dict[str, Any], hubs: tuple[str, ...], now: datetime) -> bool:
+    """해결했거나 무음이 끝난 상관 알림 뒤에 이 흐름에 새 단계가 더해졌나 — 그 알림이 재알림 간격 동안 같은 대상을 막지 않게(해결 뒤 재발,
+    점검이 끝난 뒤 새 단계). 그 앞의 알림은 늘어난 것으로 세지 않는다(이미 처리했거나 점검 중이던 것으로 다시 울리지 않게)."""
+    marks = [t for t in (announced.get("resolved_at"),) if t is not None]
+    if (until := announced.get("silenced_until")) is not None and until <= now:
+        marks.append(until)
+    if not marks:
         return False
-    after = [row for row in chain["rows"] if row["fired_at"] > resolved and row["id"] not in announced["ids"]]
+    since = max(marks)
+    after = [row for row in chain["rows"] if row["fired_at"] > since and row["id"] not in announced["ids"]]
     return bool(after) and _adds_steps(after, announced["steps"], hubs)
 
 

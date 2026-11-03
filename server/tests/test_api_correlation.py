@@ -388,3 +388,46 @@ def test_resolved_correlation_alert_does_not_block_a_recurrence(ctx, now):
     [again] = evaluate(admin, now + timedelta(minutes=21))
     [(_, payload, *_)] = [x for x in corr("PC RZ-1") if x[0] == again]
     assert payload["recurred"] is True and payload["previous_id"] == first
+
+
+# ------------------------------------------------------------------ 검토 보완 (6차)
+
+def _resolve(client, alert_id):
+    r = client.post("/api/alerts/handle", json={"ids": [alert_id], "action": "resolve", "note": "", "with_related": False,
+                                                "resolution": "tp_malicious"}, headers=CSRF)
+    assert r.status_code == 200, r.text
+
+
+def test_after_resolving_every_entity_one_new_step_alerts_once(ctx, now):
+    """흐름을 PC·계정(번짐)으로 알리고 둘 다 해결한 뒤 새 단계 하나 — 한 번만(PC) 알린다. 해결한 알림도 같은 흐름 판단에는 남는다 (검토에서 재현)."""
+    admin = ctx["admin"]
+    for minutes, rule, tag in ((-40, "대입", "MITRE T1110"), (-35, "새 서비스", "MITRE T1543.003"), (-30, "로그 삭제", "MITRE T1070.001")):
+        put(now, rule, minutes, [tag], hosts=["RX"], accounts=["rkim"])
+    [pc] = evaluate(admin, now)
+    put(now, "대입", 1, ["MITRE T1110"], hosts=["RY"], accounts=["rkim"])
+    [acct] = evaluate(admin, now + timedelta(minutes=2))
+    assert len(corr("계정 rkim")) == 1
+    _resolve(admin, pc)
+    _resolve(admin, acct)
+    put(now, "PowerShell", 5, ["MITRE T1059.001"], hosts=["RX"], accounts=["rkim"])
+    fired = evaluate(admin, now + timedelta(minutes=6))
+    assert len(fired) == 1 and [x[0] for x in corr("PC RX")][-1] == fired[0] and len(corr("계정 rkim")) == 1
+
+
+def test_silenced_correlation_alert_does_not_block_after_the_silence(ctx, now):
+    """무음 중에 기록만 된 상관 알림은 무음이 끝난 뒤 새 단계가 더해지면 재알림 간격을 기다리지 않는다(건수 규칙과 같게). 점검 중의 알림만으로는
+    다시 울리지 않는다 (검토에서 재현)."""
+    admin = ctx["admin"]
+    [(silence,)] = sql("INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by)"
+                       " VALUES (%s, 'PC SRV-S', %s, %s, '점검', 'admin') RETURNING id",
+                       (CORR, now - timedelta(hours=2), now - timedelta(minutes=5)))
+    for minutes, rule, tag in ((-50, "대입", "MITRE T1110"), (-40, "새 서비스", "MITRE T1543.003"), (-30, "로그 삭제", "MITRE T1070.001")):
+        put(now, rule, minutes, [tag], hosts=["SRV-S"])
+    [quiet] = evaluate(admin, now - timedelta(minutes=25))
+    assert sql("SELECT silence_id FROM alerts WHERE id = %s", (quiet,)) == [(silence,)]
+    assert evaluate(admin, now - timedelta(minutes=3)) == []     # 무음이 끝났지만 새 단계 없음
+    put(now, "예약 작업", -2, ["MITRE T1053.005"], hosts=["SRV-S"])
+    put(now, "PowerShell", -1, ["MITRE T1059.001"], hosts=["SRV-S"])
+    [again] = evaluate(admin, now)
+    [(_, payload, *_)] = [x for x in corr("PC SRV-S") if x[0] == again]
+    assert payload["previous_id"] == quiet and payload["recurred"] is False
