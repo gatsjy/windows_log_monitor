@@ -1054,6 +1054,7 @@ def test_budget_stays_under_slow_threshold():
 def test_new_source_learns_forward_from_its_own_first_log(client):
     """새로 모으기 시작한 소스의 규칙: DB 의 다른 소스가 오래됐어도 그 소스를 처음 받은 때부터 배우는 기간을 채운다(재현: 바로 알림)."""
     two_hours_ago = datetime.now(UTC) - timedelta(hours=2)
+    stream_since("winevtlog", datetime.now(UTC) - timedelta(days=30), host="DC-01")   # 표가 아는 때: 30일 전부터
     stream_since("mssql", two_hours_ago)                  # 두 시간 전에 모으기 시작
     ev("batch", "10.80.0.1", 4880, at=two_hours_ago, source="mssql")
     rule = own_rule("새 소스", 4880, seed=False, match='{ source: mssql, event_id: "4880" }')
@@ -1079,6 +1080,7 @@ def test_first_fit_survives_condition_change_during_first_backfill(client, monke
     from app.alerts import newterms
 
     two_hours_ago = datetime.now(UTC) - timedelta(hours=2)
+    stream_since("winevtlog", datetime.now(UTC) - timedelta(days=30), host="DC-01")
     stream_since("oracle", two_hours_ago)
     ev("app", "10.86.0.1", 4886, at=two_hours_ago, source="oracle")
     rule = own_rule("처음 중 바꿈", 4886, seed=False, match='{ source: oracle, event_id: "4886" }')
@@ -1086,8 +1088,9 @@ def test_first_fit_survives_condition_change_during_first_backfill(client, monke
     evaluate(client, rule)                                # 처음 거슬러 배우기가 남은 채로
     monkeypatch.undo()
     rule = own_rule("처음 중 바꿈", 4886, seed=False, match='{ source: oracle, event_id: "4886,4887" }')
+    newterms._fit_checked.clear()
     evaluate(client, rule)
-    assert sql("SELECT relearn_reason FROM new_terms_state WHERE rule_key = 'name:처음 중 바꿈'") == [("처음 · 조건 바뀜",)]
+    assert sql("SELECT relearn_reason, fit_pending FROM new_terms_state WHERE rule_key = 'name:처음 중 바꿈'") == [("조건 바뀜", False)]
     ev("weekly", "10.86.0.2", 4886, source="oracle")
     assert evaluate(client, rule)[0] == []
 
@@ -1104,3 +1107,54 @@ def test_sid_change_moves_state(client):
     assert r.status_code == 200, r.text
     assert sql("SELECT id FROM new_terms_state WHERE rule_key = 'sid:1009301'") == [(ns,)]
     assert sql("SELECT count(*) FROM new_terms_state WHERE id = %s", (stale,)) == [(0,)]
+
+
+# ---------------------------------------------------------------- 10차 검토 보완
+def test_host_scoped_rule_for_new_server_learns_forward(client):
+    """같은 소스의 다른 서버를 오래 모아 왔어도 규칙이 보는 PC 를 오늘 연결했으면 그때부터 배운다(재현: 바로 알림)."""
+    from app.alerts import newterms
+
+    stream_since("mssql", datetime.now(UTC) - timedelta(days=30), host="PACS-DB")
+    two_hours_ago = datetime.now(UTC) - timedelta(hours=2)
+    stream_since("mssql", two_hours_ago, host="EMR-DB2")
+    ev("app", "10.90.0.1", 4890, host="EMR-DB2", at=two_hours_ago, source="mssql")
+    rule = own_rule("새 서버", 4890, seed=False, match='{ host: EMR-DB2, source: mssql, event_id: "4890" }')
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    ev("batch", "10.90.0.2", 4890, host="EMR-DB2", source="mssql")
+    assert evaluate(client, rule)[0] == []
+    [(until,)] = sql("SELECT learn_until FROM new_terms_state WHERE rule_key = 'name:새 서버'")
+    assert until > datetime.now(UTC) + timedelta(hours=20)
+
+
+def test_long_learn_on_old_source_after_stream_purge_alerts(client):
+    """수집 PC 표(agent_streams)는 35일만 둔다 — 그보다 긴 learn 에서 오래 모아 온 소스를 '새 소스'로 보지 않는다(재현: 몇 주 침묵)."""
+    from app.alerts import newterms
+
+    sql("DELETE FROM agent_streams")
+    stream_since("syslog", datetime.now(UTC) - timedelta(days=35), host="FW-01")   # 정리 뒤 남은 가장 이른 날
+    rule = own_rule("긴 배우기", 4891, seed=False, learn="20d", history="30d", match='{ source: syslog, event_id: "4891" }')
+    ev("seed", "10.91.0.1", 4891, host="FW-01", at=datetime.now(UTC) - timedelta(days=25), source="syslog")
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    ev("attacker", "203.0.113.91", 4891, host="FW-01", source="syslog")
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1
+
+
+def test_rule_created_before_its_source_learns_when_source_arrives(client):
+    """규칙을 먼저 만들고 에이전트를 나중에 설치: 그 소스가 들어오는 때부터 배운다(재현: 정상 값이 모두 알림)."""
+    from app.alerts import newterms
+
+    stream_since("winevtlog", datetime.now(UTC) - timedelta(days=30), host="DC-01")
+    rule = own_rule("소스 전에 만든 규칙", 4892, seed=False, match='{ source: pacs, event_id: "4892" }')
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    assert sql("SELECT fit_pending FROM new_terms_state WHERE rule_key = 'name:소스 전에 만든 규칙'") == [(True,)]
+    sql("UPDATE new_terms_state SET learn_until = now() - interval '1 minute' WHERE rule_key = 'name:소스 전에 만든 규칙'")
+    stream_since("pacs", datetime.now(UTC), host="PACS-01")       # 이제 연결
+    for i in range(3):
+        ev(f"svc{i}", "10.92.0.1", 4892, host="PACS-01", source="pacs")
+    newterms._fit_checked.clear()
+    assert evaluate(client, rule)[0] == []
+    assert sql("SELECT fit_pending FROM new_terms_state WHERE rule_key = 'name:소스 전에 만든 규칙'") == [(False,)]

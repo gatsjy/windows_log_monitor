@@ -1068,14 +1068,14 @@ async def new_terms_state(rule_key: str, fields: list[str]) -> dict[str, Any] | 
 async def create_new_terms_state(rule_key: str, fields: list[str], filter_sig: str, cursor_at: datetime, learn_until: datetime,
                                  backfill_from: datetime | None, backfill_to: datetime | None, reason: str) -> dict[str, Any]:
     row = await db.fetch_one(
-        "INSERT INTO new_terms_state (rule_key, fields, filter_sig, cursor_at, learn_until, backfill_from, backfill_to, relearn_reason)"
-        " VALUES (%s, %s::text[], %s, %s, %s, %s, %s, %s) ON CONFLICT (rule_key, fields) DO NOTHING RETURNING *",
+        "INSERT INTO new_terms_state (rule_key, fields, filter_sig, cursor_at, learn_until, backfill_from, backfill_to, relearn_reason,"
+        " fit_pending) VALUES (%s, %s::text[], %s, %s, %s, %s, %s, %s, true) ON CONFLICT (rule_key, fields) DO NOTHING RETURNING *",
         (rule_key, fields, filter_sig, cursor_at, learn_until, backfill_from, backfill_to, reason))
     return row or await new_terms_state(rule_key, fields)
 
 
 NEW_TERMS_STATE_COLUMNS = frozenset({"filter_sig", "cursor_at", "learn_until", "backfill_from", "backfill_to", "chunk_sec",
-                                     "relearn_reason", "overflow_n", "learn_dropped"})
+                                     "relearn_reason", "overflow_n", "learn_dropped", "fit_pending"})
 
 
 async def update_new_terms_state(ns: int, **values: Any) -> None:
@@ -1086,26 +1086,31 @@ async def update_new_terms_state(ns: int, **values: Any) -> None:
                        [*values.values(), ns])
 
 
-async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, start: datetime, now: datetime) -> None:
-    """처음 켠 규칙의 거슬러 배우기가 끝났을 때: 규칙이 보는 **소스**(source·channel 조건)를 배우는 기간의 시작(start)보다 늦게 모으기
-    시작했으면 배우는 기간을 그 소스를 처음 받은 때부터로 맞춘다 — DB 전체에서 가장 오래된 로그로 정하면 어제 연결한 MSSQL 의 규칙은
-    하루 치만 배우고 바로 알렸다(검토에서 재현). 규칙에 맞는 로그로 정하면 오래 모아 온 소스의 드문 이벤트 규칙(7045 새 서비스)이
-    '새 소스'가 되어 공격자의 첫 서비스를 배운 값으로 삼켰다(검토에서 재현) — 그래서 소스를 처음 받은 때(agent_streams)로 본다.
-    규칙이 소스·채널을 정하지 않으면 알 수 없어 예전처럼(DB 전체 기준). 그동안 알릴 차례가 된 값 중 맞춘 기간 안의 것은 배운 것으로."""
-    if not f.sources and not f.channels:
-        return
+async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, start: datetime) -> bool:
+    """배우는 기간을 규칙이 보는 소스(source·channel·PC 조건)를 처음 받은 때에 맞춘다 (B-47, ADR-063 22). 끝났으면 True, 그 소스가 아직
+    들어오지 않아 나중에 다시 볼 것이면 False.
+    - DB 전체에서 가장 오래된 로그로 정하면 어제 연결한 MSSQL·서버의 규칙이 하루 치만 배우고 바로 알렸다(검토에서 재현).
+    - 규칙에 맞는 로그로 정하면 오래 모아 온 소스의 드문 이벤트 규칙(7045)이 '새 소스'가 되어 첫 공격을 배운 값으로 삼켰다(재현).
+    - 그 소스를 처음 받은 때는 agent_streams 로 보되, 그 표가 아는 가장 이른 날(정리 35일·올린 날)과 거의 같으면 실제 시작을 모르는 것이라
+      예전부터 모아 온 것으로 본다(그렇지 않으면 오래 모아 온 소스가 매번 '새 소스'가 되어 배우기만 했다 — 재현).
+    소스·채널·PC 를 정하지 않은 규칙은 알 수 없어 예전처럼(DB 전체 기준)."""
+    if not f.sources and not f.channels and not f.hosts:
+        return True
+    known = (await db.fetch_one("SELECT min(day) AS d FROM agent_streams"))["d"]
     row = await db.fetch_one(
         "SELECT min(first_at) AS first FROM agent_streams WHERE (cardinality(%s::text[]) = 0 OR source = ANY(%s))"
-        " AND (cardinality(%s::text[]) = 0 OR lower(channel) = ANY(%s))",
-        (f.sources, f.sources, f.channels, [c.lower() for c in f.channels]))
+        " AND (cardinality(%s::text[]) = 0 OR lower(channel) = ANY(%s)) AND (cardinality(%s::text[]) = 0 OR host = ANY(%s))",
+        (f.sources, f.sources, f.channels, [c.lower() for c in f.channels], f.hosts, f.hosts))
     first = row["first"] if row else None
-    if first is not None and first < start:
-        return   # 그 전부터 모아 온 소스 — DB 에 있는 만큼 배웠다
-    until = (first or now) + learn
+    if first is None:
+        return False   # 아직 그 소스를 받지 않았다 — 들어오면 그때부터 배운다
+    if first < start or known is None or first.date() <= known + timedelta(days=1):
+        return True    # 배우는 기간 전부터(또는 표가 알 수 있는 때부터) 모아 온 소스 — DB 에 있는 만큼 배웠다
     await db.fetch_all(
         "WITH u AS (UPDATE new_terms_state SET learn_until = GREATEST(learn_until, %s) WHERE id = %s RETURNING learn_until)"
         " UPDATE seen_terms SET state = 'learned' WHERE ns = %s AND state = 'pending' AND first_seen < (SELECT learn_until FROM u)"
-        " RETURNING ns", (until, ns, ns))
+        " RETURNING ns", (first + learn, ns, ns))
+    return True
 
 
 async def drop_new_terms_states(rule_key: str) -> int:

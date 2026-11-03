@@ -46,6 +46,8 @@ _spread_checked: dict[int, datetime] = {}   # 알림 번호 → 마지막으로 
 _spread_timeouts: dict[int, int] = {}       # 번짐 확인이 시간 초과로 건너뛴 수 (규칙 상태에 보임)
 _spread_deferred: dict[int, set[int]] = {}  # 번짐 확인이 시간 초과 난 알림 — 다음 차례에 맨 뒤로
 _purged: dict[int, datetime] = {}       # 메모리 (워커 1개) — 다시 시작하면 한 번 더 지울 뿐
+FIT_EVERY = timedelta(minutes=1)        # 규칙이 보는 소스가 아직 안 들어왔을 때 다시 보는 간격
+_fit_checked: dict[int, datetime] = {}
 _ceiling: dict[int, int] = {}           # 시간 초과가 난 구간 크기 — 다시 그만큼 키우지 않는다 (다시 시작하면 한 번 더 겪을 뿐)
 
 
@@ -64,16 +66,6 @@ def _budget() -> float:
     from ..config import settings
 
     return min(SCAN_BUDGET_SEC, max(5, settings.alert_rule_timeout_sec * 0.5) * 0.6)
-
-
-def _first(state: dict[str, Any]) -> bool:
-    """처음 거슬러 배우기가 아직 끝나지 않았나 — 조건 바뀜·멈춤·상한 올림으로 다시 배우게 돼도 '처음'을 앞에 남겨, 끝났을 때 배우는 기간
-    맞추기(fit_first_learning)를 건너뛰지 않게(건너뛰면 어제 연결한 소스의 규칙이 바로 알렸다, 검토에서 재현)."""
-    return (state["relearn_reason"] or "").startswith("처음")
-
-
-def _reason(state: dict[str, Any], reason: str) -> str:
-    return f"처음 · {reason}" if state["backfill_to"] is not None and _first(state) else reason
 
 
 def _clamp_chunk(sec: float) -> int:
@@ -107,8 +99,8 @@ async def _state(rule: Rule, saved: str | None, now: datetime) -> dict[str, Any]
             frm = min(frm, state["backfill_from"])
         await repository.update_new_terms_state(state["id"], filter_sig=sig, cursor_at=now, backfill_from=frm, backfill_to=now,
                                                 learn_until=max(state["learn_until"], now),
-                                                relearn_reason=_reason(state, f"{(now - state['cursor_at']).days}일 멈춤"
-                                                                       + (" · 조건 바뀜" if changed else "")))
+                                                relearn_reason=f"{(now - state['cursor_at']).days}일 멈춤" + (" · 조건 바뀜" if changed else ""),
+                                                **({"fit_pending": True} if changed else {}))
         return await repository.new_terms_state(key, fields)
     if state["filter_sig"] != sig:
         # 조건이 바뀜: 본 값은 두고 새 조건으로 이미 훑은 곳(cursor_at)까지 다시 거슬러 배운다(그동안 알림은 미룸). 아직 훑지 않은
@@ -120,7 +112,7 @@ async def _state(rule: Rule, saved: str | None, now: datetime) -> dict[str, Any]
             frm = min(frm, state["backfill_from"])
         await repository.update_new_terms_state(state["id"], filter_sig=sig, backfill_from=min(frm, to), backfill_to=to,
                                                 learn_until=max(state["learn_until"], state["cursor_at"]),
-                                                relearn_reason=_reason(state, "조건 바뀜"))
+                                                relearn_reason="조건 바뀜", fit_pending=True)
         return await repository.new_terms_state(key, fields)
     return state
 
@@ -150,7 +142,7 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
             if state["backfill_to"] is not None and state["backfill_from"] is not None:
                 frm, end = min(frm, state["backfill_from"]), max(end, state["backfill_to"])
             if frm < end:
-                relearn = {"backfill_from": frm, "backfill_to": end, "relearn_reason": _reason(state, "상한 올림")}
+                relearn = {"backfill_from": frm, "backfill_to": end, "relearn_reason": "상한 올림"}
         await repository.update_new_terms_state(ns, overflow_n=0, learn_dropped=False, **relearn)
         if relearn:
             state = await repository.new_terms_state(rule_key(rule), fields)
@@ -194,11 +186,13 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
         backfilling = to > frm
     await repository.update_new_terms_state(ns, chunk_sec=chunk,
                                             **({} if backfilling else {"backfill_to": None, "backfill_from": None}))
-    if state["backfill_to"] is not None and not backfilling and _first(state):
-        # 처음 켠 규칙: 소스를 늦게 모으기 시작했으면 배우는 기간을 그때부터로(DB 전체의 가장 오래된 로그가 아니라) — 알리기 전에.
-        # 시간 초과면 예전처럼(DB 전체 기준)
+    if state["fit_pending"] and not backfilling and now - _fit_checked.get(ns, now - FIT_EVERY) >= FIT_EVERY:
+        # 처음 켰거나 조건을 바꾼 규칙: 그 소스를 늦게 모으기 시작했으면 배우는 기간을 그때부터로 — 알리기 전에. 그 소스가 아직 안
+        # 들어왔으면 1분마다 다시 본다(들어오는 때부터 배운다). 시간 초과면 다음에
+        _fit_checked[ns] = now
         try:
-            await repository.fit_first_learning(ns, base, rule.learn, state["backfill_from"], now)
+            if await repository.fit_first_learning(ns, base, rule.learn, state["backfill_from"] or state["learn_until"] - rule.learn):
+                await repository.update_new_terms_state(ns, fit_pending=False)
         except db.QueryTimeout:
             pass
     if (last := _purged.get(ns)) is None or now - last > PURGE_EVERY:
