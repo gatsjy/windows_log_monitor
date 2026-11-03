@@ -1332,3 +1332,58 @@ def test_condition_edit_after_retention_moved_first_log(client):
     ev("attacker", "203.0.113.17", 4917)
     fired, _ = evaluate(client, rule)
     assert len(fired) == 1
+
+
+# ---------------------------------------------------------------- 16차 검토 보완
+def test_cap_during_condition_relearn_relearns_dropped_range(client):
+    """조건을 넓혀 다시 배우다 상한에 닿고 상한을 올리면 넘친 그 구간을 다시 배운다(재현: 엉뚱한 구간이라 늘 보이던 값이 알림)."""
+    from app.alerts.newterms import CappedError
+
+    ev("old", "10.50.0.1", 4950, at=datetime.now(UTC) - timedelta(days=25))
+    rule = own_rule("넓혀 넘침", 4950, seed=False, max_terms=100)
+    evaluate(client, rule)
+    sql("UPDATE new_terms_state SET learn_until = now() - interval '10 days', learn_from = now() - interval '11 days'"
+        " WHERE rule_key = 'name:넓혀 넘침'")
+    for i in range(110):
+        ev(f"usual{i}", "10.51.0.1", 4951, at=datetime.now(UTC) - timedelta(hours=2))
+    rule = own_rule("넓혀 넘침", 4950, seed=False, max_terms=100, match='{ event_id: "4950,4951" }')
+    with pytest.raises(CappedError):
+        evaluate(client, rule)
+    rule = own_rule("넓혀 넘침", 4950, seed=False, max_terms=1000, match='{ event_id: "4950,4951" }')
+    evaluate(client, rule)
+    evaluate(client, rule)
+    for i in range(110):
+        ev(f"usual{i}", "10.51.0.1", 4951)
+    assert evaluate(client, rule)[0] == []
+
+
+def test_raising_learn_during_backfill_widens_it(client, monkeypatch):
+    """거슬러 배우는 중에 learn 을 늘리면 그만큼 더 거슬러 배운다(재현: 늘린 기간에 본 값이 '처음 보는 값')."""
+    from app.alerts import newterms
+
+    ev("old", "10.52.0.9", 4952, at=datetime.now(UTC) - timedelta(days=10))
+    ev("monthly", "10.52.0.1", 4952, at=datetime.now(UTC) - timedelta(days=3))
+    monkeypatch.setattr(newterms, "SCAN_BUDGET_SEC", 0)       # 처음 거슬러 배우기가 남은 채로
+    rule = own_rule("배우며 늘림", 4952, seed=False, learn="1d")
+    evaluate(client, rule)
+    monkeypatch.undo()
+    rule = own_rule("배우며 늘림", 4952, seed=False, learn="5d")
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    ev("monthly", "10.52.0.1", 4952)
+    assert evaluate(client, rule)[0] == []
+
+
+def test_re_registered_pc_is_not_new(client):
+    """수집 PC 목록에서 지웠다 다시 등록된 PC: 그 PC 의 더 오래된 로그가 있으면 '새로 연결'이 아니다(재현: learn 만큼 침묵)."""
+    from app.alerts import newterms
+
+    sql("DELETE FROM agents WHERE host = 'EMR-RR'")
+    sql("INSERT INTO agents (host, first_seen) VALUES ('EMR-RR', now() - interval '1 hour')")   # 다시 등록
+    ev("app", "10.53.0.1", 4953, host="EMR-RR", at=datetime.now(UTC) - timedelta(days=5))
+    rule = own_rule("다시 등록", 4953, seed=False, match='{ host: EMR-RR, event_id: "4953" }')
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    ev("attacker", "203.0.113.53", 4953, host="EMR-RR")
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1

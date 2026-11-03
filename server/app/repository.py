@@ -1077,7 +1077,8 @@ async def create_new_terms_state(rule_key: str, fields: list[str], filter_sig: s
 
 
 NEW_TERMS_STATE_COLUMNS = frozenset({"filter_sig", "cursor_at", "learn_until", "backfill_from", "backfill_to", "chunk_sec",
-                                     "relearn_reason", "overflow_n", "learn_dropped", "fit_pending", "learn_from", "learn_sec"})
+                                     "relearn_reason", "overflow_n", "learn_dropped", "fit_pending", "learn_from", "learn_sec",
+                                     "dropped_from", "dropped_to"})
 
 
 async def update_new_terms_state(ns: int, **values: Any) -> None:
@@ -1094,7 +1095,7 @@ async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, anchor: 
     조건을 바꿔도 이미 배운 소스면 다시 늘지 않는다(늘리면 조건 한 줄 고친 뒤 몇 주 동안 새 값을 배운 값으로 삼켰다, 검토에서 재현).
     연결된 때:
     - 소스·PC 를 정하지 않은 규칙(채널만 정한 규칙 포함): DB 전체의 첫 로그 — 비었으면(새로 설치) 들어올 때까지 기다린다.
-    - PC 만: 그 PC 를 처음 받은 때(agents.first_seen — 지우지 않는 표). 채널은 보지 않는다 — 오래 연결된 PC 의 조용한 채널을 '새로
+    - PC 만: 그 PC 를 처음 받은 때(agents.first_seen — 목록에서 지웠다 다시 등록됐으면 그 PC 의 더 오래된 로그로 가린다). 채널은 보지 않는다 — 오래 연결된 PC 의 조용한 채널을 '새로
       연결'로 보면 그 채널의 첫 접속(공격자일 수도)을 배운 값으로 삼켰다(검토에서 재현).
     - 소스: 그 소스(정한 PC 안)를 처음 받은 때(agent_streams). 그 표는 35일만 두고 018 전의 것은 없으니, 표가 아는 가장 이른 날과 같고
       DB 에 그보다 오래된 로그가 있으면 실제 시작을 모르는 것이라 예전부터로 본다(새로 설치한 서버는 그 날이 수집의 시작이라 그대로).
@@ -1103,6 +1104,9 @@ async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, anchor: 
         first = await oldest_received()
     elif not f.sources:
         first = (await db.fetch_one("SELECT min(first_seen) AS first FROM agents WHERE host = ANY(%s)", (f.hosts,)))["first"]
+        # 수집 PC 목록에서 지웠다 다시 등록되면 first_seen 이 새로 시작한다 — 그 PC 의 로그가 그보다 하루 넘게 먼저 있으면 예전부터(재현)
+        if first is not None and await _logs_before(EventFilter(hosts=list(f.hosts)), first):
+            return True
     else:
         first = (await db.fetch_one(
             "SELECT min(first_at) AS first FROM agent_streams WHERE source = ANY(%s) AND (cardinality(%s::text[]) = 0 OR host = ANY(%s))",
@@ -1112,22 +1116,26 @@ async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, anchor: 
             oldest = await oldest_received()
             if oldest is not None and oldest < datetime.combine(known, datetime.min.time(), UTC) - timedelta(days=1):
                 return True
-        if first is not None:
-            # 그 소스(정한 PC 안)의 로그가 표의 첫 줄보다 하루 넘게 먼저 있으면 예전부터 — 표의 앞쪽에 빈 날(주말·장애)이 있으면 오래 모아
-            # 온 소스가 '새로 연결'이 되어 몇 주 배우기만 했다(검토에서 재현). 시간 초과면 예전부터로(놓치는 쪽보다 알림)
-            where, params = where_clause(EventFilter(sources=list(f.sources), hosts=list(f.hosts),
-                                                     received_before=first - timedelta(days=1)))
-            try:
-                if await db.fetch_one(sql.SQL("SELECT 1 AS x FROM events WHERE {} LIMIT 1").format(where), params):
-                    return True
-            except db.QueryTimeout:
-                return True
+        # 그 소스(정한 PC 안)의 로그가 표의 첫 줄보다 하루 넘게 먼저 있으면 예전부터 — 표의 앞쪽에 빈 날(주말·장애)이 있으면 오래 모아
+        # 온 소스가 '새로 연결'이 되어 몇 주 배우기만 했다(검토에서 재현)
+        if first is not None and await _logs_before(EventFilter(sources=list(f.sources), hosts=list(f.hosts)), first):
+            return True
     if first is None:
         return False   # 아직 연결되지 않았다 — 들어오면 그때부터 배운다
     if first <= anchor:
         return True    # 지금 배우는 기간이 시작되기 전부터 연결돼 있었다 — DB 에 있는 만큼 배웠다
     await _fit_learning(ns, first, learn)
     return True
+
+
+async def _logs_before(f: EventFilter, first: datetime) -> bool:
+    """f(소스·PC)의 로그가 first 보다 하루 넘게 먼저 있나 — 표(agent_streams·agents)의 첫 시각이 실제 연결보다 늦은 경우를 가린다.
+    시간 초과면 있다고 본다(예전부터 → 앞으로 배우지 않음: 놓치는 쪽보다 알림)."""
+    where, params = where_clause(replace(f, received_before=first - timedelta(days=1)))
+    try:
+        return bool(await db.fetch_one(sql.SQL("SELECT 1 AS x FROM events WHERE {} LIMIT 1").format(where), params))
+    except db.QueryTimeout:
+        return True
 
 
 async def _fit_learning(ns: int, first: datetime, learn: timedelta) -> None:
@@ -1222,6 +1230,8 @@ WITH t AS (
   UPDATE new_terms_state SET terms_n = terms_n + (SELECT count(*) FROM ins WHERE inserted),
     overflow_n = overflow_n + (SELECT count(*) FROM w WHERE over AND frx >= %s),
     learn_dropped = learn_dropped OR EXISTS (SELECT 1 FROM w WHERE over AND new_state = 'learned'),
+    dropped_from = LEAST(dropped_from, (SELECT min(frx) FROM w WHERE over AND new_state = 'learned')),
+    dropped_to = GREATEST(dropped_to, (SELECT max(lrx) FROM w WHERE over AND new_state = 'learned')),
     cursor_at = COALESCE(%s, cursor_at), updated_at = now()
   WHERE id = %s RETURNING terms_n, overflow_n
 )

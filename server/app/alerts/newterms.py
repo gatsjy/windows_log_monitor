@@ -91,10 +91,18 @@ async def _state(rule: Rule, saved: str | None, now: datetime) -> dict[str, Any]
     learn_sec = int(rule.learn.total_seconds())
     if state["learn_sec"] != learn_sec:
         # learn 을 바꿈: 배우는 중이면 시작(learn_from)부터 새 길이로 줄이거나 늘린다 — 처음 정한 끝이 그대로면 learn 을 고쳐도 '배우는
-        # 중'이 이어졌다(검토에서 재현). 이미 끝났으면 다시 배우지 않는다(값을 지우지 않으니 늘려도 덜 새로워질 뿐). 예전 상태(NULL)는 채우기만
-        frm = state["learn_from"] or state["learn_until"] - (timedelta(seconds=state["learn_sec"]) if state["learn_sec"] else rule.learn)
+        # 중'이 이어졌다(검토에서 재현). 이미 끝났으면 다시 배우지 않는다(값을 지우지 않으니 늘려도 덜 새로워질 뿐). 예전 상태(NULL)는 채우기만.
+        # 거슬러 배우는 중에 늘리면 그만큼 더 거슬러 배운다 — 그대로면 늘린 기간에 본 값이 '처음 보는 값'으로 알림이었다(재현)
+        old = timedelta(seconds=state["learn_sec"]) if state["learn_sec"] else rule.learn
+        frm = state["learn_from"] or state["learn_until"] - old
         values: dict[str, Any] = {"learn_sec": learn_sec, "learn_from": frm}
-        if state["learn_sec"] is not None and state["learn_until"] > now:
+        if state["learn_sec"] is not None and state["backfill_to"] is not None and rule.learn > old:
+            values["backfill_from"] = max(state["backfill_from"] - (rule.learn - old), oldest)
+            if state["relearn_reason"] == "처음":   # 처음 켤 때와 같게: DB 가 새 길이보다 짧으면 모자란 만큼 앞으로
+                start = max(state["backfill_to"] - rule.learn, oldest)
+                values["learn_from"] = start
+                values["learn_until"] = max(state["learn_until"], start + rule.learn)
+        elif state["learn_sec"] is not None and state["learn_until"] > now:
             values["learn_until"] = frm + rule.learn
         await repository.update_new_terms_state(state["id"], **values)
         state = await repository.new_terms_state(key, fields)
@@ -146,17 +154,21 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
         # 못한 채 두지 못한 값이 조용히 사라졌고(검토에서 재현), 끝없이 누적하면 상한을 올려도 오류가 영영 남았다
         relearn = {}
         if state["learn_dropped"]:
-            # 배우는 동안 두지 못한 값이 있었다 — 배우는 기간을 다시 거슬러 배운다(그동안 알림은 미룸). 하지 않으면 늘 보이던 값이 상한을
-            # 올린 뒤 '처음 보는 값'으로 거짓 알림이 됐다(검토에서 재현). 배운 뒤에 두지 못한 값(알렸어야 할 것)은 그 기간 밖이라 다시 보면 새 값
-            # history 보다 오래된 구간은 다시 배우지 않는다 — 그 값은 다시 보이면 새 값이 맞고, 다시 넣으면 정리가 지워 자리가 생겨
-            # 6시간마다 다시 배우기를 되풀이했다(검토에서 재현)
-            end = min(state["learn_until"], state["cursor_at"])
-            frm = max(end - rule.learn, await repository.oldest_received() or end, state["cursor_at"] - rule.history)
+            # 배우는 동안 두지 못한 값이 있었다 — 그 구간(dropped_from~to, 마이그레이션 045)을 다시 거슬러 배운다(그동안 알림은 미룸). 하지
+            # 않으면 늘 보이던 값이 상한을 올린 뒤 '처음 보는 값'으로 거짓 알림이 됐다(검토에서 재현). 배운 뒤에 두지 못한 값(알렸어야 할
+            # 것)은 그 구간 밖이라 다시 보면 새 값. history 보다 오래된 구간은 다시 배우지 않는다 — 그 값은 다시 보이면 새 값이 맞고, 다시
+            # 넣으면 정리가 지워 자리가 생겨 6시간마다 다시 배우기를 되풀이했다(검토에서 재현). 예전 상태(구간 없음)는 배우는 기간으로 짐작
+            if state["dropped_to"] is not None and state["dropped_from"] is not None:
+                end = state["dropped_to"] + timedelta(seconds=1)
+                frm = max(state["dropped_from"], await repository.oldest_received() or end, state["cursor_at"] - rule.history)
+            else:
+                end = min(state["learn_until"], state["cursor_at"])
+                frm = max(end - rule.learn, await repository.oldest_received() or end, state["cursor_at"] - rule.history)
             if state["backfill_to"] is not None and state["backfill_from"] is not None:
                 frm, end = min(frm, state["backfill_from"]), max(end, state["backfill_to"])
             if frm < end:
                 relearn = {"backfill_from": frm, "backfill_to": end, "relearn_reason": "상한 올림"}
-        await repository.update_new_terms_state(ns, overflow_n=0, learn_dropped=False, **relearn)
+        await repository.update_new_terms_state(ns, overflow_n=0, learn_dropped=False, dropped_from=None, dropped_to=None, **relearn)
         if relearn:
             state = await repository.new_terms_state(rule_key(rule), fields)
 
