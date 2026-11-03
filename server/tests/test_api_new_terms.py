@@ -238,10 +238,16 @@ def own_rule(name, event_id, *, fields="[account, ip]", burst=20, max_terms=5000
     return next(r for r in engine.config.rules if r.name == name)
 
 
-def ev(user, ip, event_id, host="DC-01", at=None, raw="{}"):
+def ev(user, ip, event_id, host="DC-01", at=None, raw="{}", source="winevtlog"):
     at = at or datetime.now(UTC)
     sql("INSERT INTO events (received_at, ts, host, source, category, event_id, level, username, src_ip, message, raw)"
-        " VALUES (%s, %s, %s, 'winevtlog', 'security', %s, 4, %s, %s, '로그온', %s::jsonb)", (at, at, host, event_id, user, ip, raw))
+        " VALUES (%s, %s, %s, %s, 'security', %s, 4, %s, %s, '로그온', %s::jsonb)", (at, at, host, source, event_id, user, ip, raw))
+
+
+def stream_since(source, at, host="DB-01"):
+    """그 소스를 처음 받은 때 (agent_streams — 수집 경로가 채우는 표, 시험에서는 직접)."""
+    sql("INSERT INTO agent_streams (host, source, channel, day, n, first_at, last_at) VALUES (%s, %s, '', %s::date, 1, %s, now())"
+        " ON CONFLICT DO NOTHING", (host, source, at, at))
 
 
 def state_of(name):
@@ -352,7 +358,7 @@ def test_catchup_keeps_unfinished_relearn(client, monkeypatch):
     monkeypatch.setattr(newterms, "SCAN_BUDGET_SEC", 0)
     evaluate(client, rule)
     [(frm, reason)] = sql("SELECT backfill_from, relearn_reason FROM new_terms_state WHERE id = %s", (ns,))
-    assert frm < datetime.now(UTC) - timedelta(days=9) and reason == "4일 멈춤"
+    assert frm < datetime.now(UTC) - timedelta(days=9) and reason.endswith("4일 멈춤")   # 처음 거슬러 배우던 중이면 '처음 · ' 이 앞에
 
 
 def test_first_host_is_first_event_and_silence_needs_every_host(client):
@@ -1046,14 +1052,44 @@ def test_budget_stays_under_slow_threshold():
 
 # ---------------------------------------------------------------- 8차 검토 보완
 def test_new_source_learns_forward_from_its_own_first_log(client):
-    """새로 모으기 시작한 소스의 규칙: DB 의 다른 소스가 오래됐어도 이 규칙의 로그가 있던 때부터 배우는 기간을 채운다(재현: 바로 알림)."""
-    ev("batch", "10.80.0.1", 4880, at=datetime.now(UTC) - timedelta(hours=2))   # 두 시간 전에 모으기 시작
-    rule = own_rule("새 소스", 4880, seed=False)
+    """새로 모으기 시작한 소스의 규칙: DB 의 다른 소스가 오래됐어도 그 소스를 처음 받은 때부터 배우는 기간을 채운다(재현: 바로 알림)."""
+    two_hours_ago = datetime.now(UTC) - timedelta(hours=2)
+    stream_since("mssql", two_hours_ago)                  # 두 시간 전에 모으기 시작
+    ev("batch", "10.80.0.1", 4880, at=two_hours_ago, source="mssql")
+    rule = own_rule("새 소스", 4880, seed=False, match='{ source: mssql, event_id: "4880" }')
     evaluate(client, rule)
-    ev("weekly", "10.80.0.2", 4880)                       # 배우는 하루 안 — 새 값이어도 알리지 않는다
+    ev("weekly", "10.80.0.2", 4880, source="mssql")       # 배우는 하루 안 — 새 값이어도 알리지 않는다
     assert evaluate(client, rule)[0] == []
     [(until,)] = sql("SELECT learn_until FROM new_terms_state WHERE rule_key = 'name:새 소스'")
     assert until > datetime.now(UTC) + timedelta(hours=20)
+
+
+def test_rare_event_rule_on_old_source_alerts_after_first_backfill(client):
+    """오래 모아 온 소스의 드문 이벤트 규칙(7045 새 서비스): 규칙에 맞는 로그가 없다고 '새 소스'로 보아 배우기를 늘리지 않는다(재현)."""
+    stream_since("winevtlog", datetime.now(UTC) - timedelta(days=60), host="SRV-01")
+    rule = own_rule("드문 이벤트", 4885, seed=False, match='{ source: winevtlog, event_id: "4885" }')
+    evaluate(client, rule)
+    ev("PSEXESVC", "10.85.0.1", 4885, host="SRV-01")
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1
+
+
+def test_first_fit_survives_condition_change_during_first_backfill(client, monkeypatch):
+    """처음 거슬러 배우는 중에 조건을 바꿔도 끝나면 배우는 기간을 맞춘다(재현: '조건 바뀜'이 '처음'을 덮어 건너뜀)."""
+    from app.alerts import newterms
+
+    two_hours_ago = datetime.now(UTC) - timedelta(hours=2)
+    stream_since("oracle", two_hours_ago)
+    ev("app", "10.86.0.1", 4886, at=two_hours_ago, source="oracle")
+    rule = own_rule("처음 중 바꿈", 4886, seed=False, match='{ source: oracle, event_id: "4886" }')
+    monkeypatch.setattr(newterms, "SCAN_BUDGET_SEC", 0)
+    evaluate(client, rule)                                # 처음 거슬러 배우기가 남은 채로
+    monkeypatch.undo()
+    rule = own_rule("처음 중 바꿈", 4886, seed=False, match='{ source: oracle, event_id: "4886,4887" }')
+    evaluate(client, rule)
+    assert sql("SELECT relearn_reason FROM new_terms_state WHERE rule_key = 'name:처음 중 바꿈'") == [("처음 · 조건 바뀜",)]
+    ev("weekly", "10.86.0.2", 4886, source="oracle")
+    assert evaluate(client, rule)[0] == []
 
 
 def test_sid_change_moves_state(client):
