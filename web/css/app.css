@@ -742,6 +742,16 @@ body.auth-open .app { visibility: hidden; }
 .pb-events { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12.5px; display: grid; gap: 2px; }
 .pb-events li { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pb-events li:hover { background: var(--accent-wash); }
+/* 관련 알림 (B-67) — 상세 패널은 좁아 표 대신 두 줄 목록. 개체 칩은 글자 그대로 이어 붙인다 */
+.entity-chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
+.entity-chip { color: var(--ink-2); text-decoration: none; }
+.entity-chip:hover { border-color: var(--accent); color: var(--accent); }
+.rel-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border); }
+.rel-list li { padding: 8px 6px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.rel-list li:hover { background: var(--surface-2); }
+.rel-head { display: flex; gap: 4px 8px; align-items: center; flex-wrap: wrap; }
+.rel-head .rel-status { margin-left: auto; }
+.rel-meta { margin-top: 3px; font-size: 12.5px; display: flex; gap: 2px 8px; align-items: center; flex-wrap: wrap; }
 .pb-answer { margin-top: 6px; display: flex; gap: 6px; }
 .pb-answer .input { flex: 1; min-width: 0; }
 /* 규칙 시험기 (B-52) */

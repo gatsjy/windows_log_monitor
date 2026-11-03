@@ -11,6 +11,7 @@ import * as agents from './views/agents.js';
 import * as alerts from './views/alerts.js';
 import * as audit from './views/audit.js';
 import * as dashboard from './views/dashboard.js';
+import * as entity from './views/entity.js';
 import * as events from './views/events.js';
 import * as fields from './views/fields.js';
 import * as live from './views/live.js';
@@ -20,7 +21,9 @@ import * as reports from './views/reports.js';
 import * as settingsView from './views/settings.js';
 import * as users from './views/users.js';
 
-const VIEWS = { dashboard, live, events, alerts, agents, fields, users, audit, reports, compliance, readiness, settings: settingsView };
+const VIEWS = { dashboard, live, events, alerts, agents, fields, users, audit, reports, compliance, readiness, entity, settings: settingsView };
+// 메뉴에 없는 화면의 상단 바 제목 (개체 페이지는 알림·로그 상세의 링크로만 연다, B-67)
+const VIEW_TITLES = { entity: '개체' };
 // 화면별 필요한 권한 ('admin' = 관리자만). 서버도 같은 권한으로 API 를 막는다
 const VIEW_PERMS = { users: 'admin', readiness: 'admin', audit: 'audit.view', reports: 'reports.view', compliance: 'reports.view', settings: 'settings.manage' };
 const allowedView = (name) => !VIEW_PERMS[name] || (VIEW_PERMS[name] === 'admin' ? auth.isAdmin() : auth.can(VIEW_PERMS[name]));
@@ -54,7 +57,7 @@ async function route() {
   if (denied) toast('이 화면을 볼 권한이 없습니다 — 관리자에게 요청하세요.', { type: 'error' });
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === name));
   const current = document.querySelector(`[data-nav="${name}"] span`);
-  document.getElementById('topbar-page').textContent = current ? current.textContent : '';
+  document.getElementById('topbar-page').textContent = current ? current.textContent : VIEW_TITLES[name] ?? '';
   setNavOpen(false);
   // 화면마다 새 그릇 — 첫 불러오기가 늦게 끝난 앞 화면(정리 함수를 아직 돌려주지 않음)이 새 화면을 덮어 그렸다(검토에서 재현).
   // 이제 앞 화면은 떼어 낸 제 그릇에만 그린다

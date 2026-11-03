@@ -6,7 +6,7 @@ import { EVENT_HEAD, bindRows, eventRow } from './eventtable.js';
 import { categoryLabel, levelLabel, severityBadge, sourceLabel } from './levels.js';
 import { describe } from './querybox.js';
 import { formatTerm, parseTerms } from './querylang.js';
-import { errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html, qs } from './util.js';
+import { ENTITY_LABELS, entityHash, errorBox, fmtDuration, fmtNum, fmtRelative, fmtTime, html, qs } from './util.js';
 
 const DELIVERY = {
   sent: ['✓', '전송됨'],
@@ -142,6 +142,71 @@ function termsBlock(t) {
 }
 
 /** 서버가 만든 링크(http://주소/#/events?...)를 현재 화면 기준 해시로 */
+// 알림의 개체 (B-67): 서버 종류(account) → 개체 페이지 종류(user)
+const ENTITY_KIND = { host: 'host', account: 'user', ip: 'ip' };
+
+/** 개체 칩 — 누르면 개체 페이지. entities = {host: [...], account: [...], ip: [...]} */
+export function entityChips(entities = {}) {
+  return html`${Object.entries(ENTITY_KIND).flatMap(([k, page]) => (entities[k] || []).map((v) => html`<a class="type-tag entity-chip"
+    href="${entityHash(page, v)}" title="${ENTITY_LABELS[page]} ${v} 의 알림·로그">${ENTITY_LABELS[page]} ${v}</a> `))}`;
+}
+
+/** 알림 짧은 표 (개체 페이지, B-67) — 행을 누르면 그 알림 상세(bindAlertRows) */
+export function alertRows(items) {
+  return html`<div class="table-wrap"><table class="table"><thead><tr><th>발생 시각</th><th>심각도</th><th>규칙</th><th>대상</th>
+    <th>처리 상태</th></tr></thead>
+    <tbody>${items.map((a) => html`<tr class="clickable" data-alert="${a.id}">
+      <td class="nowrap num">${fmtTime(a.fired_at)}</td><td class="nowrap">${severityBadge(a.severity)}</td><td>${a.rule}</td>
+      <td class="ink-2" style="overflow-wrap:anywhere">${a.group_key || '–'}${a.terms_host ? html` <span class="muted">· PC ${a.terms_host}</span>` : ''}</td>
+      <td class="nowrap">${statusChip(a)}</td></tr>`)}</tbody></table></div>`;
+}
+
+/** alertRows·관련 알림 목록의 행을 누르면 그 알림 상세 (칩 링크는 그대로 개체 페이지로) */
+export function bindAlertRows(el, onChange) {
+  el.addEventListener('click', (ev) => {
+    if (ev.target.closest('a')) return;
+    const row = ev.target.closest('[data-alert]');
+    if (row) openAlert(Number(row.dataset.alert), { onChange });
+  });
+}
+
+// 겹친 개체: 종류마다 두 개까지는 칩, 넘으면 '계정 7개'(값은 title) — 좁은 패널에서 칩이 줄줄이 늘어서지 않게
+function sharedSummary(a) {
+  return html`${Object.entries(ENTITY_KIND).map(([k, page]) => {
+    const values = a[`shared_${k}`] || [];
+    if (values.length <= 2) return entityChips({ [k]: values });
+    return html`<span class="type-tag" title="${values.join(', ')}">${ENTITY_LABELS[page]} ${fmtNum(values.length)}개</span> `;
+  })}`;
+}
+
+function relatedList(items) {
+  return html`<ul class="rel-list">${items.map((a) => html`<li data-alert="${a.id}" title="이 알림 상세">
+    <div class="rel-head">${severityBadge(a.severity)}<b>${a.rule}</b>${a.group_key ? html`<span class="muted">· ${a.group_key}</span>` : ''}
+      <span class="rel-status">${statusChip(a)}</span></div>
+    <div class="rel-meta"><span class="num muted">${fmtTime(a.fired_at)}</span><span class="muted">겹친 개체</span>${sharedSummary(a)}</div>
+  </li>`)}</ul>`;
+}
+
+/** 관련 알림 (B-67): 앞뒤 1시간 안에 같은 PC·계정·IP 가 걸린 다른 알림 — 규칙마다 흩어진 한 흐름을 한 곳에서 */
+async function relatedSection(box, alert, onChange) {
+  let res;
+  try {
+    res = await api.get(`/api/alerts/${alert.id}/related`);
+  } catch (err) {
+    box.innerHTML = errorBox(err);
+    return;
+  }
+  const e = res.entities;
+  if (!e.host.length && !e.account.length && !e.ip.length) {
+    box.innerHTML = html`<p class="muted" style="font-size:13px">이 알림에는 PC·계정·IP 가 없어 관련 알림을 찾지 않습니다.</p>`;
+    return;
+  }
+  box.innerHTML = res.items.length ? html`${relatedList(res.items)}
+    ${res.truncated ? html`<p class="muted" style="font-size:12.5px">앞에서부터 ${fmtNum(res.items.length)}건만 보입니다 — 개체 칩을 눌러 개체 페이지에서 모두 보세요.</p>` : ''}`
+    : html`<p class="muted" style="font-size:13px">앞뒤 ${fmtDuration(res.window_sec)} 안에 같은 PC·계정·IP 가 걸린 다른 알림이 없습니다.</p>`;
+  bindAlertRows(box, onChange);
+}
+
 export function linkHash(link) {
   const i = (link || '').indexOf('#');
   return i >= 0 ? link.slice(i) : '';
@@ -184,6 +249,7 @@ export async function openAlert(id, { onChange } = {}) {
     // 내장 알림(설정 변경·알림 기능 문제, ADR-043·045): 설명 첫 줄이 요약, 나머지가 내용. 알림 기능 문제는 무음으로 막을 수 있다
     const builtin = config || p.kind === 'system';
     const [configSummary, ...configLines] = builtin ? (p.description || '').split('\n') : [];
+    const entities = !!(alert.entity_hosts?.length || alert.entity_accounts?.length || alert.entity_ips?.length);
     body.innerHTML = html`
       <div class="toolbar" style="margin-bottom:6px">${severityBadge(alert.severity)}<b>${alert.rule}</b>
         ${alert.group_key ? html`<span class="muted">· ${alert.group_key}</span>` : ''}</div>
@@ -226,10 +292,14 @@ export async function openAlert(id, { onChange } = {}) {
         ${alert.first_event_at ? html`<dt>이벤트 시각</dt><dd>${fmtTime(alert.first_event_at)} ~ ${fmtTime(alert.last_event_at, { date: false })}</dd>` : ''}
         ${p.kind === 'agent_silent' || p.kind === 'stream_silent' ? html`<dt>마지막 수신</dt><dd>${fmtTime(alert.last_event_at)}</dd>` : ''}
         <dt>알림 번호</dt><dd class="num">#${alert.id}</dd>
+        ${entities ? html`<dt>개체</dt><dd><div class="entity-chips">${entityChips({ host: alert.entity_hosts, account: alert.entity_accounts, ip: alert.entity_ips })}</div></dd>` : ''}
       </dl>
       ${p.kind === 'system' ? html`<a class="btn" data-link href="#/alerts/targets">알림 상태·알림 대상 보기 →</a>`
         : config ? (can('audit.view') ? html`<a class="btn" data-link href="#/audit?action=alerts.config.">감사로그에서 설정 변경 보기 →</a>` : '')
         : hash ? html`<a class="btn" data-link href="${hash}">${p.kind === 'agent_silent' || p.kind === 'stream_silent' ? '수집 PC 화면 열기' : '이 알림의 이벤트 검색'} →</a>` : ''}
+
+      ${!builtin ? html`<div class="section-title">관련 알림 <span class="muted" style="font-weight:400">앞뒤 1시간 · 같은 PC·계정·IP</span></div>
+        <div data-related><div class="skeleton" style="height:60px"></div></div>` : ''}
 
       ${!builtin && p.kind === 'count' ? html`<div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
         <span>조사 순서 <span class="muted" style="font-weight:400">플레이북 — 무엇부터 볼지</span></span>
@@ -267,6 +337,8 @@ export async function openAlert(id, { onChange } = {}) {
         <div class="table-wrap"><table class="table ev-table"><thead>${EVENT_HEAD}</thead>
           <tbody data-samples>${samples.map((s, i) => eventRow(s, i))}</tbody></table></div>` : ''}`;
 
+    const relBox = body.querySelector('[data-related]');
+    if (relBox) relatedSection(relBox, alert, onChange);   // 관련 알림을 열면 이 패널은 그 알림으로 바뀐다 — 목록만 새로
     body.querySelector('[data-pb-open]')?.addEventListener('click', (e) => {
       e.target.disabled = true;
       playbookSection(body.querySelector('[data-pb]'), alert, async () => { onChange?.(); await reload(); });

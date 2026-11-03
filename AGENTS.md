@@ -76,12 +76,12 @@ server/app/
   integrity.py       감사로그 해시 체인 검증(DB 함수와 따로 파이썬으로)·매일 DB 밖 앵커(archive/integrity-*.json) (ADR-050)
   eventdigest.py     수집 로그 시간별 다이제스트(감사로그 체인에 기록)·다시 계산 — 매일 검증·보관 파일 만들 때 (B-71 2단계)
   cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원, 감사로그 verify-chain, 인증서 tls-init·tls-renew·tls-status — DB 없이)
-  routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음) · searches(저장한 검색) · compliance(심사 대응)
+  routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음) · searches(저장한 검색) · compliance(심사 대응) · entities(개체 페이지)
 server/migrations/   번호순 SQL
 server/tests/        pytest (DB 없이 도는 단위 테스트)
 web/js/
   main.js            해시 라우터 (#/화면/하위?파라미터)
-  views/             화면: dashboard, live, events, alerts, agents, fields, reports(점검 보고서), compliance(심사 대응), users·audit·settings·readiness(관리자)
+  views/             화면: dashboard, live, events, alerts, agents, fields, reports(점검 보고서), compliance(심사 대응), entity(개체 페이지 — 메뉴 없음, 링크로), users·audit·settings·readiness(관리자)
   auth.js            로그인·비밀번호 변경 화면, 현재 사용자 (main.js 가 init)
   widgets/           ★ 대시보드 위젯: stat, timeseries, top, events, hosts, text, alerts (live() = 실시간 갱신)
   querylang.js       ★ 검색 문장 파서·매처·옛 링크 접기·문장 편집 (import·DOM 없음 — node 로 시험)
@@ -258,6 +258,9 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - **규칙 시험기 (B-52, ADR-053):** `EventFilter.explain` 은 `matches` 와 같은 뜻이어야 한다 — matches 를 고치면 explain 도(케이스 표 전체로 `test_explain_agrees_with_matches`).
   - 관찰 모드(`mode: observe`)는 `engine.fire` 가 무음처럼 기록만 한다. 알림을 보내는 새 경로(해소 통지 등)는 `rule.mode == "observe"` 면 보내지 않는다.
   - 규칙이 쓰는 저장한 검색은 탐지 조건이다: 고치는 권한은 `alerts.manage`, 문장을 바꾸면 관리 작업 알림(`routers/searches.py`). 조회 범위 판단은 규칙 자체의 분류만 본다.
+- **알림의 개체 (B-67, ADR-064):** `alerts.entity_*` 는 SQL 함수 `wlm_alert_entities`(마이그레이션 046, **고치지 않는다** — 뜻을 바꾸면 `_v2`)가 payload 와 평가 때 센 값(`observed`)으로 채운다.
+  알림을 넣는 새 길은 `engine.fire(…, observed=)` 를 거친다(직접 INSERT 하면 개체가 빈다). 함수의 상한 10 은 `repository.ENTITY_MAX` 와 같게(`test_entity_limit_matches_repository`).
+  payload 에 개체가 될 새 칸(새 규칙 종류의 PC 등)을 더하면 함수가 모르므로 새 함수·마이그레이션으로. 관련 알림·개체 페이지의 조회 범위는 목록과 같은 `_visible_targets` 로 LIMIT 전에.
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - **알림 설정 판본 (ADR-043):** 설정을 적용하면 `engine.reload()` 가 `_pending` 을 두고 `await engine.record()` 가 판본(`alert_config_versions`, 추가만)·감사로그·약화 알림을 남긴다. 설정을 바꾸는 새 API 는 `routers/alerts._store` 를 거친다(쓰기 전 파일 직접 수정부터 기록 → `reload(force=True, source="ui", actor=…)`).
   - 내장 규칙 이름 `engine.CONFIG_RULE`('알림 설정 변경', kind `config`)은 무음을 건너뛴다. 받는 곳은 바뀌기 전 설정의 규칙들 — 새 약화 판단은 `configdiff._rule_changes` 와 `test_configdiff.py` 의 표에 함께.

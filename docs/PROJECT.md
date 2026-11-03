@@ -179,7 +179,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `field_stats` | 원본 필드 카탈로그 | `(source, path)` 별 타입·횟수·예시. 중첩은 점 경로(3단계까지) |
 | `iis_layouts` | IIS 열 순서 (014) | `(host, file)` 별 `#Fields:` 이름들, 폴더(`dir`)·마지막 머리줄 시각. 이벤트와 같은 트랜잭션에 저장, 35일 지난 것은 정리(폴더마다 최신 1개는 남김) |
 | `audit_log` | 시스템 감사 기록 | 대시보드·알림 설정 저장, 알림 테스트 발송, 보관기간 만료 삭제 |
-| `alerts` | 발생한 알림 (002) | 규칙, 심각도, 대상(group_key), 건수, `payload` = 보낸 메시지 전체. 처리 상태 `status`(open/acked/resolved)·처리자·처리 시각, 무음 중 발생이면 `silence_id` (009) |
+| `alerts` | 발생한 알림 (002) | 규칙, 심각도, 대상(group_key), 건수, `payload` = 보낸 메시지 전체. 처리 상태 `status`(open/acked/resolved)·처리자·처리 시각, 무음 중 발생이면 `silence_id` (009). 개체 `entity_hosts`·`entity_accounts`(계정 열쇠)·`entity_ips` (046, SQL 함수 `wlm_alert_entities` 가 채움 — ADR-064) |
 | `alert_deliveries` | 알림 대상별 전송 상태 (002) | `pending/sent/failed/gave_up/skipped`, 시도 횟수, 마지막 오류(건너뛴 사유: 받을 최소 수준·무음) |
 | `alert_notes` | 알림 처리 기록 (009) | 확인·해결·다시 열기·메모 타임라인. **수정·삭제 불가 트리거**(알림이 보관기간 만료로 지워질 때만 함께 삭제) |
 | `alert_silences` | 알림 무음 (009) | 규칙·대상(NULL = 전체)·시작·끝·사유·만든 사람. 해제는 행을 지우지 않고 끝 시각만 앞당김 |
@@ -245,6 +245,8 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 | `GET /api/alerts?since=&rule=&severity=&host=&status=` | 알림 이력 (전송·처리 상태 포함) + `counts`(기간 안 처리 상태별 수). `status` = `open`·`acked`·`resolved`·`unresolved` |
 | `GET /api/alerts?format=csv` | 알림 이력 CSV (처리 상태·처리자·처리 시각·무음·전송·처리 기록, 최대 1만 건 — 넘으면 마지막 줄·`X-WLM-Truncated`·감사로그에 표시). 수식 주입 방지 — 감사로그 `alerts.export` |
 | `GET /api/alerts/{id}` | 알림 상세 (payload: 본문, 최근 이벤트 샘플, 처리 기록 `notes`, 무음 `silence`, 같은 규칙·대상의 해결 안 된 다른 알림 수 `related_unresolved`) |
+| `GET /api/alerts/{id}/related` | 관련 알림 (B-67, ADR-064): 발생 시각 앞뒤 1시간에 PC·계정·IP 가 하나라도 겹치는 다른 알림(최대 50, `shared_host`·`shared_account`·`shared_ip`), `entities`(이 알림의 개체). 조회 범위는 목록과 같게 LIMIT 전에 |
+| `GET /api/entities/{host\|user\|ip}/{값}?since=7d&limit=` | 개체 페이지 (B-67): 그 개체가 걸린 기간 안 알림(최근 것부터, 조회 범위 반영)·`query`(그 개체를 찾는 검색 문장 — 사용자는 표기 통일 열쇠 `account:`)·`agent`(PC 수신 정보, PC 범위 안일 때만). 접속기록 `entity.view` |
 | `POST /api/alerts/handle` | `{ids, action, note, with_related?, resolution?}` 확인(`ack`, 볼 수 있으면 누구나)·해결(`resolve`)·다시 열기(`reopen`: 확인함·해결됨 → 처리 안 됨, `alerts.handle`). 최대 1000건(`with_related` 면 같은 규칙·대상 전부), 결과 `changed/unchanged/missing`. 해결은 종료 분류 `resolution` 필수(B-44: `tp_malicious`·`tp_expected`·`fp_rule`·`fp_data`·`undetermined`, 없으면 422 — `auto` 는 엔진만), 다시 열면 비움. 감사로그에 분류·대상 수 |
 | `GET /api/alerts/groups?since=&status=&rule=&severity=&host=&limit=` | 묶어 보기 (B-44): (규칙, 대상)마다 수·상태별 수·가장 높은 심각도·처음/마지막 발생·`last_id`. 처리 안 된·심각한 묶음부터. 조회 범위는 GROUP BY·LIMIT 전에 |
 | `POST /api/alerts/{id}/notes` | `{text}` 메모 (볼 수 있으면 누구나, 고칠 수 없음) |
@@ -665,6 +667,11 @@ escalations:
   구간은 알림이 센 이벤트의 발생 시각 기준 — 처음 이벤트 앞 `window`(기본 24h)·마지막 이벤트 뒤 `after`(기본 1h)(밀려 들어온 로그도 듦).
   조회 범위·시간 상한, 접속기록 `alerts.playbook`. 기본 플레이북: 로그온 실패 급증·무차별 대입·원격 데스크톱 무차별 대입·계정 잠금·관리자 그룹 구성원 추가·새 서비스 설치·보안 감사 로그 삭제.
   API: `GET /api/alerts/{id}/playbook` → `{available, title, steps[{question, why, query, since, until, count, top, events} | {missing}], false_positive}`
+- **관련 알림·개체 페이지 (B-67, ADR-064):** 알림 상세의 '개체'(이 알림에 걸린 PC·계정·IP 칩)와 '관련 알림'(앞뒤 1시간에 같은 개체가 걸린 다른 규칙의 알림 —
+  무차별 대입 → 로그온 성공 → 새 서비스 → 감사 로그 삭제처럼 흩어진 한 흐름, 겹친 개체 표시). 개체는 대상 이름(묶음 기준이 PC·계정·IP 인 것)과 알림 조건에 맞은
+  로그에 나온 값 — 종류마다 10개를 넘으면 넣지 않는다(수십 대에 걸친 알림이 모든 PC 와 이어지지 않게). 칩·로그 상세의 '개체 페이지'는 `#/entity/host|user|ip/<값>`:
+  기간(24시간·7일·30일) 안 그 개체의 알림, 로그 건수·경고 이상·흐름, 분류·상대 개체(PC 면 계정·IP, 계정이면 PC·IP, IP 면 PC·계정 — 누르면 그 개체 페이지),
+  최근 로그 20건. 계정은 표기 통일 열쇠로(HOSP\kim·kim@hosp.local 이 한 화면). 로그 쪽은 검색 API 를 `host:`·`account:`·`ip:` 문장으로 부르므로 조회 범위·접속기록이 그대로.
 - **알림 상세:** 앞 알림과의 관계(재발·지난 알림 이후 n건)·이 알림 뒤 같은 조건으로 더 들어온 건수와 마지막 시각(같은 대상의 가장 최근 알림일 때)·지연 수신 표시(B-35), 처리 상자(확인 / 해결… / 다시 열기… / 무음…), 처리 기록 타임라인(발생 → 확인 → 해결 → 메모), 메모 입력, 전송 상태, 포함 이벤트.
   - 다시 열기는 해결됨뿐 아니라 확인함에서도 됩니다(누구나 하는 '확인'으로 대기열에서 치운 알림을 담당자가 되돌림).
   - 해결할 때 같은 규칙·대상의 해결 안 된 다른 알림을 함께 해결할 수 있습니다(재발은 합치지 않고 발생마다 따로 기록).

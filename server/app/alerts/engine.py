@@ -492,6 +492,10 @@ class AlertEngine:
                 samples = await repository.list_events(scoped, SAMPLE_COUNT)
             except db.QueryTimeout:
                 samples = []   # 표본 때문에 알림을 잃지 않는다
+            try:   # 이 알림에 걸린 PC·계정·IP (B-67) — 관련 알림·개체 페이지가 쓴다. 시간 초과면 표본의 PC 로
+                observed = await repository.alert_entities(scoped)
+            except db.QueryTimeout:
+                observed = None
             message = AlertMessage(
                 rule=rule.name, severity=rule.severity, kind=rule.kind, description=rule.description,
                 group_by=rule.group_by, group_key=key, event_count=row["n"], threshold=rule.threshold,
@@ -505,7 +509,7 @@ class AlertEngine:
                 previous_fired_at=last["fired_at"] if last is not None else None,
                 since_previous=since_previous, recurred=recurred,
             )
-            fired.append(await self.fire_rule(rule, message))
+            fired.append(await self.fire_rule(rule, message, observed=observed))
         if rule.resolve == "auto":
             await self._resolve_quiet(rule, base, now)
         return fired
@@ -598,11 +602,12 @@ class AlertEngine:
 
     # ------------------------------------------------------------ 전송
     async def fire(self, message: AlertMessage, notify: tuple[str, ...], claim: dict | None = None,
-                   hosts: list[tuple[str, datetime]] | None = None) -> int | None:
+                   hosts: list[tuple[str, datetime]] | None = None, observed: dict[str, list[str]] | None = None) -> int | None:
         """알림을 기록하고 전송기를 깨운다 — 보내는 것은 전송기(dispatcher)다. 여기서는 네트워크를 쓰지 않는다 (ADR-045).
         claim: 처음 보는 값(B-47)의 조합 — 다른 쪽이 이미 알렸으면 None.
         hosts: 처음 보는 값(B-47)을 본 (PC, 그 PC 에서 마지막으로 본 때) — 규칙·대상·전체 무음은 지금으로, PC 로 건 무음은 그 PC 모두가
-        본 때 무음이었을 때만(한 PC 의 점검 무음이 다른 PC 의 새 값을 가리지 않게, 점검 중에만 보인 값은 무음이 끝나도 알리지 않게)."""
+        본 때 무음이었을 때만(한 PC 의 점검 무음이 다른 PC 의 새 값을 가리지 않게, 점검 중에만 보인 값은 무음이 끝나도 알리지 않게).
+        observed: 알림 조건에 맞은 로그의 PC·계정·IP (B-67) — 없으면 hosts 의 PC, 그것도 없으면 표본 로그의 PC."""
         # 설정 변경 알림은 무음으로 막지 않는다 — '모든 규칙' 무음을 건 뒤 규칙을 끄면 아무도 모르게 된다
         host = (message.stream or {}).get("host") or (message.terms or {}).get("host")
         if message.kind == "config":
@@ -619,7 +624,10 @@ class AlertEngine:
             silence = await repository.active_silence(message.rule, message.group_key, message.fired_at, host, pc, key_is_pc)
         # 관찰 모드(B-52): 무음처럼 기록만 한다. 시험 발송은 받는 곳을 시험하는 것이라 보낸다
         message.observe = not message.test and self.observing(message.rule)
-        alert_id = await repository.insert_alert(message.to_dict(), notify, silence, observe=message.observe, claim=claim)
+        if observed is None and hosts:
+            observed = {"host": [h for h, _ in hosts]}
+        alert_id = await repository.insert_alert(message.to_dict(), notify, silence, observe=message.observe, claim=claim,
+                                                 observed=observed)
         if alert_id is None:
             return None
         message.alert_id = alert_id
@@ -692,10 +700,10 @@ class AlertEngine:
         return reopened
 
     async def fire_rule(self, rule: Rule, message: AlertMessage, claim: dict | None = None,
-                        hosts: list[tuple[str, datetime]] | None = None) -> int | None:
+                        hosts: list[tuple[str, datetime]] | None = None, observed: dict[str, list[str]] | None = None) -> int | None:
         """규칙의 알림 — 받는 곳은 규칙의 notify 에 경로(routes, B-26)를 적용해서. 거친 경로 이름은 payload 에(증적)."""
         notify, message.routes = self.config.targets_for(rule, message.group_key, host=(message.terms or {}).get("host"))
-        return await self.fire(message, notify, claim, hosts)
+        return await self.fire(message, notify, claim, hosts, observed)
 
     @property
     def loaded(self) -> bool:

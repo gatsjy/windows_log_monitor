@@ -30,6 +30,7 @@ from .routers import (
     auth,
     compliance,
     dashboards,
+    entities,
     ingest,
     inspections,
     query,
@@ -244,6 +245,7 @@ app.include_router(reports.router, dependencies=[Depends(require_user)])
 app.include_router(searches.router, dependencies=[Depends(require_user)])
 app.include_router(compliance.router, dependencies=[Depends(require_user)])
 app.include_router(inspections.router, dependencies=[Depends(require_user)])
+app.include_router(entities.router, dependencies=[Depends(require_user)])
 app.include_router(users.router)
 app.include_router(audit.router)
 app.include_router(settings_router.router)

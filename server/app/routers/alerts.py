@@ -1067,6 +1067,25 @@ async def get_alert(alert_id: int, request: Request):
     return row  # related_unresolved: 같은 규칙·대상의 해결 안 된 다른 알림 수 — 함께 해결할 수 있게 (재발은 따로 기록, ADR-029)
 
 
+RELATED_WINDOW = timedelta(hours=1)
+RELATED_LIMIT = 50
+
+
+@router.get("/api/alerts/{alert_id}/related")
+async def related_alerts(alert_id: int, request: Request):
+    """관련 알림 (B-67): 이 알림의 발생 시각 앞뒤 1시간 안에 같은 PC·계정·IP 가 걸린 다른 알림 — 규칙마다 흩어진 한 흐름
+    (무차별 대입 → 로그온 성공 → 새 서비스 → 감사 로그 삭제)을 한 곳에서. 조회 범위는 목록과 같은 (규칙, 대상, PC) 로 LIMIT 전에."""
+    user = request.state.user
+    base = await repository.alert_entity_row(alert_id)
+    if base is None or not alert_visible(user, base):
+        raise HTTPException(404, "알림을 찾을 수 없습니다")
+    start, end = base["fired_at"] - RELATED_WINDOW, base["fired_at"] + RELATED_WINDOW
+    pairs = _visible_targets(user, await repository.alert_group_counts(start, until=end)) if user.scopes is not None else None
+    rows = await repository.related_alerts(base, start, end, RELATED_LIMIT + 1, pairs)
+    return {"entities": {"host": base["entity_hosts"], "account": base["entity_accounts"], "ip": base["entity_ips"]},
+            "window_sec": _seconds(RELATED_WINDOW), "items": rows[:RELATED_LIMIT], "truncated": len(rows) > RELATED_LIMIT}
+
+
 def _slim(e: dict[str, Any]) -> dict[str, Any]:
     message = e.get("message") or ""
     return {"id": e["id"], "ts": e["ts"], "host": e["host"], "username": e.get("username"), "src_ip": e.get("src_ip"),

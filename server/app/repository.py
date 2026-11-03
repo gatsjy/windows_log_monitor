@@ -1016,14 +1016,33 @@ async def silent_agents(cutoff: datetime, hosts: tuple[str, ...]) -> list[dict]:
 
 OBSERVE_REASON = "관찰 모드 — 규칙을 켜기 전 시험 중이라 보내지 않음"
 
+# 알림의 개체 (B-67, ADR-064): 종류 → alerts 열. 계정은 표기 통일 열쇠(wlm_user_key)
+ENTITY_KINDS = ("host", "account", "ip")
+ENTITY_COLUMNS = {"host": "entity_hosts", "account": "entity_accounts", "ip": "entity_ips"}
+# 알림 하나에 종류마다 서로 다른 값이 이만큼까지 — 넘으면 그 종류는 넣지 않는다(마이그레이션 046 wlm_alert_entities 의 10 과 같게)
+ENTITY_MAX = 10
+
+
+async def alert_entities(f: EventFilter) -> dict[str, list[str]]:
+    """알림 조건에 맞은 로그의 PC·계정·IP (B-67) — 종류마다 ENTITY_MAX + 1 개까지(넘었다는 것을 wlm_alert_entities 가 알게)."""
+    where, params = where_clause(f)
+    query = sql.SQL(
+        "SELECT ARRAY(SELECT DISTINCT host FROM events WHERE {w} AND host <> '' LIMIT {n}) AS host,"
+        " ARRAY(SELECT DISTINCT wlm_user_key(username) FROM events WHERE {w} AND username IS NOT NULL LIMIT {n}) AS account,"
+        " ARRAY(SELECT DISTINCT src_ip FROM events WHERE {w} AND src_ip IS NOT NULL LIMIT {n}) AS ip"
+    ).format(w=where, n=sql.Literal(ENTITY_MAX + 1))
+    return await db.fetch_one(query, [*params, *params, *params])
+
 
 async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict | None = None, observe: bool = False,
-                       claim: dict | None = None) -> int | None:
+                       claim: dict | None = None, observed: dict[str, list[str]] | None = None) -> int | None:
     """alerts 한 줄 + 알림 대상별 alert_deliveries 를 넣고 새 id 를 돌려준다.
     무음(silence) 중이면 전송 상태를 처음부터 skipped(사유: 무음)로 둔다 — 발생 기록은 남기고 보내지만 않는다.
     관찰 모드 규칙(B-52)도 같은 길 (사유: 관찰 모드).
     claim = 처음 보는 값(B-47) {ns, hashes|None, state}: 같은 트랜잭션에서 그 조합들을 pending → state 로 — 이미 다른 쪽이 가져갔으면
-    알림을 넣지 않고 None (서버가 멈췄다 다시 떠도·두 서버가 떠도 조합마다 알림 한 번)."""
+    알림을 넣지 않고 None (서버가 멈췄다 다시 떠도·두 서버가 떠도 조합마다 알림 한 번).
+    observed = 알림 조건에 맞은 로그에서 센 개체 {host, account, ip: [값…]} (B-67, alert_entities) — 개체 열은 payload 와 함께
+    SQL 함수 wlm_alert_entities(마이그레이션 046)가 채운다(옛 알림을 채운 규칙과 같게). 종류가 없으면 표본 로그의 PC 로."""
     if silence:
         status, reason = "skipped", f"무음 #{silence['id']}: {silence['reason']}"
     elif observe:
@@ -1039,12 +1058,18 @@ async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict 
             claimed = [r["term_hash"] for r in await cur.fetchall()]
             if not claimed:
                 return None
+        observed = observed or {}
         cur = await conn.execute(
-            "INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, first_event_at, last_event_at,"
-            " payload, silence_id, terms_host) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s) RETURNING id",
-            (message["fired_at"], message["rule"], message["severity"], message["group_key"],
-             message["event_count"], message["first_event_at"], message["last_event_at"], _json(message),
-             silence["id"] if silence else None, (message.get("terms") or {}).get("host")),
+            "WITH p AS (SELECT %s::jsonb AS j)"
+            " INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, first_event_at, last_event_at,"
+            " payload, silence_id, terms_host, entity_hosts, entity_accounts, entity_ips)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, (SELECT j FROM p), %s, %s,"
+            " (SELECT wlm_alert_entities(j, 'host', %s::text[]) FROM p), (SELECT wlm_alert_entities(j, 'account', %s::text[]) FROM p),"
+            " (SELECT wlm_alert_entities(j, 'ip', %s::text[]) FROM p)) RETURNING id",
+            (_json(message), message["fired_at"], message["rule"], message["severity"], message["group_key"],
+             message["event_count"], message["first_event_at"], message["last_event_at"],
+             silence["id"] if silence else None, (message.get("terms") or {}).get("host"),
+             *(observed.get(k) for k in ENTITY_KINDS)),
         )
         alert_id = (await cur.fetchone())["id"]
         async with conn.cursor() as c:
@@ -1811,6 +1836,7 @@ async def count_gave_up(since: datetime) -> int:
 _ALERT_COLUMNS = (
     "a.id, a.fired_at, a.rule, a.severity, a.group_key, a.terms_host, a.event_count, a.first_event_at, a.last_event_at,"
     " a.status, a.acked_by, a.acked_at, a.resolved_by, a.resolved_at, a.auto_resolved, a.silence_id, a.resolution,"
+    " a.entity_hosts, a.entity_accounts, a.entity_ips,"   # 알림의 개체 (B-67)
     " coalesce((a.payload->>'observe')::boolean, false) AS observed,"   # 관찰 모드 규칙의 알림 (B-52)
     " (SELECT count(*) FROM alert_notes n WHERE n.alert_id = a.id AND n.action = 'note') AS note_count,"
     " (SELECT COALESCE(json_agg(json_build_object('notifier', d.notifier, 'action', d.action, 'status', d.status,"
@@ -1849,13 +1875,69 @@ async def list_alerts(since: datetime, limit: int, rule: str | None = None, seve
     if status:
         clauses.append(ALERT_STATUS_FILTERS[status])
     if pairs is not None:
-        clauses.append(f"(a.rule, a.group_key, {ALERT_HOST}) IN (SELECT * FROM unnest(%s::text[], %s::text[], %s::text[]))")
-        params += [[p[0] for p in pairs], [p[1] for p in pairs], [p[2] for p in pairs]]
+        clauses.append(_PAIRS_CLAUSE)
+        params += _pairs_params(pairs)
     return await db.fetch_all(
         # 같은 평가 주기의 알림은 발생 시각이 같다 → id 로 순서를 고정 (새로고침 사이에 행이 뒤바뀌지 않게)
         f"SELECT {_ALERT_COLUMNS} FROM alerts a WHERE {' AND '.join(clauses)} ORDER BY a.fired_at DESC, a.id DESC LIMIT %s",
         [*params, limit],
     )
+
+
+_PAIRS_CLAUSE = f"(a.rule, a.group_key, {ALERT_HOST}) IN (SELECT * FROM unnest(%s::text[], %s::text[], %s::text[]))"
+
+
+def _pairs_params(pairs: list[tuple[str, str, str]]) -> list[list[str]]:
+    return [[p[0] for p in pairs], [p[1] for p in pairs], [p[2] for p in pairs]]
+
+
+async def alert_entity_row(alert_id: int) -> dict | None:
+    """관련 알림(B-67)의 기준: 범위 판단(규칙·대상·PC)·발생 시각·개체."""
+    return await db.fetch_one("SELECT id, rule, group_key, terms_host, fired_at, entity_hosts, entity_accounts, entity_ips"
+                              " FROM alerts WHERE id = %s", (alert_id,))
+
+
+async def related_alerts(base: dict, start: datetime, end: datetime, limit: int,
+                         pairs: list[tuple[str, str, str]] | None = None) -> list[dict]:
+    """관련 알림 (B-67): start~end 에 발생했고 base 와 PC·계정·IP 가 하나라도 겹치는 다른 알림. shared_* = 겹친 값.
+    pairs 는 목록과 같은 조회 범위 — LIMIT 전에 거른다."""
+    if pairs is not None and not pairs:
+        return []
+    values = [base["entity_hosts"], base["entity_accounts"], base["entity_ips"]]
+    if not any(values):
+        return []
+    clauses = ["a.fired_at BETWEEN %s AND %s", "a.id <> %s",
+               "(a.entity_hosts && %s::text[] OR a.entity_accounts && %s::text[] OR a.entity_ips && %s::text[])"]
+    params: list[Any] = [start, end, base["id"], *values]
+    if pairs is not None:
+        clauses.append(_PAIRS_CLAUSE)
+        params += _pairs_params(pairs)
+    shared = ", ".join(f"ARRAY(SELECT x FROM unnest(a.{c}) x WHERE x = ANY(%s::text[]) ORDER BY x) AS shared_{k}"
+                       for k, c in ENTITY_COLUMNS.items())
+    return await db.fetch_all(
+        f"SELECT {_ALERT_COLUMNS}, {shared} FROM alerts a WHERE {' AND '.join(clauses)} ORDER BY a.fired_at, a.id LIMIT %s",
+        [*values, *params, limit])
+
+
+async def entity_alerts(kind: str, value: str, since: datetime, limit: int,
+                        pairs: list[tuple[str, str, str]] | None = None) -> list[dict]:
+    """개체 페이지 (B-67): 그 PC·계정(열쇠)·IP 가 걸린 기간 안 알림, 최근 것부터."""
+    if pairs is not None and not pairs:
+        return []
+    clauses = [f"a.{ENTITY_COLUMNS[kind]} @> ARRAY[%s]::text[]", "a.fired_at >= %s"]
+    params: list[Any] = [value, since]
+    if pairs is not None:
+        clauses.append(_PAIRS_CLAUSE)
+        params += _pairs_params(pairs)
+    return await db.fetch_all(
+        f"SELECT {_ALERT_COLUMNS} FROM alerts a WHERE {' AND '.join(clauses)} ORDER BY a.fired_at DESC, a.id DESC LIMIT %s",
+        [*params, limit])
+
+
+async def agent_row(host: str) -> dict | None:
+    """개체 페이지의 PC 정보 (B-67)."""
+    return await db.fetch_one("SELECT host, first_seen, last_seen, last_ip, EXTRACT(EPOCH FROM now() - last_seen)::bigint AS silent_sec"
+                              " FROM agents WHERE host = %s", (host,))
 
 
 async def get_alert(alert_id: int) -> dict | None:
@@ -1942,12 +2024,16 @@ async def add_alert_note(alert_id: int, author: str, text: str) -> dict:
     )
 
 
-async def alert_group_counts(since: datetime | None = None, status: str | None = None) -> list[dict]:
+async def alert_group_counts(since: datetime | None = None, status: str | None = None,
+                             until: datetime | None = None) -> list[dict]:
     """(규칙, 대상, 상태)별 알림 수. 조회 범위가 있는 사용자의 숫자는 라우터가 이 묶음 단위로 걸러서 센다."""
     clauses, params = ["TRUE"], []
     if since is not None:
         clauses.append("a.fired_at >= %s")
         params.append(since)
+    if until is not None:
+        clauses.append("a.fired_at <= %s")
+        params.append(until)
     if status:
         clauses.append(ALERT_STATUS_FILTERS[status])
     return await db.fetch_all(

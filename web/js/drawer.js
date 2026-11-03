@@ -6,7 +6,7 @@ import { jsonView } from './jsonview.js';
 import { categoryLabel, levelBadge, sourceLabel } from './levels.js';
 import { accountKey, addTerm, aliasPath, formatTerm, parseTerms } from './querylang.js';
 import { runTest } from './ruletest.js';
-import { errorBox, fmtNum, fmtRelative, fmtTime, html, navigate } from './util.js';
+import { ENTITY_LABELS, entityHash, errorBox, fmtNum, fmtRelative, fmtTime, html, navigate } from './util.js';
 
 let current = null;
 // 이벤트 검색·실시간 화면이 열려 있는 동안: { query(): 지금 확정된 문장, apply(text): 문장을 바꿔 바로 검색 }
@@ -43,6 +43,12 @@ function actions(filter) {
   }
   return html` <a href="#" class="filter-link" data-act="only" data-filter='${enc(filter)}'>이 값으로 검색</a>
     ${term ? html`<a href="#" class="filter-link" data-act="without" data-filter='${enc(filter)}'>제외하고 검색</a>` : ''}`;
+}
+
+// 값 + 개체 페이지 링크 (B-67) — 그 PC·계정·IP 의 알림·로그를 한 화면에서
+function entityValue(kind, value, text) {
+  if (value == null || value === '') return text || '–';
+  return html`${text} <a class="filter-link" href="${entityHash(kind, value)}" title="이 ${ENTITY_LABELS[kind]}의 알림·로그">개체 페이지</a>`;
 }
 
 function act(kind, filter) {
@@ -214,7 +220,7 @@ export async function openEvent(evOrId) {
     <dl class="kv">
       ${row('발생 시각', html`${fmtTime(ev.ts)} <span class="muted">(${fmtRelative(ev.ts)})</span>`)}
       ${row('수집 시각', fmtTime(ev.received_at))}
-      ${row('PC', ev.host, { host: ev.host })}
+      ${row('PC', entityValue('host', ev.host, ev.host), { host: ev.host })}
       ${row('분류', categoryLabel(ev.category), ev.category ? { category: ev.category } : null)}
       ${row('소스', sourceLabel(ev.source), { source: ev.source })}
       ${row('채널', ev.channel, ev.channel ? { channel: ev.channel } : null)}
@@ -222,9 +228,9 @@ export async function openEvent(evOrId) {
       ${row(ev.source === 'iis' ? 'HTTP 상태' : '이벤트 ID', ev.event_id, ev.event_id != null ? { event_id: ev.event_id } : null)}
       ${row('수준', levelBadge(ev.level), { level: ev.level })}
       ${ev.username ? row('사용자', ev.username, { user: ev.username }) : ''}
-      ${ev.username ? row('계정(표기 통일)', html`<code title="HOSP\\kim·kim@hosp.local·KIM 처럼 표기가 달라도 같은 계정으로 찾습니다">${accountKey(ev.username)}</code>`,
+      ${ev.username ? row('계정(표기 통일)', html`<code title="HOSP\\kim·kim@hosp.local·KIM 처럼 표기가 달라도 같은 계정으로 찾습니다">${accountKey(ev.username)}</code>${entityValue('user', accountKey(ev.username), '')}`,
         { account: accountKey(ev.username) }) : ''}
-      ${ev.src_ip ? row('접속 IP', ev.src_ip, { ip: ev.src_ip }) : ''}
+      ${ev.src_ip ? row('접속 IP', entityValue('ip', ev.src_ip, ev.src_ip), { ip: ev.src_ip }) : ''}
     </dl>
     ${ev.summary ? html`<div class="section-title">요약</div><p class="summary-line">${ev.summary}</p>` : ''}
     ${ev.decoded?.length ? html`<div class="section-title">코드 풀이</div>

@@ -106,6 +106,10 @@ export function pushParams(view, params = {}) {
 
 export const tzOffset = () => -new Date().getTimezoneOffset();
 
+/** 개체 페이지 주소 (B-67): kind = host | user | ip. 값에 '/'·'?'·'#' 가 있어도 한 조각으로 */
+export const ENTITY_LABELS = { host: 'PC', user: '계정', ip: 'IP' };
+export const entityHash = (kind, value) => `#/entity/${kind}/${encodeURIComponent(value)}`;
+
 /** localStorage 는 사생활 보호 모드 등에서 실패할 수 있다 */
 export const store = {
   get(key, fallback = null) { try { const v = localStorage.getItem(key); return v == null ? fallback : JSON.parse(v); } catch { return fallback; } },
