@@ -1112,6 +1112,16 @@ async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, anchor: 
             oldest = await oldest_received()
             if oldest is not None and oldest < datetime.combine(known, datetime.min.time(), UTC) - timedelta(days=1):
                 return True
+        if first is not None:
+            # 그 소스(정한 PC 안)의 로그가 표의 첫 줄보다 하루 넘게 먼저 있으면 예전부터 — 표의 앞쪽에 빈 날(주말·장애)이 있으면 오래 모아
+            # 온 소스가 '새로 연결'이 되어 몇 주 배우기만 했다(검토에서 재현). 시간 초과면 예전부터로(놓치는 쪽보다 알림)
+            where, params = where_clause(EventFilter(sources=list(f.sources), hosts=list(f.hosts),
+                                                     received_before=first - timedelta(days=1)))
+            try:
+                if await db.fetch_one(sql.SQL("SELECT 1 AS x FROM events WHERE {} LIMIT 1").format(where), params):
+                    return True
+            except db.QueryTimeout:
+                return True
     if first is None:
         return False   # 아직 연결되지 않았다 — 들어오면 그때부터 배운다
     if first <= anchor:

@@ -1271,3 +1271,64 @@ def test_condition_edit_does_not_restart_learning_on_young_db(client):
     ev("attacker", "203.0.113.99", 4899)
     fired, _ = evaluate(client, rule)
     assert len(fired) == 1
+
+
+# ---------------------------------------------------------------- 15차 검토 보완
+def test_broadening_rule_ends_inherited_forward_learning(client):
+    """새 서버 규칙(앞으로 배우는 중)을 모든 서버로 넓히면 옛 조건의 배우는 기간을 물려받지 않는다(재현: 오래된 서버의 새 값 침묵)."""
+    from app.alerts import newterms
+
+    sql("INSERT INTO agents (host, first_seen) VALUES ('NEW-SRV', now() - interval '2 hours'), ('DC-15', now() - interval '60 days')"
+        " ON CONFLICT (host) DO NOTHING")
+    ev("old", "10.15.15.1", 4915, host="DC-15", at=datetime.now(UTC) - timedelta(days=3))
+    rule = own_rule("넓힘", 4915, seed=False, learn="14d", match='{ host: NEW-SRV, event_id: "4915" }')
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    [(until,)] = sql("SELECT learn_until FROM new_terms_state WHERE rule_key = 'name:넓힘'")
+    assert until > datetime.now(UTC) + timedelta(days=10)          # 새 서버라 앞으로 배우는 중
+    rule = own_rule("넓힘", 4915, seed=False, learn="14d", match='{ event_id: "4915" }')
+    evaluate(client, rule)
+    ev("attacker", "203.0.113.15", 4915, host="DC-15")
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1
+
+
+def test_gap_at_start_of_stream_table_is_not_a_new_source(client):
+    """수집 PC 표 앞쪽에 빈 날(주말·장애)이 있어도 그 소스의 더 오래된 로그가 있으면 예전부터 — 몇 주 침묵하지 않는다(재현)."""
+    from app.alerts import newterms
+
+    now = datetime.now(UTC)
+    upper = (now.replace(day=1) - timedelta(days=1)).replace(day=1)      # 지난달 1일 — 그 앞 두 달 파티션
+    for _ in range(2):
+        lower = (upper - timedelta(days=1)).replace(day=1)
+        sql(f"CREATE TABLE IF NOT EXISTS events_{lower:%Y_%m} PARTITION OF events FOR VALUES FROM ('{lower:%Y-%m-%d}')"
+            f" TO ('{upper:%Y-%m-%d}')")
+        upper = lower
+    ev("dc", "10.16.0.9", 4600, at=now - timedelta(days=70))           # DB 는 learn(60일)보다 오래됨
+    sql("DELETE FROM agent_streams")
+    stream_since("winevtlog", now - timedelta(days=35), host="DC-01")    # 표가 아는 때
+    stream_since("mssql", now - timedelta(days=33), host="EMR-16")       # 그 소스는 이틀 늦게 (빈 날)
+    ev("app", "10.16.0.1", 4916, host="EMR-16", at=now - timedelta(days=40), source="mssql")
+    rule = own_rule("빈 날", 4916, seed=False, learn="60d", history="90d", match='{ host: EMR-16, source: mssql, event_id: "4916" }')
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    evaluate(client, rule)
+    ev("attacker", "203.0.113.16", 4916, host="EMR-16", source="mssql")
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1
+
+
+def test_condition_edit_after_retention_moved_first_log(client):
+    """보관기간으로 DB 의 첫 로그가 앞으로 움직인 뒤 조건을 고쳐도 배우기를 다시 늘리지 않는다(재현: 몇 주 침묵)."""
+    from app.alerts import newterms
+
+    ev("old", "10.17.0.1", 4917, at=datetime.now(UTC) - timedelta(days=20))
+    rule = own_rule("보관 뒤 고침", 4917, seed=False, learn="14d")
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    sql("DELETE FROM events WHERE received_at < now() - interval '10 days'")   # 보관기간 정리로 첫 로그가 앞으로
+    rule = own_rule("보관 뒤 고침", 4917, seed=False, learn="14d", match='{ event_id: "4917", query: \'-ip:10.60.9.9\' }')
+    evaluate(client, rule)
+    ev("attacker", "203.0.113.17", 4917)
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1

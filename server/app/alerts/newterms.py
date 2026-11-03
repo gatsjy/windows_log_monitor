@@ -108,22 +108,24 @@ async def _state(rule: Rule, saved: str | None, now: datetime) -> dict[str, Any]
             frm = min(frm, max(now - rule.learn, oldest))
         if state["backfill_to"] is not None and state["backfill_from"] is not None:
             frm = min(frm, state["backfill_from"])
+        # 조건이 바뀌었으면 앞으로 배우던 것은 여기서 끝(아래 조건 바뀜과 같게)
         await repository.update_new_terms_state(state["id"], filter_sig=sig, cursor_at=now, backfill_from=frm, backfill_to=now,
-                                                learn_until=max(state["learn_until"], now),
-                                                relearn_reason=f"{(now - state['cursor_at']).days}일 멈춤" + (" · 조건 바뀜" if changed else ""),
-                                                **({"fit_pending": True} if changed else {}))
+                                                learn_until=min(state["learn_until"], now) if changed else max(state["learn_until"], now),
+                                                relearn_reason=f"{(now - state['cursor_at']).days}일 멈춤" + (" · 조건 바뀜" if changed else ""))
         return await repository.new_terms_state(key, fields)
     if state["filter_sig"] != sig:
         # 조건이 바뀜: 본 값은 두고 새 조건으로 이미 훑은 곳(cursor_at)까지 다시 거슬러 배운다(그동안 알림은 미룸). 아직 훑지 않은
         # [cursor_at, 지금) 은 배우는 기간이 아니다 — 지금부터 거슬러 배우면 이어서 훑기보다 먼저 그 구간의 새 값을 '배운 값'으로 만들었다
-        # (검토에서 재현). 그 구간의 값도 더 먼저 본 것이 있으면 거슬러 배우기가 배운 값으로 돌린다
+        # (검토에서 재현). 그 구간의 값도 더 먼저 본 것이 있으면 거슬러 배우기가 배운 값으로 돌린다.
+        # 앞으로 배우던 것은 여기서 끝낸다(배우는 기간 맞추기도 다시 하지 않음) — 옛 조건의 배우는 기간(새로 연결한 서버의 14일)을 넓힌
+        # 조건에 물려주거나, 보관기간으로 움직인 '첫 로그'로 다시 늘려 몇 주 동안 새 값을 삼켰다(검토에서 재현). 놓치는 쪽보다 알림
         to = state["cursor_at"]
         frm = max(to - rule.learn, oldest)
         if state["backfill_to"] is not None and state["backfill_from"] is not None:
             frm = min(frm, state["backfill_from"])
         await repository.update_new_terms_state(state["id"], filter_sig=sig, backfill_from=min(frm, to), backfill_to=to,
-                                                learn_until=max(state["learn_until"], state["cursor_at"]),
-                                                relearn_reason="조건 바뀜", fit_pending=True)
+                                                learn_until=min(state["learn_until"], state["cursor_at"]),
+                                                relearn_reason="조건 바뀜")
         return await repository.new_terms_state(key, fields)
     return state
 
