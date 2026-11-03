@@ -217,3 +217,111 @@ def test_feeder_removed_or_observed_weakens_too():
     off = parse_text(FEEDERS.replace("    kind: correlation\n", "    kind: correlation\n    enabled: false\n", 1))
     assert not any(c["change"] == "feeder_tactics" for c in configdiff.diff(off, parse_text(FEEDERS.replace(
         "    kind: correlation\n", "    kind: correlation\n    enabled: false\n", 1).replace("MITRE T1070.001, ", ""))))
+
+
+
+# ------------------------------------------------------------------ 검토 보완 (2차)
+
+def _v(corr_on=True, tags="MITRE T1070.001, ", feeder_on=True, corr=True):
+    corr_block = (f"""  - name: 공격 흐름
+    sid: 1
+    kind: correlation
+    enabled: {'true' if corr_on else 'false'}
+    severity: critical
+    notify: [보안팀]
+""" if corr else "")
+    return parse_text(f"""rules:
+{corr_block}  - name: 로그 삭제
+    sid: 2
+    enabled: {'true' if feeder_on else 'false'}
+    match: {{ event_id: "1102" }}
+    severity: critical
+    tags: [{tags}ISMS 2.11.3]
+    notify: [운영팀]
+""")
+
+
+def _feeder(changes):
+    return [(c["change"], c["weakens"], c["rule"]) for c in changes if c["change"] == "feeder_tactics"]
+
+
+def test_off_edit_on_bypass_is_reported_when_the_correlation_rule_comes_back():
+    """상관 규칙을 끄고 → 다른 규칙의 태그를 지우고 → 다시 켜도, 켜는 판본에서 그때(마지막으로 켜져 있던 판본)와 비교해 알린다 (검토에서 재현)."""
+    v1, v2, v3, v4 = _v(), _v(corr_on=False), _v(corr_on=False, tags=""), _v(tags="")
+    assert _feeder(configdiff.diff(v1, v2)) == [] and _feeder(configdiff.diff(v2, v3)) == []
+    base = {"sid:1": (v1.rules[0], 1)}
+    changes = configdiff.diff(v3, v4, base, {1: v1})
+    [(_, weakens, rule)] = _feeder(changes)
+    assert weakens and rule == "공격 흐름"
+    assert "다시 켬" in next(c["text"] for c in changes if c["change"] == "feeder_tactics")
+    assert configdiff.recipients(configdiff.affected(v3, v4, changes, base), v1) == ("보안팀",)
+    # 지웠다가 다시 추가해도
+    w2, w3 = _v(corr=False), _v(corr=False, tags="")
+    changes = configdiff.diff(w3, v4, base, {1: v1})
+    assert _feeder(changes) and "다시 추가" in next(c["text"] for c in changes if c["change"] == "feeder_tactics")
+    assert _feeder(configdiff.diff(w2, w3)) == []
+    # 그 사이 태그를 그대로 두었으면 알리지 않는다
+    assert _feeder(configdiff.diff(_v(corr_on=False), _v(), base, {1: v1})) == []
+
+
+def test_feeder_off_edit_on_is_compared_with_its_last_enabled_shape():
+    """다른 규칙을 끄고(알림) → 태그를 지우고 → 다시 켜면, 다시 켤 때 그 규칙이 마지막으로 켜져 있던 모양과 비교한다."""
+    v1, v3, v4 = _v(), _v(feeder_on=False, tags=""), _v(tags="")
+    assert _feeder(configdiff.diff(v1, _v(feeder_on=False)))   # 끄는 것 자체도 알린다
+    changes = configdiff.diff(v3, v4, {"sid:2": (v1.rules[1], 1)}, {1: v1})
+    assert [(c, w) for c, w, _ in _feeder(changes)] == [("feeder_tactics", True)]
+
+
+ROUTED = """routes:
+  - name: 의료정보과 PC
+    match: {{ hosts: ["MED-*"]{extra} }}
+    notify: [의료정보과]
+rules:
+  - name: 공격 흐름
+    sid: 1
+    kind: correlation
+    entities: [{entities}]
+    severity: critical
+    notify: [운영팀]
+"""
+
+
+@pytest.mark.parametrize("extra", ["", ", rules: [공격 흐름]"])
+def test_pc_routes_reach_correlation_alerts_in_samples(extra):
+    """상관 알림의 PC 개체는 발생 때 PC 경로를 탄다(fire_rule host=) — 받는 곳 표본(설정 변경 알림·시험 전송·상태)도 같게 (검토에서 재현)."""
+    cfg = parse_text(ROUTED.format(extra=extra, entities="host, account, ip"))
+    rule = cfg.rules[0]
+    assert "의료정보과" in cfg.reachable(rule) and "의료정보과" in cfg.delivery_targets()
+    off = parse_text(ROUTED.format(extra=extra, entities="host, account, ip").replace("    kind: correlation\n",
+                                                                                      "    kind: correlation\n    enabled: false\n"))
+    changes = configdiff.diff(cfg, off)
+    assert "의료정보과" in configdiff.recipients(configdiff.affected(cfg, off, changes), cfg)
+    # PC 개체를 보지 않으면 PC 경로를 타지 않는다 (발생 때와 같게)
+    no_host = parse_text(ROUTED.format(extra=extra, entities="account, ip"))
+    assert "의료정보과" not in no_host.reachable(no_host.rules[0])
+
+
+def test_hub_hosts_do_not_chain_by_pc_but_accounts_still_do():
+    """도메인 컨트롤러에 여러 직원의 일상 알림(잠금·새 계정·정책 반영)이 모여도 hub_hosts 면 PC 로 잇지 않는다 — 같은 계정의 흐름은 그대로."""
+    rows = correlation.with_tactics([
+        _row(1, "계정 잠금", -50, ["MITRE T1110"], hosts=["DC-01"], accounts=["nurse1"]),
+        _row(2, "새 사용자 계정", -40, ["MITRE T1136.001"], hosts=["DC-01"], accounts=["helpdesk"]),
+        _row(3, "감사 정책 변경", -30, ["MITRE T1562.002"], hosts=["DC-01"], accounts=["gpo"]),
+        _row(4, "관리자 그룹 추가", -20, ["MITRE T1098"], hosts=["DC-01"], accounts=["evil"]),
+        _row(5, "새 서비스", -15, ["MITRE T1543.003"], hosts=["DC-01"], accounts=["evil"]),
+        _row(6, "로그 삭제", -10, ["MITRE T1070.001"], hosts=["DC-01"], accounts=["evil"]),
+    ])
+    kinds = ("host", "account", "ip")
+    assert ("host", "DC-01") in {(c["kind"], c["value"]) for c in correlation.chains(rows, kinds, 3)}
+    found = {(c["kind"], c["value"]) for c in correlation.chains(rows, kinds, 3, ("dc-*",))}
+    assert found == {("account", "evil")}
+    assert correlation.preview(rows, ("host",), 3, timedelta(hours=1), ("DC-*",)) == []
+
+
+def test_hub_hosts_validation_and_weakening():
+    assert _parse("    hub_hosts: [DC-*, AD01]\n").hub_hosts == ("DC-*", "AD01")
+    for bad in ('    hub_hosts: ["*"]\n', '    hub_hosts: [""]\n'):
+        with pytest.raises(ConfigError):
+            _parse(bad)
+    changes = configdiff.diff(parse_text(BASE), parse_text(BASE.replace("    window: 1h\n", "    window: 1h\n    hub_hosts: [DC-*]\n", 1)))
+    assert [(c["change"], c["weakens"]) for c in changes] == [("hub_hosts", True)]

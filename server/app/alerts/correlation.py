@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .. import repository
+from ..filters import host_matches
 from . import tactics
 from .message import AlertMessage, alerts_link
 from .rules import Rule
@@ -27,8 +28,10 @@ ENTITY_LABELS = {"host": "PC", "account": "계정", "ip": "IP"}
 COLUMNS = {"host": "entity_hosts", "account": "entity_accounts", "ip": "entity_ips"}
 
 
-def _by_entity(rows: list[dict[str, Any]], kinds: tuple[str, ...]) -> dict[tuple[str, str], list[dict[str, Any]]]:
-    """알림(전술이 있는 것)을 개체마다 — 기본 계정은 잇지 않는다."""
+def _by_entity(rows: list[dict[str, Any]], kinds: tuple[str, ...],
+               hubs: tuple[str, ...] = ()) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """알림(전술이 있는 것)을 개체마다 — 기본 계정은 잇지 않는다. hubs = 여러 사람의 일이 모이는 서버(도메인 컨트롤러 등)의
+    PC 패턴: 그 PC 로는 잇지 않는다(그곳의 일은 계정·IP 로만 잇는다 — 여러 직원의 계정 잠금·새 계정·정책 반영이 한 흐름이 되지 않게)."""
     out: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in rows:
         if not row["tactics"]:
@@ -36,6 +39,8 @@ def _by_entity(rows: list[dict[str, Any]], kinds: tuple[str, ...]) -> dict[tuple
         for kind in kinds:
             for value in row[COLUMNS[kind]] or []:
                 if kind == "account" and repository.machine_account(value):
+                    continue
+                if kind == "host" and hubs and host_matches(hubs, value):
                     continue
                 out.setdefault((kind, value), []).append(row)
     return out
@@ -52,21 +57,23 @@ def _strongest_first(out: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(out, key=lambda c: (-len(c["picked"]), -len(c["rows"]), list(ENTITY_LABELS).index(c["kind"]), c["value"]))
 
 
-def chains(rows: list[dict[str, Any]], kinds: tuple[str, ...], min_tactics: int) -> list[dict[str, Any]]:
+def chains(rows: list[dict[str, Any]], kinds: tuple[str, ...], min_tactics: int,
+           hubs: tuple[str, ...] = ()) -> list[dict[str, Any]]:
     """개체마다 묶어 서로 다른 전술이 min_tactics 개 이상인 것 — 강한 것(전술 수·알림 수)부터. rows 는 기간 안 알림(엔진)."""
     out = []
-    for (kind, value), items in _by_entity(rows, kinds).items():
+    for (kind, value), items in _by_entity(rows, kinds, hubs).items():
         picked = _picked(items)
         if len(picked) >= min_tactics:
             out.append({"kind": kind, "value": value, "rows": items, "picked": picked})
     return _strongest_first(out)
 
 
-def preview(rows: list[dict[str, Any]], kinds: tuple[str, ...], min_tactics: int, window: timedelta) -> list[dict[str, Any]]:
+def preview(rows: list[dict[str, Any]], kinds: tuple[str, ...], min_tactics: int, window: timedelta,
+            hubs: tuple[str, ...] = ()) -> list[dict[str, Any]]:
     """미리보기: 지난 알림(rows, 발생 순)에 이 규칙을 적용했다면 — 개체마다 window 를 밀며 처음 기준에 닿은 구간, 그 구간 끝 뒤부터 다시.
     엔진은 주기마다 [지금 - window, 지금] 을 보므로 근사다(재알림 간격은 window 로 본다)."""
     out = []
-    for (kind, value), items in _by_entity(rows, kinds).items():
+    for (kind, value), items in _by_entity(rows, kinds, hubs).items():
         i = 0
         while i < len(items):
             end = items[i]["fired_at"] + window
@@ -105,17 +112,15 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     rows = await repository.correlation_sources(now - rule.window, now, SOURCE_MAX + 1)
     if run is not None:
         run.candidates, run.truncated = min(len(rows), SOURCE_MAX), len(rows) > SOURCE_MAX
-    found = chains(with_tactics(rows[-SOURCE_MAX:]), rule.entities, rule.min_tactics)
+    found = chains(with_tactics(rows[-SOURCE_MAX:]), rule.entities, rule.min_tactics, rule.hub_hosts)
     if not found:
         return []
-    recent = await repository.recent_correlations(rule.name, now - rule.cooldown)
-    recent_keys = {r["group_key"] for r in recent}
-    covered = {i for r in recent for i in r["ids"]}
+    recent = [{"key": r["group_key"], "ids": set(r["ids"]), "hosts": set(r["hosts"]), "tactics": set(r["tactics"])}
+              for r in await repository.recent_correlations(rule.name, now - rule.cooldown)]
     fired = []
     for chain in found:
         key = key_of(chain["kind"], chain["value"])
-        ids = {row["id"] for row in chain["rows"]}
-        if key in recent_keys or ids <= covered:
+        if any(r["key"] == key for r in recent) or _nothing_new(chain, recent):
             continue
         message = _message(rule, chain, key, now)
         observed = {k: ([chain["value"]] if k == chain["kind"] else []) for k in COLUMNS}
@@ -123,13 +128,34 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
                                           host=chain["value"] if chain["kind"] == "host" else None)
         if alert_id:
             fired.append(alert_id)
-        recent_keys.add(key)
-        covered |= ids
+        recent.append({"key": key, "ids": {row["id"] for row in chain["rows"]}, **_spread(chain)})
     return fired
+
+
+def _spread(chain: dict[str, Any]) -> dict[str, set[str]]:
+    """흐름이 걸친 PC 와 단계(전술) — 이미 알린 흐름에 새것이 더해졌는지 볼 때."""
+    return {"hosts": {h for row in chain["rows"] for h in row["entity_hosts"] or []},
+            "tactics": {t for row in chain["rows"] for t in row["tactics"]}}
+
+
+def _nothing_new(chain: dict[str, Any], recent: list[dict[str, Any]]) -> bool:
+    """이미 알린 흐름(재알림 간격 안)과 알림을 나누는데 새 PC·새 단계가 없으면 다른 개체로 다시 알리지 않는다 — 같은 흐름이 PC·계정·IP 로
+    세 번 오지 않게. 알림 번호로만 보면 이미 센 규칙이 같은 PC 에서 한 번 더 울려도(봇이 IP 를 바꿈) 계정으로 같은 흐름을 또 알렸다
+    (검토에서 재현). 다른 PC 로 번지거나 새 단계가 더해지면 알린다."""
+    ids = {row["id"] for row in chain["rows"]}
+    overlap = [r for r in recent if r["ids"] & ids]
+    if not overlap:
+        return False
+    if ids <= set().union(*(r["ids"] for r in overlap)):
+        return True   # 묶은 알림이 모두 이미 알린 흐름에 있다
+    spread = _spread(chain)
+    return (spread["hosts"] <= set().union(*(r["hosts"] for r in overlap))
+            and spread["tactics"] <= set().union(*(r["tactics"] for r in overlap)))
 
 
 def _message(rule: Rule, chain: dict[str, Any], key: str, now: datetime) -> AlertMessage:
     rows = chain["rows"]
+    spread = _spread(chain)
     flow = [{k: v for k, v in s.items() if k != "at"} for s in steps(chain)]
     # 보이는 목록: 단계마다 센 알림을 먼저 두고 남은 자리는 최근 것으로(오래된 30개만 두면 앞쪽 무차별 대입 줄만 남고 새 서비스·로그 삭제가
     # 빠졌다, 검토). 다시 알리지 않을지 판단은 ids(전부)로
@@ -148,4 +174,6 @@ def _message(rule: Rule, chain: dict[str, Any], key: str, now: datetime) -> Aler
         description=rule.description, first_event_at=min(r["fired_at"] for r in rows),
         last_event_at=max(r["fired_at"] for r in rows), link=alerts_link(rule.name), tags=list(rule.tags),
         correlation={"entity": {"kind": chain["kind"], "value": chain["value"]}, "tactics": flow, "alerts": items,
-                     "count": len(rows), "ids": [row["id"] for row in rows]})
+                     "count": len(rows), "ids": [row["id"] for row in rows],
+                     # 다시 알리지 않을지 판단용 (흐름이 걸친 PC·단계 — _nothing_new)
+                     "hosts": sorted(spread["hosts"]), "tactic_ids": sorted(spread["tactics"], key=tactics.ORDER.__getitem__)})

@@ -99,6 +99,10 @@ def _rule_changes(old: Rule, new: Rule) -> list[tuple[str, str, bool]]:
         if set(old.entities) != set(new.entities):
             out.append(("entities", f"볼 개체 {', '.join(old.entities)} → {', '.join(new.entities)}",
                         bool(set(old.entities) - set(new.entities))))
+        if set(old.hub_hosts) != set(new.hub_hosts):
+            # PC 로 잇지 않는 서버를 더하면 그 서버의 흐름은 계정·IP 로만 — 약해짐
+            out.append(("hub_hosts", f"PC 로 잇지 않는 서버 {', '.join(old.hub_hosts) or '없음'} → {', '.join(new.hub_hosts) or '없음'}",
+                        bool(set(new.hub_hosts) - set(old.hub_hosts))))
         return out
     if old.match != new.match:
         out.append(("match", f"조건 {_match_text(old)} → {_match_text(new)}", True))
@@ -235,9 +239,11 @@ def _escalation_changes(old: AlertConfig, new: AlertConfig) -> list[dict]:
     return [{"rule": None, "sid": None, "key": None, "change": c, "weakens": w, "text": t} for c, t, w in out]
 
 
-def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tuple[Rule, int]] | None = None) -> list[dict]:
+def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tuple[Rule, int]] | None = None,
+         base_configs: dict[int, AlertConfig] | None = None) -> list[dict]:
     """직전 판본(old) → 새 판본(new) 차이. old 가 None 이면 비교할 수 없다는 한 줄(약해짐으로 봄).
-    last_enabled = 규칙 키 → (그 규칙이 마지막으로 켜져 있던 모양, 판본 번호). needs_history 의 키만 엔진이 찾아 준다."""
+    last_enabled = 규칙 키 → (그 규칙이 마지막으로 켜져 있던 모양, 판본 번호). needs_history 의 키만 엔진이 찾아 준다.
+    base_configs = 그 판본 번호 → 그 판본의 설정 전체 (다시 켠 상관 규칙이 세던 다른 규칙들과 비교, B-67)."""
     if old is None:
         return [{"rule": None, "sid": None, "key": None, "change": "unknown", "weakens": True,
                  "text": "이전 판본을 읽을 수 없어 비교하지 못했습니다 — 규칙 목록을 직접 확인하세요"}]
@@ -294,7 +300,7 @@ def diff(old: AlertConfig | None, new: AlertConfig, last_enabled: dict[str, tupl
             if lost:
                 changes.append(_change(rule, key, "route_targets", f"경로로 받던 곳이 빠짐: {', '.join(lost)}", True,
                                        new_rule.name))
-    changes += _feeder_changes(old, before, matched)
+    changes += _feeder_changes(new, before, matched, after, added_by_name, last_enabled, base_configs or {})
     for key in added_by_name.values():
         rule = after[key]
         changes.append(_change(rule, key, "added", "추가" + ("" if rule.enabled else " (꺼짐)"), False))
@@ -312,21 +318,46 @@ def _contributes(rule: Rule | None) -> set[str]:
     return set(tactics.of_tags(rule.tags))
 
 
-def _feeder_changes(old: AlertConfig, before: dict[str, Rule], matched: dict[str, Rule]) -> list[dict]:
+def _lost_text(name: str, lost: set[str]) -> str:
+    return f"'{name}' 의 {', '.join(tactics.label(t) for t in sorted(lost, key=tactics.ORDER.__getitem__))}"
+
+
+def _feeder_changes(new: AlertConfig, before: dict[str, Rule], matched: dict[str, Rule], after: dict[str, Rule],
+                    added_by_name: dict[str, str], last_enabled: dict[str, tuple[Rule, int]],
+                    base_configs: dict[int, AlertConfig]) -> list[dict]:
     """상관 알림이 세던 규칙에서 전술이 빠짐 — 태그를 지우거나 모르는 기법으로 바꾸거나·끄거나·관찰로 돌리거나·지우면 그 단계가 흐름에서
-    빠져 공격 흐름이 기준 아래가 된다. 그 규칙 자체의 변경으로는 약해짐이 아니어도(태그) 상관 규칙의 받는 곳에 알린다(검토에서 재현)."""
+    빠져 공격 흐름이 기준 아래가 된다. 그 규칙 자체의 변경으로는 약해짐이 아니어도(태그) 상관 규칙의 받는 곳에 알린다(검토에서 재현).
+    끄고 → 고치고 → 켜는 우회도 막는다: 다시 켠 규칙은 마지막으로 켜져 있던 모양과, 다시 켠 상관 규칙은 그때 판본의 다른 규칙들과 비교한다."""
+    out: list[dict] = []
     watchers = [(k, r) for k, r in before.items() if r.kind == "correlation" and r.enabled]
-    if not watchers:
-        return []
-    lost_by_rule = []
-    for key, rule in before.items():
-        lost = _contributes(rule) - _contributes(matched.get(key))
-        if lost:
-            lost_by_rule.append(f"'{rule.name}' 의 {', '.join(tactics.label(t) for t in sorted(lost, key=tactics.ORDER.__getitem__))}")
-    if not lost_by_rule:
-        return []
-    text = f"이 세던 전술이 빠짐: {'; '.join(lost_by_rule)}"
-    return [_change(r, k, "feeder_tactics", text, True, matched[k].name if k in matched else r.name) for k, r in watchers]
+    if watchers:
+        lost_by_rule = []
+        for key, rule in before.items():
+            new_rule = matched.get(key)
+            prev = rule
+            if not rule.enabled and new_rule is not None and new_rule.enabled and rule_key(new_rule) in last_enabled:
+                prev = last_enabled[rule_key(new_rule)][0]   # 꺼 둔 동안 태그를 고친 규칙을 다시 켬 — 마지막으로 켜져 있던 모양과
+            if lost := _contributes(prev) - _contributes(new_rule):
+                lost_by_rule.append(_lost_text(rule.name, lost))
+        if lost_by_rule:
+            text = f"이 세던 전술이 빠짐: {'; '.join(lost_by_rule)}"
+            out += [_change(r, k, "feeder_tactics", text, True, matched[k].name if k in matched else r.name) for k, r in watchers]
+    # 다시 켜거나 다시 추가한 상관 규칙 — 꺼져(없어져) 있는 동안 다른 규칙의 태그를 지웠으면 그때(마지막으로 켜져 있던 판본)와 비교
+    revived = [(k, before[k], matched[k], "다시 켬") for k in matched
+               if k in before and not before[k].enabled and matched[k].enabled and matched[k].kind == "correlation"]
+    revived += [(k, after[k], after[k], "다시 추가") for k in added_by_name.values()
+                if after[k].enabled and after[k].kind == "correlation"]
+    now_rules = {rule_key(r): r for r in new.rules}
+    for key, rule, new_rule, how in revived:
+        base = last_enabled.get(rule_key(new_rule))
+        if base is None or (then := base_configs.get(base[1])) is None:
+            continue
+        lost_by_rule = [_lost_text(r.name, lost) for r in then.rules
+                        if (lost := _contributes(r) - _contributes(now_rules.get(rule_key(r))))]
+        if lost_by_rule:
+            out.append(_change(rule, key, "feeder_tactics", f"{how} — 판본 #{base[1]}에서 켜져 있던 때와 비교: "
+                                                              f"이 세던 전술이 빠짐: {'; '.join(lost_by_rule)}", True, new_rule.name))
+    return out
 
 
 def affected(old: AlertConfig | None, new: AlertConfig, changes: list[dict],

@@ -20,7 +20,7 @@ settings:
   # group_interval_sec: 300   # 0~3600
 
 # 받는 곳 경로 (B-26): 규칙마다 notify 를 고치지 않고 팀별 받는 곳 — 위에서부터 맞는 것을 적용, continue 면 다음도 본다.
-#   match: group(규칙 묶음)·tags·severity·rules(규칙 이름)·hosts(PC 패턴, PC 로 묶는 규칙만) — 모두 만족. replace: true 면 규칙의 notify 대신
+#   match: group(규칙 묶음)·tags·severity·rules(규칙 이름)·hosts(PC 패턴, PC 로 묶는 규칙·처음 보는 값·상관 알림의 PC) — 모두 만족. replace: true 면 규칙의 notify 대신
 # routes:
 #   - name: 보안 규칙은 보안팀에게도
 #     match: { tags: [MITRE T1110] }
@@ -391,6 +391,8 @@ rules:
     window: 1h
     min_tactics: 3
     entities: [host, account, ip]
+    # 도메인 컨트롤러처럼 여러 직원의 계정 잠금·새 계정·정책 반영이 모이는 서버는 PC 로 잇지 않고 계정·IP 로만 (관찰 중 오탐이 보이면)
+    # hub_hosts: [DC-*]
     severity: critical
     tags: [ISMS 2.11.3]
     notify: [운영팀]

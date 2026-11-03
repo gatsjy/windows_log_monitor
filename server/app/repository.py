@@ -1961,10 +1961,12 @@ async def recent_correlations(rule: str, since: datetime) -> list[dict]:
     """이 상관 규칙이 since 뒤에 낸 알림의 대상과 묶은 알림 번호 — 재알림 간격·같은 알림들로 다른 개체에 또 울리지 않게.
     번호는 correlation.ids(묶은 알림 전부). 보이는 목록(correlation.alerts, 30개까지)으로 보면 31번째부터의 알림이 '새것'이 되어
     다음 주기에 같은 흐름을 계정·IP 로 또 알렸다(검토에서 재현)."""
+    def arr(name: str, cast: str = "") -> str:
+        return (f"COALESCE((SELECT array_agg(x{cast}) FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(a.payload->'correlation'->'{name}')"
+                f" = 'array' THEN a.payload->'correlation'->'{name}' ELSE '[]' END) x"
+                + (" WHERE x ~ '^[0-9]+$'" if cast else "") + "), '{}')")
     return await db.fetch_all(
-        "SELECT a.group_key, COALESCE((SELECT array_agg(x::bigint) FROM jsonb_array_elements_text("
-        "  CASE WHEN jsonb_typeof(a.payload->'correlation'->'ids') = 'array' THEN a.payload->'correlation'->'ids' ELSE '[]' END) x"
-        "  WHERE x ~ '^[0-9]+$'), '{}') AS ids"
+        f"SELECT a.group_key, {arr('ids', '::bigint')} AS ids, {arr('hosts')} AS hosts, {arr('tactic_ids')} AS tactics"
         " FROM alerts a WHERE a.rule = %s AND a.fired_at >= %s", (rule, since))
 
 

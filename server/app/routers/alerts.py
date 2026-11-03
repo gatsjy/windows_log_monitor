@@ -195,7 +195,7 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
             "fields": list(r.terms_fields), "history_sec": _seconds(r.history), "learn_sec": _seconds(r.learn),
             "max_terms": r.max_terms, "burst": r.burst,
             # 상관 알림 (B-67 2단계): 기준·볼 개체, 그리고 모든 규칙의 태그에서 읽은 전술(상관 알림에 드는지)·전술을 모르는 MITRE 태그
-            "min_tactics": r.min_tactics, "entities": list(r.entities),
+            "min_tactics": r.min_tactics, "entities": list(r.entities), "hub_hosts": list(r.hub_hosts),
             "tactics": [tactics.label(t) for t in tactics.of_tags(r.tags)], "unknown_tactic_tags": tactics.unknown_tags(r.tags),
             "resolve": r.resolve, "channels": list(r.channels), "coverage": coverage.public(data.get(r.name)),
             "mode": r.mode, "quality": quality.get(r.name),
@@ -396,6 +396,8 @@ def _clean_rule(raw: dict[str, Any]) -> dict[str, Any]:
         entities = str_list("entities")
         if entities and set(entities) != {"host", "account", "ip"}:
             rule["entities"] = entities
+        if str_list("hub_hosts"):
+            rule["hub_hosts"] = str_list("hub_hosts")
     elif kind == "new_terms":
         rule["match"] = {str(k).strip(): str(v).strip() for k, v in (raw.get("match") or {}).items() if str(k).strip() and str(v).strip()}
         rule["fields"] = str_list("fields")
@@ -610,7 +612,8 @@ async def _preview_correlation(request: Request, admin: User, rule: Rule, now: d
     if admin.scopes is not None:
         raise HTTPException(403, "상관 알림은 모든 규칙·PC 의 알림을 묶어 봐서 조회 범위가 있는 사용자는 미리 볼 수 없습니다")
     rows = await repository.correlation_sources(now - timedelta(hours=hours), now, correlation.SOURCE_MAX + 1)
-    found = correlation.preview(correlation.with_tactics(rows[-correlation.SOURCE_MAX:]), rule.entities, rule.min_tactics, rule.window)
+    found = correlation.preview(correlation.with_tactics(rows[-correlation.SOURCE_MAX:]), rule.entities, rule.min_tactics, rule.window,
+                                rule.hub_hosts)
     await _preview_accesslog(request, admin, rule, ["user" if e == "account" else e for e in rule.entities], hours, len(found))
     covered = [{"name": r.name, "tactics": [tactics.label(t) for t in tactics.of_tags(r.tags)],
                 "unknown": tactics.unknown_tags(r.tags)}

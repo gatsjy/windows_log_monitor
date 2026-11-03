@@ -242,7 +242,9 @@ class AlertEngine:
         source = "startup" if self._first and read["source"] == "file" else read["source"]
         old, new = applied["config"], read["config"]
         last_enabled = await self._last_enabled(old, new) if applied["sha"] else {}
-        changes = configdiff.diff(old, new, last_enabled) if applied["sha"] else []   # 판본이 없으면 기준 판본
+        # 다시 켠 상관 규칙(B-67)은 그때 판본의 다른 규칙들과 비교한다 — 그 판본 전체 (_last_enabled 가 읽어 둔 것)
+        bases = {vid: cfg for _, vid in last_enabled.values() if (cfg := self._parsed.get(vid)) is not None}
+        changes = configdiff.diff(old, new, last_enabled, bases) if applied["sha"] else []   # 판본이 없으면 기준 판본
         await self._flag_silenced_names(changes)
         weakened = any(c["weakens"] for c in changes)
         version = await repository.insert_alert_config_version(source, read["actor"], read["sha"], read["text"],

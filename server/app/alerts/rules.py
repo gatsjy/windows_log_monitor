@@ -72,6 +72,7 @@ class Rule:
     # 상관 알림 (B-67 2단계, ADR-065): 같은 개체(entities)에서 window 안에 다른 규칙 알림들의 서로 다른 전술이 min_tactics 개 이상이면
     min_tactics: int = 3
     entities: tuple[str, ...] = ()
+    hub_hosts: tuple[str, ...] = ()   # 여러 사람의 일이 모이는 서버(도메인 컨트롤러 등) — PC 로는 잇지 않고 계정·IP 로만
 
     def event_filter(self, exceptions: tuple[str, ...] | list[str] = (), saved: str | None = None) -> EventFilter:
         """exceptions: 규칙 예외(B-46)의 조건들(정본 표기) — 문장에 제외 항(-조건)으로 덧붙인다. 검색 문장의 제외 의미 그대로
@@ -140,7 +141,7 @@ class Route:
     tags: tuple[str, ...] = ()         # 규칙 태그 중 하나라도
     severities: tuple[str, ...] = ()
     rules: tuple[str, ...] = ()        # 규칙 이름
-    hosts: tuple[str, ...] = ()        # 대상 PC 이름 패턴('MED-*', 대소문자 무시) — PC 로 묶는 규칙만 맞을 수 있다
+    hosts: tuple[str, ...] = ()        # 대상 PC 이름 패턴('MED-*', 대소문자 무시) — PC 로 묶는 규칙·처음 보는 값의 PC·상관 알림의 PC 개체만 맞는다
     continue_: bool = False
     replace: bool = False
 
@@ -202,7 +203,8 @@ class AlertConfig:
     def sample_targets(self, rule: Rule, host: str | None) -> tuple[str, ...]:
         """PC 표본 하나에서 이 규칙의 받는 곳 — 처음 보는 값(B-47)은 대상 이름이 값 조합이라 PC 를 host= 로 넘겨야 발생 때(fire_rule)와
         같다(대상 이름 자리에 넣으면 PC 경로가 영영 맞지 않아 경로로 받는 팀이 설정 변경 알림·시험 전송에서 빠졌다, 검토에서 재현)."""
-        return self.targets_for(rule, host, host=host if rule.kind == "new_terms" else None)[0]
+        pc_routed = rule.kind == "new_terms" or (rule.kind == "correlation" and "host" in rule.entities)   # 상관 알림의 PC 개체도 (B-67)
+        return self.targets_for(rule, host, host=host if pc_routed else None)[0]
 
     def host_samples(self) -> tuple[str | None, ...]:
         """경로의 PC 패턴마다 그 패턴에 맞는 PC 이름 하나와, 어느 패턴에도 맞지 않는 경우(None).
@@ -416,8 +418,11 @@ def _correlation(raw: dict, common: dict, where: str) -> Rule:
     entities = _str_list(raw.get("entities", list(ENTITY_KINDS)), f"{where}.entities")
     if not entities or any(e not in ENTITY_KINDS for e in entities):
         raise ConfigError(f"{where}.entities 는 {', '.join(ENTITY_KINDS)} 중 하나 이상")
+    hub_hosts = tuple(h.strip() for h in _str_list(raw.get("hub_hosts"), f"{where}.hub_hosts"))
+    if any(not h or h.strip("*") == "" for h in hub_hosts):
+        raise ConfigError(f"{where}.hub_hosts: PC 이름 패턴 (예: DC-*) — '*' 만으로는 모든 PC 를 빼게 됩니다")
     return Rule(**common, window=window, cooldown=cooldown, group_by="none", min_tactics=min_tactics,
-                entities=tuple(e for e in ENTITY_KINDS if e in entities))
+                entities=tuple(e for e in ENTITY_KINDS if e in entities), hub_hosts=hub_hosts)
 
 
 DISTINCT_MAX_WINDOW = timedelta(days=1)   # count(DISTINCT) 는 구간이 길수록 비싸다 — 엔진이 30초마다 다시 센다

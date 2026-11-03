@@ -80,6 +80,11 @@ def _host_regex(pattern: str) -> re.Pattern[str]:
     return re.compile("^" + ".*".join(re.escape(part) for part in pattern.split("*")) + "$", re.IGNORECASE)
 
 
+def host_matches(patterns, host: str) -> bool:
+    """PC 이름이 패턴('MED-*', 대소문자 무시, * 만 와일드카드) 중 하나에 맞나 — 조회 범위와 같은 규칙."""
+    return any(_host_regex(p).match(host) for p in patterns)
+
+
 def field_filters(params) -> list[tuple[list[str], str]]:
     """URL 의 f.<경로>=값 조건 (빈 단계는 버리고, 경로가 남는 것만). 검색 문장의 원본 필드 한도도 이것으로 센다."""
     items = params.multi_items() if hasattr(params, "multi_items") else params.items()

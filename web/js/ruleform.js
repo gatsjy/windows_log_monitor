@@ -50,6 +50,7 @@ export function signature(r) {
     parts.push(`hosts:${r.hosts.length ? r.hosts.join(',') : 'any'}`);
   } else if (r.kind === 'correlation') {
     parts.push(`correlation:track ${r.entities.join(',') || '?'}, tactics ${r.min_tactics}, seconds ${r.window_sec}`);
+    if (r.hub_hosts.length) parts.push(`hub_hosts:${quote(r.hub_hosts.join(','))}`);
     if (r.cooldown_sec !== r.window_sec) parts.push(`cooldown:${r.cooldown_sec}`);
   } else if (r.kind === 'new_terms') {
     Object.entries(r.match).forEach(([k, v]) => { if (v) parts.push(k.startsWith('f.') ? `field:${k.slice(2)}=${quote(v)}` : `${k}:${quote(v)}`); });
@@ -90,6 +91,7 @@ export function sentence(r) {
     const where = r.entities.length ? r.entities.map((k) => ENTITIES.find(([e]) => e === k)?.[1].split(' ')[0] ?? k).join('·') : '(볼 개체 없음)';
     return `같은 ${where}에서 ${fmtSec(r.window_sec)} 안에 다른 규칙들의 알림이 서로 다른 공격 단계(규칙 태그의 MITRE 전술) ${fmtNum(r.min_tactics)}개 이상으로 이어지면 `
       + `${to} [${sev}] 알림. 규칙 하나는 한 단계로만 셉니다. 같은 대상은 ${fmtSec(r.cooldown_sec)} 동안 다시 알리지 않음.`
+      + (r.hub_hosts.length ? ` ${r.hub_hosts.join(', ')} 는 PC 로 잇지 않고 계정·IP 로만 봅니다.` : '')
       + (r.mode === 'observe' ? ' 지금은 관찰 모드 — 기록만 하고 보내지 않음.' : '');
   }
   if (r.kind === 'new_terms') {
@@ -137,6 +139,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
     learn_sec: rule?.learn_sec ?? 14 * 86400, max_terms: rule?.max_terms ?? 50000, burst: rule?.burst ?? 20,
     // 상관 알림 (B-67 2단계)
     min_tactics: rule?.min_tactics ?? 3, entities: [...(rule?.entities?.length ? rule.entities : ENTITIES.map(([k]) => k))],
+    hub_hosts: [...(rule?.hub_hosts ?? [])],
   };
   // 로그 하나로 시험 (B-52): 조건을 바꾸면 폼을 다시 그리므로 입력·결과를 여기 둔다 — 바꾼 조건으로 같은 로그를 다시 시험하게
   const test = { id: '', sample: '', open: false, out: '' };
@@ -339,6 +342,8 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
       <div class="sentence-row">${unitInput('window_sec', r.window_sec)}<span>안에 서로 다른 전술</span>
         <input class="input num" type="number" min="2" max="8" data-k="min_tactics" value="${r.min_tactics}" style="width:70px"><span>개 이상이면 알림</span></div>
       <div class="sentence-row"><span>같은 대상은</span>${unitInput('cooldown_sec', r.cooldown_sec)}<span>동안 다시 알리지 않음 (기간 이상)</span></div>
+      <label class="field"><span>PC 로 잇지 않는 서버 (쉼표로 구분 — 도메인 컨트롤러처럼 여러 사람의 계정 잠금·새 계정·정책 반영이 모이는 서버는 계정·IP 로만 잇습니다)</span>
+        <input class="input" data-hub-hosts value="${r.hub_hosts.join(', ')}" placeholder="DC-*, AD01"></label>
       <details style="margin-top:6px"><summary class="muted">전술이 있는 켜진 규칙 ${fmtNum(withTactics.length)}개 / ${fmtNum(fed.length)}개</summary>
         <ul class="muted" style="font-size:12.5px;margin:6px 0 0;padding-left:18px">${withTactics.map((x) => html`<li>${x.name} — ${x.tactics.join(' · ')}</li>`)}</ul></details>
       ${unknown.length ? html`<p class="hint-box" style="margin-top:6px">전술을 모르는 MITRE 태그가 있는 규칙: ${unknown.map((x) => `${x.name} (${x.unknown_tactic_tags.join(', ')})`).join(', ')} — 그 태그는 세지 않습니다.</p>` : ''}
@@ -476,6 +481,7 @@ export async function openRuleEditor({ rule, config, onSaved, defaults = {} }) {
       body.querySelector(`[data-fk="${r.fields.length - 1}"]`)?.focus();
     });
     body.querySelector('[data-hosts]')?.addEventListener('input', (e) => { r.hosts = list(e.target.value); refresh(); });
+    body.querySelector('[data-hub-hosts]')?.addEventListener('input', (e) => { r.hub_hosts = list(e.target.value); refresh(); });
     body.querySelector('[data-channels]')?.addEventListener('input', (e) => { r.channels = list(e.target.value); refresh(); });
     body.querySelector('[data-tags]').addEventListener('input', (e) => { r.tags = list(e.target.value); refresh(); });
     body.querySelectorAll('[data-notify]').forEach((c) => c.addEventListener('change', () => {

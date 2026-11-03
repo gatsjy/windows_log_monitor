@@ -91,7 +91,8 @@ def _rule_lines(rule: Rule, exceptions: list[dict[str, Any]] = (), since: dateti
                    f" · 처음 {_days(rule.learn)}은 배우기만 · 한 주기에 {rule.burst}개 넘으면 한 통 · 둘 조합 상한 {rule.max_terms:,}개")]
     elif rule.kind == "correlation":   # 상관 알림 (B-67 2단계)
         lines += [(f"기준: 같은 {'·'.join({'host': 'PC', 'account': '계정', 'ip': 'IP'}[e] for e in rule.entities)}에서 "
-                   f"{int(rule.window.total_seconds())}초 안에 다른 규칙 알림들의 서로 다른 MITRE 전술 {rule.min_tactics}개 이상")]
+                   f"{int(rule.window.total_seconds())}초 안에 다른 규칙 알림들의 서로 다른 MITRE 전술 {rule.min_tactics}개 이상"
+                   + (f" · PC 로 잇지 않는 서버 {', '.join(rule.hub_hosts)}" if rule.hub_hosts else ""))]
     else:
         lines += [f"기준: {int(rule.silent_for.total_seconds())}초 동안 수신 없음" if rule.kind == "agent_silent"
                   else "기준: 늘 오던 채널이 평소보다 오래 끊김", f"대상 PC: {', '.join(rule.hosts) or '전체'}"]

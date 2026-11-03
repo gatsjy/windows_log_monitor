@@ -279,3 +279,21 @@ def test_deleted_correlation_rule_stays_hidden_from_scoped_users(ctx, now):
     finally:
         path.write_text(RULES, encoding="utf-8")
         engine.reload(force=True)
+
+
+
+# ------------------------------------------------------------------ 검토 보완 (2차)
+
+def test_repeat_on_the_announced_pc_is_not_announced_again_but_spread_is(ctx, now):
+    """이미 알린 흐름의 PC 에서 이미 센 규칙이 한 번 더 울려도(봇이 IP 를 바꿈) 계정으로 다시 알리지 않는다. 그 계정이 다른 PC 로 번지면 알린다 (검토에서 재현)."""
+    admin = ctx["admin"]
+    put(now, "대입", -40, ["MITRE T1110"], hosts=["SRV-X"], accounts=["evil"], ips=["198.51.100.1"])
+    put(now, "새 서비스", -30, ["MITRE T1543.003"], hosts=["SRV-X"], accounts=["evil"])
+    put(now, "로그 삭제", -20, ["MITRE T1070.001"], hosts=["SRV-X"], accounts=["evil"])
+    assert len(evaluate(admin, now)) == 1 and len(corr("PC SRV-X")) == 1
+    put(now, "대입", -1, ["MITRE T1110"], hosts=["SRV-X"], accounts=["evil"], ips=["198.51.100.2"])
+    assert evaluate(admin, now + timedelta(seconds=30)) == [] and corr("계정 evil") == []
+    put(now, "대입", 0, ["MITRE T1110"], hosts=["SRV-Y"], accounts=["evil"], ips=["198.51.100.3"])
+    assert len(evaluate(admin, now + timedelta(seconds=60))) == 1
+    [(_, payload, *_)] = corr("계정 evil")
+    assert payload["correlation"]["hosts"] == ["SRV-X", "SRV-Y"]
