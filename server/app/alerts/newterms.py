@@ -232,7 +232,7 @@ async def _reopen_spread(rule: Rule, ns: int, base, now: datetime) -> None:
             continue
         for h in hosts:
             if await repository.active_silence(rule.name, row["group_key"], now, h) is None:
-                reopen.append(row["term_hash"])
+                reopen.append((row["term_hash"], h))
                 break
     if reopen:
         await repository.reopen_terms(ns, reopen)
@@ -286,9 +286,11 @@ async def _fire(engine: Any, rule: Rule, ns: int, base, saved: str | None, excep
             host = values[rule.terms_fields.index("host")]
         else:
             host = p["first_host"] if not hosts or p["first_host"] in hosts else hosts[0]
-        # 표본은 그 알림의 PC 것만 — 조회 범위·PC 경로로 받는 사람에게 범위 밖 PC 의 로그가 보였다(검토에서 재현)
+        # 표본은 그 알림의 PC 것만 — 조회 범위·PC 경로로 받는 사람에게 범위 밖 PC 의 로그가 보였다(검토에서 재현).
+        # 처음 본 때부터 지금까지(번진 PC 는 첫 한 시간 뒤에 보였을 수 있다)
+        since_first = replace(first, received_before=None)
         try:
-            samples = await repository.list_events(_with_group(first, "host", host) if host else first, SAMPLE_COUNT)
+            samples = await repository.list_events(_with_group(since_first, "host", host) if host else since_first, SAMPLE_COUNT)
         except db.QueryTimeout:
             samples = []
         message = AlertMessage(

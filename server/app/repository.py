@@ -1041,10 +1041,10 @@ async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict 
                 return None
         cur = await conn.execute(
             "INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, first_event_at, last_event_at,"
-            " payload, silence_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING id",
+            " payload, silence_id, terms_host) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s) RETURNING id",
             (message["fired_at"], message["rule"], message["severity"], message["group_key"],
              message["event_count"], message["first_event_at"], message["last_event_at"], _json(message),
-             silence["id"] if silence else None),
+             silence["id"] if silence else None, (message.get("terms") or {}).get("host")),
         )
         alert_id = (await cur.fetchone())["id"]
         async with conn.cursor() as c:
@@ -1206,9 +1206,14 @@ async def host_silenced_terms(ns: int, now: datetime, limit: int) -> list[dict[s
         " ORDER BY a.id DESC LIMIT %s", (ns, now, limit))
 
 
-async def reopen_terms(ns: int, hashes: list[bytes]) -> None:
-    await db.fetch_all("UPDATE seen_terms SET state = 'pending', alert_id = NULL WHERE ns = %s AND term_hash = ANY(%s)"
-                       " AND state = 'alerted' RETURNING ns", (ns, hashes))
+async def reopen_terms(ns: int, spread: list[tuple[bytes, str]]) -> None:
+    """다른 PC 로 번진 조합을 다시 알릴 차례로 — 알림의 PC 는 번진 PC 로(점검 중인 첫 PC 로 두면 그 PC 의 경로·조회 범위로 가서
+    번진 PC 쪽 사람은 못 봤다, 검토에서 재현)."""
+    await db.fetch_all(
+        "UPDATE seen_terms s SET state = 'pending', alert_id = NULL, first_host = x.host"
+        " FROM unnest(%s::bytea[], %s::text[]) x(term_hash, host)"
+        " WHERE s.ns = %s AND s.term_hash = x.term_hash AND s.state = 'alerted' RETURNING s.ns",
+        ([h for h, _ in spread], [host for _, host in spread], ns))
 
 
 async def pending_terms(ns: int, limit: int) -> list[dict[str, Any]]:
@@ -1666,9 +1671,10 @@ ALERT_STATUS_FILTERS = {
 }
 
 
-# 알림의 '대상'은 (규칙, 대상 이름, 이 값) — 처음 보는 값(B-47)은 대상 이름이 값 조합이라 PC 가 payload 에만 있다. 다른 알림은 ''.
-# 조회 범위·'함께 해결'·같은 대상 수는 이 셋으로 본다 — 둘만 보면 범위 밖 PC 의 같은 값 조합 알림이 목록·함께 해결에 섞였다(검토에서 재현)
-ALERT_HOST = "COALESCE(a.payload->'terms'->>'host', '')"
+# 알림의 '대상'은 (규칙, 대상 이름, 이 값) — 처음 보는 값(B-47)은 대상 이름이 값 조합이라 PC 가 따로 있다(terms_host, 마이그레이션 040).
+# 다른 알림은 ''. 조회 범위·묶어 보기·'함께 해결'·같은 대상 수는 이 셋으로 본다 — 둘만 보면 범위 밖 PC 의 같은 값 조합 알림이
+# 목록·함께 해결에 섞였고(검토에서 재현), 묶어 보기만 둘이면 '모두 확인'이 다른 PC 의 알림을 남겼다
+ALERT_HOST = "COALESCE(a.terms_host, '')"
 
 
 async def list_alerts(since: datetime, limit: int, rule: str | None = None, severity: str | None = None,
@@ -1696,12 +1702,12 @@ async def list_alerts(since: datetime, limit: int, rule: str | None = None, seve
 
 async def get_alert(alert_id: int) -> dict | None:
     """상세: 목록 칸 + payload + 처리 기록(notes) + 무음 정보 + 같은 규칙·대상의 해결 안 된 다른 알림 수."""
-    row = await db.fetch_one(f"SELECT {_ALERT_COLUMNS}, a.payload FROM alerts a WHERE a.id = %s", (alert_id,))
+    row = await db.fetch_one(f"SELECT {_ALERT_COLUMNS}, a.payload, a.terms_host FROM alerts a WHERE a.id = %s", (alert_id,))
     if row is None:
         return None
     row["notes"] = (await alert_notes_for([alert_id])).get(alert_id, [])
     row["silence"] = await get_silence(row["silence_id"]) if row["silence_id"] else None
-    host = ((row.get("payload") or {}).get("terms") or {}).get("host") or ""
+    host = row["terms_host"] or ""
     related = await db.fetch_one(
         f"SELECT count(*) AS n FROM alerts a WHERE a.rule = %s AND a.group_key = %s AND {ALERT_HOST} = %s"
         " AND a.status <> 'resolved' AND a.id <> %s",
@@ -1716,8 +1722,7 @@ async def get_alert(alert_id: int) -> dict | None:
 
 async def alert_refs(ids: list[int]) -> list[dict]:
     """처리 권한 확인용 최소 정보."""
-    return await db.fetch_all("SELECT id, rule, group_key, status, payload->'terms'->>'host' AS terms_host FROM alerts"
-                              " WHERE id = ANY(%s)", (ids,))
+    return await db.fetch_all("SELECT id, rule, group_key, status, terms_host FROM alerts WHERE id = ANY(%s)", (ids,))
 
 
 async def alert_notes_for(ids: list[int]) -> dict[int, list[dict]]:
@@ -1789,7 +1794,7 @@ async def alert_group_counts(since: datetime | None = None, status: str | None =
         clauses.append(ALERT_STATUS_FILTERS[status])
     return await db.fetch_all(
         # terms_host: 처음 보는 값(B-47)의 PC — 대상 이름이 값 조합이라 조회 범위를 이것으로 본다(상세만 payload 를 봐서 목록·처리에서 빠졌다)
-        f"SELECT a.rule, a.group_key, a.status, a.payload->'terms'->>'host' AS terms_host, count(*) AS n FROM alerts a"
+        f"SELECT a.rule, a.group_key, a.status, a.terms_host, count(*) AS n FROM alerts a"
         f" WHERE {' AND '.join(clauses)} GROUP BY 1, 2, 3, 4",
         params,
     )
@@ -1890,7 +1895,7 @@ async def alert_groups(since: datetime, limit: int, rule: str | None = None, sev
         clauses.append(f"(a.rule, a.group_key, {ALERT_HOST}) IN (SELECT * FROM unnest(%s::text[], %s::text[], %s::text[]))")
         params += [[p[0] for p in pairs], [p[1] for p in pairs], [p[2] for p in pairs]]
     return await db.fetch_all(
-        "SELECT a.rule, a.group_key, count(*) AS n,"
+        "SELECT a.rule, a.group_key, a.terms_host, count(*) AS n,"
         " count(*) FILTER (WHERE a.status = 'open') AS open, count(*) FILTER (WHERE a.status = 'acked') AS acked,"
         " count(*) FILTER (WHERE a.status = 'resolved') AS resolved,"
         # 심각도·누를 알림은 해결 안 된 것을 먼저 — 해결된 심각 알림 하나 때문에 경고만 남은 묶음이 심각으로 보이거나,
@@ -1898,7 +1903,7 @@ async def alert_groups(since: datetime, limit: int, rule: str | None = None, sev
         " (array_agg(a.severity ORDER BY a.status = 'resolved', " + _SEVERITY_RANK + "))[1] AS severity,"
         " min(a.fired_at) AS first_fired_at, max(a.fired_at) AS last_fired_at,"
         " COALESCE(max(a.id) FILTER (WHERE a.status <> 'resolved'), max(a.id)) AS last_id"
-        f" FROM alerts a WHERE {' AND '.join(clauses)} GROUP BY a.rule, a.group_key"
+        f" FROM alerts a WHERE {' AND '.join(clauses)} GROUP BY a.rule, a.group_key, a.terms_host"
         " ORDER BY count(*) FILTER (WHERE a.status <> 'resolved') > 0 DESC,"
         " min(" + _SEVERITY_RANK + ") FILTER (WHERE a.status <> 'resolved'), min(" + _SEVERITY_RANK + "), max(a.fired_at) DESC"
         " LIMIT %s",
@@ -2052,7 +2057,7 @@ async def alert_rule_groups(since: datetime) -> list[dict]:
     """(규칙, 대상, 심각도)별 since 이후 수·마지막 발생과 전체 기간 마지막 발생 — 조회 범위가 있는 사용자의 알림 화면 숫자를
     보이는 (규칙, 대상)만으로 다시 셀 때 (B-27, alerts/visibility.alert_visible 로 거른다)."""
     return await db.fetch_all(
-        "SELECT rule, group_key, severity, payload->'terms'->>'host' AS terms_host, count(*) FILTER (WHERE fired_at >= %s) AS n,"
+        "SELECT rule, group_key, severity, terms_host, count(*) FILTER (WHERE fired_at >= %s) AS n,"
         " max(fired_at) FILTER (WHERE fired_at >= %s) AS last_recent, max(fired_at) AS last_ever"
         " FROM alerts GROUP BY 1, 2, 3, 4", (since, since))
 

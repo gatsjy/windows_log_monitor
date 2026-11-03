@@ -608,6 +608,14 @@ def test_scope_and_with_related_follow_host(client):
     assert client.portal.call(repository.get_alert, ws)["related_unresolved"] == 0
     assert client.portal.call(lambda: repository.handle_alerts([ws], "ack", "ws", with_related=True)) == [ws]
     assert sql("SELECT status FROM alerts WHERE id = %s", (srv,)) == [("open",)]
+    # 범위가 없는 사람의 묶어 보기도 같은 셋으로 — 한 줄의 '모두 확인'이 다른 PC 의 알림을 남기지 않게(3차 검토에서 재현)
+    rows = client.portal.call(lambda: repository.alert_groups(since, 100, rule="같은 이름 다른 PC"))
+    assert sorted((g["group_key"], g["terms_host"], g["n"]) for g in rows) == [("svc_x", "SRV-09", 1), ("svc_x", "WS-09", 1)]
+    # 사고관리로 보내는 중복 제거 키도 PC 마다 — 같은 키면 받는 쪽이 열린 사고에 합쳤다
+    from app.alerts.message import AlertMessage
+
+    [(a,), (b,)] = sql("SELECT payload FROM alerts WHERE id IN (%s, %s) ORDER BY id", (srv, ws))
+    assert AlertMessage.from_dict(a).dedup_key != AlertMessage.from_dict(b).dedup_key
 
 
 def test_silenced_burst_reopens_as_one(client):
@@ -643,7 +651,11 @@ def test_value_spreading_later_to_unsilenced_pc_alerts(client):
     ns, *_ = state_of("나중에 번짐")
     newterms._spread.pop(ns, None)
     fired, _ = evaluate(client, rule)
-    assert len(fired) == 1 and rule_alerts("나중에 번짐")[-1][2] is None
+    [*_, (_, _, silence_id, payload)] = rule_alerts("나중에 번짐")
+    assert len(fired) == 1 and silence_id is None
+    # 다시 보낸 알림의 PC 는 번진 PC — 점검 중인 첫 PC 로 두면 그 PC 의 경로·조회 범위로 갔다(3차 검토에서 재현)
+    assert payload["terms"]["host"] == "WS-39" and {x["host"] for x in payload["samples"]} == {"WS-39"}
+    assert sql("SELECT terms_host FROM alerts WHERE id = %s", (fired[0],)) == [("WS-39",)]
     sql("UPDATE alert_silences SET ends_at = now() WHERE group_key = 'MAINT-39'")
 
 

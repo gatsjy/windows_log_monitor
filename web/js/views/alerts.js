@@ -152,7 +152,7 @@ export async function mount(root, params, sub) {
         <tbody>${items.map((g, i) => html`<tr class="clickable ${g.open + g.acked ? '' : 'row-done'}" data-g="${i}">
           <td class="nowrap">${severityBadge(g.severity)}</td>
           <td class="nowrap"><b>${g.rule}</b></td>
-          <td class="nowrap">${g.group_key || '–'}</td>
+          <td class="nowrap">${g.group_key || '–'}${g.terms_host ? html` <span class="muted">· ${g.terms_host}</span>` : ''}</td>
           <td class="r num">${fmtNum(g.n)}</td>
           <td class="nowrap">${g.open ? html`<span class="ast open">처리 안 됨 ${fmtNum(g.open)}</span> ` : ''}${g.acked ? html`<span class="ast acked">확인함 ${fmtNum(g.acked)}</span> ` : ''}${g.resolved ? html`<span class="ast resolved">해결됨 ${fmtNum(g.resolved)}</span>` : ''}</td>
           <td class="nowrap num muted" title="처음 ${fmtTime(g.first_fired_at)}">${fmtTime(g.last_fired_at)}</td>

@@ -185,8 +185,11 @@ class AlertMessage:
     @property
     def dedup_key(self) -> str:
         """같은 규칙·대상이면 같은 값 — 사내 사고관리·SMS 가 알림(trigger)으로 연 것을 해소(resolve)로 닫게 (B-35 2단계).
-        규칙 이름이 재알림 간격의 키인 것과 같다: 이름을 바꾸면 다른 문제로 본다."""
-        return hashlib.sha256(f"{self.rule}\x1f{self.group_key}".encode()).hexdigest()[:32]
+        규칙 이름이 재알림 간격의 키인 것과 같다: 이름을 바꾸면 다른 문제로 본다.
+        처음 보는 값(B-47)은 대상이 (대상 이름, PC) — 같은 값 조합이 다른 PC 에서 다시 알림이 되면 다른 사고다(같은 키면 받는 쪽이 열린 사고에
+        합쳤다, 검토에서 재현). 다른 알림은 예전과 같은 값."""
+        host = (self.terms or {}).get("host")
+        return hashlib.sha256(f"{self.rule}\x1f{self.group_key}{chr(31) + host if host else ''}".encode()).hexdigest()[:32]
 
     @property
     def color(self) -> str:

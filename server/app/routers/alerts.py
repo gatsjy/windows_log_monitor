@@ -831,7 +831,7 @@ async def handle_alerts(body: HandleBody, request: Request, user: User = Depends
                                              resolution=body.resolution if body.action == "resolve" else None)
     unchanged = [i for i in visible if i not in changed]
     if changed:
-        targets = len({(r["rule"], r["group_key"]) for r in await repository.alert_refs(changed)})
+        targets = len({(r["rule"], r["group_key"], r["terms_host"] or "") for r in await repository.alert_refs(changed)})
         await db.audit(user.username, f"alerts.{body.action}", _ids_text(changed),
                        {"ids": changed, "unchanged": unchanged, "note": note, "with_related": body.with_related,
                         "targets": targets, **({"resolution": body.resolution} if body.action == "resolve" else {})},
