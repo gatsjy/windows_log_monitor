@@ -104,7 +104,13 @@ async def _state(rule: Rule, saved: str | None, now: datetime) -> dict[str, Any]
                 values["learn_until"] = max(state["learn_until"], start + rule.learn)
         elif state["learn_sec"] is not None and state["learn_until"] > now:
             values["learn_until"] = frm + rule.learn
+        until = values.pop("learn_until", None)
         await repository.update_new_terms_state(state["id"], **values)
+        if until is not None and until > state["learn_until"]:
+            # 늘렸으면 그 기간 안에서 이미 알릴 차례가 된 값도 배운 것으로(처음 켤 때 그 길이였으면 배웠을 값)
+            await repository.extend_learning(state["id"], values["learn_from"], until)
+        elif until is not None:
+            await repository.update_new_terms_state(state["id"], learn_until=until)
         state = await repository.new_terms_state(key, fields)
     if now - state["cursor_at"] > CATCHUP_MAX:
         # 오래 멈춤(조건도 바뀌었으면 함께): 그 사이는 배우기만(밀린 것을 한꺼번에 '처음 보는 값'으로 알리지 않게). history 안이면 멈춘 때부터,

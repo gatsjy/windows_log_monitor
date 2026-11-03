@@ -1138,6 +1138,15 @@ async def _logs_before(f: EventFilter, first: datetime) -> bool:
         return True
 
 
+async def extend_learning(ns: int, learn_from: datetime, learn_until: datetime) -> None:
+    """배우는 기간을 learn_from 부터 learn_until 까지로(끝은 늘리기만) — 그동안 알릴 차례가 된 값 중 그 기간 안의 것은 배운 것으로.
+    끝만 늘리고 알릴 차례인 값을 두면, 늘린 기간 안에서 처음 본 정상 값이 거짓 '처음 보는 값'이 됐다(검토에서 재현)."""
+    await db.fetch_all(
+        "WITH u AS (UPDATE new_terms_state SET learn_until = GREATEST(learn_until, %s), learn_from = %s WHERE id = %s RETURNING learn_until)"
+        " UPDATE seen_terms SET state = 'learned' WHERE ns = %s AND state = 'pending' AND first_seen < (SELECT learn_until FROM u)"
+        " RETURNING ns", (learn_until, learn_from, ns, ns))
+
+
 async def _fit_learning(ns: int, first: datetime, learn: timedelta) -> None:
     """배우는 기간을 first 부터 learn 만큼으로(늘리기만) — 그동안 알릴 차례가 된 값 중 그 기간 안의 것은 배운 것으로."""
     await db.fetch_all(
@@ -1193,6 +1202,9 @@ WITH t AS (
 ), d AS (
   SELECT t.*, x.th, s.term_hash IS NULL AS fresh, s.first_seen AS s_first, s.last_seen AS s_last, s.prev_last_seen AS s_prev,
          s.first_ts AS s_fts, s.first_event_id AS s_fid, s.first_host AS s_fhost, s.state AS s_state, s.alert_id AS s_alert,
+         -- 무음으로 보내지 않은 알림의 조합 — last_seen 을 한 시간 단위가 아니라 볼 때마다 고쳐 쓴다: 무음이 끝난 뒤 한 시간 안에만 이어진
+         -- 활동을 '무음 뒤 다시 알림'(reopen_silenced_terms)이 놓쳤다(검토에서 재현)
+         (s.alert_id IS NOT NULL AND EXISTS (SELECT 1 FROM alerts a WHERE a.id = s.alert_id AND a.silence_id IS NOT NULL)) AS s_silenced,
          (s.term_hash IS NOT NULL AND s.last_seen < t.frx - %s) AS expired,
          -- 더 먼저 본 것 — 단 그 사이가 history 안일 때만(오래전 기록을 거슬러 배우다 찾아 history 넘게 안 보이던 새 값을 배운 값으로
          -- 돌리지 않게, 검토에서 재현). 그보다 멀면 그 행은 건드리지 않는다
@@ -1204,7 +1216,7 @@ WITH t AS (
   SELECT d.*, (fresh OR expired) AS renew,
          CASE WHEN fresh THEN row_number() OVER (PARTITION BY fresh ORDER BY frx, th) END AS rn,
          CASE WHEN %s OR frx < %s THEN 'learned' ELSE 'pending' END AS new_state
-  FROM d WHERE fresh OR expired OR s_last < lrx - interval '1 hour' OR earlier
+  FROM d WHERE fresh OR expired OR s_last < lrx - interval '1 hour' OR earlier OR (s_silenced AND s_last < lrx)
 ), w AS (
   SELECT r.*, (fresh AND rn > %s) AS over FROM r
 ), ins AS (

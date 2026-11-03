@@ -1387,3 +1387,46 @@ def test_re_registered_pc_is_not_new(client):
     ev("attacker", "203.0.113.53", 4953, host="EMR-RR")
     fired, _ = evaluate(client, rule)
     assert len(fired) == 1
+
+
+# ---------------------------------------------------------------- 17차 검토 보완
+def test_raising_learn_settles_values_already_pending(client, monkeypatch):
+    """젊은 DB 에서 처음 거슬러 배우는 중에 learn 을 늘리면 그 기간 안에서 이미 알릴 차례가 된 값도 배운 것으로(재현: 거짓 알림)."""
+    from app.alerts import newterms
+
+    sql("DELETE FROM events")
+    ev("old", "10.47.0.9", 4947, at=datetime.now(UTC) - timedelta(days=10))
+    monkeypatch.setattr(newterms, "SCAN_BUDGET_SEC", 0)
+    rule = own_rule("늘리기 전 대기", 4947, seed=False, learn="7d")
+    evaluate(client, rule)
+    monkeypatch.undo()
+    ns, *_ = state_of("늘리기 전 대기")
+    t = datetime.now(UTC)
+    ev("newbie", "10.47.0.1", 4947, at=t)                       # 이어서 훑기가 알릴 차례로 둔 값(거슬러 배우는 중이라 미룸)
+    sql("INSERT INTO seen_terms (ns, term_hash, term, first_seen, last_seen, first_host, state) VALUES"
+        " (%s, wlm_terms_hash(ARRAY['newbie','10.47.0.1']), ARRAY['newbie','10.47.0.1'], %s, %s, 'DC-01', 'pending')", (ns, t, t))
+    sql("UPDATE new_terms_state SET cursor_at = %s WHERE id = %s", (t + timedelta(seconds=1), ns))
+    rule = own_rule("늘리기 전 대기", 4947, seed=False, learn="14d")
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    assert evaluate(client, rule)[0] == []
+    assert sql("SELECT state FROM seen_terms WHERE ns = %s AND term[1] = 'newbie'", (ns,)) == [("learned",)]
+
+
+def test_short_activity_after_rule_silence_ends_alerts(client):
+    """규칙 전체 무음 중에 처음 본 값이 무음이 끝난 뒤 한 시간 안에만 이어져도 다시 알린다(재현: last_seen 이 한 시간 단위라 놓침)."""
+    rule = own_rule("짧게 이어짐", 4948)
+    evaluate(client, rule)
+    silence("짧게 이어짐", None, 60)
+    ev("rdp", "10.48.0.1", 4948)
+    evaluate(client, rule)
+    assert rule_alerts("짧게 이어짐")[-1][2] is not None             # 무음 중 — 기록만
+    ns, *_ = state_of("짧게 이어짐")
+    sql("UPDATE alert_silences SET starts_at = now() - interval '2 hours', ends_at = now() - interval '10 minutes'"
+        " WHERE rule = '짧게 이어짐'")
+    sql("UPDATE alerts SET fired_at = now() - interval '30 minutes' WHERE rule = '짧게 이어짐'")
+    sql("UPDATE seen_terms SET first_seen = now() - interval '30 minutes', last_seen = now() - interval '30 minutes' WHERE ns = %s", (ns,))
+    sql("UPDATE events SET received_at = now() - interval '30 minutes' WHERE event_id = 4948 AND username = 'rdp'")
+    ev("rdp", "10.48.0.1", 4948)                                     # 무음이 끝나고 10분 뒤 — 한 시간 안
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1 and rule_alerts("짧게 이어짐")[-1][2] is None
