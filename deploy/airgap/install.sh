@@ -254,16 +254,33 @@ fi
 # ------------------------------------------------------------------ 8. 기동
 step "8. 기동"
 compose up -d --no-build --pull never --remove-orphans
+# 마이그레이션을 적용하는 중인가 — 마지막 '마이그레이션 적용' 줄 뒤에 기동 줄('Log Monitor … 시작')이 아직 없다
+migrating() {
+  compose logs --no-log-prefix --tail 500 api 2>/dev/null | grep -E '마이그레이션 적용|Log Monitor .* 시작' | tail -n 1 | grep -q '마이그레이션 적용'
+}
 printf '  상태 확인 '
-for _ in $(seq 1 60); do
+LIMIT=60; MIGRATING=0   # 2초마다 — 기본 2분
+for i in $(seq 1 900); do
   # TLS 면 화면 포트가 https 만 받는다 — 설정을 읽는 상태 확인 모듈로 (Dockerfile HEALTHCHECK 와 같다)
   if compose exec -T api python -m app.healthcheck >/dev/null 2>&1; then
     OK=1; break
   fi
+  # 마이그레이션이 기존 행을 채우는 동안은(감사로그 체인 022, 알림 개체 046 — 행 수에 비례) 끝난 뒤 1분까지, 최대 30분 기다린다.
+  # 2분에 멈추면 운영자가 컨테이너를 다시 띄우고, 그러면 그 트랜잭션이 되돌려져 처음부터 다시 한다
+  if [ "$i" -ge 30 ] && migrating; then
+    LIMIT=$((i + 30))
+    if [ "$MIGRATING" = 0 ] && [ "$i" -ge 60 ]; then
+      MIGRATING=1; echo; printf '  마이그레이션 적용 중 — 기존 행을 채우고 있습니다(최대 30분 기다림, 컨테이너를 다시 띄우지 마세요) '
+    fi
+  fi
+  [ "$i" -lt "$LIMIT" ] || break
   printf '.'; sleep 2
 done
 echo
-[ "${OK:-0}" = 1 ] || die "2분 안에 기동하지 않았습니다 — (cd $TARGET && docker compose -f docker-compose.yml logs api db)"
+if [ "${OK:-0}" != 1 ]; then
+  migrating && die "30분 안에 마이그레이션이 끝나지 않았습니다 — 컨테이너를 다시 띄우지 말고 기다리세요: (cd $TARGET && docker compose -f docker-compose.yml logs -f api)"
+  die "기동하지 않았습니다 — (cd $TARGET && docker compose -f docker-compose.yml logs api db)"
+fi
 compose ps
 
 step "완료 — 버전 ${VERSION}"

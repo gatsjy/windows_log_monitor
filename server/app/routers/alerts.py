@@ -36,6 +36,7 @@ from ..alerts.visibility import (
     alert_stats_for,
     alert_visible,
     count_by_status,
+    scrub_entities,
     scrub_silence,
     silence_target_visible,
     silence_visible,
@@ -93,7 +94,7 @@ async def list_alerts(
     if format == "csv":
         return await _alerts_csv(request, user, start, since, pairs, filters, export_reason(reason))
     items = await repository.list_alerts(start, limit, pairs=pairs, **filters)
-    return {"items": items, "counts": count_by_status(user, groups)}
+    return {"items": [scrub_entities(user, a) for a in items], "counts": count_by_status(user, groups)}
 
 
 @router.get("/api/alerts/groups")
@@ -1063,6 +1064,7 @@ async def get_alert(alert_id: int, request: Request):
         raise HTTPException(404, "알림을 찾을 수 없습니다")
     if row["silence"]:
         row["silence"] = scrub_silence(user, row["silence"], row)
+    scrub_entities(user, row)
     row["followup"] = await _followup(row)
     return row  # related_unresolved: 같은 규칙·대상의 해결 안 된 다른 알림 수 — 함께 해결할 수 있게 (재발은 따로 기록, ADR-029)
 
@@ -1079,11 +1081,21 @@ async def related_alerts(alert_id: int, request: Request):
     base = await repository.alert_entity_row(alert_id)
     if base is None or not alert_visible(user, base):
         raise HTTPException(404, "알림을 찾을 수 없습니다")
+    # 잇는 데 쓰는 개체: 이 사람이 볼 수 없는 PC 로 잇지 않고(이어진 것 자체가 범위 밖 PC 를 알려 준다), 어느 PC 에나 있는 기본 계정으로도 잇지 않는다
+    scrub_entities(user, base)
+    base["entity_accounts"] = [a for a in base["entity_accounts"] if not repository.machine_account(a)]
     start, end = base["fired_at"] - RELATED_WINDOW, base["fired_at"] + RELATED_WINDOW
     pairs = _visible_targets(user, await repository.alert_group_counts(start, until=end)) if user.scopes is not None else None
     rows = await repository.related_alerts(base, start, end, RELATED_LIMIT + 1, pairs)
+    truncated = len(rows) > RELATED_LIMIT
+    items = []
+    for row in rows[:RELATED_LIMIT]:
+        scrub_entities(user, row)
+        # 그 알림의 규칙으로는 볼 수 없는 PC 로만 이어졌으면 보이지 않는다(겹친 개체가 비어 보이는 줄이 범위 밖 PC 를 알려 준다)
+        if row["shared_host"] or row["shared_account"] or row["shared_ip"]:
+            items.append(row)
     return {"entities": {"host": base["entity_hosts"], "account": base["entity_accounts"], "ip": base["entity_ips"]},
-            "window_sec": _seconds(RELATED_WINDOW), "items": rows[:RELATED_LIMIT], "truncated": len(rows) > RELATED_LIMIT}
+            "window_sec": _seconds(RELATED_WINDOW), "items": items, "truncated": truncated}
 
 
 def _slim(e: dict[str, Any]) -> dict[str, Any]:

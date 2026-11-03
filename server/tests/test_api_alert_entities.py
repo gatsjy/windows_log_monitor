@@ -44,6 +44,20 @@ rules:
     group_by: ip
     severity: error
     notify: [운영팀]
+  - name: 새 서비스
+    enabled: false
+    match: { event_id: "7045" }
+    threshold: 1
+    group_by: host
+    severity: warning
+    notify: [운영팀]
+  - name: 새 출발지
+    kind: new_terms
+    enabled: false
+    match: { event_id: "4624" }
+    fields: [account, ip]
+    severity: warning
+    notify: [운영팀]
 """
 
 
@@ -78,6 +92,17 @@ def _alert(rule, key):
     return rows[0]
 
 
+def _viewer(admin, app, username, group):
+    from fastapi.testclient import TestClient
+
+    temp = admin.post("/api/users", json={"username": username, "role": "viewer"}, headers=CSRF).json()
+    assert admin.post("/api/user-groups", json={**group, "member_ids": [temp["user"]["id"]]}, headers=CSRF).status_code == 200
+    client = TestClient(app)
+    client.post("/api/auth/login", json={"username": username, "password": temp["temp_password"]}, headers=CSRF)
+    client.post("/api/auth/password", json={"current_password": temp["temp_password"], "new_password": PASSWORD}, headers=CSRF)
+    return client
+
+
 @pytest.fixture(scope="module")
 def ctx():
     try:
@@ -99,15 +124,10 @@ def ctx():
             admin.post("/api/auth/login", json={"username": "admin", "password": initial}, headers=CSRF)
             admin.post("/api/auth/password", json={"current_password": initial, "new_password": "Root#Changed2026"}, headers=CSRF)
             engine.reload(force=True)
-            temp = admin.post("/api/users", json={"username": "medic", "role": "viewer"}, headers=CSRF).json()
-            assert admin.post("/api/user-groups", json={"name": "의료", "scope_hosts": ["MED-*"],
-                                                        "member_ids": [temp["user"]["id"]]}, headers=CSRF).status_code == 200
-            medic = TestClient(app)
-            medic.post("/api/auth/login", json={"username": "medic", "password": temp["temp_password"]}, headers=CSRF)
-            medic.post("/api/auth/password", json={"current_password": temp["temp_password"], "new_password": PASSWORD},
-                       headers=CSRF)
+            medic = _viewer(admin, app, "medic", {"name": "의료", "scope_hosts": ["MED-*"]})
+            dba = _viewer(admin, app, "dba", {"name": "DB", "scope_categories": ["mssql"]})
             accesslog.forget()
-            yield {"admin": admin, "medic": medic}
+            yield {"admin": admin, "medic": medic, "dba": dba}
     finally:
         Path(os.environ["WLM_ALERTS_FILE"]).write_text("settings:\n  interval_sec: 30\n\nrules:\n", encoding="utf-8")
         engine.reload(force=True)
@@ -314,3 +334,66 @@ def test_entity_page_follows_scope(ctx):
     assert {a["group_key"] for a in body["alerts"]} == {"MED-1"}       # 범위 밖 PC 의 kim 알림은 안 보인다
     assert medic.get("/api/entities/host/PC-1").json()["agent"] is None   # 범위 밖 PC 의 수신 정보도
     assert medic.get("/api/entities/host/MED-1").json()["agent"]["host"] == "MED-1"
+
+
+# ------------------------------------------------------------------ 검토 보완 (1차)
+
+def _terms_alert(client, values, host, sightings):
+    """처음 보는 값 알림 하나 — 엔진처럼 본 PC(sightings)를 넘긴다."""
+    from app.alerts.engine import engine
+    from app.alerts.message import AlertMessage
+
+    now = datetime.now(UTC)
+    message = AlertMessage(rule="새 출발지", severity="warning", kind="new_terms", group_by="none", group_key=" · ".join(values),
+                           event_count=1, threshold=1, window_sec=0, fired_at=now,
+                           terms={"fields": ["account", "ip"], "values": values, "host": host, "history_days": 30})
+    return client.portal.call(engine.fire_rule, _rule("새 출발지"), message, None, [(h, now) for h in sightings])
+
+
+def test_scoped_user_does_not_see_other_pcs_of_a_new_terms_alert(ctx):
+    """처음 보는 값 알림은 본 PC 를 모두 개체로 둔다 — MED-* 사용자에게는 MED 의 것만, 범위 밖 PC 로 찾거나 잇지 않는다 (검토에서 재현)."""
+    admin, medic = ctx["admin"], ctx["medic"]
+    base = _terms_alert(admin, ["roam", "10.50.0.1"], "MED-1", ["MED-1", "HR-DB-01"])
+    other = _terms_alert(admin, ["other", "10.50.0.2"], "MED-2", ["MED-2", "HR-DB-01"])   # 범위 밖 PC 로만 이어짐
+    assert sql("SELECT entity_hosts FROM alerts WHERE id = %s", (base,))[0][0] == ["MED-1", "HR-DB-01"]
+    assert admin.get(f"/api/alerts/{base}").json()["entity_hosts"] == ["MED-1", "HR-DB-01"]
+    assert other in {i["id"] for i in admin.get(f"/api/alerts/{base}/related").json()["items"]}
+    assert medic.get(f"/api/alerts/{base}").json()["entity_hosts"] == ["MED-1"]
+    rows = {a["id"]: a for a in medic.get("/api/alerts").json()["items"]}
+    assert rows[base]["entity_hosts"] == ["MED-1"] and rows[other]["entity_hosts"] == ["MED-2"]
+    related = medic.get(f"/api/alerts/{base}/related").json()
+    assert related["entities"]["host"] == ["MED-1"] and other not in {i["id"] for i in related["items"]}
+    assert medic.get("/api/entities/host/HR-DB-01").json()["alerts"] == []
+    assert {a["id"] for a in medic.get("/api/entities/host/MED-1").json()["alerts"]} >= {base}
+
+
+def test_category_scope_does_not_reveal_pc_status(ctx):
+    """분류로만 정한 범위(mssql)는 모든 PC 이름에 맞는다 — 그 분류의 로그가 없는 PC 의 수신 정보는 주지 않는다(수집 PC 목록과 같게, 검토에서 재현)."""
+    admin, dba = ctx["admin"], ctx["dba"]
+    sqlev = {"date": datetime.now(UTC).isoformat(), "EventID": 18456, "Channel": "Application", "ProviderName": "MSSQLSERVER",
+             "Computer": "SQL-01", "agent_host": "SQL-01", "log_source": "winevtlog", "Message": "Login failed"}
+    assert admin.post("/api/ingest", json=[sqlev], headers=KEY).json()["accepted"] == 1
+    assert dba.get("/api/entities/host/PC-1").json()["agent"] is None            # 보안 로그만 있는 PC
+    assert admin.get("/api/entities/host/PC-1").json()["agent"]["host"] == "PC-1"
+    assert dba.get("/api/entities/host/SQL-01").json()["agent"]["host"] == "SQL-01"
+    assert dba.get("/api/entities/host/NO-SUCH").json()["agent"] is None
+
+
+def test_machine_accounts_do_not_link_alerts(ctx):
+    """업데이트가 여러 PC 에 서비스를 깔면 7045 계정이 모두 LocalSystem — 계정으로 서로 잇지 않는다 (검토에서 재현)."""
+    admin = ctx["admin"]
+    events = [{"date": datetime.now(UTC).isoformat(), "EventID": 7045, "Channel": "System", "Computer": h, "agent_host": h,
+               "log_source": "winevtlog", "Message": "service", "EventData": {"ServiceName": "Upd", "AccountName": "LocalSystem"}}
+              for h in ("SVC-1", "SVC-2")]
+    assert admin.post("/api/ingest", json=events, headers=KEY).json()["accepted"] == 2
+    assert sql("SELECT DISTINCT username FROM events WHERE host = 'SVC-1'") == [("LocalSystem",)]
+    _fire(admin, "새 서비스")
+    one, hosts, accounts, _ = _alert("새 서비스", "SVC-1")
+    assert (hosts, accounts) == (["SVC-1"], [])
+    # 옛 알림·대상 이름에서 온 기본 계정(NT AUTHORITY\SYSTEM 으로 묶음)도 잇지 않는다
+    ids = [sql("INSERT INTO alerts (fired_at, rule, severity, group_key, event_count, payload, entity_accounts)"
+               " VALUES (now(), '계정 대입', 'error', %s, 1, '{}', '{system}') RETURNING id", (f"NT AUTHORITY\\SYSTEM {i}",))[0][0]
+           for i in range(2)]
+    body = admin.get(f"/api/alerts/{ids[0]}/related").json()
+    assert body["entities"]["account"] == [] and ids[1] not in {i["id"] for i in body["items"]}
+    assert one not in {i["id"] for i in admin.get(f"/api/alerts/{_alert('새 서비스', 'SVC-2')[0]}/related").json()["items"]}

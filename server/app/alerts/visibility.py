@@ -54,6 +54,26 @@ def alert_visible(user: User, alert: dict[str, Any]) -> bool:
     return False
 
 
+def entity_host_visible(user: User, rule_name: str, host: str) -> bool:
+    """알림의 개체 PC (B-67) 하나가 이 사용자에게 보이는가 — 그 규칙의 분류로 그 PC 를 볼 수 있는 범위가 있을 때만(alert_visible 과 같은 판단)."""
+    if user.scopes is None:
+        return True
+    cats = _rule_categories(rule_name)
+    return any((not s.categories or bool(cats & set(s.categories))) and s.allows_host(host) for s in user.scopes)
+
+
+def scrub_entities(user: User, alert: dict[str, Any]) -> dict[str, Any]:
+    """알림의 개체 PC 중 이 사용자가 볼 수 없는 것을 뺀다 (B-67). 처음 보는 값 알림은 그 값을 본 PC 를 모두 개체로 두므로(관련 알림이
+    이어지게) 알림의 PC 만 보는 사용자에게 범위 밖 PC 이름이 상세·목록·관련 알림으로 보였다(검토에서 재현 — 표본을 그 PC 것만 두는 것과
+    같은 이유). 저장은 그대로 두고 읽을 때 사람마다 거른다. 계정·IP 는 대상 이름·표본처럼 그대로."""
+    if user.scopes is None:
+        return alert
+    for key in ("entity_hosts", "shared_host"):
+        if alert.get(key):
+            alert[key] = [h for h in alert[key] if entity_host_visible(user, alert["rule"], h)]
+    return alert
+
+
 def silence_visible(user: User, silence: dict[str, Any]) -> bool:
     """조회 범위가 있는 사용자에게는 '내 알림에 걸릴 수 있는' 무음만 보인다 (범위 밖 PC 이름·사유가 새지 않게).
     - 모든 규칙·모든 대상: 누구에게나 (내 알림도 막으므로)

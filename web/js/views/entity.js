@@ -29,6 +29,7 @@ export async function mount(root, params, sub) {
   let since = PERIODS.some(([v]) => v === params.since) ? params.since : '7d';
   let alive = true;
   let token = 0;
+  let recent = [];   // 최근 로그 표의 행 — 클릭 처리는 한 번만 붙이고 이 값만 바꾼다
 
   root.innerHTML = html`
     <div class="page-head">
@@ -55,9 +56,15 @@ export async function mount(root, params, sub) {
       <div class="table-wrap"><table class="table ev-table"><thead>${EVENT_HEAD}</thead><tbody data-events>
         <tr><td colspan="6"><div class="skeleton"></div></td></tr></tbody></table></div></section>`;
 
+  // 행 클릭은 한 번만 붙인다 — load 마다 붙이면 기간을 바꾸거나 알림을 처리한 뒤 한 번 누를 때 지난 목록의 로그까지 열려
+  // 보지 않은 로그의 열람 기록(events.view, 고칠 수 없음)이 남았다(검토에서 재현)
+  bindRows(root.querySelector('[data-events]'), (k) => recent[Number(k)]);
+  bindAlertRows(root.querySelector('[data-alerts]'), () => load());
+
   async function load() {
     const my = ++token;
     const stale = () => !alive || my !== token;
+    recent = [];
     let data;
     try {
       data = await api.get(`/api/entities/${kind}/${encodeURIComponent(value)}`, { since });
@@ -109,10 +116,9 @@ export async function mount(root, params, sub) {
     part(async () => {
       const page = await api.get('/api/events', { ...q, limit: RECENT });
       if (stale()) return;
-      const tbody = root.querySelector('[data-events]');
-      tbody.innerHTML = page.items.length ? html`${page.items.map((ev, i) => eventRow(ev, i))}`
+      recent = page.items;
+      root.querySelector('[data-events]').innerHTML = page.items.length ? html`${page.items.map((ev, i) => eventRow(ev, i))}`
         : html`<tr><td colspan="6" class="empty">이 기간에 로그가 없습니다</td></tr>`;
-      bindRows(tbody, (k) => page.items[Number(k)]);
     }, root.querySelector('[data-events]'));
   }
 
@@ -138,7 +144,6 @@ export async function mount(root, params, sub) {
       return;
     }
     box.innerHTML = alertRows(data.alerts);
-    bindAlertRows(box, () => load());
   }
 
   root.querySelectorAll('[data-period] button').forEach((b) => b.addEventListener('click', () => {

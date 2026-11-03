@@ -1021,17 +1021,29 @@ ENTITY_KINDS = ("host", "account", "ip")
 ENTITY_COLUMNS = {"host": "entity_hosts", "account": "entity_accounts", "ip": "entity_ips"}
 # 알림 하나에 종류마다 서로 다른 값이 이만큼까지 — 넘으면 그 종류는 넣지 않는다(마이그레이션 046 wlm_alert_entities 의 10 과 같게)
 ENTITY_MAX = 10
+# 어느 PC 에나 있는 기본 계정 (표기 통일 열쇠) — 개체로 이으면 업데이트가 서비스를 300대에 깔 때 '새 서비스 설치' 알림이 모두 서로의 관련
+# 알림이 되어 진짜 흐름이 50개 상한 뒤로 밀렸다(7045 AccountName = LocalSystem, 검토에서 재현). 본 값으로 두지 않고 관련 알림을 잇지도 않는다.
+# 공격 대상이 되는 이름(administrator·guest)은 넣지 않는다 — 여러 PC 에 같은 이름으로 대입하는 것이 바로 이어 볼 흐름이다
+MACHINE_ACCOUNTS = ("system", "localsystem", "local system", "local service", "localservice", "network service",
+                    "networkservice", "anonymous logon", "iusr", "defaultaccount", "wdagutilityaccount")
+MACHINE_ACCOUNT_PATTERN = "^(dwm|umfd)-[0-9]+$"   # Window Manager\DWM-1, Font Driver Host\UMFD-0
+
+
+def machine_account(key: str) -> bool:
+    return key in MACHINE_ACCOUNTS or re.match(MACHINE_ACCOUNT_PATTERN, key) is not None
 
 
 async def alert_entities(f: EventFilter) -> dict[str, list[str]]:
-    """알림 조건에 맞은 로그의 PC·계정·IP (B-67) — 종류마다 ENTITY_MAX + 1 개까지(넘었다는 것을 wlm_alert_entities 가 알게)."""
+    """알림 조건에 맞은 로그의 PC·계정·IP (B-67) — 종류마다 ENTITY_MAX + 1 개까지(넘었다는 것을 wlm_alert_entities 가 알게).
+    기본 계정(MACHINE_ACCOUNTS)은 세지 않는다."""
     where, params = where_clause(f)
     query = sql.SQL(
         "SELECT ARRAY(SELECT DISTINCT host FROM events WHERE {w} AND host <> '' LIMIT {n}) AS host,"
-        " ARRAY(SELECT DISTINCT wlm_user_key(username) FROM events WHERE {w} AND username IS NOT NULL LIMIT {n}) AS account,"
+        " ARRAY(SELECT DISTINCT wlm_user_key(username) FROM events WHERE {w} AND username IS NOT NULL"
+        "  AND NOT (wlm_user_key(username) = ANY(%s::text[]) OR wlm_user_key(username) ~ %s) LIMIT {n}) AS account,"
         " ARRAY(SELECT DISTINCT src_ip FROM events WHERE {w} AND src_ip IS NOT NULL LIMIT {n}) AS ip"
     ).format(w=where, n=sql.Literal(ENTITY_MAX + 1))
-    return await db.fetch_one(query, [*params, *params, *params])
+    return await db.fetch_one(query, [*params, *params, list(MACHINE_ACCOUNTS), MACHINE_ACCOUNT_PATTERN, *params])
 
 
 async def insert_alert(message: dict, notifiers: tuple[str, ...], silence: dict | None = None, observe: bool = False,
@@ -1900,7 +1912,7 @@ async def alert_entity_row(alert_id: int) -> dict | None:
 async def related_alerts(base: dict, start: datetime, end: datetime, limit: int,
                          pairs: list[tuple[str, str, str]] | None = None) -> list[dict]:
     """관련 알림 (B-67): start~end 에 발생했고 base 와 PC·계정·IP 가 하나라도 겹치는 다른 알림. shared_* = 겹친 값.
-    pairs 는 목록과 같은 조회 범위 — LIMIT 전에 거른다."""
+    base 의 개체는 부르는 쪽이 잇는 데 쓸 것만 남겨 넘긴다(조회 범위 밖 PC·기본 계정 뺌). pairs 는 목록과 같은 조회 범위 — LIMIT 전에 거른다."""
     if pairs is not None and not pairs:
         return []
     values = [base["entity_hosts"], base["entity_accounts"], base["entity_ips"]]
@@ -1934,10 +1946,23 @@ async def entity_alerts(kind: str, value: str, since: datetime, limit: int,
         [*params, limit])
 
 
-async def agent_row(host: str) -> dict | None:
-    """개체 페이지의 PC 정보 (B-67)."""
-    return await db.fetch_one("SELECT host, first_seen, last_seen, last_ip, EXTRACT(EPOCH FROM now() - last_seen)::bigint AS silent_sec"
-                              " FROM agents WHERE host = %s", (host,))
+async def agent_row(host: str, since: datetime, scopes=None) -> dict | None:
+    """개체 페이지의 PC 정보 (B-67). 조회 범위가 있으면 수집 PC 목록(agents)과 같은 판단 — since 뒤 범위 안 로그가 있었거나 PC 로만 정한
+    범위에 이름이 맞을 때만. 분류로만 정한 범위는 모든 PC 이름에 맞아(allows_host) 이름만 넣어 보면 병원 전체 PC 의 수신 상태를 알 수 있었다(검토에서 재현)."""
+    cond, params = sql.SQL("TRUE"), []
+    if scopes is not None:
+        event_scope, scope_params = scope_clause(scopes)
+        conds = [sql.SQL("EXISTS (SELECT 1 FROM events WHERE host = a.host AND ts >= %s AND {})").format(event_scope)]
+        params = [since, *scope_params]
+        host_only = [s for s in scopes if s.hosts and not s.categories]
+        if host_only:
+            host_sql, host_params = scope_clause(host_only, host_column=("a", "host"), category_column=None)
+            conds.append(host_sql)
+            params += host_params
+        cond = sql.SQL("({})").format(sql.SQL(" OR ").join(conds))
+    query = sql.SQL("SELECT a.host, a.first_seen, a.last_seen, a.last_ip, EXTRACT(EPOCH FROM now() - a.last_seen)::bigint AS silent_sec"
+                    " FROM agents a WHERE a.host = %s AND {}").format(cond)
+    return await db.fetch_one(query, [host, *params])
 
 
 async def get_alert(alert_id: int) -> dict | None:

@@ -4,19 +4,22 @@
 - 로그 쪽(건수·분류·상대 개체·최근 로그)은 화면이 검색 API(/api/events·/api/stats/*)를 여기서 준 문장으로 부른다 — 조회 범위·시간 상한·
   접속기록이 그쪽에서 그대로 붙는다(같은 조건을 두 번 구현하지 않게).
 - 사람·IP 를 지목해 보는 조회라 접속기록(entity.view)을 남긴다 — 기록하지 못하면 503(ADR-042).
+- 조회 범위가 있는 사용자: 개체 PC 는 그 알림의 규칙으로 볼 수 있는 것만(visibility.scrub_entities), PC 정보는 수집 PC 목록과 같은 판단.
+  PC 정보가 범위 안 로그를 보므로 시간 상한(read_time_limit)을 건다.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from .. import accesslog, repository
+from ..alerts.visibility import entity_host_visible, scrub_entities
 from ..filters import FilterError, parse_time
 from ..querylang import QueryError, account_key, format_value, parse_terms
 from .alerts import _visible_targets
-from .query import agent_status
+from .query import agent_status, read_time_limit
 
 router = APIRouter(tags=["entities"])
 
@@ -25,7 +28,7 @@ KINDS = {"host": ("host", "host"), "user": ("account", "account"), "ip": ("ip", 
 VALUE_MAX = 256   # wlm_alert_entities 가 넣는 값의 상한과 같게
 
 
-@router.get("/api/entities/{kind}/{value:path}")
+@router.get("/api/entities/{kind}/{value:path}", dependencies=[Depends(read_time_limit)])
 async def entity(kind: str, value: str, request: Request, since: str = "7d", limit: int = Query(200, ge=1, le=500)):
     if kind not in KINDS:
         raise HTTPException(404, "개체 종류는 host·user·ip 중 하나입니다")
@@ -43,10 +46,14 @@ async def entity(kind: str, value: str, request: Request, since: str = "7d", lim
         raise HTTPException(400, str(exc)) from exc
     user = request.state.user
     pairs = _visible_targets(user, await repository.alert_group_counts(start)) if user.scopes is not None else None
-    rows = await repository.entity_alerts(column, value, start, limit + 1, pairs)
+    if pairs is not None and kind == "host":
+        # 그 규칙으로 이 PC 를 볼 수 있는 알림만 — 보이는 알림(내 PC 의 처음 보는 값)이 범위 밖 PC 도 개체로 가지면 그 PC 이름으로
+        # 찾아 '그 PC 에도 같은 값이 나왔다'를 알 수 있었다(검토에서 재현). LIMIT 전에 거른다
+        pairs = [p for p in pairs if entity_host_visible(user, p[0], value)]
+    rows = [scrub_entities(user, r) for r in await repository.entity_alerts(column, value, start, limit + 1, pairs)]
     agent = None
-    if kind == "host" and (user.scopes is None or any(s.allows_host(value) for s in user.scopes)):
-        agent = await repository.agent_row(value)
+    if kind == "host":
+        agent = await repository.agent_row(value, start, user.scopes)   # 수집 PC 목록과 같은 범위 판단
         if agent is not None:
             agent["status"] = agent_status(agent["silent_sec"])
     await accesslog.record(request, user.username, "entity.view", f"{kind}:{value}",

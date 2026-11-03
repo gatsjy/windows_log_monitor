@@ -261,6 +261,9 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - **알림의 개체 (B-67, ADR-064):** `alerts.entity_*` 는 SQL 함수 `wlm_alert_entities`(마이그레이션 046, **고치지 않는다** — 뜻을 바꾸면 `_v2`)가 payload 와 평가 때 센 값(`observed`)으로 채운다.
   알림을 넣는 새 길은 `engine.fire(…, observed=)` 를 거친다(직접 INSERT 하면 개체가 빈다). 함수의 상한 10 은 `repository.ENTITY_MAX` 와 같게(`test_entity_limit_matches_repository`).
   payload 에 개체가 될 새 칸(새 규칙 종류의 PC 등)을 더하면 함수가 모르므로 새 함수·마이그레이션으로. 관련 알림·개체 페이지의 조회 범위는 목록과 같은 `_visible_targets` 로 LIMIT 전에.
+  - 개체 PC 는 저장된 그대로 내보내지 않는다 — 알림을 돌려주는 새 API 는 `visibility.scrub_entities(user, row)` 를 거친다(처음 보는 값 알림은 본 PC 를 모두 가져 범위 밖 PC 이름이 샌다).
+  - 관련 알림을 잇는 계정에서 `repository.machine_account`(SYSTEM·LocalSystem 등)는 뺀다. PC 정보는 `repository.agent_row(host, since, scopes)`(수집 PC 목록과 같은 범위 판단).
+  - 설치 스크립트는 마이그레이션 중이면 30분까지 기다린다(`deploy/airgap/install.sh` 의 `migrating` — 로그 'Log Monitor … 시작' 줄을 바꾸면 그것도).
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - **알림 설정 판본 (ADR-043):** 설정을 적용하면 `engine.reload()` 가 `_pending` 을 두고 `await engine.record()` 가 판본(`alert_config_versions`, 추가만)·감사로그·약화 알림을 남긴다. 설정을 바꾸는 새 API 는 `routers/alerts._store` 를 거친다(쓰기 전 파일 직접 수정부터 기록 → `reload(force=True, source="ui", actor=…)`).
   - 내장 규칙 이름 `engine.CONFIG_RULE`('알림 설정 변경', kind `config`)은 무음을 건너뛴다. 받는 곳은 바뀌기 전 설정의 규칙들 — 새 약화 판단은 `configdiff._rule_changes` 와 `test_configdiff.py` 의 표에 함께.
