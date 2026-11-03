@@ -130,11 +130,13 @@ async def bundle(rules: tuple[Rule, ...], coverage: dict[str, dict[str, Any]], s
             truncated.append(i["item"])
             rows = rows[:BUNDLE_ALERTS_MAX]
         files.append((f"{folder}/알림.csv", csv_bytes(
-            ["번호", "발생 시각", "심각도", "규칙", "대상", "건수", "처리 상태", "확인한 사람", "확인 시각", "해결한 사람", "해결 시각", "종료 분류"],
+            ["번호", "발생 시각", "심각도", "규칙", "대상", "건수", "처리 상태", "확인한 사람", "확인 시각", "해결한 사람", "해결 시각", "종료 분류",
+             "PC(처음 보는 값)"],
             [[a["id"], local(a["fired_at"]), SEVERITY_LABELS.get(a["severity"], a["severity"]), a["rule"], a["group_key"],
               a["event_count"], STATUS_LABELS.get(a["status"], a["status"]), a["acked_by"] or "",
               local(a["acked_at"]) if a["acked_at"] else "", a["resolved_by"] or "",
-              local(a["resolved_at"]) if a["resolved_at"] else "", RESOLUTION_LABELS.get(a["resolution"] or "", "")]
+              local(a["resolved_at"]) if a["resolved_at"] else "", RESOLUTION_LABELS.get(a["resolution"] or "", ""),
+              a["terms_host"] or ""]
              for a in rows])))
     readme = "\n".join([
         "심사 대응 기간 증적 묶음 (Log Monitor, BACKLOG B-73)",

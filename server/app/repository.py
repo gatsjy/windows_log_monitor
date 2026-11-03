@@ -1185,35 +1185,81 @@ async def reopen_silenced_terms(ns: int, now: datetime, limit: int = 1000) -> in
     무음 중에 처음 보인 공격 출발지가 '이미 알림'이 되어 무음이 끝난 뒤에도 영영 알리지 않았다(검토에서 재현).
     last_seen 은 한 시간마다 고쳐 쓰므로 무음이 끝난 뒤 다시 알리기까지 최대 한 시간 늦을 수 있다.
     - 몰려와 한 통으로 묶은 알림은 한 조합이라도 이어지면 그 알림의 조합을 모두 함께 — 하나씩 열면 묶음 크기 아래로 흩어져 수백 통이 됐다
-    - LIMIT 은 조건에 맞는 것 안에서 — 최근에 본 순으로 먼저 자르면 맞는 조합이 영영 뒤로 밀렸다(검토에서 재현)"""
+    - LIMIT 은 조건에 맞는 것 안에서 — 최근에 본 순으로 먼저 자르면 맞는 조합이 영영 뒤로 밀렸다(검토에서 재현)
+    - 알림 뒤에도 본 것만(last_seen > 알림 시각) — 무음은 본 때로 판단하므로 이미 끝난 무음으로 기록된 알림이 매 주기 다시 열리지 않게"""
     rows = await db.fetch_all(
         "WITH due AS (SELECT DISTINCT s.alert_id FROM seen_terms s JOIN alerts a ON a.id = s.alert_id"
         " JOIN alert_silences si ON si.id = a.silence_id"
-        " WHERE s.ns = %s AND s.state IN ('alerted', 'aggregated') AND si.ends_at <= %s AND s.last_seen > si.ends_at LIMIT %s)"
+        " WHERE s.ns = %s AND s.state IN ('alerted', 'aggregated') AND si.ends_at <= %s AND s.last_seen > GREATEST(si.ends_at, a.fired_at)"
+        " LIMIT %s)"
         " UPDATE seen_terms s SET state = 'pending', alert_id = NULL FROM due"
         " WHERE s.ns = %s AND s.alert_id = due.alert_id AND s.state IN ('alerted', 'aggregated') RETURNING s.term_hash",
         (ns, now, limit, ns))
     return len(rows)
 
 
-async def host_silenced_terms(ns: int, now: datetime, limit: int) -> list[dict[str, Any]]:
+async def host_silenced_terms(ns: int, now: datetime, limit: int, before: tuple[int, bytes] | None = None) -> list[dict[str, Any]]:
     """PC 로 건 무음(대상 = PC 이름)으로만 보내지 않은 조합 중 그 무음이 아직 걸린 것 — 그 사이 다른 PC 에서도 보였는지 볼 것.
-    한 PC 의 점검 무음이 나중에 다른 PC 로 번진 새 값을 무음이 끝날 때까지 가렸다(검토에서 재현)."""
+    한 PC 의 점검 무음이 나중에 다른 PC 로 번진 새 값을 무음이 끝날 때까지 가렸다(검토에서 재현). 몰려 한 통으로 묶은 것도.
+    before: 앞 차례에서 본 마지막 (알림 번호, 열쇠) — 늘 최근 limit 개만 보면 오래된 조합이 영영 차례가 오지 않았다(검토에서 재현).
+    묶음 알림은 조합이 여럿이라 알림 번호만으로 넘기면 경계의 조합을 건너뛴다."""
+    after = "" if before is None else " AND (a.id, s.term_hash) < (%s, %s)"
     return await db.fetch_all(
-        "SELECT s.term_hash, s.term, a.fired_at, a.group_key FROM seen_terms s JOIN alerts a ON a.id = s.alert_id"
-        " JOIN alert_silences si ON si.id = a.silence_id"
-        " WHERE s.ns = %s AND s.state = 'alerted' AND si.ends_at > %s AND si.group_key IS NOT NULL AND si.group_key <> a.group_key"
-        " ORDER BY a.id DESC LIMIT %s", (ns, now, limit))
+        "SELECT s.term_hash, s.term, s.state, a.id AS alert_id, a.fired_at, a.group_key FROM seen_terms s"
+        " JOIN alerts a ON a.id = s.alert_id JOIN alert_silences si ON si.id = a.silence_id"
+        " WHERE s.ns = %s AND s.state IN ('alerted', 'aggregated') AND si.ends_at > %s AND si.group_key IS NOT NULL"
+        f" AND si.group_key <> a.group_key{after} ORDER BY a.id DESC, s.term_hash DESC LIMIT %s",
+        (ns, now, *(before or ()), limit))
 
 
 async def reopen_terms(ns: int, spread: list[tuple[bytes, str]]) -> None:
     """다른 PC 로 번진 조합을 다시 알릴 차례로 — 알림의 PC 는 번진 PC 로(점검 중인 첫 PC 로 두면 그 PC 의 경로·조회 범위로 가서
-    번진 PC 쪽 사람은 못 봤다, 검토에서 재현)."""
+    번진 PC 쪽 사람은 못 봤다, 검토에서 재현). 몰려 한 통으로 묶었던 것은 그 알림의 조합을 모두 함께(다시 한 통으로)."""
     await db.fetch_all(
-        "UPDATE seen_terms s SET state = 'pending', alert_id = NULL, first_host = x.host"
-        " FROM unnest(%s::bytea[], %s::text[]) x(term_hash, host)"
-        " WHERE s.ns = %s AND s.term_hash = x.term_hash AND s.state = 'alerted' RETURNING s.ns",
-        ([h for h, _ in spread], [host for _, host in spread], ns))
+        "WITH x AS (SELECT * FROM unnest(%s::bytea[], %s::text[]) x(term_hash, host)),"
+        " ids AS (SELECT DISTINCT s.alert_id FROM seen_terms s JOIN x ON x.term_hash = s.term_hash WHERE s.ns = %s)"
+        " UPDATE seen_terms s SET state = 'pending', alert_id = NULL,"
+        " first_host = COALESCE((SELECT x.host FROM x WHERE x.term_hash = s.term_hash), s.first_host)"
+        " WHERE s.ns = %s AND s.alert_id IN (SELECT alert_id FROM ids) AND s.state IN ('alerted', 'aggregated') RETURNING s.ns",
+        ([h for h, _ in spread], [host for _, host in spread], ns, ns))
+
+
+async def recheck_pending_terms(ns: int, f: EventFilter, fields: list[str]) -> list[bytes]:
+    """알릴 차례(pending)인 조합 중 지금 조건(예외·저장한 검색·바꾼 match)에 맞는 로그가 처음 본 때 뒤로 있는 것의 열쇠 — 몰려와
+    한 통으로 묶을 때 한꺼번에 다시 본다(하나씩 보던 것을 묶음에서는 건너뛰어, 미뤄 둔 동안 예외를 건 값도 '처음 보는 값 n개'에 들어갔다).
+    전체 값으로 만든 열쇠(wlm_terms_hash)로 맞춰 256자 잘림과 무관하다."""
+    exprs = [_field_expr(x) for x in fields]
+    first = await db.fetch_one("SELECT min(first_seen) AS at FROM seen_terms WHERE ns = %s AND state = 'pending'", (ns,))
+    if first is None or first["at"] is None:
+        return []
+    where, where_params = where_clause(replace(f, received_since=first["at"] - timedelta(minutes=1)))
+    term = sql.SQL("ARRAY[{}]::text[]").format(sql.SQL(", ").join(e for e, _ in exprs))
+    nonempty = sql.SQL(" AND ").join(sql.SQL("{} <> ''").format(e) for e, _ in exprs)
+    expr_params = [p for _, ps in exprs for p in ps]
+    rows = await db.fetch_all(sql.SQL(
+        "SELECT DISTINCT wlm_terms_hash({term}) AS h FROM events WHERE {where} AND {nonempty}"
+        " AND wlm_terms_hash({term}) IN (SELECT term_hash FROM seen_terms WHERE ns = %s AND state = 'pending')").format(
+            term=term, where=where, nonempty=nonempty), [*expr_params, *where_params, *expr_params, *expr_params, ns])
+    return [bytes(r["h"]) for r in rows]
+
+
+async def pending_hosts(ns: int, hashes: list[bytes], limit: int) -> list[dict[str, Any]] | None:
+    """몰려온 묶음의 PC 와 그 PC 에서 마지막으로 본 때 — PC 점검 무음이 묶음에도 걸리게(모든 PC 가 무음일 때만). PC 를 모르는 조합이
+    있거나 너무 많으면 None(무음으로 가리지 않음)."""
+    rows = await db.fetch_all(
+        "SELECT first_host AS host, max(last_seen) AS at FROM seen_terms WHERE ns = %s AND term_hash = ANY(%s) GROUP BY 1"
+        " LIMIT %s", (ns, hashes, limit + 1))
+    if not rows or len(rows) > limit or any(r["host"] is None for r in rows):
+        return None
+    return rows
+
+
+async def hosts_last_seen(f: EventFilter, limit: int) -> list[dict[str, Any]]:
+    """조건에 맞는 로그의 PC 와 그 PC 에서 마지막으로 받은 때 — 무음은 그 PC 를 마지막으로 본 때로 판단한다(지금으로 판단하면 점검 중에만
+    보인 값이 다른 PC 의 무음이 먼저 끝나는 순간 알림이 됐다, 검토에서 재현)."""
+    where, params = where_clause(f)
+    return await db.fetch_all(sql.SQL("SELECT host, max(received_at) AS at FROM events WHERE {} AND host IS NOT NULL"
+                                      " GROUP BY host ORDER BY max(received_at) DESC LIMIT %s").format(where), [*params, limit])
 
 
 async def pending_terms(ns: int, limit: int) -> list[dict[str, Any]]:
@@ -1226,6 +1272,12 @@ async def settle_terms(ns: int, hashes: list[bytes], state: str) -> None:
     """알릴 차례(pending)였던 조합을 알리지 않고 state 로 — 알릴 때 다시 보니 지금 조건(예외)에 맞는 로그가 없을 때."""
     await db.fetch_all("UPDATE seen_terms SET state = %s WHERE ns = %s AND term_hash = ANY(%s) AND state = 'pending' RETURNING ns",
                        (state, ns, hashes))
+
+
+async def settle_terms_except(ns: int, keep: list[bytes], state: str) -> None:
+    """알릴 차례인 조합 중 keep 이 아닌 것을 알리지 않고 state 로 (몰려온 묶음을 다시 봐서 지금 조건에 맞는 로그가 없던 것)."""
+    await db.fetch_all("UPDATE seen_terms SET state = %s WHERE ns = %s AND state = 'pending' AND NOT (term_hash = ANY(%s))"
+                       " RETURNING ns", (state, ns, keep))
 
 
 async def count_pending_terms(ns: int) -> int:
@@ -1651,7 +1703,7 @@ async def count_gave_up(since: datetime) -> int:
 
 
 _ALERT_COLUMNS = (
-    "a.id, a.fired_at, a.rule, a.severity, a.group_key, a.event_count, a.first_event_at, a.last_event_at,"
+    "a.id, a.fired_at, a.rule, a.severity, a.group_key, a.terms_host, a.event_count, a.first_event_at, a.last_event_at,"
     " a.status, a.acked_by, a.acked_at, a.resolved_by, a.resolved_at, a.auto_resolved, a.silence_id, a.resolution,"
     " coalesce((a.payload->>'observe')::boolean, false) AS observed,"   # 관찰 모드 규칙의 알림 (B-52)
     " (SELECT count(*) FROM alert_notes n WHERE n.alert_id = a.id AND n.action = 'note') AS note_count,"
@@ -1702,7 +1754,7 @@ async def list_alerts(since: datetime, limit: int, rule: str | None = None, seve
 
 async def get_alert(alert_id: int) -> dict | None:
     """상세: 목록 칸 + payload + 처리 기록(notes) + 무음 정보 + 같은 규칙·대상의 해결 안 된 다른 알림 수."""
-    row = await db.fetch_one(f"SELECT {_ALERT_COLUMNS}, a.payload, a.terms_host FROM alerts a WHERE a.id = %s", (alert_id,))
+    row = await db.fetch_one(f"SELECT {_ALERT_COLUMNS}, a.payload FROM alerts a WHERE a.id = %s", (alert_id,))
     if row is None:
         return None
     row["notes"] = (await alert_notes_for([alert_id])).get(alert_id, [])
@@ -1947,7 +1999,7 @@ async def isms_alert_stats(since: datetime, until: datetime) -> list[dict]:
 async def isms_alerts(item: str, since: datetime, until: datetime, limit: int) -> list[dict]:
     """심사 대응 증적 묶음 (B-73): 그 ISMS 항목 태그로 난 기간 안 알림 (발생 순, 요약과 같은 항목 판단)."""
     return await db.fetch_all(
-        "SELECT a.id, a.fired_at, a.severity, a.rule, a.group_key, a.event_count, a.status, a.acked_by, a.acked_at,"
+        "SELECT a.id, a.fired_at, a.severity, a.rule, a.group_key, a.terms_host, a.event_count, a.status, a.acked_by, a.acked_at,"
         " a.resolved_by, a.resolved_at, a.resolution FROM alerts a"
         f" WHERE a.fired_at >= %s AND a.fired_at < %s AND EXISTS (SELECT 1 FROM jsonb_array_elements_text({_TAGS}) AS t(tag)"
         f"   WHERE {_ISMS_ITEM} = %s) ORDER BY a.fired_at, a.id LIMIT %s",

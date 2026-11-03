@@ -215,7 +215,7 @@ export async function openAlert(id, { onChange } = {}) {
         <div data-formbox></div>
       </div>
       ${alert.silence ? html`<div class="hint-box" style="margin-bottom:14px">무음 #${alert.silence.id} 중에 발생해 보내지 않았습니다 —
-        ${alert.silence.reason} (${alert.silence.created_by}, ${fmtTime(alert.silence.starts_at)} ~ ${fmtTime(alert.silence.ends_at)})</div>` : ''}
+        ${alert.silence.hidden ? '다른 대상에 건 무음' : html`${alert.silence.reason} (${alert.silence.created_by},`} ${fmtTime(alert.silence.starts_at)} ~ ${fmtTime(alert.silence.ends_at)}${alert.silence.hidden ? '' : ')'}</div>` : ''}
 
       ${builtin ? (configLines.length ? html`<div class="hint-box" style="margin-bottom:14px;white-space:pre-line">${configLines.join('\n')}</div>` : '')
         : p.description ? html`<div class="hint-box" style="margin-bottom:14px">${p.description}</div>` : ''}

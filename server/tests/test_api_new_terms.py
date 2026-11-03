@@ -673,7 +673,113 @@ def test_reopen_limit_counts_only_qualifying(client):
     ns, *_ = state_of("다시 열기 상한")
     sql("UPDATE alert_silences SET starts_at = now() - interval '3 hours', ends_at = now() - interval '30 minutes'"
         " WHERE rule = '다시 열기 상한'")
+    sql("UPDATE alerts SET fired_at = now() - interval '2 hours' WHERE rule = '다시 열기 상한'")   # 알림은 무음 중에 났고
     sql("UPDATE seen_terms SET last_seen = now() - interval '10 minutes' WHERE ns = %s AND term[1] = 'hushed'", (ns,))
     sql("UPDATE seen_terms SET last_seen = now() WHERE ns = %s AND term[1] = 'plain'", (ns,))
     assert client.portal.call(lambda: repository.reopen_silenced_terms(ns, datetime.now(UTC), limit=1)) == 1
     assert sql("SELECT state FROM seen_terms WHERE ns = %s AND term[1] = 'hushed'", (ns,)) == [("pending",)]
+
+
+# ---------------------------------------------------------------- 3차 재검토 보완
+def silence(rule, key, minutes_left, reason="점검", started_minutes_ago=1):
+    return sql("INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by) VALUES"
+               " (%s, %s, now() - make_interval(mins => %s), now() + make_interval(mins => %s), %s, 'admin') RETURNING id",
+               (rule, key, started_minutes_ago, minutes_left, reason))[0][0]
+
+
+def test_burst_rechecks_pending_against_current_condition(client, monkeypatch):
+    """몰려온 묶음도 알리기 전에 지금 조건으로 다시 본다 — 미뤄 둔 동안 건 예외의 값이 '처음 보는 값 n개'에 들어갔다(재현)."""
+    rule = own_rule("묶음 다시 보기", 4851, burst=2)
+    evaluate(client, rule)
+    ns, *_ = state_of("묶음 다시 보기")
+    for i in range(3):
+        ev(f"scan{i}", "10.51.0.200", 4851)
+        sql("INSERT INTO seen_terms (ns, term_hash, term, first_seen, last_seen, first_host, state) VALUES"
+            " (%s, wlm_terms_hash(ARRAY[%s, '10.51.0.200']), ARRAY[%s, '10.51.0.200'], now() - interval '5 seconds', now(),"
+            " 'DC-01', 'pending')", (ns, f"scan{i}", f"scan{i}"))
+    sql("INSERT INTO rule_exceptions (rule, term, reason, created_by) VALUES ('묶음 다시 보기', 'ip:10.51.0.200', '점검기', 'admin')")
+    sql("UPDATE new_terms_state SET cursor_at = now() WHERE id = %s", (ns,))
+    assert evaluate(client, rule)[0] == []
+    assert sql("SELECT DISTINCT state FROM seen_terms WHERE ns = %s AND term[1] LIKE 'scan%%'", (ns,)) == [("learned",)]
+
+
+def test_burst_from_silenced_pc_is_silenced(client):
+    rule = own_rule("점검 중 몰림", 4852, burst=2)
+    evaluate(client, rule)
+    silence(None, "MH-52", 60)
+    for i in range(3):
+        ev(f"msi{i}", "10.52.0.1", 4852, host="MH-52")
+    evaluate(client, rule)
+    [(_, key, silence_id, _)] = rule_alerts("점검 중 몰림")
+    assert key.startswith("처음 보는 값 3개") and silence_id is not None
+    sql("UPDATE alert_silences SET ends_at = now() WHERE group_key = 'MH-52'")
+
+
+def test_silence_judged_at_sighting_time(client):
+    """두 PC 모두 점검 중에만 본 값: 한 PC 의 무음이 먼저 끝나도 알리지 않는다(지금으로 판단하면 알림이 됐다, 재현)."""
+    from app.alerts import newterms
+
+    rule = own_rule("점검 중에만", 4853)
+    evaluate(client, rule)
+    silence(None, "MA-53", 3 * 24 * 60)
+    mb = silence(None, "MB-53", 60)
+    ev("patchsvc", "10.53.0.1", 4853, host="MA-53")
+    ev("patchsvc", "10.53.0.1", 4853, host="MB-53")
+    evaluate(client, rule)
+    assert rule_alerts("점검 중에만")[-1][2] is not None
+    sql("UPDATE alert_silences SET ends_at = now() WHERE id = %s", (mb,))
+    ns, *_ = state_of("점검 중에만")
+    newterms._spread.pop(ns, None)
+    assert evaluate(client, rule)[0] == []
+    sql("UPDATE alert_silences SET ends_at = now() WHERE group_key IN ('MA-53', 'MB-53')")
+
+
+def test_spread_check_rotates_through_all_candidates(client, monkeypatch):
+    from app.alerts import newterms
+
+    monkeypatch.setattr(newterms, "SPREAD_MAX", 5)
+    rule = own_rule("돌아가며", 4854, burst=100)
+    evaluate(client, rule)
+    silence(None, "MC-54", 3 * 24 * 60)
+    ev("early", "10.54.0.1", 4854, host="MC-54")
+    evaluate(client, rule)
+    for i in range(6):                                   # 오래된 'early' 뒤에 6개 더 — 최근 5개만 보면 영영 차례가 안 온다
+        ev(f"later{i}", "10.54.0.2", 4854, host="MC-54")
+    evaluate(client, rule)
+    assert len(rule_alerts("돌아가며")) == 7
+    ev("early", "10.54.0.1", 4854, host="WS-54")
+    ns, *_ = state_of("돌아가며")
+    fired = []
+    for _ in range(2):
+        newterms._spread.pop(ns, None)
+        fired += evaluate(client, rule)[0]
+    assert len(fired) == 1 and rule_alerts("돌아가며")[-1][3]["terms"]["host"] == "WS-54"
+    sql("UPDATE alert_silences SET ends_at = now() WHERE group_key = 'MC-54'")
+
+
+def test_hidden_silence_and_scoped_pc_silence(client):
+    """범위 밖 PC 의 무음은 상세에 이름·사유 없이, 범위 안 PC 로 건 처음 보는 값 규칙의 무음은 다룰 수 있다."""
+    from app import repository
+    from app.alerts.visibility import scrub_silence, silence_target_visible, silence_visible
+    from app.auth.service import User
+    from app.filters import Scope
+
+    rule = own_rule("두 PC 점검", 4855)
+    evaluate(client, rule)
+    silence(None, "WS-55", 60)
+    silence(None, "SRV-55", 24 * 60, reason="EMR DB 비공개 점검")
+    t = datetime.now(UTC)
+    ev("svc_patch", "10.55.0.1", 4855, host="WS-55", at=t)
+    ev("svc_patch", "10.55.0.1", 4855, host="SRV-55", at=t + timedelta(seconds=1))
+    evaluate(client, rule)
+    [(alert_id, _, silence_id, payload)] = rule_alerts("두 PC 점검")
+    assert silence_id is not None and payload["terms"]["host"] == "WS-55"
+    user = User(id=97, username="ws", display_name="ws", role="viewer", must_change_password=False,
+                password_changed_at=datetime.now(UTC), scopes=(Scope(hosts=("WS-*",)),))
+    row = client.portal.call(repository.get_alert, alert_id)
+    shown = scrub_silence(user, row["silence"])
+    assert shown["hidden"] and shown["reason"] is None and shown["group_key"] is None
+    assert silence_target_visible(user, "두 PC 점검", "WS-55") and not silence_target_visible(user, "두 PC 점검", "SRV-55")
+    assert silence_visible(user, {"rule": "두 PC 점검", "group_key": "WS-55"})
+    assert row["terms_host"] == "WS-55"                    # 목록·CSV 에도 PC
+    sql("UPDATE alert_silences SET ends_at = now() WHERE group_key IN ('WS-55', 'SRV-55')")

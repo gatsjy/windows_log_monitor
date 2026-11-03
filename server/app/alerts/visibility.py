@@ -70,11 +70,32 @@ def silence_visible(user: User, silence: dict[str, Any]) -> bool:
     if key is None:
         cats = _rule_categories(rule)
         return any(not scope.categories or bool(cats & set(scope.categories)) for scope in user.scopes)
-    return alert_visible(user, silence)
+    return alert_visible(user, _as_alert(silence))
+
+
+def _as_alert(silence: dict[str, Any]) -> dict[str, Any]:
+    """규칙·대상을 정한 무음을 알림처럼 — 처음 보는 값(B-47) 규칙의 대상 자리는 PC 이름으로도 걸린다(active_silence 가 PC 로도 맞춘다).
+    그래서 PC 로 보아 범위를 판단한다 — 값 조합 이름은 PC 모양이 아니라 그대로 안 보인다(그 무음은 모든 PC 에 걸리므로 맞다)."""
+    rule = next((r for r in engine.config.rules if r.name == silence["rule"]), None)
+    if rule is not None and rule.kind == "new_terms":
+        return {"rule": silence["rule"], "group_key": silence["group_key"], "terms_host": silence["group_key"]}
+    return silence
+
+
+def silence_target_visible(user: User, rule: str | None, group_key: str | None) -> bool:
+    """무음을 걸고 풀 수 있는 범위(routers/alerts._check_silence_scope) — 규칙·대상 한 개, 위와 같은 판단."""
+    if user.scopes is None:
+        return True
+    return rule is not None and group_key is not None and alert_visible(user, _as_alert({"rule": rule, "group_key": group_key}))
 
 
 def scrub_silence(user: User, silence: dict[str, Any]) -> dict[str, Any]:
-    """범위가 있는 사용자에게 넓은 무음의 '보내지 않은 알림 수'는 감춘다 — 범위 밖 알림까지 센 숫자라서."""
+    """범위가 있는 사용자에게 넓은 무음의 '보내지 않은 알림 수'는 감춘다 — 범위 밖 알림까지 센 숫자라서.
+    볼 수 없는 무음(처음 보는 값 알림이 여러 PC 의 점검 무음에 걸렸을 때 다른 PC 의 것)은 무음이었다는 것과 기간만 —
+    범위 밖 PC 이름·사유·건 사람이 알림 상세로 샜다(검토에서 재현)."""
+    if user.scopes is not None and not silence_visible(user, silence):
+        return {"id": silence["id"], "starts_at": silence["starts_at"], "ends_at": silence["ends_at"], "rule": None,
+                "group_key": None, "reason": None, "created_by": None, "suppressed": None, "hidden": True}
     if user.scopes is not None and (silence["rule"] is None or silence["group_key"] is None):
         return {**silence, "suppressed": None}
     return silence

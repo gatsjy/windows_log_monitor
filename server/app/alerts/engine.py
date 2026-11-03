@@ -595,17 +595,20 @@ class AlertEngine:
 
     # ------------------------------------------------------------ 전송
     async def fire(self, message: AlertMessage, notify: tuple[str, ...], claim: dict | None = None,
-                   hosts: list[str] | None = None) -> int | None:
+                   hosts: list[tuple[str, datetime]] | None = None) -> int | None:
         """알림을 기록하고 전송기를 깨운다 — 보내는 것은 전송기(dispatcher)다. 여기서는 네트워크를 쓰지 않는다 (ADR-045).
         claim: 처음 보는 값(B-47)의 조합 — 다른 쪽이 이미 알렸으면 None.
-        hosts: 여러 PC 에서 보인 조합(B-47) — PC 로 건 무음은 그 PC 모두에 걸려야 무음(한 PC 의 점검 무음이 다른 PC 의 새 값을 가리지 않게)."""
+        hosts: 처음 보는 값(B-47)을 본 (PC, 그 PC 에서 마지막으로 본 때) — 규칙·대상·전체 무음은 지금으로, PC 로 건 무음은 그 PC 모두가
+        본 때 무음이었을 때만(한 PC 의 점검 무음이 다른 PC 의 새 값을 가리지 않게, 점검 중에만 보인 값은 무음이 끝나도 알리지 않게)."""
         # 설정 변경 알림은 무음으로 막지 않는다 — '모든 규칙' 무음을 건 뒤 규칙을 끄면 아무도 모르게 된다
         host = (message.stream or {}).get("host") or (message.terms or {}).get("host")
         if message.kind == "config":
             silence = None
         elif hosts:
-            found = [await repository.active_silence(message.rule, message.group_key, message.fired_at, h) for h in hosts]
-            silence = None if any(x is None for x in found) else max(found, key=lambda x: x["ends_at"])
+            silence = await repository.active_silence(message.rule, message.group_key, message.fired_at)
+            if silence is None:
+                found = [await repository.active_silence(message.rule, message.group_key, at, h) for h, at in hosts]
+                silence = None if any(x is None for x in found) else max(found, key=lambda x: x["ends_at"])
         else:
             silence = await repository.active_silence(message.rule, message.group_key, message.fired_at, host)
         # 관찰 모드(B-52): 무음처럼 기록만 한다. 시험 발송은 받는 곳을 시험하는 것이라 보낸다
@@ -683,7 +686,7 @@ class AlertEngine:
         return reopened
 
     async def fire_rule(self, rule: Rule, message: AlertMessage, claim: dict | None = None,
-                        hosts: list[str] | None = None) -> int | None:
+                        hosts: list[tuple[str, datetime]] | None = None) -> int | None:
         """규칙의 알림 — 받는 곳은 규칙의 notify 에 경로(routes, B-26)를 적용해서. 거친 경로 이름은 payload 에(증적)."""
         notify, message.routes = self.config.targets_for(rule, message.group_key, host=(message.terms or {}).get("host"))
         return await self.fire(message, notify, claim, hosts)

@@ -32,7 +32,14 @@ from ..alerts.health import RULE_LABELS
 from ..alerts.message import RESOLUTION_LABELS, local
 from ..alerts.notifiers import SEVERITY_LABELS, NotifierError
 from ..alerts.rules import ACCOUNT_EXCLUDE_ERROR, SILENT_KINDS, AlertConfig, ConfigError, Rule, parse, parse_text
-from ..alerts.visibility import alert_stats_for, alert_visible, count_by_status, scrub_silence, silence_visible
+from ..alerts.visibility import (
+    alert_stats_for,
+    alert_visible,
+    count_by_status,
+    scrub_silence,
+    silence_target_visible,
+    silence_visible,
+)
 from ..auth import groups
 from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
@@ -143,14 +150,14 @@ async def _alerts_csv(request: Request, user: User, start: datetime, since: str,
                 local(a["resolved_at"]) if a["resolved_at"] else "", RESOLUTION_LABELS.get(a["resolution"] or "", ""),
                 f"#{a['silence_id']}" if a["silence_id"] else "",
                 "; ".join(f"{d['notifier']}{' 해소' if d.get('action') == 'resolve' else ' 다시 알림' if str(d.get('action') or '').startswith('escalate:') else ''}:{d['status']}"
-                          for d in a["deliveries"]), history,
+                          for d in a["deliveries"]), history, a["terms_host"] or "",
             ]
         if truncated:
             yield [f"(최근 {CSV_LIMIT:,}건까지만 내보냈습니다. 기간을 나눠 다시 내려받으세요)"]
 
     return csv_response(
         ["번호", "발생 시각", "심각도", "규칙", "대상", "건수", "처리 상태", "확인한 사람", "확인 시각",
-         "해결한 사람", "해결 시각", "종료 분류", "무음", "전송", "처리 기록"],
+         "해결한 사람", "해결 시각", "종료 분류", "무음", "전송", "처리 기록", "PC(처음 보는 값)"],
         lines(), f"alerts_{datetime.now(UTC):%Y%m%d_%H%M%S}.csv",
         headers={"X-WLM-Truncated": "1"} if truncated else None)
 
@@ -892,7 +899,7 @@ def _check_silence_scope(user: User, rule: str | None, group_key: str | None) ->
     """조회 범위가 있는 사용자는 자기가 볼 수 있는 규칙·대상에만 무음을 걸고 풀 수 있다 (남의 알림까지 막지 않게)."""
     if user.scopes is None:
         return
-    if rule is None or group_key is None or not alert_visible(user, {"rule": rule, "group_key": group_key}):
+    if not silence_target_visible(user, rule, group_key):
         raise HTTPException(403, "조회 범위가 정해진 사용자는 볼 수 있는 규칙·대상 한 개에만 무음을 걸 수 있습니다")
 
 

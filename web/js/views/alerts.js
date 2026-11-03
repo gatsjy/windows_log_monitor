@@ -209,7 +209,7 @@ export async function mount(root, params, sub) {
           <td class="nowrap num muted" title="${fmtRelative(a.fired_at)}">${fmtTime(a.fired_at)}</td>
           <td class="nowrap">${severityBadge(a.severity)}</td>
           <td class="nowrap"><b>${a.rule}</b></td>
-          <td class="nowrap">${a.group_key || '–'}</td>
+          <td class="nowrap">${a.group_key || '–'}${a.terms_host ? html` <span class="muted">· ${a.terms_host}</span>` : ''}</td>
           <td class="r num">${a.event_count ? fmtNum(a.event_count) : '–'}</td>
           <td class="nowrap">${statusChip(a)}${a.note_count ? html` <span class="muted note-count" title="메모 ${a.note_count}개">메모 ${a.note_count}</span>` : ''}</td>
           <td class="dlv-cell">${deliveryChips(a.deliveries)}</td>

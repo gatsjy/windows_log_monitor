@@ -18,7 +18,7 @@ export default {
       <tr class="clickable" data-id="${a.id}">
         <td class="nowrap muted" style="width:1%">${fmtRelative(a.fired_at)}</td>
         <td class="nowrap" style="width:1%">${severityBadge(a.severity)}</td>
-        <td class="nowrap"><b>${a.rule}</b>${a.group_key ? html` <span class="muted">· ${a.group_key}</span>` : ''}
+        <td class="nowrap"><b>${a.rule}</b>${a.group_key ? html` <span class="muted">· ${a.group_key}${a.terms_host ? ` · ${a.terms_host}` : ''}</span>` : ''}
           ${a.event_count ? html` <span class="muted num">(${fmtNum(a.event_count)}건)</span>` : ''}</td>
         <td class="nowrap" style="width:1%">${statusChip(a)}</td>
         <td class="r dlv-cell">${deliveryChips(a.deliveries)}</td>
