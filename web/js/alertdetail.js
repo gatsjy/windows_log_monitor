@@ -103,8 +103,15 @@ export function matchText(match = {}) {
   return parts.join(', ') || '모든 이벤트';
 }
 
+// 상관 알림 (B-67 2단계): 볼 개체 → 'PC·계정·IP'
+const ENTITY_WORDS = { host: 'PC', account: '계정', ip: 'IP' };
+export const entityText = (kinds = []) => kinds.map((k) => ENTITY_WORDS[k] ?? k).join('·');
+
 /** 규칙 조건을 한 줄로: "수준 오류 · 10분 동안 5건 이상 · PC별 · 재알림 1시간" */
 export function ruleSummary(r) {
+  if (r.kind === 'correlation') {
+    return `같은 ${entityText(r.entities)}에서 ${fmtDuration(r.window_sec)} 안에 다른 규칙 알림의 서로 다른 전술 ${fmtNum(r.min_tactics)}개 이상 · 재알림 ${fmtDuration(r.cooldown_sec)}`;
+  }
   if (r.kind === 'agent_silent') {
     return `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'} · ${fmtDuration(r.silent_for_sec)} 이상 수신 없음`;
   }
@@ -128,6 +135,18 @@ function termsText(t) {
   if (t.items) return `${days} 없던 ${(t.fields ?? []).map(termName).join(' + ')} ${fmtNum(t.count)}개가 한 주기에 몰려와 한 통으로 묶었습니다 — 서브넷·계정 일괄 변경인지 확인하세요.`;
   const again = t.prev_last_seen ? ` (마지막으로 본 때 ${fmtTime(t.prev_last_seen)} — 오랜만에 다시 보임)` : '';
   return `${days} 보지 못한 ${(t.fields ?? []).map(termName).join(' + ')} 조합이 나타났습니다${again}.`;
+}
+
+/** 상관 알림 (B-67 2단계): 전술 흐름(전술 → 그 전술로 센 규칙)과 묶은 알림 목록 — 누르면 그 알림 상세 */
+function correlationBlock(c) {
+  const steps = c.tactics ?? [];
+  const items = c.alerts ?? [];
+  return html`<ol class="tactic-steps">${steps.map((s) => html`<li><b>${s.name}</b> <span class="muted">${s.rule}</span></li>`)}</ol>
+    ${items.length ? html`<ul class="rel-list" data-chain style="margin-bottom:14px">${items.map((a) => html`<li data-alert="${a.id}" title="이 알림 상세">
+      <div class="rel-head">${severityBadge(a.severity)}<b>${a.rule}</b>${a.group_key ? html`<span class="muted">· ${a.group_key}</span>` : ''}</div>
+      <div class="rel-meta"><span class="num muted">${fmtTime(a.fired_at)}</span>${(a.tactics ?? []).map((t) => html`<span class="type-tag">${t}</span>`)}</div>
+    </li>`)}</ul>` : ''}
+    ${(c.count ?? items.length) > items.length ? html`<p class="muted" style="margin:-8px 0 14px;font-size:12.5px">… 외 ${fmtNum(c.count - items.length)}건 — 개체 칩을 눌러 개체 페이지에서 모두 보세요</p>` : ''}`;
 }
 
 function termsBlock(t) {
@@ -259,11 +278,14 @@ export async function openAlert(id, { onChange } = {}) {
           ? `${alert.group_key} 로그가 ${fmtDuration(p.window_sec)} 넘게 들어오지 않습니다 — PC 는 살아 있습니다${p.stream?.per_day ? ` (평소 하루 ${fmtNum(p.stream.per_day)}건)` : ''}. 감사 정책·에이전트 설정을 확인하세요.`
         : p.kind === 'new_terms'
           ? termsText(p.terms ?? {})
+        : p.kind === 'correlation'
+          ? `${alert.group_key} 에서 최근 ${fmtDuration(p.window_sec)} 동안 다른 규칙들의 알림이 서로 다른 공격 단계(전술) ${fmtNum(p.correlation?.tactics?.length ?? 0)}개로 이어졌습니다 (기준 ${fmtNum(p.threshold)}개 이상) — 한 사고로 보고 함께 조사하세요.`
         : p.distinct_field
           ? `최근 ${fmtDuration(p.window_sec)} 동안 서로 다른 ${GROUP_LABELS[p.distinct_field] ?? p.distinct_field.replace(/^f\./, '')} ${fmtNum(p.distinct_count)}개 (기준 ${fmtNum(p.distinct_min)}개 이상) · 이벤트 ${fmtNum(alert.event_count)}건`
           : `최근 ${fmtDuration(p.window_sec)} 동안 조건에 맞는 이벤트 ${fmtNum(alert.event_count)}건 (기준 ${fmtNum(p.threshold)}건 이상)`}</p>
       ${lifecycle(alert, p)}
       ${p.kind === 'new_terms' ? termsBlock(p.terms ?? {}) : ''}
+      ${p.kind === 'correlation' ? correlationBlock(p.correlation ?? {}) : ''}
       ${p.distinct_values?.length ? html`<p class="muted" style="margin:-8px 0 14px;font-size:12.5px">${p.distinct_values.join(', ')}${p.distinct_count > p.distinct_values.length ? ` … 외 ${fmtNum(p.distinct_count - p.distinct_values.length)}` : ''}</p>` : ''}
 
       <div class="handle-box">
@@ -337,6 +359,8 @@ export async function openAlert(id, { onChange } = {}) {
         <div class="table-wrap"><table class="table ev-table"><thead>${EVENT_HEAD}</thead>
           <tbody data-samples>${samples.map((s, i) => eventRow(s, i))}</tbody></table></div>` : ''}`;
 
+    const chain = body.querySelector('[data-chain]');
+    if (chain) bindAlertRows(chain, onChange);   // 묶은 알림을 열면 이 패널은 그 알림으로 바뀐다
     const relBox = body.querySelector('[data-related]');
     if (relBox) relatedSection(relBox, alert, onChange);   // 관련 알림을 열면 이 패널은 그 알림으로 바뀐다 — 목록만 새로
     body.querySelector('[data-pb-open]')?.addEventListener('click', (e) => {

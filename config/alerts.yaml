@@ -377,3 +377,18 @@ rules:
     severity: warning
     tags: [MITRE T1110.004, ISMS 2.11.3]
     notify: [운영팀]
+
+  # 상관 알림 (B-67 2단계): 위 규칙들의 알림을 같은 PC·계정·IP 마다 묶어, 1시간 안에 서로 다른 MITRE 전술 3개 이상이면 한 통
+  # (전술은 각 규칙의 tags 의 'MITRE T…' 에서). 관찰 모드로 오탐을 본 뒤 켠다
+  - name: 공격 흐름 (여러 전술)
+    sid: 1000026
+    group: 계정·인증 공격
+    description: "같은 PC·계정·IP 에서 1시간 안에 서로 다른 공격 단계(예: 무차별 대입 → 로그온 → 새 서비스 → 감사 로그 삭제)의 알림이 이어졌습니다 — 한 사고로 보고 묶은 알림을 함께 조사하세요"
+    kind: correlation
+    mode: observe
+    window: 1h
+    min_tactics: 3
+    entities: [host, account, ip]
+    severity: critical
+    tags: [ISMS 2.11.3]
+    notify: [운영팀]

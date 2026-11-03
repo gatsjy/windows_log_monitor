@@ -57,7 +57,7 @@ server/app/
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
-  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · newterms(처음 보는 값: 받은 시각 구간 훑기·배우기·조합마다 한 번, B-47) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
+  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · newterms(처음 보는 값: 받은 시각 구간 훑기·배우기·조합마다 한 번, B-47) · correlation(상관 알림: 개체마다 여러 전술, B-67) · tactics(MITRE 기법 → 전술 표·짝짓기) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF) · review(권한 검토 스냅샷·결재, B-72)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
   clock.py           PC·서버 시계 차이 판단(B-57) — 하트비트 시각의 창 두 개 최솟값(repository.CLOCK_OFFSET_SQL)으로 1분·5분·서버 시계 의심
@@ -264,6 +264,9 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 개체 PC 는 저장된 그대로 내보내지 않는다 — 알림을 돌려주는 새 API 는 `visibility.scrub_entities(user, row)` 를 거친다(처음 보는 값 알림은 본 PC 를 모두 가져 범위 밖 PC 이름이 샌다).
   - 관련 알림을 잇는 계정에서 `repository.machine_account`(SYSTEM·LocalSystem 등)는 뺀다. PC 정보는 `repository.agent_row(host, since, scopes)`(수집 PC 목록과 같은 범위 판단).
   - 설치 스크립트는 마이그레이션 중이면 30분까지 기다린다(`deploy/airgap/install.sh` 의 `migrating` — `db._MIGRATION_LOCK_ID` 잠금을 쥐고 있고 api 가 다시 뜨지 않았을 때. 잠금 번호를 바꾸면 그것도).
+- **상관 알림 (B-67 2단계, ADR-065):** 재료는 로그가 아니라 알림(`repository.correlation_sources` — 관찰·무음·끊김·내장·상관 알림 제외)과 알릴 때의 태그.
+  전술 수는 `tactics.assign`(규칙·전술 최대 짝짓기) — 전술 합집합으로 세지 않는다(T1078 하나가 3개가 됨). 새 MITRE 기법 태그를 기본 규칙에 쓰면 `tactics.TECHNIQUES` 에도(`test_shipped_rules_have_only_known_mitre_tags`).
+  상관 알림은 범위가 없는 사용자만 본다(`visibility.alert_visible`) — 알림 종류를 새로 보이게 하려면 그 판단부터.
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - **알림 설정 판본 (ADR-043):** 설정을 적용하면 `engine.reload()` 가 `_pending` 을 두고 `await engine.record()` 가 판본(`alert_config_versions`, 추가만)·감사로그·약화 알림을 남긴다. 설정을 바꾸는 새 API 는 `routers/alerts._store` 를 거친다(쓰기 전 파일 직접 수정부터 기록 → `reload(force=True, source="ui", actor=…)`).
   - 내장 규칙 이름 `engine.CONFIG_RULE`('알림 설정 변경', kind `config`)은 무음을 건너뛴다. 받는 곳은 바뀌기 전 설정의 규칙들 — 새 약화 판단은 `configdiff._rule_changes` 와 `test_configdiff.py` 의 표에 함께.

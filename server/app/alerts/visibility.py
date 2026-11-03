@@ -38,6 +38,10 @@ def alert_visible(user: User, alert: dict[str, Any]) -> bool:
         return False
     cats = _rule_categories(alert["rule"])
     rule = next((r for r in engine.config.rules if r.name == alert["rule"]), None)
+    if rule is not None and rule.kind == "correlation":
+        # 상관 알림 (B-67 2단계)은 여러 규칙·PC 의 알림을 묶는다 — 범위가 없는 사용자만. 규칙을 지우거나 이름을 바꿔도 대상 이름이
+        # 'PC DC-01' 처럼 종류가 앞에 붙어 PC 패턴에 맞지 않는다(분류 범위는 규칙 분류가 없어 맞지 않는다)
+        return False
     # 처음 보는 값(B-47): 대상 이름은 값 조합 — PC 는 payload.terms.host. 목록·숫자·처리는 그 값만 뽑은 terms_host 로(같은 판단,
     # 검토에서 재현: 상세에서는 보이는데 목록·확인·해결에서는 빠졌다). 규칙을 지우거나 이름을 바꿔도 같게 값이 있으면 그것으로.
     # 없으면(몰려온 묶음) PC 범위 사용자에게 안 보임

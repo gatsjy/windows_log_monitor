@@ -108,6 +108,9 @@ class AlertMessage:
     grouped: list[dict[str, Any]] = field(default_factory=list)
     # 처음 보는 값 (B-47): {fields, values, host, first_ts, prev_last_seen, history_days} 또는 몰려온 묶음 {fields, count, items:[{values, first_ts}]}
     terms: dict[str, Any] | None = None
+    # 상관 알림 (B-67 2단계): {entity: {kind, value}, tactics: [{tactic, name, rule, alert_id}], alerts: [{id, rule, severity, fired_at,
+    # group_key, tactics}], count}
+    correlation: dict[str, Any] | None = None
 
     # ------------------------------------------------------------ 직렬화
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +130,8 @@ class AlertMessage:
             data.pop("grouped")
         if self.terms is None:
             data.pop("terms")
+        if self.correlation is None:
+            data.pop("correlation")
         if not self.distinct_field:   # 건수 규칙의 본문(웹훅 json·저장된 payload)은 예전과 같게
             for key in ("distinct_field", "distinct_min", "distinct_count", "distinct_values"):
                 data.pop(key)
@@ -250,6 +255,10 @@ class AlertMessage:
                     f"({usual}마지막 수신 {local(self.last_event_at)}). 감사 정책·에이전트 설정을 확인하세요")
         if self.kind == "new_terms" and self.terms:
             return self._terms_summary()
+        if self.kind == "correlation" and self.correlation:
+            steps = " → ".join(f"{s['name']}({s['rule']})" for s in self.correlation.get("tactics", []))
+            return (f"{self.group_key} 에서 최근 {_window_text(self.window_sec)} 동안 서로 다른 전술 "
+                    f"{len(self.correlation.get('tactics', [])):,}개 (기준 {self.threshold:,}개 이상) — {steps}")
         target = f"{self.group_key} 에서 " if self.group_key else ""
         if self.distinct_field:
             label = DISTINCT_LABELS.get(self.distinct_field, self.distinct_field.removeprefix("f."))
@@ -287,6 +296,8 @@ class AlertMessage:
             return f"같은 알림 {n}건을 묶어 보냅니다 — 내용은 알림 화면에서 확인하세요"
         if self.kind == "new_terms":
             return f"처음 보는 값 알림 {n}건을 묶어 보냅니다 — 값 조합은 아래와 알림 화면에서 확인하세요"
+        if self.kind == "correlation":
+            return f"여러 전술이 이어진 개체 {n}건을 묶어 보냅니다 — 묶은 알림은 알림 화면에서 확인하세요"
         basis = (f"서로 다른 {DISTINCT_LABELS.get(self.distinct_field, self.distinct_field)} {self.distinct_min:,}개 이상"
                  if self.distinct_field else f"기준 {self.threshold:,}건 이상")
         return (f"같은 규칙의 알림 {n}건을 묶어 보냅니다 — {n}{unit}에서 최근 {_window_text(self.window_sec)} 동안 조건에 맞는 "
@@ -309,6 +320,21 @@ class AlertMessage:
         label = DISTINCT_LABELS.get(self.distinct_field, self.distinct_field.removeprefix("f."))
         more = self.distinct_count - len(self.distinct_values)
         return f"서로 다른 {label}: " + ", ".join(self.distinct_values) + (f" … 외 {more:,}" if more > 0 else "")
+
+    def correlation_lines(self) -> list[str]:
+        """상관 알림 (B-67 2단계): 묶은 알림 — '- 10:01:02 [오류] 무차별 대입 · 10.0.0.5 (자격 증명 접근) #123'."""
+        if self.kind != "correlation" or not self.correlation or self.grouped:
+            return []
+        items = self.correlation.get("alerts", [])
+        lines = ["묶은 알림:"]
+        for a in items:
+            tactic = f" ({', '.join(a.get('tactics') or [])})" if a.get("tactics") else ""
+            lines.append(f"- {local(_dt(a.get('fired_at')))} [{SEVERITY_LABELS.get(a.get('severity'), a.get('severity'))}] "
+                         f"{a.get('rule')} · {_short(str(a.get('group_key') or '-'), 80)}{tactic} #{a.get('id')}")
+        more = int(self.correlation.get("count") or len(items)) - len(items)
+        if more > 0:
+            lines.append(f"… 외 {more:,}건 — 전체는 알림 화면에서")
+        return lines
 
     def lifecycle_line(self) -> str:
         """같은 규칙·대상의 앞 알림과의 관계 (B-35)."""
@@ -351,7 +377,8 @@ class AlertMessage:
             return self.resolved_line()
         if self.kind in ("config", "system"):
             return self.description.split("\n", 1)[1] if "\n" in self.description else ""
-        return "\n".join(line for line in (self.lifecycle_line(), self.delayed_line(), self.description) if line)
+        return "\n".join(line for line in (self.lifecycle_line(), self.delayed_line(), *self.correlation_lines(), self.description)
+                         if line)
 
     def text(self) -> str:
         lines = [self.title(), "", self.summary()]

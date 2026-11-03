@@ -87,6 +87,18 @@ def _rule_changes(old: Rule, new: Rule) -> list[tuple[str, str, bool]]:
             weaker = bool(new.hosts) and (not old.hosts or bool(set(old.hosts) - set(new.hosts)))
             out.append(("hosts", f"대상 PC {', '.join(old.hosts) or '전체'} → {', '.join(new.hosts) or '전체'}", weaker))
         return out
+    if old.kind == new.kind == "correlation":
+        # 상관 알림 (B-67 2단계): 기준 전술 수를 올리거나 기간을 줄이거나 볼 개체를 빼면 덜 울린다
+        if old.min_tactics != new.min_tactics:
+            out.append(("min_tactics", f"전술 기준 {old.min_tactics}개 → {new.min_tactics}개", new.min_tactics > old.min_tactics))
+        if old.window != new.window:
+            out.append(("window", f"기간 {_dur(old.window)} → {_dur(new.window)}", new.window < old.window))
+        if old.cooldown != new.cooldown:
+            out.append(("cooldown", f"재알림 간격 {_dur(old.cooldown)} → {_dur(new.cooldown)}", new.cooldown > old.cooldown))
+        if set(old.entities) != set(new.entities):
+            out.append(("entities", f"볼 개체 {', '.join(old.entities)} → {', '.join(new.entities)}",
+                        bool(set(old.entities) - set(new.entities))))
+        return out
     if old.match != new.match:
         out.append(("match", f"조건 {_match_text(old)} → {_match_text(new)}", True))
     if old.kind == new.kind == "new_terms":

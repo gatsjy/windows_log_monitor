@@ -6,7 +6,7 @@
 import * as api from '../api.js';
 import { can } from '../auth.js';
 import {
-  ALERT_STATUS, GROUP_LABELS, SILENCE_DURATIONS, deliveryChips, matchText, openAlert, resolutionSelect, silenceScope,
+  ALERT_STATUS, GROUP_LABELS, SILENCE_DURATIONS, deliveryChips, entityText, matchText, openAlert, resolutionSelect, silenceScope,
   statusChip,
 } from '../alertdetail.js';
 import { closeDrawer, openDrawer } from '../drawer.js';
@@ -414,6 +414,7 @@ export async function mount(root, params, sub) {
     if (r.kind === 'new_terms') {
       return `처음 보는 ${r.fields.map((k) => GROUP_LABELS[k] ?? k.replace(/^f\./, '')).join(' + ')} · ${fmtDuration(r.history_sec)} 동안 없던 값`;
     }
+    if (r.kind === 'correlation') return `${fmtDuration(r.window_sec)} 안에 서로 다른 전술 ${fmtNum(r.min_tactics)}개↑ · ${entityText(r.entities)}마다`;
     const by = r.group_by === 'none' ? '전체 합산' : `${GROUP_LABELS[r.group_by] ?? r.group_by.replace(/^f\./, '')}별`;
     const distinct = r.distinct?.field ? ` · 서로 다른 ${GROUP_LABELS[r.distinct.field] ?? r.distinct.field} ${fmtNum(r.distinct.min)}↑` : '';
     return `${fmtDuration(r.window_sec)} 동안 ${fmtNum(r.threshold)}건↑${distinct} · ${by}`;
@@ -532,10 +533,13 @@ export async function mount(root, params, sub) {
                   ? html` <span class="ast silenced" title="관찰 모드 — 알림을 기록만 하고 보내지 않습니다">관찰</span>` : ''}</div>
                 ${r.description ? html`<div class="rule-desc">${r.description}</div>` : ''}
                 ${r.tags.length ? html`<div class="rule-tags">${r.tags.map((t) => html`<span class="type-tag">${t}</span>`)}</div>` : ''}
+                ${r.tactics?.length || r.unknown_tactic_tags?.length ? html`<div class="muted rule-tactics" title="상관 알림(여러 전술)이 이 규칙의 알림을 세는 공격 단계 — 태그의 MITRE 기법에서">
+                  전술: ${r.tactics.join(' · ') || '없음'}${r.unknown_tactic_tags?.length ? html` <span class="tag-bad">· 전술을 모르는 태그 ${r.unknown_tactic_tags.join(', ')}</span>` : ''}</div>` : ''}
                 <div data-run-error="${r.name}">${runError(r)}</div>
               </td>
               <td class="rule-cond"><div class="ink-2">${r.kind === 'agent_silent' ? (r.hosts.length ? r.hosts.join(', ') : '모든 PC')
                 : r.kind === 'stream_silent' ? `${r.hosts.length ? r.hosts.join(', ') : '모든 PC'} · ${r.channels.length ? r.channels.join(', ') : '모든 채널'}`
+                : r.kind === 'correlation' ? '다른 규칙의 알림 (태그의 MITRE 전술)'
                 : matchText(r.match)}</div>
                 <div class="muted rule-crit">${criteria(r)}</div>${coverageBadge(r)}</td>
               <td class="ink-2">${r.notify.join(', ')}${r.unknown_notify.length

@@ -18,7 +18,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .. import accesslog, db, repository
-from ..alerts import adminwatch, configdiff, coverage, health, playbook, ruleedit, targets
+from ..alerts import adminwatch, configdiff, correlation, coverage, health, playbook, ruleedit, tactics, targets
 from ..alerts.builtin import SYSTEM_RULES
 from ..alerts.dispatcher import dispatcher
 from ..alerts.engine import (  # _with_group: 엔진과 같은 묶음 조건 (알림 뒤 이벤트 수)
@@ -194,6 +194,9 @@ async def alert_config(since: str = "24h", user: User = Depends(require_user)):
             # 처음 보는 값 (B-47)
             "fields": list(r.terms_fields), "history_sec": _seconds(r.history), "learn_sec": _seconds(r.learn),
             "max_terms": r.max_terms, "burst": r.burst,
+            # 상관 알림 (B-67 2단계): 기준·볼 개체, 그리고 모든 규칙의 태그에서 읽은 전술(상관 알림에 드는지)·전술을 모르는 MITRE 태그
+            "min_tactics": r.min_tactics, "entities": list(r.entities),
+            "tactics": [tactics.label(t) for t in tactics.of_tags(r.tags)], "unknown_tactic_tags": tactics.unknown_tags(r.tags),
             "resolve": r.resolve, "channels": list(r.channels), "coverage": coverage.public(data.get(r.name)),
             "mode": r.mode, "quality": quality.get(r.name),
             # 마지막 평가 (ADR-045): 상태 칩·오류 줄
@@ -380,6 +383,19 @@ def _clean_rule(raw: dict[str, Any]) -> dict[str, Any]:
         for key in ("hosts", "channels"):
             if str_list(key):
                 rule[key] = str_list(key)
+    elif kind == "correlation":
+        rule["window"] = _duration_text(raw.get("window_sec", 3600), "기간")
+        if raw.get("cooldown_sec") not in (None, "", raw.get("window_sec", 3600)):   # 기본(= 기간)이면 적지 않는다
+            rule["cooldown"] = _duration_text(raw.get("cooldown_sec"), "재알림 간격")
+        try:
+            min_tactics = int(raw.get("min_tactics", 3))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "전술 기준은 숫자여야 합니다") from exc
+        if min_tactics != 3:
+            rule["min_tactics"] = min_tactics
+        entities = str_list("entities")
+        if entities and set(entities) != {"host", "account", "ip"}:
+            rule["entities"] = entities
     elif kind == "new_terms":
         rule["match"] = {str(k).strip(): str(v).strip() for k, v in (raw.get("match") or {}).items() if str(k).strip() and str(v).strip()}
         rule["fields"] = str_list("fields")
@@ -540,6 +556,8 @@ async def preview_rule(body: PreviewBody, request: Request, admin: User = Depend
                 and scopes_allow(admin.scopes, None, r["host"])]
         return {"kind": rule.kind, "silent": [{"host": r["host"], "channel": stream_label(r["source"], r["channel"]),
                                                "last_seen": r["last_at"]} for r in rows]}
+    if rule.kind == "correlation":
+        return await _preview_correlation(request, admin, rule, now, body.hours)
     # 미리보기도 이벤트 수·대상 이름을 돌려주므로 사용자 그룹의 조회 범위를 붙인다 (ADR-025)
     # 미리보기는 저장한 검색(B-64)·지금 걸린 규칙 예외(B-46)까지 반영 — 실제 평가와 같은 결과
     try:
@@ -581,6 +599,29 @@ async def preview_rule(body: PreviewBody, request: Request, admin: User = Depend
 
 
 PREVIEW_LOOKBACK = timedelta(days=1)
+
+
+CORRELATION_PREVIEW_MAX = 50
+
+
+async def _preview_correlation(request: Request, admin: User, rule: Rule, now: datetime, hours: int) -> dict[str, Any]:
+    """상관 알림 (B-67 2단계) 미리보기: 최근 N시간의 알림에 이 규칙을 적용했다면 — 개체·전술·묶은 알림 수. 그리고 지금 규칙들이
+    어느 전술을 덮는지(태그). 상관 알림처럼 모든 규칙·PC 의 알림을 묶으므로 조회 범위가 없는 사람만, 계정·IP 가 보이면 접속기록."""
+    if admin.scopes is not None:
+        raise HTTPException(403, "상관 알림은 모든 규칙·PC 의 알림을 묶어 봐서 조회 범위가 있는 사용자는 미리 볼 수 없습니다")
+    rows = await repository.correlation_sources(now - timedelta(hours=hours), now, correlation.SOURCE_MAX + 1)
+    found = correlation.preview(correlation.with_tactics(rows[:correlation.SOURCE_MAX]), rule.entities, rule.min_tactics, rule.window)
+    await _preview_accesslog(request, admin, rule, ["user" if e == "account" else e for e in rule.entities], hours, len(found))
+    covered = [{"name": r.name, "tactics": [tactics.label(t) for t in tactics.of_tags(r.tags)],
+                "unknown": tactics.unknown_tags(r.tags)}
+               for r in engine.config.rules if r.enabled and r.kind in ("count", "new_terms")]
+    return {"kind": rule.kind, "hours": hours, "alerts": min(len(rows), correlation.SOURCE_MAX),
+            "truncated": len(rows) > correlation.SOURCE_MAX,
+            "items": [{"key": correlation.key_of(c["kind"], c["value"]), "kind": c["kind"], "value": c["value"],
+                       "tactics": [step["name"] for step in correlation.steps(c)],
+                       "alerts": len(c["rows"]), "first": c["rows"][0]["fired_at"], "last": c["rows"][-1]["fired_at"]}
+                      for c in found[:CORRELATION_PREVIEW_MAX]],
+            "total": len(found), "rules": covered}
 
 
 async def _preview_accesslog(request: Request, admin: User, rule: Rule, fields: list[str], hours: int, rows: int) -> None:
@@ -658,7 +699,7 @@ async def test_rule(body: RuleTestBody, request: Request, user: User = Depends(r
     else:
         raise HTTPException(400, "규칙을 주세요")
     if rule.kind not in ("count", "new_terms"):
-        raise HTTPException(400, "끊김 규칙은 로그 하나로 시험할 수 없습니다")
+        raise HTTPException(400, "끊김·상관 알림 규칙은 로그 하나로 시험할 수 없습니다")
     now = datetime.now(UTC)
     event = await _test_event(body, user, request, rule.name)
     try:
@@ -712,6 +753,8 @@ def _exception_rule(name: str) -> Rule:
         raise HTTPException(404, f"규칙 '{name}' 이(가) 없습니다")
     if rule.kind in SILENT_KINDS:
         raise HTTPException(400, "끊김 규칙에는 예외 대신 대상(hosts)·무음을 씁니다")
+    if rule.kind == "correlation":
+        raise HTTPException(400, "상관 알림은 로그가 아니라 다른 규칙의 알림을 봅니다 — 그 규칙에 예외를 거세요")
     return rule
 
 
@@ -752,7 +795,7 @@ async def list_exceptions(_: User = Depends(require_permission("alerts.manage"))
     items = await repository.list_rule_exceptions()
     for e in items:
         e["state"] = _exception_state(e, now)
-    return {"items": items, "rules": [r.name for r in engine.config.rules if r.kind not in SILENT_KINDS]}
+    return {"items": items, "rules": [r.name for r in engine.config.rules if r.kind not in (*SILENT_KINDS, "correlation")]}
 
 
 @router.post("/api/alerts/exceptions/preview", dependencies=[Depends(read_time_limit)])

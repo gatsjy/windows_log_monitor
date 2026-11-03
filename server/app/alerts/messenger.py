@@ -67,6 +67,9 @@ def _facts(m: AlertMessage) -> list[tuple[str, str]]:
         facts.append(("알림", f"{len(m.grouped):,}건" + (f" · 이벤트 {m.event_count:,}건" if m.kind == "count" and not m.resolved else "")))
     elif m.kind in ("config", "system"):   # 내장 알림(ADR-043·045)에는 건수 기준이 없다 — 내용 줄 수
         facts.append(("변경", f"{m.event_count:,}건"))
+    elif m.kind == "correlation" and not m.test and not m.resolved:   # 상관 알림 (B-67 2단계): 전술 수·묶은 알림 수
+        n = len((m.correlation or {}).get("tactics", []))
+        facts.append(("전술", f"{n:,}개 (기준 {m.threshold:,}개 이상) · 알림 {m.event_count:,}건"))
     elif m.kind not in ("agent_silent", "stream_silent") and not m.test and not m.resolved:
         facts.append(("건수", f"{m.event_count:,}건 (기준 {m.threshold:,}건 이상)"))
     if m.group_key:

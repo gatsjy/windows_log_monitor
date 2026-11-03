@@ -19,7 +19,7 @@ from ..repository import COLUMN_EXPR
 from .builtin import BUILTIN_RULES
 
 SEVERITIES = ("critical", "error", "warning", "info")
-RULE_KINDS = ("count", "agent_silent", "stream_silent", "new_terms")
+RULE_KINDS = ("count", "agent_silent", "stream_silent", "new_terms", "correlation")
 SILENT_KINDS = ("agent_silent", "stream_silent")   # 끊김 규칙: 다시 들어오면 끝난 것이 분명해 자동 해결이 기본
 # 해결 방식 (B-35 2단계): manual = 사람이 해결, auto = 조건이 풀리면 엔진이 해결하고 해소 통지.
 # PC 수신 끊김은 하트비트가 돌아오면 끝난 것이 분명해 auto 가 기본. 건수 규칙은 manual 이 기본 —
@@ -69,6 +69,9 @@ class Rule:
     learn: timedelta = timedelta(days=14)
     max_terms: int = 50000
     burst: int = 20
+    # 상관 알림 (B-67 2단계, ADR-065): 같은 개체(entities)에서 window 안에 다른 규칙 알림들의 서로 다른 전술이 min_tactics 개 이상이면
+    min_tactics: int = 3
+    entities: tuple[str, ...] = ()
 
     def event_filter(self, exceptions: tuple[str, ...] | list[str] = (), saved: str | None = None) -> EventFilter:
         """exceptions: 규칙 예외(B-46)의 조건들(정본 표기) — 문장에 제외 항(-조건)으로 덧붙인다. 검색 문장의 제외 의미 그대로
@@ -311,6 +314,9 @@ def _check_rule(index: int, raw: Any) -> Rule:
         return Rule(**common, hosts=_str_list(raw.get("hosts"), f"{where}.hosts"),
                     channels=_str_list(raw.get("channels"), f"{where}.channels"), group_by="host")
 
+    if kind == "correlation":
+        return _correlation(raw, common, where)
+
     match = raw.get("match") or {}
     if not isinstance(match, dict):
         raise ConfigError(f"{where}.match 는 객체여야 합니다")
@@ -382,6 +388,36 @@ def _new_terms(raw: dict, common: dict, match: dict[str, str], checked: EventFil
         numbers[key] = value
     return Rule(**common, match=match, group_by="none", categories=tuple(checked.categories), terms_fields=fields,
                 history=history, learn=learn, **numbers)
+
+
+CORRELATION_WINDOW = (timedelta(minutes=10), timedelta(hours=24))
+CORRELATION_TACTICS = (2, 8)
+ENTITY_KINDS = ("host", "account", "ip")
+
+
+def _correlation(raw: dict, common: dict, where: str) -> Rule:
+    """상관 알림 (B-67 2단계, ADR-065). 로그가 아니라 다른 규칙의 알림을 본다 — 조건·건수·묶음 키는 없다.
+    재알림 간격은 기간보다 짧으면 같은 알림들로 다시 울리므로 기간 이상(기본 = 기간)."""
+    if bad := [k for k in ("match", "threshold", "group_by", "distinct", "fields", "history", "learn", "max_terms", "burst",
+                           "silent_for", "hosts", "channels") if k in raw]:
+        raise ConfigError(f"{where}: 상관 알림에는 {', '.join(bad)} 를 쓰지 않습니다 (다른 규칙의 알림을 개체마다 묶어 봄)")
+    if common["resolve"] == "auto":
+        raise ConfigError(f"{where}.resolve: 상관 알림은 사람이 해결합니다")
+    window = _duration(raw.get("window", "1h"), f"{where}.window")
+    if not CORRELATION_WINDOW[0] <= window <= CORRELATION_WINDOW[1]:
+        raise ConfigError(f"{where}.window 는 10m~24h")
+    cooldown = _duration(raw.get("cooldown", raw.get("window", "1h")), f"{where}.cooldown")
+    if cooldown < window:
+        raise ConfigError(f"{where}.cooldown 은 window 이상 (짧으면 같은 알림들로 다시 울림)")
+    low, high = CORRELATION_TACTICS
+    min_tactics = raw.get("min_tactics", 3)
+    if isinstance(min_tactics, bool) or not isinstance(min_tactics, int) or not low <= min_tactics <= high:
+        raise ConfigError(f"{where}.min_tactics 는 {low}~{high} 의 정수")
+    entities = _str_list(raw.get("entities", list(ENTITY_KINDS)), f"{where}.entities")
+    if not entities or any(e not in ENTITY_KINDS for e in entities):
+        raise ConfigError(f"{where}.entities 는 {', '.join(ENTITY_KINDS)} 중 하나 이상")
+    return Rule(**common, window=window, cooldown=cooldown, group_by="none", min_tactics=min_tactics,
+                entities=tuple(e for e in ENTITY_KINDS if e in entities))
 
 
 DISTINCT_MAX_WINDOW = timedelta(days=1)   # count(DISTINCT) 는 구간이 길수록 비싸다 — 엔진이 30초마다 다시 센다

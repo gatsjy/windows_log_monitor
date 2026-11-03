@@ -451,6 +451,10 @@ class AlertEngine:
             from . import newterms  # 처음 보는 값 (B-47) — 그 모듈이 엔진의 도우미를 쓴다
 
             return await newterms.evaluate(self, rule, now, run)
+        if rule.kind == "correlation":
+            from . import correlation  # 상관 알림 (B-67 2단계) — 다른 규칙의 알림을 개체마다 묶어 본다
+
+            return await correlation.evaluate(self, rule, now, run)
         if rule.kind == "agent_silent":
             return await self._evaluate_silent(rule, now)
         if rule.kind == "stream_silent":
@@ -700,9 +704,11 @@ class AlertEngine:
         return reopened
 
     async def fire_rule(self, rule: Rule, message: AlertMessage, claim: dict | None = None,
-                        hosts: list[tuple[str, datetime]] | None = None, observed: dict[str, list[str]] | None = None) -> int | None:
-        """규칙의 알림 — 받는 곳은 규칙의 notify 에 경로(routes, B-26)를 적용해서. 거친 경로 이름은 payload 에(증적)."""
-        notify, message.routes = self.config.targets_for(rule, message.group_key, host=(message.terms or {}).get("host"))
+                        hosts: list[tuple[str, datetime]] | None = None, observed: dict[str, list[str]] | None = None,
+                        host: str | None = None) -> int | None:
+        """규칙의 알림 — 받는 곳은 규칙의 notify 에 경로(routes, B-26)를 적용해서. 거친 경로 이름은 payload 에(증적).
+        host: 대상 이름이 PC 가 아닌 알림의 PC (처음 보는 값은 terms.host, 상관 알림은 PC 개체) — PC 경로가 맞게."""
+        notify, message.routes = self.config.targets_for(rule, message.group_key, host=host or (message.terms or {}).get("host"))
         return await self.fire(message, notify, claim, hosts, observed)
 
     @property

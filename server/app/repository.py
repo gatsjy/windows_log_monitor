@@ -1941,6 +1941,27 @@ async def related_alerts(base: dict, start: datetime, end: datetime, limit: int,
         [*values, *params, base["fired_at"], limit])
 
 
+async def correlation_sources(since: datetime, until: datetime, limit: int) -> list[dict]:
+    """상관 알림 (B-67 2단계, ADR-065)의 재료: (since, until] 에 발생한 건수·처음 보는 값 규칙의 알림과 그 개체·태그(알릴 때의 태그).
+    관찰 모드(시험 중인 규칙)·무음 중 알림(점검 잡음)은 빼고, 끊김·내장·상관 알림은 전술이 없어 뺀다."""
+    return await db.fetch_all(
+        "SELECT a.id, a.rule, a.severity, a.fired_at, a.group_key, a.terms_host, COALESCE(a.payload->'tags', '[]'::jsonb) AS tags,"
+        " a.entity_hosts, a.entity_accounts, a.entity_ips FROM alerts a"
+        " WHERE a.fired_at > %s AND a.fired_at <= %s AND a.silence_id IS NULL AND a.payload->>'kind' IN ('count', 'new_terms')"
+        " AND NOT coalesce((a.payload->>'observe')::boolean, false) AND jsonb_typeof(a.payload->'tags') = 'array'"
+        " ORDER BY a.fired_at, a.id LIMIT %s", (since, until, limit))
+
+
+async def recent_correlations(rule: str, since: datetime) -> list[dict]:
+    """이 상관 규칙이 since 뒤에 낸 알림의 대상과 묶은 알림 번호 — 재알림 간격·같은 알림들로 다른 개체에 또 울리지 않게."""
+    rows = await db.fetch_all(
+        "SELECT a.group_key, COALESCE((SELECT array_agg((x->>'id')::bigint) FROM jsonb_array_elements("
+        "  CASE WHEN jsonb_typeof(a.payload->'correlation'->'alerts') = 'array' THEN a.payload->'correlation'->'alerts' ELSE '[]' END) x"
+        "  WHERE x->>'id' ~ '^[0-9]+$'), '{}') AS ids"
+        " FROM alerts a WHERE a.rule = %s AND a.fired_at >= %s", (rule, since))
+    return rows
+
+
 async def entity_alerts(kind: str, value: str, since: datetime, limit: int,
                         pairs: list[tuple[str, str, str]] | None = None) -> list[dict]:
     """개체 페이지 (B-67): 그 PC·계정(열쇠)·IP 가 걸린 기간 안 알림, 최근 것부터."""
