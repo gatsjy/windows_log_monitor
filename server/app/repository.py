@@ -1075,7 +1075,7 @@ async def create_new_terms_state(rule_key: str, fields: list[str], filter_sig: s
 
 
 NEW_TERMS_STATE_COLUMNS = frozenset({"filter_sig", "cursor_at", "learn_until", "backfill_from", "backfill_to", "chunk_sec",
-                                     "relearn_reason", "overflow_n"})
+                                     "relearn_reason", "overflow_n", "learn_dropped"})
 
 
 async def update_new_terms_state(ns: int, **values: Any) -> None:
@@ -1153,6 +1153,7 @@ WITH t AS (
 ), st AS (
   UPDATE new_terms_state SET terms_n = terms_n + (SELECT count(*) FROM ins WHERE inserted),
     overflow_n = overflow_n + (SELECT count(*) FROM w WHERE over AND frx >= %s),
+    learn_dropped = learn_dropped OR EXISTS (SELECT 1 FROM w WHERE over AND new_state = 'learned'),
     cursor_at = COALESCE(%s, cursor_at), updated_at = now()
   WHERE id = %s RETURNING terms_n, overflow_n
 )
@@ -1211,7 +1212,8 @@ async def host_silenced_alerts(ns: int, now: datetime, limit: int, *, after_id: 
         clauses.append("a.id < %s")
         params.append(before_id)
     return await db.fetch_all(
-        "SELECT a.id AS alert_id, a.fired_at, a.group_key, array_agg(s.term_hash ORDER BY s.term_hash) AS hashes"
+        "SELECT a.id AS alert_id, a.fired_at, a.group_key, array_agg(s.term_hash ORDER BY s.term_hash) AS hashes,"
+        " CASE WHEN count(*) = 1 THEN min(array_to_json(s.term)::text) END AS term_json"
         " FROM seen_terms s JOIN alerts a ON a.id = s.alert_id JOIN alert_silences si ON si.id = a.silence_id"
         " WHERE s.ns = %s AND s.state IN ('alerted', 'aggregated') AND si.group_key IS NOT NULL AND si.group_key <> a.group_key"
         " AND (si.ends_at > %s OR GREATEST(si.ends_at, a.fired_at) > %s)"

@@ -397,11 +397,14 @@ function handleForm(box, kind, related, submit) {
 /** 무음 양식 (알림 상세에서): 이 규칙·이 대상 / 이 규칙 전체, 기간, 사유 */
 function silenceForm(box, alert, done) {
   const hasKey = alert.group_key !== '';
+  // 처음 보는 값(B-47)은 대상 이름이 값 조합 — 그 PC 의 점검이면 PC 로 거는 것을 먼저(PC 범위 사용자는 PC 로만 걸 수 있다)
+  const pc = alert.terms_host || '';
   box.innerHTML = html`<div class="inline-form">
     <p class="muted" style="margin:0;font-size:12.5px">무음 동안에도 알림은 이력에 남고, 보내기만 하지 않습니다. 끝난 뒤에도 새 로그가 들어오면 바로 다시 알립니다.</p>
     <div class="field"><span>범위</span><div class="seg" data-scope>
-      ${hasKey ? html`<button type="button" data-v="one" class="on">이 규칙 · ${alert.group_key}</button>` : ''}
-      <button type="button" data-v="rule" class="${hasKey ? '' : 'on'}">이 규칙 전체</button></div></div>
+      ${pc ? html`<button type="button" data-v="pc" class="on">이 규칙 · PC ${pc}</button>` : ''}
+      ${hasKey ? html`<button type="button" data-v="one" class="${pc ? '' : 'on'}">이 규칙 · ${alert.group_key}</button>` : ''}
+      <button type="button" data-v="rule" class="${hasKey || pc ? '' : 'on'}">이 규칙 전체</button></div></div>
     <div class="field"><span>기간 (지금부터)</span><div class="seg" data-dur>${SILENCE_DURATIONS.map(([sec, label], i) => html`
       <button type="button" data-v="${sec}" class="${i === 0 ? 'on' : ''}">${label}</button>`)}</div></div>
     <label class="field"><span>사유 <em>*</em></span><input class="input" data-reason maxlength="500" placeholder="예: 정기 패치 작업 (변경 요청 CR-1234)"></label>
@@ -415,11 +418,11 @@ function silenceForm(box, alert, done) {
   box.querySelector('[data-ok]').addEventListener('click', async (e) => {
     const reason = box.querySelector('[data-reason]').value.trim();
     if (!reason) { box.querySelector('[data-reason]').focus(); return; }
-    const one = box.querySelector('[data-scope] .on').dataset.v === 'one';
+    const scope = box.querySelector('[data-scope] .on').dataset.v;
     e.target.disabled = true;
     try {
       await api.send('POST', '/api/alerts/silences', {
-        rule: alert.rule, group_key: one ? alert.group_key : null, reason,
+        rule: alert.rule, group_key: scope === 'pc' ? pc : scope === 'one' ? alert.group_key : null, reason,
         duration_sec: Number(box.querySelector('[data-dur] .on').dataset.v),
       });
       box.innerHTML = html`<div class="hint-box">✓ 무음을 걸었습니다. 알림 화면의 '무음' 탭에서 보거나 해제합니다.</div>`;

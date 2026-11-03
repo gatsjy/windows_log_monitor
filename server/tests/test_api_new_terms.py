@@ -892,7 +892,6 @@ def test_scoped_silences_keep_working_for_other_rule_kinds(client):
                     password_changed_at=datetime.now(UTC), scopes=(Scope(**scope),))
 
     dba, ward, dc = user(categories=("security",)), user(hosts=("WS-*",)), user(hosts=("DC-01",))
-    assert not _silence_host_only(dba) and _silence_host_only(ward) and _silence_host_only(dc)
     engine.config = parse_text("""rules:
   - name: IP 묶음
     match: { category: security }
@@ -907,6 +906,19 @@ def test_scoped_silences_keep_working_for_other_rule_kinds(client):
     fields: [account]
     notify: [운영팀]
 """)
+    assert not _silence_host_only(dba, "IP 묶음") and _silence_host_only(ward, "IP 묶음") and _silence_host_only(dc, "채널 끊김")
+    # PC 범위와 분류 범위를 함께 가진 사용자: 그 규칙을 모든 PC 에서 보면 예전처럼(대상 이름 그대로) — 사용자마다 정하면 걸리지 않았다(6차 재현)
+    both = User(id=95, username="b", display_name="b", role="viewer", must_change_password=False, password_changed_at=datetime.now(UTC),
+                scopes=(Scope(hosts=("WS-*",)), Scope(categories=("security",))))
+    assert not _silence_host_only(both, "IP 묶음") and _silence_host_only(both, "채널 끊김")
+    from fastapi import HTTPException
+
+    from app.routers.alerts import _check_host_only_target
+    for rule_name, key in (("IP 묶음", "10.1.2.3"), ("새 값", "kim · 10.0.0.9")):   # PC 로만 맞추는 무음은 PC 가 아닌 대상에 못 건다
+        with pytest.raises(HTTPException):
+            _check_host_only_target(rule_name, key)
+    _check_host_only_target("새 값", "WS-05")
+    _check_host_only_target("채널 끊김", "WS-02 · Security")
     now = datetime.now(UTC)
     sql("INSERT INTO alert_silences (rule, group_key, starts_at, ends_at, reason, created_by, host_only) VALUES"
         " ('IP 묶음', '10.1.2.3', now() - interval '1 minute', now() + interval '1 hour', '스캐너', 'dba', false),"
@@ -920,3 +932,24 @@ def test_scoped_silences_keep_working_for_other_rule_kinds(client):
     assert {r["group_key"] for r in refs if r["rule"] in ("채널 끊김", "새 값") and silence_visible(ward, r)} == {
         "WS-02 · Security", "WS-05"}
     sql("UPDATE alert_silences SET ends_at = now() WHERE rule IN ('IP 묶음', '채널 끊김', '새 값')")
+
+
+# ---------------------------------------------------------------- 6차 검토 보완
+def test_values_dropped_while_learning_are_relearned_when_room_returns(client):
+    """배우는 동안 상한으로 두지 못한 늘 보이던 값 — 상한을 올리면 그 기간을 다시 배워 거짓 '처음 보는 값'이 되지 않는다(재현)."""
+    from app.alerts.newterms import CappedError
+
+    at = datetime.now(UTC) - timedelta(hours=2)
+    for i in range(105):
+        ev(f"usual{i}", "10.70.0.1", 4870, at=at)
+    rule = own_rule("배우다 넘침", 4870, max_terms=100)
+    with pytest.raises(CappedError):
+        evaluate(client, rule)                               # 처음 켬 — 거슬러 배우다 상한
+    assert sql("SELECT learn_dropped FROM new_terms_state WHERE rule_key = 'name:배우다 넘침'") == [(True,)]
+    rule = own_rule("배우다 넘침", 4870, max_terms=1000)
+    assert evaluate(client, rule)[0] == []                   # 자리가 생기면 배우는 기간을 다시 거슬러 배운다
+    assert sql("SELECT relearn_reason, learn_dropped, terms_n FROM new_terms_state WHERE rule_key = 'name:배우다 넘침'") == [
+        ("상한 올림", False, 105)]
+    for i in range(105):
+        ev(f"usual{i}", "10.70.0.1", 4870)                   # 늘 보이던 값이 다시 — 알리지 않는다
+    assert evaluate(client, rule)[0] == [] and rule_alerts("배우다 넘침") == []

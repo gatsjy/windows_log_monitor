@@ -895,11 +895,27 @@ def _coverage(spans: list[dict[str, Any]], starts_at: datetime, ends_at: datetim
     return max(lo, now), hi
 
 
-def _silence_host_only(user: User) -> bool:
-    """PC 범위가 정해진 사용자의 무음은 PC 로만 맞춘다 (마이그레이션 041) — 처음 보는 값의 PC 모양인 값 조합(계정 'ws-ops'·IP)으로 범위 밖
-    PC 의 알림을 막지 않게. 분류만 정해진 사용자는 모든 PC 를 보므로 예전처럼(대상 이름 그대로) — 모두 PC 로만 맞추면 IP·사용자로 묶은
-    알림에 건 무음이 아무 데도 걸리지 않았다(검토에서 재현)."""
-    return user.scopes is not None and any(scope.hosts for scope in user.scopes)
+def _silence_host_only(user: User, rule: str | None) -> bool:
+    """이 사용자가 이 규칙에 거는 무음을 PC 로만 맞출까 (마이그레이션 041) — 그 규칙의 알림을 모든 PC 에서 보는 범위(PC 제한 없는 범위가
+    그 규칙의 분류를 덮음)가 하나도 없을 때만. 처음 보는 값의 PC 모양인 값 조합(계정 'ws-ops'·IP)으로 범위 밖 PC 의 알림을 막지 않게.
+    사용자마다 정하면 분류 범위도 함께 가진 사용자의 IP·사용자 묶음 무음이 '적용 중'으로 보이면서 걸리지 않았다(검토에서 재현)."""
+    if user.scopes is None:
+        return False
+    found = next((r for r in engine.config.rules if r.name == rule), None)
+    cats = set(found.categories) if found else set()
+    return not any(not s.hosts and (not s.categories or bool(cats & set(s.categories))) for s in user.scopes)
+
+
+def _check_host_only_target(rule: str | None, group_key: str | None) -> None:
+    """PC 로만 맞추는 무음은 대상 자리가 PC 여야 걸린다 — 걸리지 않을 무음을 '적용 중'으로 남기지 않게 미리 거절한다."""
+    found = next((r for r in engine.config.rules if r.name == rule), None)
+    if found is None or group_key is None:
+        return
+    pc_target = (found.kind in ("agent_silent", "stream_silent") or (found.kind == "count" and found.group_by == "host")
+                 or (found.kind == "new_terms" and " · " not in group_key))
+    if not pc_target:
+        raise HTTPException(422, "조회 범위가 PC 로 정해진 사용자의 무음은 PC 에만 걸립니다 — 이 대상은 PC 가 아닙니다"
+                                 "(처음 보는 값 알림이면 'PC' 범위를 고르세요)")
 
 
 def _check_silence_scope(user: User, rule: str | None, group_key: str | None, host_only: bool = True) -> None:
@@ -929,7 +945,10 @@ async def create_silence(body: SilenceBody, request: Request, user: User = Depen
     # 알림 기능 자체의 알림(엔진 멈춤 등)도 무음으로 막을 수 있다 — 메일 서버 점검처럼 예정된 일. 설정 변경 알림은 안 됨 (ADR-043)
     if rule is not None and rule not in {r.name for r in engine.config.rules} | SYSTEM_RULES:
         raise HTTPException(422, f"없는 규칙입니다: {rule}")
-    _check_silence_scope(user, rule, group_key, _silence_host_only(user))
+    host_only = _silence_host_only(user, rule)
+    if host_only:
+        _check_host_only_target(rule, group_key)
+    _check_silence_scope(user, rule, group_key, host_only)
     now = datetime.now(UTC)
     for value in (body.starts_at, body.ends_at):
         if value is not None and value.tzinfo is None:
@@ -958,11 +977,11 @@ async def create_silence(body: SilenceBody, request: Request, user: User = Depen
     covered_from, covered_until = _coverage(await repository.covering_silences(rule, group_key, now), starts_at, ends_at, now)
     wide = (rule is None and group_key is None) or covered_until - covered_from > configdiff.WIDE_SILENCE
     silence_id = await repository.insert_silence(rule, group_key, starts_at, ends_at, reason, user.username,
-                                                 host_only=_silence_host_only(user))
+                                                 host_only=host_only)
     target = f"{rule or '모든 규칙'} · {group_key if group_key is not None else '모든 대상'}"
     await db.audit(user.username, "alerts.silence.create", target,
                    {"id": silence_id, "rule": rule, "group_key": group_key, "starts_at": starts_at.isoformat(),
-                    "ends_at": ends_at.isoformat(), "reason": reason, "wide": wide, "host_only": _silence_host_only(user),
+                    "ends_at": ends_at.isoformat(), "reason": reason, "wide": wide, "host_only": host_only,
                     "covered_until": covered_until.isoformat()}, actor_ip=client_ip(request))
     if wide:
         # 그 규칙들의 받는 곳에 알린다. 실패해도 무음은 걸린다

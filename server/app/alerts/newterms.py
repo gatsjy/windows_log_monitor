@@ -43,6 +43,7 @@ _spread: dict[int, datetime] = {}
 _spread_top: dict[int, int] = {}            # 앞 차례에서 본 가장 큰 알림 번호 — 그 뒤에 난 알림을 먼저 본다(5분 안에)
 _spread_cursor: dict[int, int | None] = {}  # 차례 돌기 — 다음은 이 알림 번호 앞부터, 끝까지 봤으면 처음부터
 _spread_checked: dict[int, datetime] = {}   # 알림 번호 → 마지막으로 본 때 (그 뒤 받은 로그만 다시 본다 — 차례가 늦어도 놓치지 않게)
+_spread_timeouts: dict[int, int] = {}       # 번짐 확인이 시간 초과로 건너뛴 수 (규칙 상태에 보임)
 _purged: dict[int, datetime] = {}       # 메모리 (워커 1개) — 다시 시작하면 한 번 더 지울 뿐
 _ceiling: dict[int, int] = {}           # 시간 초과가 난 구간 크기 — 다시 그만큼 키우지 않는다 (다시 시작하면 한 번 더 겪을 뿐)
 
@@ -118,7 +119,19 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
     if state["overflow_n"] and state["terms_n"] < rule.max_terms:
         # 상한 오류는 자리가 다시 생길 때(max_terms 를 올림·오래된 값 정리)까지 — 한 평가만 오류로 두면 평가 간격이 길 때 감시가 알리지
         # 못한 채 두지 못한 값이 조용히 사라졌고(검토에서 재현), 끝없이 누적하면 상한을 올려도 오류가 영영 남았다
-        await repository.update_new_terms_state(ns, overflow_n=0)
+        relearn = {}
+        if state["learn_dropped"]:
+            # 배우는 동안 두지 못한 값이 있었다 — 배우는 기간을 다시 거슬러 배운다(그동안 알림은 미룸). 하지 않으면 늘 보이던 값이 상한을
+            # 올린 뒤 '처음 보는 값'으로 거짓 알림이 됐다(검토에서 재현). 배운 뒤에 두지 못한 값(알렸어야 할 것)은 그 기간 밖이라 다시 보면 새 값
+            end = min(state["learn_until"], state["cursor_at"])
+            frm = max(end - rule.learn, await repository.oldest_received() or end)
+            if state["backfill_to"] is not None and state["backfill_from"] is not None:
+                frm, end = min(frm, state["backfill_from"]), max(end, state["backfill_to"])
+            if frm < end:
+                relearn = {"backfill_from": frm, "backfill_to": end, "relearn_reason": "상한 올림"}
+        await repository.update_new_terms_state(ns, overflow_n=0, learn_dropped=False, **relearn)
+        if relearn:
+            state = await repository.new_terms_state(rule_key(rule), fields)
 
     async def scan(start: datetime, end: datetime, learning: bool, cursor: datetime | None,
                    count_from: datetime | None = None) -> dict[str, int]:
@@ -172,7 +185,8 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
                      "learn_until": current["learn_until"], "backfilling": backfilling,
                      "backfill_left_sec": int((current["backfill_to"] - current["backfill_from"]).total_seconds())
                      if current["backfill_to"] and current["backfill_from"] else 0,
-                     "cursor_lag_sec": int((now - current["cursor_at"]).total_seconds()), "reason": current["relearn_reason"]}
+                     "cursor_lag_sec": int((now - current["cursor_at"]).total_seconds()), "reason": current["relearn_reason"],
+                     "spread_timeouts": _spread_timeouts.get(ns, 0)}
     # 3) 알리기 — 거슬러 배우는 동안은 미룬다(배우다 '이미 본 값'으로 바뀔 수 있다)
     fired: list[int] = []
     if not backfilling:
@@ -248,12 +262,18 @@ async def _reopen_spread(rule: Rule, ns: int, base, now: datetime) -> None:
         _spread_top[ns] = max([top or 0, *(r["alert_id"] for r in rows)])
     if len(_spread_checked) > 50000:
         _spread_checked.clear()
+    started = time.monotonic()
     for row in rows:
+        if time.monotonic() - started > SCAN_BUDGET_SEC:
+            break   # 나머지는 다음 차례 — 규칙 하나가 평가 주기를 붙잡지 않게
         since = max(_spread_checked.get(row["alert_id"], row["fired_at"]) - OVERLAP, now - RECENT)
+        # 조합 하나면 그 값으로 좁혀(색인) 찾는다 — 열쇠만으로는 그 구간의 조건에 맞는 로그를 모두 풀어 봤다(검토에서 측정)
+        f = _scoped(rule, base, json.loads(row["term_json"])) if row["term_json"] else base
         try:
-            sights = await repository.term_sightings(base, list(rule.terms_fields), [bytes(h) for h in row["hashes"]],
+            sights = await repository.term_sightings(f, list(rule.terms_fields), [bytes(h) for h in row["hashes"]],
                                                      [(since, None)], SIGHTINGS_MAX)
         except db.QueryTimeout:
+            _spread_timeouts[ns] = _spread_timeouts.get(ns, 0) + 1   # 규칙 상태에 보인다(run.terms)
             continue
         _spread_checked[row["alert_id"]] = now
         for x in sorted(sights, key=lambda x: x["at"], reverse=True):
