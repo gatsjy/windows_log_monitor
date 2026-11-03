@@ -1097,6 +1097,14 @@ async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, start: d
       예전부터 모아 온 것으로 본다(그렇지 않으면 오래 모아 온 소스가 매번 '새 소스'가 되어 배우기만 했다 — 재현).
     소스·채널·PC 를 정하지 않은 규칙은 알 수 없어 예전처럼(DB 전체 기준)."""
     if not f.sources and not f.channels and not f.hosts:
+        # 소스를 정하지 않은 규칙은 DB 전체 기준 — 그런데 DB 가 비었으면(새로 설치) 기준이 아직 없다: 첫 로그가 들어오면 그때부터.
+        # 지금으로 두면 에이전트를 늦게 붙인 만큼 배우는 기간이 줄거나 사라져 첫 정상 값이 알림이었다(검토에서 재현)
+        first = await oldest_received()
+        if first is None:
+            return False
+        if first < start:
+            return True
+        await _fit_learning(ns, first, learn)
         return True
     known = (await db.fetch_one("SELECT min(day) AS d FROM agent_streams"))["d"]
     row = await db.fetch_one(
@@ -1114,11 +1122,16 @@ async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, start: d
         oldest = await oldest_received()
         if oldest is not None and oldest < datetime.combine(known, datetime.min.time(), UTC) - timedelta(days=1):
             return True
+    await _fit_learning(ns, first, learn)
+    return True
+
+
+async def _fit_learning(ns: int, first: datetime, learn: timedelta) -> None:
+    """배우는 기간을 first 부터 learn 만큼으로(늘리기만) — 그동안 알릴 차례가 된 값 중 그 기간 안의 것은 배운 것으로."""
     await db.fetch_all(
         "WITH u AS (UPDATE new_terms_state SET learn_until = GREATEST(learn_until, %s), learn_from = %s WHERE id = %s RETURNING learn_until)"
         " UPDATE seen_terms SET state = 'learned' WHERE ns = %s AND state = 'pending' AND first_seen < (SELECT learn_until FROM u)"
         " RETURNING ns", (first + learn, first, ns, ns))
-    return True
 
 
 async def drop_new_terms_states(rule_key: str) -> int:

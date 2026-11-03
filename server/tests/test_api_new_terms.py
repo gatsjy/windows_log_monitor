@@ -1217,3 +1217,21 @@ def test_fresh_install_rule_before_agents_learns_from_first_agent(client):
     for i in range(3):
         ev(f"svc{i}", "10.95.0.1", 4895, host="DC-95", source="fresh")
     assert evaluate(client, rule)[0] == []
+
+
+# ---------------------------------------------------------------- 13차 검토 보완
+def test_fresh_install_unscoped_rule_learns_from_first_log(client):
+    """소스를 정하지 않은 규칙(기본 RDP 규칙처럼)도 빈 DB 에서는 첫 로그가 들어올 때부터 배운다(재현: 늦게 붙인 PC 의 정상 값이 알림)."""
+    from app.alerts import newterms
+
+    sql("DELETE FROM agent_streams")
+    sql("DELETE FROM events")
+    rule = own_rule("새 설치 소스 없음", 4897, seed=False)
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    assert sql("SELECT fit_pending FROM new_terms_state WHERE rule_key = 'name:새 설치 소스 없음'") == [(True,)]
+    sql("UPDATE new_terms_state SET learn_until = now() - interval '1 minute' WHERE rule_key = 'name:새 설치 소스 없음'")
+    stream_since("winevtlog", datetime.now(UTC), host="DC-97")
+    for i in range(3):
+        ev(f"svc{i}", "10.97.0.1", 4897, host="DC-97")
+    assert evaluate(client, rule)[0] == []
