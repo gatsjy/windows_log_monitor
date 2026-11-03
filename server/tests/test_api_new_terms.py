@@ -1152,9 +1152,33 @@ def test_rule_created_before_its_source_learns_when_source_arrives(client):
     evaluate(client, rule)
     assert sql("SELECT fit_pending FROM new_terms_state WHERE rule_key = 'name:소스 전에 만든 규칙'") == [(True,)]
     sql("UPDATE new_terms_state SET learn_until = now() - interval '1 minute' WHERE rule_key = 'name:소스 전에 만든 규칙'")
-    stream_since("pacs", datetime.now(UTC), host="PACS-01")       # 이제 연결
+    stream_since("pacs", datetime.now(UTC), host="PACS-01")       # 이제 연결 — 1분 간격 확인을 기다리지 않는다(30초 주기, 11차 재현)
     for i in range(3):
         ev(f"svc{i}", "10.92.0.1", 4892, host="PACS-01", source="pacs")
-    newterms._fit_checked.clear()
     assert evaluate(client, rule)[0] == []
     assert sql("SELECT fit_pending FROM new_terms_state WHERE rule_key = 'name:소스 전에 만든 규칙'") == [(False,)]
+
+
+# ---------------------------------------------------------------- 11차 검토 보완
+def test_alerts_held_while_fit_pending(client, monkeypatch):
+    """배우는 기간을 아직 맞추지 못했으면(시간 초과 등) 알리지 않고 기다린다 — 맞추기 전에 알리면 늦게 연결한 소스의 정상 값이 나갔다."""
+    from app import db, repository
+    from app.alerts import newterms
+
+    stream_since("winevtlog", datetime.now(UTC) - timedelta(days=30), host="DC-01")
+    rule = own_rule("맞추기 전", 4893, seed=False, match='{ source: dicom, event_id: "4893" }')
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    sql("UPDATE new_terms_state SET learn_until = now() - interval '1 minute' WHERE rule_key = 'name:맞추기 전'")
+    stream_since("dicom", datetime.now(UTC), host="MOD-01")
+    ev("modality", "10.93.0.1", 4893, host="MOD-01", source="dicom")
+
+    async def timeout(*a, **k):
+        raise db.QueryTimeout(20)
+
+    monkeypatch.setattr(repository, "fit_first_learning", timeout)
+    assert evaluate(client, rule)[0] == []                        # 맞추지 못함 — 알리지 않고 기다림
+    monkeypatch.undo()
+    assert evaluate(client, rule)[0] == []                        # 맞춤 — 그 값은 배우는 기간 안이라 배운 값
+    assert sql("SELECT state FROM seen_terms s JOIN new_terms_state n ON n.id = s.ns"
+               " WHERE n.rule_key = 'name:맞추기 전' AND s.term[1] = 'modality'") == [("learned",)]

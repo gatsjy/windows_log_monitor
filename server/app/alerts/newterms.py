@@ -186,9 +186,10 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
         backfilling = to > frm
     await repository.update_new_terms_state(ns, chunk_sec=chunk,
                                             **({} if backfilling else {"backfill_to": None, "backfill_from": None}))
-    if state["fit_pending"] and not backfilling and now - _fit_checked.get(ns, now - FIT_EVERY) >= FIT_EVERY:
+    if state["fit_pending"] and not backfilling and (now - _fit_checked.get(ns, now - FIT_EVERY) >= FIT_EVERY
+                                                     or await repository.count_pending_terms(ns)):
         # 처음 켰거나 조건을 바꾼 규칙: 그 소스를 늦게 모으기 시작했으면 배우는 기간을 그때부터로 — 알리기 전에. 그 소스가 아직 안
-        # 들어왔으면 1분마다 다시 본다(들어오는 때부터 배운다). 시간 초과면 다음에
+        # 들어왔으면 1분마다 다시 보되, 알릴 차례인 값이 생겼으면(그 소스가 막 들어옴) 바로. 시간 초과면 다음에(그동안 알림은 미룸)
         _fit_checked[ns] = now
         try:
             if await repository.fit_first_learning(ns, base, rule.learn, state["backfill_from"] or state["learn_until"] - rule.learn):
@@ -211,9 +212,10 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
                      if current["backfill_to"] and current["backfill_from"] else 0,
                      "cursor_lag_sec": int((now - current["cursor_at"]).total_seconds()), "reason": current["relearn_reason"],
                      "spread_timeouts": _spread_timeouts.get(ns, 0)}
-    # 3) 알리기 — 거슬러 배우는 동안은 미룬다(배우다 '이미 본 값'으로 바뀔 수 있다)
+    # 3) 알리기 — 거슬러 배우는 동안·배우는 기간을 아직 맞추지 않은 동안은 미룬다(배우다 '이미 본 값'으로 바뀔 수 있다 — 맞추기 전에
+    # 알리면 늦게 연결한 소스의 정상 값이 맞추기 직전 주기에 알림으로 나갔다, 검토에서 재현)
     fired: list[int] = []
-    if not backfilling:
+    if not backfilling and not current["fit_pending"]:
         fired = await _fire(engine, rule, ns, base, saved, exceptions, now)
     if over:
         raise CappedError(f"값 조합 상한(max_terms {rule.max_terms:,}개)에 닿아 새 값을 두지 못하고 있습니다(지금까지 {over:,}번) — "
