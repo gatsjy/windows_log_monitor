@@ -203,7 +203,8 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
         # 들어왔으면 1분마다 다시 보되, 알릴 차례인 값이 생겼으면(그 소스가 막 들어옴) 바로. 시간 초과면 다음에(그동안 알림은 미룸)
         _fit_checked[ns] = now
         try:
-            if await repository.fit_first_learning(ns, base, rule.learn, state["backfill_from"] or state["learn_until"] - rule.learn):
+            anchor = state["learn_from"] or state["backfill_from"] or state["learn_until"] - rule.learn
+            if await repository.fit_first_learning(ns, base, rule.learn, anchor):
                 await repository.update_new_terms_state(ns, fit_pending=False)
         except db.QueryTimeout:
             pass

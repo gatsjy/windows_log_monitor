@@ -1088,40 +1088,34 @@ async def update_new_terms_state(ns: int, **values: Any) -> None:
                        [*values.values(), ns])
 
 
-async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, start: datetime) -> bool:
-    """배우는 기간을 규칙이 보는 소스(source·channel·PC 조건)를 처음 받은 때에 맞춘다 (B-47, ADR-063 22). 끝났으면 True, 그 소스가 아직
-    들어오지 않아 나중에 다시 볼 것이면 False.
-    - DB 전체에서 가장 오래된 로그로 정하면 어제 연결한 MSSQL·서버의 규칙이 하루 치만 배우고 바로 알렸다(검토에서 재현).
-    - 규칙에 맞는 로그로 정하면 오래 모아 온 소스의 드문 이벤트 규칙(7045)이 '새 소스'가 되어 첫 공격을 배운 값으로 삼켰다(재현).
-    - 그 소스를 처음 받은 때는 agent_streams 로 보되, 그 표가 아는 가장 이른 날(정리 35일·올린 날)과 거의 같으면 실제 시작을 모르는 것이라
-      예전부터 모아 온 것으로 본다(그렇지 않으면 오래 모아 온 소스가 매번 '새 소스'가 되어 배우기만 했다 — 재현).
-    소스·채널·PC 를 정하지 않은 규칙은 알 수 없어 예전처럼(DB 전체 기준)."""
-    if not f.sources and not f.channels and not f.hosts:
-        # 소스를 정하지 않은 규칙은 DB 전체 기준 — 그런데 DB 가 비었으면(새로 설치) 기준이 아직 없다: 첫 로그가 들어오면 그때부터.
-        # 지금으로 두면 에이전트를 늦게 붙인 만큼 배우는 기간이 줄거나 사라져 첫 정상 값이 알림이었다(검토에서 재현)
+async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, anchor: datetime) -> bool:
+    """배우는 기간을 규칙이 보는 것(소스·PC)이 연결된 때에 맞춘다 (B-47, ADR-063 22). 끝났으면 True, 아직 연결되지 않아 나중에 다시 볼
+    것이면 False. 규칙 하나: **연결된 때가 지금 배우는 기간의 시작(anchor = learn_from)보다 늦을 때만** 그때부터 learn 을 채운다 —
+    조건을 바꿔도 이미 배운 소스면 다시 늘지 않는다(늘리면 조건 한 줄 고친 뒤 몇 주 동안 새 값을 배운 값으로 삼켰다, 검토에서 재현).
+    연결된 때:
+    - 소스·PC 를 정하지 않은 규칙(채널만 정한 규칙 포함): DB 전체의 첫 로그 — 비었으면(새로 설치) 들어올 때까지 기다린다.
+    - PC 만: 그 PC 를 처음 받은 때(agents.first_seen — 지우지 않는 표). 채널은 보지 않는다 — 오래 연결된 PC 의 조용한 채널을 '새로
+      연결'로 보면 그 채널의 첫 접속(공격자일 수도)을 배운 값으로 삼켰다(검토에서 재현).
+    - 소스: 그 소스(정한 PC 안)를 처음 받은 때(agent_streams). 그 표는 35일만 두고 018 전의 것은 없으니, 표가 아는 가장 이른 날과 같고
+      DB 에 그보다 오래된 로그가 있으면 실제 시작을 모르는 것이라 예전부터로 본다(새로 설치한 서버는 그 날이 수집의 시작이라 그대로).
+    규칙에 맞는 로그로 정하지 않는다 — 오래 모아 온 소스의 드문 이벤트 규칙(7045)이 '새 소스'가 되어 첫 공격을 삼켰다(재현)."""
+    if not f.sources and not f.hosts:
         first = await oldest_received()
-        if first is None:
-            return False
-        if first < start:
-            return True
-        await _fit_learning(ns, first, learn)
-        return True
-    known = (await db.fetch_one("SELECT min(day) AS d FROM agent_streams"))["d"]
-    row = await db.fetch_one(
-        "SELECT min(first_at) AS first FROM agent_streams WHERE (cardinality(%s::text[]) = 0 OR source = ANY(%s))"
-        " AND (cardinality(%s::text[]) = 0 OR lower(channel) = ANY(%s)) AND (cardinality(%s::text[]) = 0 OR host = ANY(%s))",
-        (f.sources, f.sources, f.channels, [c.lower() for c in f.channels], f.hosts, f.hosts))
-    first = row["first"] if row else None
+    elif not f.sources:
+        first = (await db.fetch_one("SELECT min(first_seen) AS first FROM agents WHERE host = ANY(%s)", (f.hosts,)))["first"]
+    else:
+        first = (await db.fetch_one(
+            "SELECT min(first_at) AS first FROM agent_streams WHERE source = ANY(%s) AND (cardinality(%s::text[]) = 0 OR host = ANY(%s))",
+            (f.sources, f.hosts, f.hosts)))["first"]
+        known = (await db.fetch_one("SELECT min(day) AS d FROM agent_streams"))["d"]
+        if first is not None and known is not None and first.date() <= known + timedelta(days=1):
+            oldest = await oldest_received()
+            if oldest is not None and oldest < datetime.combine(known, datetime.min.time(), UTC) - timedelta(days=1):
+                return True
     if first is None:
-        return False   # 아직 그 소스를 받지 않았다 — 들어오면 그때부터 배운다
-    if first < start:
-        return True    # 배우는 기간 전부터 모아 온 소스 — DB 에 있는 만큼 배웠다
-    if known is not None and first.date() <= known + timedelta(days=1):
-        # 표가 아는 가장 이른 날과 같다 — 그보다 오래된 로그가 DB 에 있으면(정리 35일·올린 날) 실제 시작을 모르니 예전부터로 본다.
-        # 새로 설치한 서버는 그 날이 모든 수집의 시작이라 그대로 맞춘다(그렇지 않으면 규칙을 먼저 만든 새 서버에서 첫 정상 값이 알림, 재현)
-        oldest = await oldest_received()
-        if oldest is not None and oldest < datetime.combine(known, datetime.min.time(), UTC) - timedelta(days=1):
-            return True
+        return False   # 아직 연결되지 않았다 — 들어오면 그때부터 배운다
+    if first <= anchor:
+        return True    # 지금 배우는 기간이 시작되기 전부터 연결돼 있었다 — DB 에 있는 만큼 배웠다
     await _fit_learning(ns, first, learn)
     return True
 

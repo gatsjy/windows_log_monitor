@@ -1235,3 +1235,39 @@ def test_fresh_install_unscoped_rule_learns_from_first_log(client):
     for i in range(3):
         ev(f"svc{i}", "10.97.0.1", 4897, host="DC-97")
     assert evaluate(client, rule)[0] == []
+
+
+# ---------------------------------------------------------------- 14차 검토 보완
+def test_quiet_channel_on_old_host_is_not_a_new_source(client):
+    """오래 연결된 PC 의 조용한 채널: 그 채널의 첫 이벤트를 '새로 연결'로 보아 배운 값으로 삼키지 않는다(재현)."""
+    from app.alerts import newterms
+
+    sql("INSERT INTO agents (host, first_seen) VALUES ('EMR-DB', now() - interval '90 days') ON CONFLICT (host) DO NOTHING")
+    ev("security", "10.98.0.1", 4600, host="EMR-DB", at=datetime.now(UTC) - timedelta(days=3))   # DB 에는 사흘 전 로그부터
+    rule = own_rule("조용한 채널", 4898, seed=False,
+                    match='{ host: EMR-DB, channel: "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational", '
+                          'event_id: "4898" }')
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    sql("INSERT INTO events (received_at, ts, host, source, channel, category, event_id, level, username, src_ip, message, raw)"
+        " VALUES (now(), now(), 'EMR-DB', 'winevtlog', 'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational',"
+        " 'security', 4898, 4, 'vendor', '198.51.100.98', '세션', '{}'::jsonb)")
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1
+
+
+def test_condition_edit_does_not_restart_learning_on_young_db(client):
+    """DB 가 learn 보다 젊어도 이미 배운 규칙의 조건을 고치면 앞으로 다시 배우지 않는다(재현: 몇 주 침묵)."""
+    from app.alerts import newterms
+
+    sql("DELETE FROM events")
+    ev("old", "10.99.0.1", 4899, at=datetime.now(UTC) - timedelta(days=17))
+    rule = own_rule("젊은 DB", 4899, seed=False, learn="14d")
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    rule = own_rule("젊은 DB", 4899, seed=False, learn="30d", match='{ event_id: "4899", query: \'-user:svc_backup\' }')
+    newterms._fit_checked.clear()
+    evaluate(client, rule)
+    ev("attacker", "203.0.113.99", 4899)
+    fired, _ = evaluate(client, rule)
+    assert len(fired) == 1
