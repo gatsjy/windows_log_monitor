@@ -222,8 +222,12 @@ def test_rule_api_preview_and_accesslog(client):
 
 # ---------------------------------------------------------------- 검토 보완 (B-47 1차 검토) — 규칙마다 이벤트 ID 를 따로 써서 서로 섞이지 않게
 def own_rule(name, event_id, *, fields="[account, ip]", burst=20, max_terms=50000, learn="1d", extra="", match=None, sid=None,
-             history="30d"):
+             history="30d", seed=True):
+    """seed: 배우는 기간보다 오래된 그 규칙의 로그 하나 — '이 소스는 전부터 모아 왔다'(없으면 처음 켤 때 배우는 기간을 앞으로 채운다)."""
     from app.alerts.engine import engine
+
+    if seed and not sql("SELECT 1 FROM events WHERE event_id = %s AND username = 'seed'", (event_id,)):
+        ev("seed", "10.255.255.1", event_id, at=datetime.now(UTC) - timedelta(hours=36))
 
     text = (f"settings:\n  interval_sec: 30\n{extra}rules:\n  - name: {name}\n" + (f"    sid: {sid}\n" if sid else "")
             + f"    kind: new_terms\n    match: {match or '{ event_id: \"' + str(event_id) + '\" }'}\n    fields: {fields}\n"
@@ -1038,3 +1042,29 @@ def test_budget_stays_under_slow_threshold():
 
     assert newterms._budget() <= newterms.SCAN_BUDGET_SEC
     assert newterms._budget() < max(5, settings.alert_rule_timeout_sec * 0.5)   # health.rule_state 의 '느림' 기준
+
+
+# ---------------------------------------------------------------- 8차 검토 보완
+def test_new_source_learns_forward_from_its_own_first_log(client):
+    """새로 모으기 시작한 소스의 규칙: DB 의 다른 소스가 오래됐어도 이 규칙의 로그가 있던 때부터 배우는 기간을 채운다(재현: 바로 알림)."""
+    ev("batch", "10.80.0.1", 4880, at=datetime.now(UTC) - timedelta(hours=2))   # 두 시간 전에 모으기 시작
+    rule = own_rule("새 소스", 4880, seed=False)
+    evaluate(client, rule)
+    ev("weekly", "10.80.0.2", 4880)                       # 배우는 하루 안 — 새 값이어도 알리지 않는다
+    assert evaluate(client, rule)[0] == []
+    [(until,)] = sql("SELECT learn_until FROM new_terms_state WHERE rule_key = 'name:새 소스'")
+    assert until > datetime.now(UTC) + timedelta(hours=20)
+
+
+def test_sid_change_moves_state(client):
+    rule = own_rule("번호 바꿈", 4881, sid=1009300)
+    evaluate(client, rule)
+    [(ns,)] = sql("SELECT id FROM new_terms_state WHERE rule_key = 'sid:1009300'")
+    body = {"name": "번호 바꿈", "sid": 1009301, "kind": "new_terms", "severity": "warning", "notify": ["운영팀"],
+            "match": {"event_id": "4881"}, "fields": ["account", "ip"], "history_sec": 30 * 86400, "learn_sec": 86400}
+    stale = sql("INSERT INTO new_terms_state (rule_key, fields, filter_sig, cursor_at, learn_until)"
+                " VALUES ('sid:1009301', ARRAY['account','ip'], 'x', now(), now()) RETURNING id")[0][0]
+    r = client.put("/api/alerts/rules", json={"original": "번호 바꿈", "rule": body}, headers=CSRF)
+    assert r.status_code == 200, r.text
+    assert sql("SELECT id FROM new_terms_state WHERE rule_key = 'sid:1009301'") == [(ns,)]
+    assert sql("SELECT count(*) FROM new_terms_state WHERE id = %s", (stale,)) == [(0,)]

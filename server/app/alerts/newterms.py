@@ -184,6 +184,13 @@ async def evaluate(engine: Any, rule: Rule, now: datetime, run: Any = None) -> l
         backfilling = to > frm
     await repository.update_new_terms_state(ns, chunk_sec=chunk,
                                             **({} if backfilling else {"backfill_to": None, "backfill_from": None}))
+    if state["backfill_to"] is not None and not backfilling and state["relearn_reason"] == "처음":
+        # 처음 켠 규칙: 배우는 기간을 이 규칙의 로그가 있던 때부터로(DB 전체의 가장 오래된 로그가 아니라) — 알리기 전에.
+        # 시간 초과면 예전처럼(DB 전체 기준)
+        try:
+            await repository.fit_first_learning(ns, base, rule.learn, rule.history, state["backfill_from"], now)
+        except db.QueryTimeout:
+            pass
     if (last := _purged.get(ns)) is None or now - last > PURGE_EVERY:
         # 기준은 이어서 훑은 곳까지 — 지금으로 하면 아직 훑지 못한(밀린) 구간에 다시 보인 값을 지워 거짓 '처음 보는 값'이 됐다
         await repository.purge_seen_terms(ns, min(cursor, now) - rule.history - timedelta(days=1))

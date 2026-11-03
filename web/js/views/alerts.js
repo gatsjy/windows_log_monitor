@@ -333,6 +333,8 @@ export async function mount(root, params, sub) {
         </select></label>
         <label class="field"><span>대상 (비우면 모든 대상)</span><input class="input" data-key maxlength="500" placeholder="예: WEB-01 — 규칙의 묶음 기준 값(PC·IP·사용자)"></label>
       </div>
+      <div class="field" data-target-kind hidden><span>대상 종류 (처음 보는 값 규칙)</span><div class="seg">
+        <button type="button" data-v="pc" class="on">PC 이름</button><button type="button" data-v="value">값 조합 (볼 값을 · 로 이은 것)</button></div></div>
       <div class="form-row">
         <label class="field"><span>시작</span><input class="input" type="datetime-local" data-start value="${toInput(start)}"></label>
         <label class="field"><span>끝</span><input class="input" type="datetime-local" data-end value="${toInput(new Date(start.getTime() + 3600e3))}"></label>
@@ -345,6 +347,14 @@ export async function mount(root, params, sub) {
       <div data-msg></div></div>`;
     const startEl = body.querySelector('[data-start]');
     const endEl = body.querySelector('[data-end]');
+    // 처음 보는 값 규칙은 대상 자리가 PC 인지 값 조합인지 골라야 한다 — PC 범위 사용자는 PC 로만 걸 수 있고 서버가 target=pc 로 구분한다
+    const ruleEl = body.querySelector('[data-rule]');
+    const kindBox = body.querySelector('[data-target-kind]');
+    const syncKind = () => { kindBox.hidden = config.rules.find((r) => r.name === ruleEl.value)?.kind !== 'new_terms'; };
+    ruleEl.addEventListener('change', syncKind);
+    kindBox.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+      kindBox.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    }));
     body.querySelectorAll('[data-sec]').forEach((b) => b.addEventListener('click', () => {
       const from = startEl.value ? new Date(startEl.value) : new Date();
       endEl.value = toInput(new Date(from.getTime() + Number(b.dataset.sec) * 1000));
@@ -356,9 +366,11 @@ export async function mount(root, params, sub) {
       const key = body.querySelector('[data-key]').value.trim();
       e.target.disabled = true;
       try {
+        const pcTarget = !kindBox.hidden && kindBox.querySelector('.on')?.dataset.v === 'pc' && key;
         await api.send('POST', '/api/alerts/silences', {
-          rule: body.querySelector('[data-rule]').value || null, group_key: key || null, reason,
+          rule: ruleEl.value || null, group_key: key || null, reason,
           starts_at: startEl.value ? new Date(startEl.value).toISOString() : null, ends_at: new Date(endEl.value).toISOString(),
+          ...(pcTarget ? { target: 'pc' } : {}),
         });
         closeDrawer();
         load();

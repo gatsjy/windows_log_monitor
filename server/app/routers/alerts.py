@@ -459,12 +459,15 @@ async def save_rule(body: RuleBody, request: Request, admin: User = Depends(requ
     await _validate(new_text)
     # 처음 보는 값(B-47)의 상태는 규칙 열쇠(sid: 또는 name:)로 찾는다 — 저장해서 열쇠가 바뀌면 여기서 정리한다(엔진이 새 설정으로 돌기 전에)
     before = next((r for r in engine.config.rules if r.name == body.original), None) if body.original else None
+    new_key = f"sid:{rule['sid']}"
     if body.original is None:
         # 새 규칙: 지운 규칙의 번호를 다시 받았으면 그 규칙의 상태(본 값·배운 기간)를 이어받지 않게 — 이어받으면 바로 알리거나 놓쳤다
-        await repository.drop_new_terms_states(f"sid:{rule['sid']}")
-    elif before is not None and before.sid is None:
-        # 손으로 쓴 규칙(번호 없음)을 처음 저장: 번호가 붙어 열쇠가 바뀐다 — 이름을 함께 바꿔도 옛 이름의 상태를 옮긴다
-        await repository.rekey_new_terms_states(f"name:{body.original}", f"sid:{rule['sid']}")
+        await repository.drop_new_terms_states(new_key)
+    elif before is not None and configdiff.rule_key(before) != new_key:
+        # 열쇠가 바뀜(번호 없던 규칙의 처음 저장·번호 바꿈): 새 열쇠에 남은 다른 규칙의 상태는 지우고 이 규칙의 상태를 옮긴다 —
+        # 옮기지 않으면 처음부터 다시 배워 history 안의 값이 거짓 '처음 보는 값'이 됐다(검토에서 재현)
+        await repository.drop_new_terms_states(new_key)
+        await repository.rekey_new_terms_states(configdiff.rule_key(before), new_key)
     await _store(new_text, admin, request, "alerts.rule.save",
                  {"rule": rule["name"], "sid": rule["sid"], "original": body.original})
     return {"ok": True, "name": rule["name"], "sid": rule["sid"]}
@@ -925,7 +928,7 @@ def _check_host_only_target(rule: str | None, group_key: str | None, target: str
                  or (found.kind == "new_terms" and (target == "pc" or tuple(found.terms_fields) == ("host",))))
     if not pc_target:
         raise HTTPException(422, "조회 범위가 PC 로 정해진 사용자의 무음은 PC 에만 걸립니다 — 이 대상은 PC 가 아닙니다"
-                                 "(처음 보는 값 알림이면 'PC' 범위를 고르세요)")
+                                 "(처음 보는 값 규칙이면 대상 종류를 'PC 이름'으로 고르세요)")
 
 
 def _check_silence_scope(user: User, rule: str | None, group_key: str | None, host_only: bool = True) -> None:

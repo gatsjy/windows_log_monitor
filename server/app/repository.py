@@ -1086,6 +1086,24 @@ async def update_new_terms_state(ns: int, **values: Any) -> None:
                        [*values.values(), ns])
 
 
+async def fit_first_learning(ns: int, f: EventFilter, learn: timedelta, history: timedelta, start: datetime,
+                             now: datetime) -> None:
+    """처음 켠 규칙의 거슬러 배우기가 끝났을 때: 이 규칙의 로그가 배우는 기간의 시작(start)보다 늦게 시작됐으면 배우는 기간을 그때부터로
+    맞춘다 — DB 전체에서 가장 오래된 로그로 정하면 새로 모으기 시작한 소스의 규칙은 하루 치만 배우고 바로 알렸다(검토에서 재현).
+    그 전에도 이 규칙의 로그가 있었으면(history 안에서 하나라도) 그대로. 그동안 알릴 차례로 둔 값 중 맞춘 기간 안의 것은 배운 것으로."""
+    first = (await db.fetch_one("SELECT min(first_seen) AS f FROM seen_terms WHERE ns = %s", (ns,)))["f"]
+    if first is not None and first <= start + timedelta(hours=1):
+        return
+    where, params = where_clause(replace(f, received_since=start - history, received_before=start))
+    if await db.fetch_one(sql.SQL("SELECT 1 AS x FROM events WHERE {} LIMIT 1").format(where), params):
+        return
+    until = (first or now) + learn
+    await db.fetch_all(
+        "WITH u AS (UPDATE new_terms_state SET learn_until = GREATEST(learn_until, %s) WHERE id = %s RETURNING learn_until)"
+        " UPDATE seen_terms SET state = 'learned' WHERE ns = %s AND state = 'pending' AND first_seen < (SELECT learn_until FROM u)"
+        " RETURNING ns", (until, ns, ns))
+
+
 async def drop_new_terms_states(rule_key: str) -> int:
     """그 열쇠의 상태(본 값과 함께)를 지운다 — 새로 만든 규칙이 지운 규칙의 번호를 다시 받아 그 상태를 이어받지 않게(검토에서 재현)."""
     return len(await db.fetch_all("DELETE FROM new_terms_state WHERE rule_key = %s RETURNING id", (rule_key,)))
