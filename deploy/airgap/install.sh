@@ -254,9 +254,17 @@ fi
 # ------------------------------------------------------------------ 8. 기동
 step "8. 기동"
 compose up -d --no-build --pull never --remove-orphans
-# 마이그레이션을 적용하는 중인가 — 마지막 '마이그레이션 적용' 줄 뒤에 기동 줄('Log Monitor … 시작')이 아직 없다
+# 마이그레이션을 적용하는 중인가 — migrate() 가 적용하는 동안 쥐는 DB 잠금(server/app/db.py _MIGRATION_LOCK_ID = 727001, 프로세스가 죽으면 풀림)으로 본다.
+# 로그 글('마이그레이션 적용' 뒤에 기동 줄이 없음)로 보면 실패해 다시 뜨기를 되풀이하는 것도 '적용 중'으로 보여 30분 동안 '다시 띄우지 말고
+# 기다리라'고 했다(검토에서 재현). 그사이 api 가 다시 떴으면(재시작 횟수가 늘면) 실패한 것이라 기다리지 않는다
+API_ID=$(compose ps -q api 2>/dev/null || true)
+restarts() { if [ -n "$API_ID" ]; then docker inspect -f '{{.RestartCount}}' "$API_ID" 2>/dev/null || echo x; else echo 0; fi; }
+RESTARTS0=$(restarts)
 migrating() {
-  compose logs --no-log-prefix --tail 500 api 2>/dev/null | grep -E '마이그레이션 적용|Log Monitor .* 시작' | tail -n 1 | grep -q '마이그레이션 적용'
+  [ "$(restarts)" = "$RESTARTS0" ] || return 1
+  compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA' 2>/dev/null <<'SQL' | grep -q 1
+SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 AND objid = 727001 AND objsubid = 1 AND granted;
+SQL
 }
 printf '  상태 확인 '
 LIMIT=60; MIGRATING=0   # 2초마다 — 기본 2분

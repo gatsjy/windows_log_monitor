@@ -20,7 +20,7 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
-_MIGRATION_LOCK_ID = 727_001
+_MIGRATION_LOCK_ID = 727_001   # deploy/airgap/install.sh 가 이 잠금으로 '마이그레이션 적용 중'을 본다 — 바꾸면 그쪽도
 
 _pool: AsyncConnectionPool | None = None
 POOL_MAX = 10
