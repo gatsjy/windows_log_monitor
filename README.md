@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
-  <img src="https://img.shields.io/badge/version-0.5.0-2a78d6" alt="version 0.5.0">
+  <img src="https://img.shields.io/badge/version-0.6.0-2a78d6" alt="version 0.6.0">
   <img src="https://img.shields.io/badge/PostgreSQL-17-336791" alt="PostgreSQL 17">
   <img src="https://img.shields.io/badge/Fluent%20Bit-4.0-49bda5" alt="Fluent Bit 4.0">
   <img src="https://img.shields.io/badge/UI-no%20build-lightgrey" alt="no build UI">

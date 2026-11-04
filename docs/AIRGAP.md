@@ -1,6 +1,6 @@
 # 폐쇄망 배포 가이드
 
-> 최종 갱신: 2026-10-16 · 버전 0.5.0 + 미출시(HTTPS·에이전트 TLS §7.5)
+> 최종 갱신: 2026-11-04 · 버전 0.6.0
 > 인터넷이 되지 않는 사내망 서버에 Log Monitor 를 설치·업그레이드하는 절차입니다.
 > 스크립트: `deploy/airgap/make-bundle.sh`(묶음 만들기), `deploy/airgap/install.sh`(설치·업그레이드). 리허설 기록은 §13.
 
@@ -88,8 +88,8 @@
 - 결과물 (`dist/`):
 
 ```
-log-monitor-0.5.0-amd64.tar.gz          반입 파일
-log-monitor-0.5.0-amd64.tar.gz.sha256   반입 신청서에 적을 해시
+log-monitor-0.6.0-amd64.tar.gz          반입 파일
+log-monitor-0.6.0-amd64.tar.gz.sha256   반입 신청서에 적을 해시
   └ 안에: images/images.tar.gz         컨테이너 이미지 3개 (api, postgres:17-alpine, fluent-bit:4.0)
           images/IMAGES.txt            이미지 ID
           images/PACKAGES.txt          이미지 안의 파이썬 패키지 버전 (소프트웨어 목록 증적)
@@ -192,7 +192,7 @@ docker run --rm -v "$PWD/docker-debs:/out" ubuntu:24.04 bash -c '
 
 | 반입 일시 | 반입자 | 승인자 | 파일명 | SHA-256 | 버전 | 용도 |
 |---|---|---|---|---|---|---|
-| 2026-10-__ | | | log-monitor-0.5.0-amd64.tar.gz | (`.sha256` 내용) | 0.5.0 | 신규 설치 / 업그레이드 |
+| 2026-11-__ | | | log-monitor-0.6.0-amd64.tar.gz | (`.sha256` 내용) | 0.6.0 | 신규 설치 / 업그레이드 |
 
 - 묶음 안의 `images/PACKAGES.txt`, `images/IMAGES.txt` 를 기록에 첨부하면 '어떤 소프트웨어가 들어갔는가' 를 증명할 수 있습니다.
 
@@ -207,9 +207,9 @@ docker version && docker compose version && uname -m      # x86_64 이면 amd64 
 ### 7.2 묶음 풀고 설치
 
 ```bash
-sha256sum -c log-monitor-0.5.0-amd64.tar.gz.sha256
-tar -xzf log-monitor-0.5.0-amd64.tar.gz
-cd log-monitor-0.5.0-amd64
+sha256sum -c log-monitor-0.6.0-amd64.tar.gz.sha256
+tar -xzf log-monitor-0.6.0-amd64.tar.gz
+cd log-monitor-0.6.0-amd64
 sudo ./deploy/airgap/install.sh --public-url https://logmon.corp.local:8080 --syslog
 # 사용자가 IP 로 접속: --public-url https://10.0.0.10:8080 (인증서 이름 logmon.internal + IP 로 자동)
 # 사내 PKI 인증서: ... --tls-cert server.crt --tls-key server.key --tls-ca root-ca.crt
