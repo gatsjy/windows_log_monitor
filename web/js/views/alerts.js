@@ -191,6 +191,7 @@ export async function mount(root, params, sub) {
         <div class="seg" data-status aria-label="처리 상태">${STATUS_FILTERS.map(([v, l]) => html`
           <button type="button" data-v="${v}" class="${v === status ? 'on' : ''}">${l}<span class="seg-count num">${fmtNum(v ? counts[v] : total)}</span></button>`)}</div>
         ${viewToggle()}
+        ${items.length ? html`<label class="pick-all-narrow"><input type="checkbox" data-all> 모두 선택</label>` : ''}
         <span style="flex:1"></span>
         <button type="button" class="btn ghost" data-csv title="처리 상태·처리한 사람·처리 기록 포함 (감사 증적)">CSV 내려받기</button>
       </div>
@@ -226,23 +227,24 @@ export async function mount(root, params, sub) {
     }));
     const bar = el.querySelector('[data-bulk]');
     const boxes = [...el.querySelectorAll('[data-sel]')];
-    const all = el.querySelector('[data-all]');
+    // 모두 선택: 표 머리줄 + 도구줄(좁은 화면은 머리줄이 숨으므로)
+    const alls = [...el.querySelectorAll('[data-all]')];
     const sync = () => {
       bar.hidden = !selected.size;
       bar.querySelector('[data-bulk-count]').textContent = `${fmtNum(selected.size)}건 선택`;
-      if (all) {
+      alls.forEach((all) => {
         all.checked = selected.size > 0 && selected.size === boxes.length;
         all.indeterminate = selected.size > 0 && selected.size < boxes.length;
-      }
+      });
     };
     boxes.forEach((cb) => cb.addEventListener('change', () => {
       if (cb.checked) selected.add(Number(cb.dataset.sel)); else selected.delete(Number(cb.dataset.sel));
       sync();
     }));
-    all?.addEventListener('change', () => {
+    alls.forEach((all) => all.addEventListener('change', () => {
       boxes.forEach((cb) => { cb.checked = all.checked; if (all.checked) selected.add(Number(cb.dataset.sel)); else selected.delete(Number(cb.dataset.sel)); });
       sync();
-    });
+    }));
     bar.querySelector('[data-bulk-clear]').addEventListener('click', () => { selected.clear(); boxes.forEach((cb) => { cb.checked = false; }); sync(); });
     bar.querySelectorAll('[data-bulk-act]').forEach((b) => b.addEventListener('click', async () => {
       const action = b.dataset.bulkAct;
