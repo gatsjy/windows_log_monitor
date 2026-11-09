@@ -1,0 +1,12 @@
+# 로그온 실패 급증 — 한 PC 의 4625 를 센다 (출발지 IP 가 없어도 PC 로 묶인다)
+rule: 1000005
+match:
+  - why: 대화형 로그온 실패(유형 2) — 출발지 IP 가 없어도 PC 로 센다
+    windows: {event: 4625, where: {LogonType: 2}}
+  - why: 네트워크 로그온 실패(유형 3), 출발지 IP 있음
+    windows: {event: 4625, where: {LogonType: 3}}
+    inserts: {IpAddress: 198.51.100.21, IpPort: "51230"}
+no_match:
+  - why: 로그온 성공(4624)은 실패가 아니다
+    fails_on: [event_id]
+    windows: {event: 4624}

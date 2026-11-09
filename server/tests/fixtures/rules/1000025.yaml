@@ -1,0 +1,19 @@
+# 원격 데스크톱 새 출발지 (처음 보는 값) — 계정·출발지 IP 조합. 볼 값이 비면 세지 않는다
+rule: 1000025
+match:
+  - why: 원격 데스크톱(유형 10) 로그온 성공 — 계정과 출발지 IP 가 모두 있다
+    windows: {event: 4624}
+    inserts: {LogonType: 10, TargetUserName: leerdp, IpAddress: 203.0.113.77, IpPort: "50113", LogonProcessName: "User32 "}
+no_match:
+  - why: 출발지 IP 가 없으면 '계정·IP' 조합을 만들 수 없다
+    windows: {event: 4624}
+    inserts: {LogonType: 10, TargetUserName: leerdp}
+    fails_on: [term_field:ip]
+  - why: 네트워크 로그온(유형 3)은 원격 데스크톱이 아니다 — 파일 공유 접속마다 '새 출발지'가 되면 안 된다
+    windows: {event: 4624}
+    inserts: {TargetUserName: leerdp, IpAddress: 10.20.30.9, IpPort: "50112"}
+    fails_on: [f.EventData.LogonType]
+  - why: 원격 데스크톱 로그온 실패(4625)는 로그온이 아니다 (1000007)
+    windows: {event: 4625, where: {LogonType: 3}}
+    inserts: {LogonType: 10, TargetUserName: leerdp, IpAddress: 203.0.113.77, IpPort: "50113"}
+    fails_on: [event_id]

@@ -1,0 +1,27 @@
+# 감사 정책 변경 — 4719 (시스템 감사 정책이 바뀜)
+rule: 1000014
+match:
+  - why: 감사 정책 하위 범주의 성공·실패 감사를 끔(4719) — 흔적을 남기지 않으려는 공격 단계
+    windows: {event: 4719, envelope: 4720}
+    ref: https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4719
+    fields:
+      ProviderName: Microsoft-Windows-Security-Auditing
+      Channel: Security
+      Level: 0
+      Keywords: "0x8020000000000000"
+      Version: 0
+      Task: 13568
+      Message: "System audit policy was changed.\r\n\r\nSubject:\r\n\tSecurity ID:\t\tS-1-5-18\r\n\tAccount Name:\t\tWS-0117$\r\n\tAccount Domain:\t\tCORP\r\n\tLogon ID:\t\t0x3E7\r\n\r\nAudit Policy Change:\r\n\tCategory:\t\tLogon/Logoff\r\n\tSubcategory:\t\tLogon\r\n\tSubcategory GUID:\t{0cce9215-69ae-11d9-bed3-505054503030}\r\n\tChanges:\t\tSuccess removed, Failure removed"
+    inserts:
+      SubjectUserSid: S-1-5-18
+      SubjectUserName: WS-0117$
+      SubjectDomainName: CORP
+      SubjectLogonId: "0x3e7"
+      CategoryId: "%%8273"
+      SubcategoryId: "%%12544"
+      SubcategoryGuid: "{0CCE9215-69AE-11D9-BED3-505054503030}"
+      AuditPolicyChanges: "%%8448, %%8450"
+no_match:
+  - why: 계정 바뀜(4738)은 감사 정책이 아니다
+    fails_on: [event_id]
+    windows: {event: 4738}

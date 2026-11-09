@@ -1,0 +1,76 @@
+# Linux SSH 무차별 대입 — journald(리눅스 에이전트)·syslog(수신기)의 sshd 실패, 출발지 IP 로 묶는다
+rule: 1000020
+match:
+  - why: 리눅스 에이전트(journald)의 sshd 암호 실패 — 있는 계정에 대한 암호 대입('Failed password' 만으로 맞는다)
+    journald:
+      date: "2026-11-09T01:02:03.000000Z"
+      MESSAGE: Failed password for root from 203.0.113.9 port 51234 ssh2
+      PRIORITY: "6"
+      SYSLOG_FACILITY: "10"
+      SYSLOG_IDENTIFIER: sshd
+      SYSLOG_PID: "2481"
+      _PID: "2481"
+      _UID: "0"
+      _GID: "0"
+      _COMM: sshd
+      _EXE: /usr/sbin/sshd
+      _SYSTEMD_UNIT: ssh.service
+      _TRANSPORT: syslog
+      _HOSTNAME: web-01
+    ref: https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html
+  - why: syslog 수신기로 온 장비·서버의 sshd 없는 계정 (RFC3164)
+    syslog:
+      date: "2026-11-09T01:02:04.000000Z"
+      pri: "38"
+      time: "Nov  9 10:02:04"
+      host: db-02
+      ident: sshd
+      pid: "1702"
+      message: Invalid user oracle from 203.0.113.10 port 40022
+      source_ip: 10.0.0.12
+      raw_message: "<38>Nov  9 10:02:04 db-02 sshd[1702]: Invalid user oracle from 203.0.113.10 port 40022"
+    ref: https://datatracker.ietf.org/doc/html/rfc3164
+no_match:
+  - why: 암호 로그인 성공
+    fails_on: [q]
+    journald:
+      date: "2026-11-09T01:05:00.000000Z"
+      MESSAGE: Accepted password for kim from 10.20.30.40 port 50111 ssh2
+      PRIORITY: "6"
+      SYSLOG_FACILITY: "10"
+      SYSLOG_IDENTIFIER: sshd
+      _PID: "2490"
+      _COMM: sshd
+      _SYSTEMD_UNIT: ssh.service
+      _TRANSPORT: syslog
+      _HOSTNAME: web-01
+    ref: https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html
+  - why: 공개키 인증 실패는 암호 대입이 아니다 (키를 잘못 고른 정상 사용자에게도 흔하다) — 출발지 IP 는 뽑힌다
+    fails_on: [q]
+    journald:
+      date: "2026-11-09T01:05:01.000000Z"
+      MESSAGE: Failed publickey for root from 203.0.113.9 port 51240 ssh2
+      PRIORITY: "6"
+      SYSLOG_FACILITY: "10"
+      SYSLOG_IDENTIFIER: sshd
+      _PID: "2491"
+      _COMM: sshd
+      _SYSTEMD_UNIT: ssh.service
+      _TRANSPORT: syslog
+      _HOSTNAME: web-01
+    ref: https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html
+  - why: Windows 용 OpenSSH 서버(OpenSSH/Operational)의 같은 문구는 Linux 규칙이 아니다 — 분류가 Windows, 출발지 IP 도 뽑지 않는다
+    fails_on: [category, group_key:ip]
+    windows: {event: 4, envelope: 7045}
+    ref: "https://learn.microsoft.com/windows-server/administration/openssh/openssh_server_configuration — 기본 기록 위치 OpenSSH/Operational (공급자 GUID 는 실측 전 모름)"
+    fields:
+      ProviderName: OpenSSH
+      ProviderGuid: ""
+      Channel: OpenSSH/Operational
+      Level: 4
+      Keywords: "0x8000000000000000"
+      Version: 0
+      Qualifiers: ""
+      Task: 0
+      Message: "sshd: Failed password for invalid user admin from 203.0.113.9 port 51234 ssh2"
+    strings: [sshd, "Failed password for invalid user admin from 203.0.113.9 port 51234 ssh2"]

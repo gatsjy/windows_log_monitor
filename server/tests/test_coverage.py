@@ -38,9 +38,21 @@ def test_need_comes_from_the_rule_conditions(raw, expected):
     {"match": {"category": "auth"}},
     {"kind": "agent_silent"},
     {"kind": "stream_silent"},
+    # 공급자로 좁혔는데 채널이 없으면 — 판단 재료에 공급자가 없어 다른 공급자의 같은 ID 로 채널을 짐작하게 된다
+    {"match": {"event_id": "1102,104", "provider": "Microsoft-Windows-Eventlog"}},
 ])
 def test_rules_without_a_data_shape_are_not_judged(raw):
     assert coverage.need(_rule(**raw)) is None
+
+
+def test_provider_rule_with_channels_is_judged_by_its_channels():
+    # 기본 규칙 1000013: 업무 프로그램이 Application 로그에 쓴 104 는 그 규칙의 데이터가 아니다
+    n = coverage.need(_rule(match={"event_id": "1102,104", "provider": "Microsoft-Windows-Eventlog",
+                                   "channel": "Security,System"}))
+    events = [{"host": "WS-01", "source": "winevtlog", "channel": "Application", "event_id": 104},
+              {"host": "DC-01", "source": "winevtlog", "channel": "Security", "event_id": 1102}]
+    out = coverage.evaluate(n, ALIVE, STREAMS, events)
+    assert out["channels"] == ["Security", "System"] and out["event_pcs"] == 1
 
 
 ALIVE = {"DC-01", "WS-01", "WS-02", "WS-03", "LNX-01"}

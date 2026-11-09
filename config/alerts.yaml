@@ -284,7 +284,9 @@ rules:
     sid: 1000013
     group: 흔적 삭제·감사 무력화
     description: 보안 로그(1102) 또는 다른 이벤트 로그(104)가 지워짐 — 흔적 삭제 시도일 수 있음
-    match: { event_id: "1102,104" }
+    # 이벤트 로그 서비스의 것만 — 104 같은 낮은 번호는 업무 프로그램도 Application 로그에 쓴다 (표본 B-45 에서 찾음).
+    # 1102 는 Security, 104 는 System 에만 남는다 — 채널도 적어 두면 규칙별 데이터 유무가 Application 의 104 를 세지 않는다
+    match: { event_id: "1102,104", provider: Microsoft-Windows-Eventlog, channel: "Security,System" }
     window: 5m
     threshold: 1
     cooldown: 5m
@@ -347,7 +349,11 @@ rules:
   - name: SQL Server 로그인 실패 급증
     sid: 1000018
     group: 웹·DB·Linux
-    match: { category: mssql, event_id: "18456" }
+    description: 한 IP 에서 SQL Server 로그인 실패가 몰림 — Application 로그(공급자 MSSQLSERVER·MSSQL$인스턴스)로 센다
+    # 같은 실패가 ERRORLOG(-MssqlErrorlog)로도 온다 — 둘 다 세면 기준 10건이 실제 5번에 울린다(표본 B-45 검토). Application 로그는
+    # 에이전트 기본 채널이고 SQL Server 는 로그인 실패를 늘 거기에 남긴다(Microsoft 오류표 'Event logged: Yes').
+    # 18456 만이 아니다 — 잠긴 계정(18486)·꺼진 계정(18470)·암호 만료(18487)·암호 변경 필요(18488)도 같은 'Login failed'
+    match: { source: winevtlog, category: mssql, event_id: "18456,18470,18486,18487,18488" }
     group_by: ip
     window: 10m
     threshold: 10

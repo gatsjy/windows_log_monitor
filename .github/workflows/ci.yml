@@ -164,12 +164,14 @@ jobs:
           python tools/ci/agent_memory.py --fluent-bit $exe --template agent/windows/fluent-bit.yaml --baseline tools/ci/fixtures/windows-agent-0.4.0.yaml --down 120 --work (Join-Path $env:RUNNER_TEMP "wlm-mem")
           if ($LASTEXITCODE -ne 0) { throw "agent memory test failed" }
       # Real events through the agent's winevtlog settings: prints the record shape (StringInserts order/types, EventData)
-      # that the server rules and normalizer rely on. Throwaway account/service on the runner, removed at the end.
+      # that the server rules and normalizer rely on. -ThrowawayRunner changes the runner (account, policies, clears the
+      # Security/System logs) - the script refuses it outside GitHub Actions and on domain members (B-45).
+      # The WLMCAPTURE lines become server/tests/fixtures/winevtlog/agent-fb4.0.14.jsonl as they are (see its README).
       - name: Windows event record shape (real events, agent settings)
         shell: pwsh
         run: |
           $exe = (Get-ChildItem fb -Recurse -Filter fluent-bit.exe | Select-Object -First 1).FullName
-          & tools\ci\capture_winlog.ps1 -FluentBitExe $exe -Rendered agent-render\windows-min.yaml -Work (Join-Path $env:RUNNER_TEMP "wlm-winlog") -Fixture server\tests\fixtures\winevtlog\agent-fb4.0.14.jsonl
+          & tools\ci\capture_winlog.ps1 -ThrowawayRunner -FluentBitExe $exe -Rendered agent-render\windows-min.yaml -Work (Join-Path $env:RUNNER_TEMP "wlm-winlog") -Fixture server\tests\fixtures\winevtlog\agent-fb4.0.14.jsonl
           if ($LASTEXITCODE -ne 0) { throw "capture failed" }
       # Windows build: UTF-16 ERRORLOG + multiline must give the same records as the Linux image (expected values
       # from tools/ci/test_fluentbit_mssql.sh). Only the MSSQL tail is taken from the rendered config (B-08).

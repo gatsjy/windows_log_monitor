@@ -1,0 +1,15 @@
+# 한 계정이 여러 서버에 원격 데스크톱 — 계정으로 묶고 서로 다른 PC 3대 이상 (시험이 PC 이름만 바꾼 사본을 보낸다)
+rule: 1000023
+match:
+  - why: 원격 데스크톱(유형 10) 로그온 성공 — 계정으로 묶인다
+    windows: {event: 4624}
+    inserts: {LogonType: 10, TargetUserName: kimrdp, IpAddress: 10.20.30.9, IpPort: "50112", LogonProcessName: "User32 "}
+no_match:
+  - why: 네트워크 로그온(유형 3)은 원격 데스크톱이 아니다 (파일 공유 접속이 서버 여러 대에 나는 것은 흔하다)
+    fails_on: [f.EventData.LogonType]
+    windows: {event: 4624}
+    inserts: {TargetUserName: kimrdp, IpAddress: 10.20.30.9, IpPort: "50112"}
+  - why: 원격 데스크톱 로그온 실패(4625)는 이 규칙이 아니다 (1000007)
+    fails_on: [event_id]
+    windows: {event: 4625, where: {LogonType: 3}}
+    inserts: {LogonType: 10, TargetUserName: kimrdp, IpAddress: 10.20.30.9, IpPort: "50112"}

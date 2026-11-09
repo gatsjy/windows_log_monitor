@@ -6,12 +6,13 @@
   "widgets": [
     {
       "type": "stat",
-      "title": "로그인 실패 (18456)",
+      "title": "로그인 실패 (18456 등)",
       "w": 3,
       "metric": "count",
       "query": {
+        "source": "winevtlog",
         "category": "mssql",
-        "event_id": "18456"
+        "event_id": "18456,18470,18486,18487,18488"
       },
       "up_is_good": false,
       "color": "var(--warning)",
@@ -69,8 +70,9 @@
       "w": 4,
       "field": "user",
       "query": {
+        "source": "winevtlog",
         "category": "mssql",
-        "event_id": "18456"
+        "event_id": "18456,18470,18486,18487,18488"
       }
     },
     {
@@ -79,8 +81,9 @@
       "w": 4,
       "field": "ip",
       "query": {
+        "source": "winevtlog",
         "category": "mssql",
-        "event_id": "18456"
+        "event_id": "18456,18470,18486,18487,18488"
       }
     },
     {
@@ -107,7 +110,7 @@
       "type": "text",
       "title": "참고",
       "w": 12,
-      "text": "SQL Server 는 로그인 실패(18456)와 심각한 오류(823·824 디스크 I/O, 9002 로그 가득 참, 3041 백업 실패)를 Windows 응용 프로그램 로그에 남기므로 에이전트만 설치하면 수집됩니다.\nERRORLOG 까지 받으려면 에이전트 설치 시 -MssqlErrorlog 를 붙입니다."
+      "text": "SQL Server 는 로그인 실패(18456)와 심각한 오류(823·824 디스크 I/O, 9002 로그 가득 참, 3041 백업 실패)를 Windows 응용 프로그램 로그에 남기므로 에이전트만 설치하면 수집됩니다.\nERRORLOG 까지 받으려면 에이전트 설치 시 -MssqlErrorlog 를 붙입니다. 로그인 실패 수·계정·IP 는 응용 프로그램 로그로만 셉니다(18456·잠김 18486 등) — ERRORLOG 에도 같은 실패가 남아 둘 다 세면 두 배가 됩니다. 오류 수·자주 나는 오류 번호는 ERRORLOG 에만 남는 오류도 보려고 두 로그를 함께 세므로, ERRORLOG 를 켠 서버에서는 두 로그에 다 남는 오류(823·3041·9002 등)가 두 번 보입니다."
     }
   ]
 }

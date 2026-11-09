@@ -1,0 +1,44 @@
+# 서비스 비정상 종료 — 서비스 제어 관리자 7031·7034
+rule: 1000002
+match:
+  - why: 서비스 프로세스가 예기치 않게 끝남, 복구 동작 없음(7034)
+    windows: {event: 7034, envelope: 7045}
+    ref: 'wevtutil gp "Service Control Manager" /ge /gm:true — 7034 메시지·%1(서비스 이름)·%2(횟수)'
+    fields:
+      ProviderName: Service Control Manager
+      Channel: System
+      Level: 2
+      Keywords: "0x8080000000000000"
+      Version: 0
+      Qualifiers: 49152
+      Message: "The Print Spooler service terminated unexpectedly.  It has done this 1 time(s)."
+    strings: [Print Spooler, "1"]
+  - why: 예기치 않게 끝나 복구 동작(다시 시작)이 걸림(7031)
+    windows: {event: 7031, envelope: 7045}
+    ref: 'wevtutil gp "Service Control Manager" /ge /gm:true — 7031 메시지·%1 서비스·%2 횟수·%3 지연(ms)·%4 동작 번호·%5 동작'
+    fields:
+      ProviderName: Service Control Manager
+      Channel: System
+      Level: 2
+      Keywords: "0x8080000000000000"
+      Version: 0
+      Qualifiers: 49152
+      Message: "The Print Spooler service terminated unexpectedly.  It has done this 1 time(s).  The following corrective action will be taken in 5000 milliseconds: Restart the service."
+    strings: [Print Spooler, "1", "5000", "1", Restart the service]
+no_match:
+  - why: 상태 바뀜(7036)은 정상 중지·시작
+    fails_on: [event_id]
+    windows: {event: 7036, envelope: 7045}
+    ref: 'wevtutil gp "Service Control Manager" /ge /gm:true — 7036 메시지·%1 서비스·%2 상태'
+    fields:
+      ProviderName: Service Control Manager
+      Channel: System
+      Level: 4
+      Keywords: "0x8080000000000000"
+      Version: 0
+      Qualifiers: 16384
+      Message: "The Print Spooler service entered the stopped state."
+    strings: [Print Spooler, stopped]
+  - why: 서비스 설치(7045)는 다른 규칙(1000011)
+    fails_on: [event_id]
+    windows: {event: 7045}

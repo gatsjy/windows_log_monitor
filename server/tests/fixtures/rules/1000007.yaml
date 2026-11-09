@@ -1,0 +1,19 @@
+# 원격 데스크톱 무차별 대입 — 4625 중 로그온 유형 10, 출발지 IP 로 묶는다
+rule: 1000007
+match:
+  - why: 원격 데스크톱(유형 10) 로그온 실패 — 출발지 IP 로 묶인다
+    windows: {event: 4625, where: {LogonType: 3}}
+    inserts: {LogonType: 10, IpAddress: 198.51.100.23, IpPort: "51232", LogonProcessName: "User32 ", AuthenticationPackageName: Negotiate}
+no_match:
+  - why: 네트워크 로그온(유형 3) 실패는 원격 데스크톱이 아니다 (파일 공유·NTLM 대입은 1000006)
+    fails_on: [f.EventData.LogonType]
+    windows: {event: 4625, where: {LogonType: 3}}
+    inserts: {IpAddress: 198.51.100.23, IpPort: "51232"}
+  - why: 출발지 IP 가 없으면 IP 로 묶을 수 없다
+    fails_on: [group_key:ip]
+    windows: {event: 4625, where: {LogonType: 3}}
+    inserts: {LogonType: 10}
+  - why: 원격 데스크톱 로그온 성공(4624 유형 10)은 실패가 아니다
+    fails_on: [event_id]
+    windows: {event: 4624}
+    inserts: {LogonType: 10, IpAddress: 198.51.100.23, IpPort: "51232"}

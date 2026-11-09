@@ -1,0 +1,12 @@
+# 관리자 그룹에 구성원 추가 — 4732 중 대상 그룹이 Administrators(S-1-5-32-544)
+rule: 1000009
+match:
+  - why: 로컬 Administrators 에 구성원 추가 (net localgroup administrators … /add)
+    windows: {event: 4732, where: {TargetSid: S-1-5-32-544}}
+no_match:
+  - why: 다른 로컬 그룹(Users, S-1-5-32-545)에 추가
+    fails_on: [f.EventData.TargetSid]
+    windows: {event: 4732, where: {TargetSid: S-1-5-32-545}}
+  - why: Administrators 에서 제거(4733)는 권한 상승이 아니다
+    fails_on: [event_id]
+    windows: {event: 4733, where: {TargetSid: S-1-5-32-544}}

@@ -1,0 +1,37 @@
+# 무차별 대입 (출발지 IP 기준) — 4625·4771 을 출발지 IP 로 묶는다
+rule: 1000006
+match:
+  - why: 네트워크 로그온 실패(유형 3) — 출발지 IP 로 묶인다
+    windows: {event: 4625, where: {LogonType: 3}}
+    inserts: {IpAddress: 198.51.100.22, IpPort: "51231"}
+  - why: 도메인 컨트롤러의 Kerberos 사전 인증 실패(4771) — 주소가 IPv4 매핑 IPv6(::ffff:)로 온다
+    windows: {event: 4771, envelope: 4625}
+    ref: https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4771
+    fields:
+      ProviderName: Microsoft-Windows-Security-Auditing
+      Channel: Security
+      Level: 0
+      Keywords: "0x8010000000000000"
+      Version: 0
+      Task: 14339
+      Message: "Kerberos pre-authentication failed.\r\n\r\nAccount Information:\r\n\tSecurity ID:\t\tS-1-5-21-1111111111-2222222222-3333333333-1104\r\n\tAccount Name:\t\tkim\r\n\r\nService Information:\r\n\tService Name:\t\tkrbtgt/CORP\r\n\r\nNetwork Information:\r\n\tClient Address:\t\t::ffff:198.51.100.24\r\n\tClient Port:\t\t51234\r\n\r\nAdditional Information:\r\n\tTicket Options:\t\t0x40810010\r\n\tFailure Code:\t\t0x18\r\n\tPre-Authentication Type:\t2"
+    inserts:
+      TargetUserName: kim
+      TargetSid: S-1-5-21-1111111111-2222222222-3333333333-1104
+      ServiceName: krbtgt/CORP
+      TicketOptions: "0x40810010"
+      Status: "0x18"
+      PreAuthType: "2"
+      IpAddress: "::ffff:198.51.100.24"
+      IpPort: "51234"
+      CertIssuerName: ""
+      CertSerialNumber: ""
+      CertThumbprint: ""
+no_match:
+  - why: 출발지 IP 가 없는 실패(대화형)는 IP 로 묶을 수 없어 세지 않는다 — 병원 전체의 오타가 '빈 출발지' 하나가 되지 않게
+    fails_on: [group_key:ip]
+    windows: {event: 4625, where: {LogonType: 2}}
+  - why: 로그온 성공(4624)
+    fails_on: [event_id]
+    windows: {event: 4624}
+    inserts: {IpAddress: 198.51.100.22, IpPort: "51231"}

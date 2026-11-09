@@ -60,7 +60,7 @@
 | B-42 | 무음 v2 — 반복 점검 창·공휴일·라벨 매처·시간대별 받는 곳 | P2 | L | 비교 §5.2 | 대기 |
 | B-43 | 확인 안 된 알림 에스컬레이션·당직표 — 1단계(에스컬레이션)·2단계 일부(확인 시간 초과) 완료(ADR-055) | P2 | M | 비교 §5.2, ISMS 2.11.5 | 진행 중 |
 | B-44 | 알림 대기열 묶어 보기·종료 분류(정탐/오탐)·규칙별 오탐률 — 완료(ADR-054) | P2 | M | 비교 §5.2 | 완료 |
-| B-45 | 기본 규칙 표본 게이트 — 이름 정적 검사 완료, 템플릿 실측(윈도 CI)·규칙별 표본 남음 | P2 | S | 비교 §5.1, ADR-038 | 대기 |
+| B-45 | 기본 규칙 표본 게이트 — 규칙별 표본 게이트 완료(ADR-066), 윈도 CI 캡처 확대 첫 실행 반영 남음 | P2 | S | 비교 §5.1, ADR-038 | 진행 중 |
 | B-46 | 규칙 예외 (사유·작성자·만료·검토일) — 완료(ADR-051) | P2 | M | 비교 §5.1 | 완료 |
 | B-47 | 처음 보는 값 탐지 (new_terms) — 완료(ADR-063) | P2 | M | 비교 §5.1 | 완료 |
 | B-48 | 규칙 팩 0.6 — 오탐 줄이기·AD·Defender·SQL Server·로그 무력화 | P2 | M | 비교 §5.1 | 대기 |
@@ -281,7 +281,7 @@
 - **벤치마킹(2026-10-29) — 실측 레코드 수집:**
   - 템플릿 34개 중 실측 확인은 11개이고, 나머지 23개는 문서 기반입니다. 그중 기본 규칙이 기대는 것은 4698(1000012)·4719(1000014)·4740(1000008)·4771(1000006·1000021)·1102(1000013)이고, DC 에서 주로 보는 4768·4769·4776 도 문서 기반입니다. 순서가 틀린 템플릿은 이름을 조용히 잘못 붙입니다.
   - 도메인 컨트롤러가 있어야만 생기는 것은 Kerberos 4768·4769·4771 뿐입니다. 나머지는 윈도 CI 러너에서 뜰 수 있으니 B-45 에서 먼저 확인합니다.
-  - 실기 때 한국어 Win10/11 PC 와 DC 에서 `tools/ci/capture_winlog.ps1` 로 레코드를 받아 이름·IP 를 가린 뒤 `server/tests/fixtures/winevtlog/` 에 더하고 `test_win_templates.py` 로 확인합니다(B-45 의 바탕). 같은 자리에서 PC×채널 끊김(B-37)도 실제 GPO 로 확인합니다.
+  - 실기 때 한국어 Win10/11 PC 와 DC 에서 `tools/ci/capture_winlog.ps1`(스위치 없이 = 듣기 모드, PC 를 바꾸지 않음·실행마다 새 폴더 — `-ThrowawayRunner` 는 GitHub 호스트 러너 전용이고 self-hosted 러너·도메인 가입 PC·DC 에서 거부)를 띄워 두고 필요한 동작을 손으로 일으켜 레코드를 받아 이름·IP 를 가린 뒤 `server/tests/fixtures/winevtlog/` 에 더하고 `test_win_templates.py` 로 확인합니다(B-45 의 바탕). 같은 자리에서 PC×채널 끊김(B-37)도 실제 GPO 로 확인합니다.
 
 ---
 
@@ -497,8 +497,17 @@
 - **구현 방향:**
   - (S, 먼저) `tools/ci/capture_winlog.ps1` 에 4698(`schtasks /create`)·4719(`auditpol /set`)·4740(`net accounts /lockoutthreshold` 뒤 틀린 암호)·4776(자격 증명 확인 하위 범주 + 기존 LogonUser)·4634/4647(로그오프)·1102(`wevtutil cl Security`, 맨 마지막에)를 더해 윈도 CI 실측으로 확인합니다. 4722 는 이미 `net user /add` 로 생기니 기록만 더합니다. 스크립트의 `want` 집합과 fixture 를 갱신하고 `test_win_templates.py` 로 봅니다.
   - 도메인 컨트롤러가 있어야 하는 Kerberos 4768·4769·4771 만 B-28 현장에서 채웁니다.
-  - 기본 규칙 sid 마다 실측 모양 pos/neg 표본(맞아야 하는 표본·맞으면 안 되는 표본, `server/tests/fixtures/rules/<sid>/`)을 둡니다. 표본이 없으면 CI 실패(예외는 이유와 함께 목록에).
+  - 기본 규칙 sid 마다 실측 모양 pos/neg 표본(맞아야 하는 표본·맞으면 안 되는 표본, `server/tests/fixtures/rules/<sid>.yaml`)을 둡니다. 표본이 없으면 CI 실패(예외는 이유와 함께 목록에).
 - **완료 기준:** DC 가 필요한 3개 밖의 템플릿은 윈도 CI 실측으로 확인, 모든 기본 규칙에 표본 또는 이유 있는 예외, B-47·B-48·B-50 의 새 규칙도 이 틀을 씀.
+- **규칙별 표본 게이트 완료 (2026-11-09, ADR-066):** 로그로 판단하는 기본 규칙 23개에 표본 87건(안 맞음 표본은 떨어지는 조건 `fails_on` 까지, 규칙의 조건마다 그 조건으로 떨어지는 표본 — 예외는 `UNGUARDED` 에 이유와)(`server/tests/fixtures/rules/<sid>.yaml`, 형식은 그 폴더 README),
+  `test_rule_samples`(DB 없이, 규칙 시험기와 같은 `app/alerts/ruletest.checks`)·`test_api_rule_samples`(수집 → `alert_candidates` 기준 건수·서로 다른 값 수 + 시험기 API).
+  끊김·상관 규칙은 이유와 함께 빠짐. 표본·검토에서 찾아 고침: 1000013 이 업무 프로그램의 104 에도 울림(공급자·채널 조건), 1000018 이 같은 실패를
+  ERRORLOG·Application 로그 둘로 세어 기준이 절반(Application 로그만 + 잠김 18486 등 실패 번호 전부, 대시보드·점검 보고서도), coverage 가 공급자를 보지 않음,
+  ERRORLOG 로그인 번호(성공 18453·18454·18455, 실패는 머리줄 번호).
+  - 윈도 CI 캡처 확대(위 '먼저' 항목)는 스크립트만 바꿨습니다: 4698·4699·4719·4740·4776·4634·4722·1102·104·7031·7036·Application Error 1000·WER 1001,
+    (공급자, ID) 쌍으로 받고(이름 있는 SQL Server 인스턴스 포함) 러너 이름을 WIN-CI 로 바꿔 출력. PC 를 바꾸는 단계는 `-ThrowawayRunner`(GitHub 호스트 러너만 — self-hosted·act·도메인 가입 PC·DC 거부).
+  - **남은 것:** 첫 CI 실행의 `WLMCAPTURE` 줄로 `fixtures/winevtlog/agent-fb4.0.14.jsonl` 갱신(방법은 그 폴더 README) → `test_win_templates`·`VERIFIED` 확인 →
+    문서 기반 표본을 실측으로 바꾸고 `test_rule_samples.DOCS_BASED` 에서 지움. 4771·41·7034·Defender·SQL Server 는 현장(B-28).
 - **출처:** COMPARISON.md §5.1 / SigmaHQ regression_data, Hayabusa sample-evtx, wazuh-logtest.
 
 ### B-46 규칙 예외
@@ -776,6 +785,7 @@
 - **출처:** COMPARISON.md §5.2 / 검토(누락 비평).
 
 ### B-23 기술 부채 모음
+- 화면의 이벤트 ID 설명(`web/js/catalog.js` 의 `EVENT_DOCS`·`eventDoc`)이 공급자를 보지 않습니다 — 업무 프로그램의 104 가 '이벤트 로그 삭제됨', Defender 1001(검사 끝남)이 'Windows 오류 보고'로 보입니다. 낮은 번호(41·104·1000·1001·1116·1117 등)는 공급자도 맞을 때만 설명을 붙입니다(호출하는 곳: drawer·eventtable·top 위젯 — top 위젯은 공급자를 모름). B-45 검토에서 찾음.
 - `starlette.testclient` 의 httpx 사용 경고(StarletteDeprecationWarning) — FastAPI/Starlette 권장 방식으로 테스트 클라이언트 교체.
 - 마이그레이션 007 의 기존 데이터 분류(UPDATE) 공급자 목록에 `SQLBrowser`·`SQLWriter` 가 없음(새 데이터는 `classify()` 가 처리). 다음 마이그레이션에서 보정 UPDATE.
 - 필드 경로의 점(.) 구분 한계: 키 이름에 점이 있으면 `f.` 필터 불가(PROJECT.md §15). 이스케이프 문법(예: `f.a\.b`) 검토.

@@ -57,7 +57,7 @@ server/app/
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
-  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · newterms(처음 보는 값: 받은 시각 구간 훑기·배우기·조합마다 한 번, B-47) · correlation(상관 알림: 개체마다 여러 전술, B-67) · tactics(MITRE 기법 → 전술 표·짝짓기) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
+  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · ruletest(로그 하나 판단: 규칙 시험기·표본 게이트 공용) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · newterms(처음 보는 값: 받은 시각 구간 훑기·배우기·조합마다 한 번, B-47) · correlation(상관 알림: 개체마다 여러 전술, B-67) · tactics(MITRE 기법 → 전술 표·짝짓기) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF) · review(권한 검토 스냅샷·결재, B-72)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
   clock.py           PC·서버 시계 차이 판단(B-57) — 하트비트 시각의 창 두 개 최솟값(repository.CLOCK_OFFSET_SQL)으로 1분·5분·서버 시계 의심
@@ -140,7 +140,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 |---|---|
 | 새 로그 소스 | `normalizers/새소스.py` 작성 → `normalizers/__init__.py` 의 `BY_SOURCE` 등록 → 에이전트에서 `log_source: 새소스` 부착 → 테스트 추가 |
 | 새 위젯 | `web/js/widgets/이름.js` (`render(body, cfg, ctx)`, 실시간이면 `live(body, cfg, ctx, events)` 도) → `widgets/index.js` 등록 → `server/app/routers/dashboards.py` 의 `WIDGET_TYPES` 추가 → `views/dashboard.js` 의 REFERENCE 설명 추가 |
-| 알림 규칙 추가 | `config/alerts.yaml` 의 `rules` (형식: docs/PROJECT.md §6.1). `tests/test_alerts.py::test_shipped_config_is_valid` 가 검증 |
+| 알림 규칙 추가 | `config/alerts.yaml` 의 `rules` (형식: docs/PROJECT.md §6.1). `tests/test_alerts.py::test_shipped_config_is_valid` 가 검증. 기본 규칙이면 `server/tests/fixtures/rules/<sid>.yaml` 에 맞음·아님 표본(B-45, 형식은 그 폴더 README) — 없으면 `test_rule_samples` 실패. 기존 규칙의 조건을 바꿔도 표본부터 |
 | 새 메신저(웹훅 형식) | `alerts/messenger.py` 에 `build_<이름>` + `FORMATS` 한 줄(호스트·필수 헤더·https·전송 간격) → `tests/test_messenger.py` 스냅샷 생성(`WLM_UPDATE_SNAPSHOTS=1`) → PROJECT.md §6.2 표. 형식은 공식 문서로 확인한 것만 |
 | 새 알림 대상 종류 | `app/alerts/notifiers.py` (Notifier 상속, `send()` 실패 시 예외) → `channels.type` CHECK 마이그레이션 → `targets.py` 의 `build_channel`/`_clean_channel_config` → `views/settings.js` → 테스트 |
 | 새 API | 라우터를 `main.py` 에 등록할 때 `dependencies=[Depends(require_user)]` 로 로그인 필수, 변경 작업은 엔드포인트에 `Depends(require_admin)` + `db.audit(...)` |
@@ -268,6 +268,11 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   전술 수는 `tactics.assign`(규칙·전술 최대 짝짓기) — 전술 합집합으로 세지 않는다(T1078 하나가 3개가 됨). 새 MITRE 기법 태그를 기본 규칙에 쓰면 `tactics.TECHNIQUES` 에도(`test_shipped_rules_have_only_known_mitre_tags`).
   상관 알림은 범위가 없는 사용자만 본다(`visibility.alert_visible` — `alerts.kind`, 마이그레이션 047). `alert_visible` 에 행을 넘기는 새 쿼리는 `kind` 도 뽑는다(지운 상관 규칙의 알림이 PC 패턴에 맞아 보였다).
   다시 알리지 않을지는 `payload.correlation.ids`(전부) — 보이는 `alerts`(30개)로 판단하지 않는다. 다른 규칙의 태그·켜기·관찰 변경은 `configdiff._feeder_changes` 가 상관 규칙의 약화로 본다.
+- **기본 규칙 표본 (B-45, ADR-066):** 판단은 규칙 시험기와 같은 `app/alerts/ruletest.checks` 한 곳 — 시험기 판단을 바꾸면 표본 게이트도 같이 바뀐다. Windows 표본은 실측 레코드에서 값만 바꾸고(`where`·`inserts`), 실측이 없으면 `envelope` + 판단 값 전부 + `ref`. 윈도 CI 캡처에 실측이 생기면 빌더가 '실측으로 바꾸라'며 실패한다 — 바꾸고 `test_rule_samples.DOCS_BASED` 에서 지운다. 낮은 이벤트 ID(104·1000 등)는 공급자마다 뜻이 달라 규칙·표본 모두 공급자를 본다.
+  - 안 맞음 표본은 떨어진 조건이 `fails_on` 과 **정확히 같은 집합**이어야 한다(되도록 하나) — '안 맞음'만 보면 IP 없음 같은 다른 조건으로 떨어져 정작 그 경계가 빠진 회귀를 놓쳤다(검토에서 재현). 규칙의 조건마다 그 조건으로 떨어지는 표본이 있어야 하고, 만들 수 없으면 `test_rule_samples.UNGUARDED` 에 이유를.
+  - 규칙별 데이터 유무(`coverage`)의 재료(`agent_events`)에는 공급자가 없다 — 공급자로 좁힌 규칙은 채널도 적는다(안 적으면 판단 보류).
+  - `tools/ci/capture_winlog.ps1 -ThrowawayRunner` 는 PC 를 바꾼다(감사·잠금 정책, 임시 관리자, Security/System 로그 지움) — GitHub 호스트 러너 전용: `GITHUB_ACTIONS=true`·`RUNNER_ENVIRONMENT=github-hosted`·`ACT` 없음이 아니면, 그리고 도메인 가입 PC·DC 면 거부한다(self-hosted 러너도 `GITHUB_ACTIONS=true` 라 그것만 보면 못 막는다). 현장은 스위치 없는 듣기 모드(실행마다 새 폴더, 지우지 않음).
+  - 표본·시험처럼 역슬래시(경로·`\r\n`)가 들어가는 파일은 셸 heredoc 으로 쓰지 않는다 — 윈도 Git Bash 를 거치면 `\\` 가 `\` 로 바뀌어 YAML·파이썬 문자열이 깨졌다(편집 도구로 쓴다).
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - **알림 설정 판본 (ADR-043):** 설정을 적용하면 `engine.reload()` 가 `_pending` 을 두고 `await engine.record()` 가 판본(`alert_config_versions`, 추가만)·감사로그·약화 알림을 남긴다. 설정을 바꾸는 새 API 는 `routers/alerts._store` 를 거친다(쓰기 전 파일 직접 수정부터 기록 → `reload(force=True, source="ui", actor=…)`).
   - 내장 규칙 이름 `engine.CONFIG_RULE`('알림 설정 변경', kind `config`)은 무음을 건너뛴다. 받는 곳은 바뀌기 전 설정의 규칙들 — 새 약화 판단은 `configdiff._rule_changes` 와 `test_configdiff.py` 의 표에 함께.

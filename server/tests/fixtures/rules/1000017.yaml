@@ -1,0 +1,33 @@
+# 웹 서버 오류 급증 — IIS 접속 로그 중 5xx(수준 2)
+rule: 1000017
+match:
+  - why: 서버 오류 응답(500) — IIS 기본 필드 순서(#Fields 줄 없이)
+    iis: "2026-11-09 01:02:03 10.0.0.10 POST /emr/api/orders - 443 - 10.20.30.40 Mozilla/5.0+(Windows+NT+10.0;+Win64;+x64) https://emr.corp.local/emr/ 500 0 0 1532"
+    ref: https://learn.microsoft.com/windows/win32/http/w3c-logging
+  - why: 서비스 사용 불가(503.2 — 동시 요청 한도 초과). 응용 프로그램 풀이 멈춘 503 은 HTTP.sys 의 httperr 로그에만 남아 에이전트가 받지 않는다
+    iis: "2026-11-09 01:02:04 10.0.0.10 GET /emr/ - 443 - 10.20.30.41 Mozilla/5.0+(Windows+NT+10.0;+Win64;+x64) - 503 2 0 3"
+    ref: https://learn.microsoft.com/troubleshoot/developer/webapps/iis/health-diagnostic-performance/http-status-code
+no_match:
+  - why: 없는 파일(404)은 서버 오류가 아니다
+    fails_on: [level]
+    iis: "2026-11-09 01:02:05 10.0.0.10 GET /favicon.ico - 443 - 10.20.30.40 Mozilla/5.0+(Windows+NT+10.0;+Win64;+x64) - 404 0 2 12"
+    ref: https://learn.microsoft.com/windows/win32/http/w3c-logging
+  - why: 인증 필요(401)는 경고(수준 3) — 오류가 아니다
+    fails_on: [level]
+    iis: "2026-11-09 01:02:06 10.0.0.10 GET /emr/ - 443 - 10.20.30.40 Mozilla/5.0+(Windows+NT+10.0;+Win64;+x64) - 401 2 5 3"
+    ref: https://learn.microsoft.com/windows/win32/http/w3c-logging
+  - why: 웹 서버가 아닌 소스의 오류(수준 2) — 응용 프로그램 충돌은 1000003 이 센다
+    fails_on: [source]
+    windows: {event: 1000, envelope: 7045}
+    ref: https://learn.microsoft.com/troubleshoot/windows-server/performance/troubleshoot-application-service-crashing-behavior
+    fields:
+      ProviderName: Application Error
+      ProviderGuid: "{a0e9b465-b939-57d7-b27d-95d8e925ff57}"
+      Channel: Application
+      Level: 2
+      Keywords: "0x8000000000000000"
+      Version: 0
+      Qualifiers: ""
+      Task: 100
+      Message: "Faulting application name: w3wp.exe, version: 10.0.26100.1, time stamp: 0x6543a1b2\r\nFaulting module name: ntdll.dll, version: 10.0.26100.2454, time stamp: 0x1a2b3c4d\r\nException code: 0xc0000374"
+    strings: [w3wp.exe, 10.0.26100.1, 6543a1b2, ntdll.dll, 10.0.26100.2454, 1a2b3c4d, c0000374, 00000000000fe1e9, 2f10, 01db3a1c2f5e7c11, 'C:\Windows\System32\inetsrv\w3wp.exe', 'C:\Windows\SYSTEM32\ntdll.dll', 6b1d9e7a-0b4c-4d5e-9f6a-7b8c9d0e1f2a, "", ""]

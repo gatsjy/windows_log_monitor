@@ -406,10 +406,31 @@ def test_mssql_login_failure_counted_once():
     assert [e.event_id for e in events] == [None, 18456]
 
 
+def test_mssql_login_failure_keeps_the_header_number():
+    # 계정 잠김(18486)은 Application 로그에서도 18486 — ERRORLOG 만 18456 으로 바꾸면 두 길의 번호가 갈렸다
+    events = [normalize(mssql(line), NOW) for line in (
+        "2026-10-04 10:15:23.10 Logon       Error: 18486, Severity: 14, State: 1.",
+        ("2026-10-04 10:15:23.10 Logon       Login failed for user 'sa' because the account is currently locked out. "
+         "The system administrator can unlock it.  [CLIENT: 10.0.0.5]"))]
+    assert [(e.event_id, e.src_ip) for e in events] == [(None, None), (18486, "10.0.0.5")]
+
+
 def test_mssql_errorlog_login_failed():
     e = normalize(mssql("2026-10-04 10:15:22.53 Logon       Login failed for user 'sa'. "
                         "Reason: Password did not match that for the login provided. [CLIENT: 10.0.0.5]"), NOW)
     assert (e.event_id, e.level, e.username, e.src_ip) == (18456, 3, "sa", "10.0.0.5")
+
+
+@pytest.mark.parametrize(("how", "event_id"), [
+    ("Connection made using SQL Server authentication.", 18454),
+    ("Connection made using Integrated authentication.", 18453),
+    ("Connection made using Windows authentication.", 18453),   # 옛 버전 문구
+    ("", 18455),                                                 # 인증 방식 표기 없음
+])
+def test_mssql_login_success_number_follows_the_authentication(how, event_id):
+    # Application 로그로 온 같은 로그인과 같은 번호 (Microsoft 오류표 18453·18454·18455) — 예전에는 모두 18453 이었다
+    e = normalize(mssql(f"2026-10-04 10:16:01.10 Logon       Login succeeded for user 'emr_app'. {how} [CLIENT: 10.0.0.5]"), NOW)
+    assert (e.event_id, e.level, e.src_ip) == (event_id, 4, "10.0.0.5")
 
 
 # 에이전트 0.4.0 (multiline): 시각으로 시작하지 않는 줄은 앞 레코드에 붙어 온다 — UTF-16 을 UTF-8 로 바꾼 뒤라 CRLF 의 \r 이 남는다

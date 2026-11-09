@@ -18,7 +18,18 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .. import accesslog, db, repository
-from ..alerts import adminwatch, configdiff, correlation, coverage, health, playbook, ruleedit, tactics, targets
+from ..alerts import (
+    adminwatch,
+    configdiff,
+    correlation,
+    coverage,
+    health,
+    playbook,
+    ruleedit,
+    ruletest,
+    tactics,
+    targets,
+)
 from ..alerts.builtin import SYSTEM_RULES
 from ..alerts.dispatcher import dispatcher
 from ..alerts.engine import (  # _with_group: 엔진과 같은 묶음 조건 (알림 뒤 이벤트 수)
@@ -45,9 +56,9 @@ from ..auth import groups
 from ..auth.deps import client_ip, require_permission, require_user
 from ..auth.service import User
 from ..csvexport import csv_response, export_reason
-from ..filters import EVENT_FIELD, EventFilter, FilterError, parse_time, scopes_allow
+from ..filters import EventFilter, FilterError, parse_time, scopes_allow
 from ..normalizers import Event, layout_keys, normalize_sample
-from ..querylang import QueryError, account_key, format_term, parse_terms, raw_field, raw_text
+from ..querylang import QueryError, format_term, parse_terms
 from .ingest import _fix_surrogates
 from .query import PERSONAL_FIELDS, read_time_limit
 
@@ -710,22 +721,8 @@ async def test_rule(body: RuleTestBody, request: Request, user: User = Depends(r
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     exceptions = [(t, parse_terms(t)[0]) for t in await repository.active_rule_exceptions(rule.name, now)]
-    checks = [{**c, "exception": _exception_of(c, exceptions)} for c in f.explain(event)]
-    if rule.group_by != "none":
-        # 묶음 기준 값이 없는(NULL) 로그는 엔진이 세지 않는다(alert_candidates 가 묶음마다 셈) — 조건에 맞아도 알림이 나지 않는다(검토)
-        if rule.group_by.startswith("f."):
-            current = raw_field(event.get("raw"), [p for p in rule.group_by[2:].split(".") if p])
-            value = None if current is None else raw_text(current)
-        elif rule.group_by == "account":   # 엔진은 wlm_user_key(username) 로 묶는다 (B-54)
-            value = account_key(event.get("username"))
-        else:
-            value = event.get(EVENT_FIELD.get(rule.group_by, rule.group_by))
-        checks.append({"key": rule.group_by, "op": "group_key", "expected": [], "actual": value, "ok": value is not None,
-                       "exception": None})
-    for name in rule.terms_fields:   # 처음 보는 값 (B-47): 볼 값이 비면 세지 않는다(엔진의 '' 제외와 같게)
-        value = _event_value(event, name)
-        checks.append({"key": name, "op": "term_field", "expected": [], "actual": value, "ok": value not in (None, ""),
-                       "exception": None})
+    # 묶음 값·처음 보는 값이 빈 로그는 엔진이 세지 않는다 — 기본 규칙 표본 시험(B-45)과 같은 판단 (ruletest)
+    checks = [{**c, "exception": _exception_of(c, exceptions)} for c in ruletest.checks(rule, f, event)]
     return {
         "rule": rule.name, "kind": rule.kind, "matched": all(c["ok"] for c in checks), "checks": checks,
         "event": {k: event.get(k) for k in ("id", "ts", "host", "source", "channel", "provider", "event_id", "level",
@@ -1070,17 +1067,6 @@ async def end_silence(silence_id: int, request: Request, user: User = Depends(re
                    {"id": silence_id, "rule": silence["rule"], "group_key": silence["group_key"],
                     "reason": silence["reason"]}, actor_ip=client_ip(request))
     return {"ok": True}
-
-
-def _event_value(event: dict[str, Any], name: str) -> str | None:
-    """엔진이 묶거나 보는 값과 같은 글자 (repository._field_expr) — f.<경로>는 원본 글자, account 는 계정 열쇠."""
-    if name.startswith("f."):
-        current = raw_field(event.get("raw"), [p for p in name[2:].split(".") if p])
-        return None if current is None else raw_text(current)
-    if name == "account":
-        return account_key(event.get("username"))
-    value = event.get(EVENT_FIELD.get(name, name))
-    return None if value is None else str(value)
 
 
 async def _followup(alert: dict[str, Any]) -> dict[str, Any] | None:

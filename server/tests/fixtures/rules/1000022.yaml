@@ -1,0 +1,15 @@
+# 없는 계정으로 로그온 시도 — SubStatus 0xc0000064(그런 사용자 없음), 한 IP 에서 서로 다른 이름 4개 이상
+rule: 1000022
+match:
+  - why: 없는 계정 이름(SubStatus 0xc0000064), 출발지 IP 있음
+    windows: {event: 4625, where: {LogonType: 3}}
+    inserts: {TargetUserName: ghost, SubStatus: "0xc0000064", IpAddress: 198.51.100.40, IpPort: "51250"}
+no_match:
+  - why: 있는 계정의 틀린 암호(0xc000006a)는 이름 추측이 아니다
+    fails_on: [f.EventData.SubStatus]
+    windows: {event: 4625, where: {LogonType: 3}}
+    inserts: {IpAddress: 198.51.100.40, IpPort: "51250"}
+  - why: 없는 계정이어도 출발지 IP 가 없으면 IP 로 묶을 수 없다
+    fails_on: [group_key:ip]
+    windows: {event: 4625, where: {LogonType: 2}}
+    inserts: {TargetUserName: ghost, SubStatus: "0xc0000064"}
