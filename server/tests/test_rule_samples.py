@@ -32,25 +32,16 @@ NO_LOG_SAMPLES = {
 SAMPLES = rs.all_samples()
 BAD_FLAGS = {"parse_error", "unparsed", "template_mismatch"}
 
-# 실측 없이 문서로 만든 Windows 표본 (공급자, 이벤트 ID) → 실측할 곳. 윈도 CI 캡처(tools/ci/capture_winlog.ps1)로 실측이 생기면
+# 실측 없이 문서로 만든 Windows 표본 (공급자, 이벤트 ID) → 실측할 곳 (윈도 CI 42723626534 로 9개를 실측으로 바꿨다). 실측이 생기면
 # 표본 빌더가 '실측으로 바꾸라'며 실패한다 — 바꾸고 여기서 지운다. 업무 프로그램 흉내(EMR…)는 실측 대상이 아니다
 SEC, EVENTLOG, SCM, DEFENDER = ("Microsoft-Windows-Security-Auditing", "Microsoft-Windows-Eventlog", "Service Control Manager",
                                 "Microsoft-Windows-Windows Defender")
 DOCS_BASED = {
-    (SEC, 4698): "윈도 CI (schtasks)",
-    (SEC, 4699): "윈도 CI (schtasks)",
-    (SEC, 4719): "윈도 CI (auditpol)",
-    (SEC, 4740): "윈도 CI (잠금 정책 + 틀린 암호)",
     (SEC, 4771): "도메인 컨트롤러 — 현장 B-28 (듣기 모드)",
-    (EVENTLOG, 1102): "윈도 CI (wevtutil cl Security)",
-    (EVENTLOG, 104): "윈도 CI (wevtutil cl System)",
     (EVENTLOG, 1100): "이벤트 로그 서비스 종료 — 현장 B-28",
-    (SCM, 7031): "윈도 CI (스풀러 종료)",
     (SCM, 7034): "복구 동작이 없는 서비스 — 현장 B-28",
-    (SCM, 7036): "윈도 CI (스풀러 종료·다시 시작)",
     ("Microsoft-Windows-Kernel-Power", 41): "비정상 재부팅 — 일부러 일으킬 수 없다, 현장 B-28",
-    ("Application Error", 1000): "윈도 CI (FailFast)",
-    ("Windows Error Reporting", 1001): "윈도 CI (FailFast)",
+    ("Windows Error Reporting", 1001): "윈도 CI 에서 생기지 않았다(FailFast 는 1000 만, CI 42723626534) — 현장 B-28",
     (DEFENDER, 1116): "EICAR — 러너의 Defender 는 꺼져 있을 수 있다, 현장 B-28",
     (DEFENDER, 1117): "현장 B-28",
     (DEFENDER, 1001): "현장 B-28",

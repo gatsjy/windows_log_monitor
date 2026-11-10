@@ -18,16 +18,5 @@ no_match:
     ref: https://learn.microsoft.com/windows/win32/http/w3c-logging
   - why: 웹 서버가 아닌 소스의 오류(수준 2) — 응용 프로그램 충돌은 1000003 이 센다
     fails_on: [source]
-    windows: {event: 1000, envelope: 7045}
-    ref: https://learn.microsoft.com/troubleshoot/windows-server/performance/troubleshoot-application-service-crashing-behavior
-    fields:
-      ProviderName: Application Error
-      ProviderGuid: "{a0e9b465-b939-57d7-b27d-95d8e925ff57}"
-      Channel: Application
-      Level: 2
-      Keywords: "0x8000000000000000"
-      Version: 0
-      Qualifiers: ""
-      Task: 100
-      Message: "Faulting application name: w3wp.exe, version: 10.0.26100.1, time stamp: 0x6543a1b2\r\nFaulting module name: ntdll.dll, version: 10.0.26100.2454, time stamp: 0x1a2b3c4d\r\nException code: 0xc0000374"
-    strings: [w3wp.exe, 10.0.26100.1, 6543a1b2, ntdll.dll, 10.0.26100.2454, 1a2b3c4d, c0000374, 00000000000fe1e9, 2f10, 01db3a1c2f5e7c11, 'C:\Windows\System32\inetsrv\w3wp.exe', 'C:\Windows\SYSTEM32\ntdll.dll', 6b1d9e7a-0b4c-4d5e-9f6a-7b8c9d0e1f2a, "", ""]
+    windows: {event: 1000}
+    inserts: {AppName: w3wp.exe, AppPath: 'C:\Windows\System32\inetsrv\w3wp.exe'}

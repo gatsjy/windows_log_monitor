@@ -107,15 +107,23 @@ def win_templates():
         u = f"temp{random.randint(10, 99)}"
         return ("Security", *SEC_PROVIDER, 4720, 0, AUDIT_SUCCESS,
                 f"사용자 계정을 만들었습니다.\r\n\r\n새 계정:\r\n\t계정 이름:\t\t{u}",
+                # 실제 에이전트처럼 26개 전부(윈도 CI 실측 모양) — 개수가 다르면 서버가 '템플릿 불일치'로 센다
                 {"TargetUserName": u, "TargetDomainName": "CORP", "TargetSid": "S-1-5-21-1-1201",
-                 "SubjectUserSid": "S-1-5-21-1-500", "SubjectUserName": "administrator", "SubjectDomainName": "CORP"})
+                 "SubjectUserSid": "S-1-5-21-1-500", "SubjectUserName": "administrator", "SubjectDomainName": "CORP",
+                 "SubjectLogonId": "0xb0bc2", "PrivilegeList": "-", "SamAccountName": u, "DisplayName": "%%1793",
+                 "UserPrincipalName": "-", "HomeDirectory": "%%1793", "HomePath": "%%1793", "ScriptPath": "%%1793",
+                 "ProfilePath": "%%1793", "UserWorkstations": "%%1793", "PasswordLastSet": "%%1794",
+                 "AccountExpires": "%%1794", "PrimaryGroupId": "513", "AllowedToDelegateTo": "-", "OldUacValue": "0x0",
+                 "NewUacValue": "0x15", "UserAccountControl": "\r\n\t\t%%2080\r\n\t\t%%2082\r\n\t\t%%2084",
+                 "UserParameters": "%%1793", "SidHistory": "-", "LogonHours": "%%1797"})
 
     def admin_group_add():
         return ("Security", *SEC_PROVIDER, 4732, 0, AUDIT_SUCCESS,
                 "보안이 설정된 로컬 그룹에 구성원을 추가했습니다.\r\n\r\n그룹:\r\n\t그룹 이름:\t\tAdministrators",
                 {"MemberName": "-", "MemberSid": "S-1-5-21-1-1201", "TargetUserName": "Administrators",
                  "TargetDomainName": "Builtin", "TargetSid": "S-1-5-32-544", "SubjectUserSid": "S-1-5-21-1-500",
-                 "SubjectUserName": "administrator", "SubjectDomainName": "CORP"})
+                 "SubjectUserName": "administrator", "SubjectDomainName": "CORP", "SubjectLogonId": "0xb0bc2",
+                 "PrivilegeList": "-"})
 
     def service_installed():
         return ("System", *SCM_PROVIDER, 7045, 4, CLASSIC,
@@ -154,10 +162,15 @@ def win_templates():
                 {"BugcheckCode": "0", "BugcheckParameter1": "0x0", "SleepInProgress": "0", "PowerButtonTimestamp": "0"})
 
     def app_error():
+        # 실제 에이전트처럼 15개(윈도 CI 실측 모양 — 앱·모듈·예외 코드·오프셋·프로세스·경로·보고서 ID, 패키지 두 칸은 비어 있음).
+        # 개수가 다르면 서버가 '템플릿 불일치'로 센다(수집 품질)
         app = random.choice(APPS)
         return ("Application", "Application Error", "{a0e9b465-b939-57d7-b27d-95d8e925ff57}", 1000, 2, CLASSIC,
                 f"오류 있는 응용 프로그램 이름: {app}, 버전: 10.0.20348.1, 타임스탬프: 0x5c2f1b3e\r\n오류 있는 모듈 이름: ntdll.dll\r\n예외 코드: 0xc0000005",
-                [app, "10.0.20348.1", "ntdll.dll", "0xc0000005"])
+                [app, "10.0.20348.1", "5c2f1b3e", "ntdll.dll", "10.0.20348.2340", "7a3f6c1d", "c0000005",
+                 f"{random.randint(0x10000, 0xfffff):016x}", hex(random.randint(0x400, 0x3000)),
+                 f"0x1dd{random.randint(0, 0xfffffffffff):011x}", f"C:\\Program Files\\App\\{app}",
+                 "C:\\Windows\\SYSTEM32\\ntdll.dll", str(uuid.uuid4()), "", ""])
 
     def dotnet():
         return ("Application", ".NET Runtime", "", 1026, 2, CLASSIC,

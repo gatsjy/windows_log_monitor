@@ -38,7 +38,19 @@ def test_older_versions_are_not_template_mismatches():
     assert mismatch(SECURITY, 4697, ["x"] * 9, 1)          # 실측 버전인데 길이가 다르다
     assert mismatch(SECURITY, 4624, ["x"] * 29, 4)         # 처음 보는 새 버전 — 중간에 끼었을 수 있다
     assert not mismatch(SECURITY, 4624, ["x"] * 28, 3)     # VERSIONED 와 같다
-    assert mismatch(SECURITY, 4740, ["x"] * 30, 0) and not mismatch(SECURITY, 4740, ["x"] * 2, 0)   # 실측 안 한 템플릿은 많을 때만
+    assert mismatch(SECURITY, 4624, ["x"] * 26, 2)         # v2 는 기본 이름(27) — 실측 레코드는 v3 뿐이라 VERIFIED 를 여기서 지킨다
+    # 실측 안 한 템플릿(도메인 컨트롤러의 4771)은 많을 때만
+    assert mismatch(SECURITY, 4771, ["x"] * 30, 0) and not mismatch(SECURITY, 4771, ["x"] * 2, 0)
+
+
+def test_classic_sources_are_flagged_only_when_longer():
+    """클래식 원본(Application Error 1000)은 필드를 더해도 Version 이 0 그대로다 — 옛 Windows(7·2008 R2)는 앞 13개만 보낸다.
+    버전으로 옛 모양을 가를 수 없으니 실측했어도 템플릿보다 길 때만 표시한다(검토)."""
+    from app.normalizers.win_templates import mismatch
+
+    app_error = ("Application Error", 1000)
+    assert not mismatch(*app_error, ["x"] * 15, 0) and not mismatch(*app_error, ["x"] * 13, 0)
+    assert mismatch(*app_error, ["x"] * 16, 0)
 
 
 def test_verified_versions_match_the_real_records():

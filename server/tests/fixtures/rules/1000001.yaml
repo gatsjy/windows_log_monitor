@@ -30,7 +30,7 @@ no_match:
       Version: 0
       Qualifiers: 49152
       Message: "The Print Spooler service terminated unexpectedly.  It has done this 1 time(s)."
-    strings: [Print Spooler, "1"]
+    strings: [Print Spooler, "1", "530070006F006F006C00650072000000"]
   - why: 정보(수준 4) — 서비스 설치(7045)
     fails_on: [level]
     windows: {event: 7045}

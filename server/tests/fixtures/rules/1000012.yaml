@@ -1,54 +1,12 @@
 # 예약 작업 생성 — 4698 ('기타 개체 액세스 이벤트' 감사가 켜져 있어야 남는다)
 rule: 1000012
 match:
-  - why: 예약 작업 만듦(4698) — 작업 내용(XML)이 TaskContent 에 통째로 온다
-    windows: {event: 4698, envelope: 4697}
-    ref: https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4698
-    fields:
-      ProviderName: Microsoft-Windows-Security-Auditing
-      Channel: Security
-      Level: 0
-      Keywords: "0x8020000000000000"
-      Version: 1
-      Task: 12804
-      Message: "A scheduled task was created.\r\n\r\nSubject:\r\n\tSecurity ID:\t\tS-1-5-21-1111111111-2222222222-3333333333-500\r\n\tAccount Name:\t\tadmin\r\n\tAccount Domain:\t\tWS-0117\r\n\tLogon ID:\t\t0x6A1B2\r\n\r\nTask Information:\r\n\tTask Name: \t\t\\Updater\r\n\tTask Content: \t\t<?xml version=\"1.0\" encoding=\"UTF-16\"?>"
-    inserts:
-      SubjectUserSid: S-1-5-21-1111111111-2222222222-3333333333-500
-      SubjectUserName: admin
-      SubjectDomainName: WS-0117
-      SubjectLogonId: "0x6a1b2"
-      TaskName: '\Updater'
-      TaskContent: "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n  <Actions Context=\"Author\">\r\n    <Exec>\r\n      <Command>powershell.exe</Command>\r\n      <Arguments>-NoP -W Hidden -File C:\\ProgramData\\u.ps1</Arguments>\r\n    </Exec>\r\n  </Actions>\r\n</Task>"
-      ClientProcessStartKey: 3940649673949801
-      ClientProcessId: 4321
-      ParentProcessId: 1234
-      RpcCallClientLocality: 0
-      FQDN: WS-0117.corp.local
+  - why: 예약 작업 만듦(4698) — 작업 내용(XML)이 TaskContent 에 통째로 온다 (schtasks /create 실측)
+    windows: {event: 4698}
 no_match:
   - why: 예약 작업 삭제(4699)
     fails_on: [event_id]
-    windows: {event: 4699, envelope: 4697}
-    ref: https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4699
-    fields:
-      ProviderName: Microsoft-Windows-Security-Auditing
-      Channel: Security
-      Level: 0
-      Keywords: "0x8020000000000000"
-      Version: 1
-      Task: 12804
-      Message: "A scheduled task was deleted.\r\n\r\nSubject:\r\n\tSecurity ID:\t\tS-1-5-21-1111111111-2222222222-3333333333-500\r\n\tAccount Name:\t\tadmin\r\n\tAccount Domain:\t\tWS-0117\r\n\tLogon ID:\t\t0x6A1B2\r\n\r\nTask Information:\r\n\tTask Name: \t\t\\Updater"
-    inserts:
-      SubjectUserSid: S-1-5-21-1111111111-2222222222-3333333333-500
-      SubjectUserName: admin
-      SubjectDomainName: WS-0117
-      SubjectLogonId: "0x6a1b2"
-      TaskName: '\Updater'
-      TaskContent: ""
-      ClientProcessStartKey: 3940649673949801
-      ClientProcessId: 4321
-      ParentProcessId: 1234
-      RpcCallClientLocality: 0
-      FQDN: WS-0117.corp.local
+    windows: {event: 4699}
   - why: 서비스 설치(4697)는 다른 규칙(1000011)
     fails_on: [event_id]
     windows: {event: 4697}

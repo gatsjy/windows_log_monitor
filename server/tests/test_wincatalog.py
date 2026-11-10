@@ -36,7 +36,7 @@ def _summary(event_id, n=0):
 @pytest.mark.parametrize(("event_id", "expected"), [
     (4625, "wlmci 로그온 실패 — 비밀번호가 틀림, 대화형(PC 앞에서), 접속지 WIN-CI"),
     (4624, "wlmci 로그온 성공 — 네트워크(공유 폴더·원격 관리 등), 접속지 WIN-CI"),
-    (4688, "runneradmin 이(가) 프로그램 실행 — C:\\Windows\\System32\\auditpol.exe (전체 권한 토큰(UAC 없이 관리자))"),
+    (4688, "runneradmin 이(가) 프로그램 실행 — C:\\Program Files\\PowerShell\\7\\pwsh.exe (전체 권한 토큰(UAC 없이 관리자))"),
     (4720, "runneradmin 이(가) 계정 만듦 — wlmci"),
     (4726, "runneradmin 이(가) 계정 삭제 — wlmci"),
     (4697, "runneradmin 이(가) 서비스 설치 — wlmcisvc (C:\\Windows\\System32\\cmd.exe /c exit)"),
@@ -51,7 +51,7 @@ def test_group_member_falls_back_to_sid_and_every_template_names_exist():
     """그룹 구성원 이름이 '-' 면 SID. 사전의 {이름}은 그 이벤트 템플릿에 있는 이름이어야 한다 — 오타는 영영 '–' 로만 보인다."""
     from app.normalizers import win_templates
 
-    assert _summary(4732).endswith("구성원 추가 — S-1-5-21-4239583824-265399229-1323058055-1003")
+    assert _summary(4732).endswith("구성원 추가 — S-1-5-21-3289802278-1561746829-1498425070-1003")   # 실측 러너(CI 42723626534)의 SID
     for provider, events in wincatalog.catalog()["events"].items():
         for event_id, spec in events.items():
             names = win_templates.TEMPLATES.get((provider, int(event_id)))

@@ -250,6 +250,10 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 별칭은 세 곳이 같아야 한다: `repository._raw_clause`(SQL COALESCE), `querylang.raw_field`, `web/js/querylang.js` 의 `rawField`(SYNC `raw_alias`). 케이스 표에 줄을 먼저.
   - Windows 시험 자료는 실제 에이전트 모양으로(`tests/fixtures/winevtlog/agent-fb4.0.14.jsonl`). EventData 맵을 넣은 레코드로만 시험하면 실제 PC 에서 안 맞는 규칙이 통과한다(실제로 그랬다). 시뮬레이터 기본값도 StringInserts 만.
   - 템플릿을 더하면 윈도 CI 의 실측 레코드로 길이를 확인한다(`test_win_templates.py`). 버전마다 필드가 중간에 끼기도 한다(4624 v3) — `VERSIONED`.
+  - 이름·순서는 손으로 옮기지 말고 공급자 매니페스트로(비슷한 이벤트의 틀을 재사용해 틀렸다 — 4702 는 `TaskContentNew`): 템플릿을 더하거나 바꾸면 윈도 PC 에서
+    `tools/ci/dump_templates.ps1 -Fixture server/tests/fixtures/winevtlog/manifest-templates.json -Update [-Add 공급자:ID,…]`(읽기만 함) — `test_win_templates` 가 버전마다 대조한다.
+    실측한 버전(`VERIFIED`)보다 새 버전이 뒤에 더 붙이면 `TEMPLATES` 를 늘리지 말고 `VERSIONED` 에(늘리면 실측한 옛 버전이 '템플릿 불일치'). 버전이 늘지 않는
+    클래식 원본은 `UNVERSIONED`(더 길 때만 불일치). 윈도 CI 는 러너와 달라지면 경고만 한다. 시뮬레이터(`tools/simulate.py`)의 Windows 이벤트도 실측과 같은 개수로.
   - 기본 규칙·대시보드의 `f.EventData.<이름>` 은 그 이벤트의 **실측으로 확인한** 템플릿에 있어야 한다(`test_rule_fields.py`). 이름 오타는 검사 없이 통과하고 실제 PC 에서 영영 맞지 않는다.
 - MSSQL ERRORLOG 의 `Error:` 머리줄은 번호 없이 '상세'(5)로 저장됩니다. 오류 번호로 세는 규칙·위젯은 본문 줄 기준입니다(이중 집계 방지).
 - **규칙 예외 (B-46, ADR-051):** 규칙의 결과를 세는 새 코드는 `rule.event_filter(await repository.active_rule_exceptions(rule.name, now))` 로 — 그냥 `event_filter()` 면

@@ -134,6 +134,14 @@ jobs:
           Copy-Item (Join-Path $work "pkg.yaml") agent-render\windows-ps-tls.yaml
           python tools/ci/render_agent_configs.py --check-tls agent-render\windows-ps-tls.yaml --expect-vhost logmon.ci.internal --expect-port 6977 --expect-ca-file "C:\ProgramData\wlm-agent\ca.crt"
           if ($LASTEXITCODE -ne 0) { throw "TLS static check failed on the install.ps1 package render" }
+      # 러너의 공급자 매니페스트 템플릿(이벤트 버전마다 이름·순서)을 고정 자료와 비교한다 — 읽기만 한다. 러너 이미지에 새 버전이
+      # 오면 실패가 아니라 경고(무관한 작업을 막지 않음, 그동안 서버는 그 버전을 '템플릿 불일치'로 센다). 갱신 방법은
+      # server/tests/fixtures/winevtlog/README.md (B-45)
+      - name: Windows event templates (provider manifests, Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci\dump_templates.ps1 -Fixture server\tests\fixtures\winevtlog\manifest-templates.json
+          if ($LASTEXITCODE -ne 0) { throw "template dump failed" }
       # winevtlog 입력은 윈도 빌드에만 있다. 폐쇄망 묶음과 같은 zip 을 받아 저장소의 SHA-256 으로 확인한다
       - name: Fluent Bit 받기 (해시 확인)
         shell: pwsh

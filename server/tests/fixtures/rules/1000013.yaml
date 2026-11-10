@@ -1,37 +1,10 @@
 # 보안 감사 로그 삭제 — 이벤트 로그 서비스(Microsoft-Windows-Eventlog)의 1102(Security 지움)·104(다른 로그 지움)
 rule: 1000013
 match:
-  - why: 보안 로그 지움(1102) — UserData(LogFileCleared)의 지운 사람이 StringInserts 로 온다
-    windows: {event: 1102, envelope: 4720}
-    ref: https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-1102
-    fields:
-      ProviderName: Microsoft-Windows-Eventlog
-      ProviderGuid: "{fc65ddd8-d6ef-4962-83d5-6e5cfe9ce148}"
-      Channel: Security
-      Level: 4
-      Keywords: "0x4020000000000000"
-      Version: 0
-      Task: 104
-      Message: "The audit log was cleared.\r\nSubject:\r\n\tSecurity ID:\tS-1-5-21-1111111111-2222222222-3333333333-500\r\n\tAccount Name:\tadmin\r\n\tDomain Name:\tWS-0117\r\n\tLogon ID:\t0x6A1B2"
-    inserts:
-      SubjectUserSid: S-1-5-21-1111111111-2222222222-3333333333-500
-      SubjectUserName: admin
-      SubjectDomainName: WS-0117
-      SubjectLogonId: "0x6a1b2"
-  - why: System 로그 지움(104, wevtutil cl System)
-    windows: {event: 104, envelope: 7045}
-    ref: "wevtutil gp Microsoft-Windows-Eventlog /ge /gm:true — 104 (The %3 log file was cleared), UserData: SubjectUserName·SubjectDomainName·Channel·BackupPath"
-    fields:
-      ProviderName: Microsoft-Windows-Eventlog
-      ProviderGuid: "{fc65ddd8-d6ef-4962-83d5-6e5cfe9ce148}"
-      Channel: System
-      Level: 4
-      Keywords: "0x8000000000000000"
-      Version: 0
-      Task: 104
-      Qualifiers: ""
-      Message: "The System log file was cleared."
-    strings: [admin, WS-0117, System, ""]
+  - why: 보안 로그 지움(1102, wevtutil cl Security 실측) — UserData(LogFileCleared)의 지운 사람·프로세스가 StringInserts 로 온다(v1)
+    windows: {event: 1102}
+  - why: System 로그 지움(104, wevtutil cl System 실측) — 지운 로그 이름(Channel)이 온다
+    windows: {event: 104}
 no_match:
   - why: 이벤트 로그 서비스 종료(1100)는 지운 것이 아니다 (재부팅 때마다 남는다)
     fails_on: [event_id]
