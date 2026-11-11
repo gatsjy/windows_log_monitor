@@ -34,8 +34,10 @@ sudo TLS_CA_FILE=./ca.crt TLS_SERVER_NAME=logmon.corp.local [TLS_CA_SHA256=<CA �
 |---|---|
 | 설정 | `/etc/wlm-agent/fluent-bit.yaml` (권한 600, API 키 포함) |
 | CA 인증서 (TLS) | `/etc/wlm-agent/ca.crt` |
-| 읽은 위치 / 장애 시 버퍼 | `/var/lib/wlm-agent/` |
+| 읽은 위치 / 장애 시 버퍼 | `/var/lib/wlm-agent/` (버퍼는 최대 1GB. 하트비트는 쌓지 않고 2번 재시도 후 버림) |
 | 서비스 | `systemctl status wlm-agent`, `journalctl -u wlm-agent` |
+
+- 설정 0.2.0 까지는 서버에 보내지 못하는 동안(서버 중단·포트 막힘·키 틀림·TLS 오류) 하트비트가 메모리에 쌓여 메모리가 늘었습니다(ADR-039). '수집 PC' 화면의 설정 버전이 0.2.1 보다 낮으면 새 설치 묶음으로 다시 설치합니다(읽은 위치 기록은 그대로라 유실·중복 없음).
 
 ## 에이전트를 설치하지 않는 방법 (rsyslog 전달)
 

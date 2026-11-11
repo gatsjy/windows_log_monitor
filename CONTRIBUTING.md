@@ -29,10 +29,12 @@ node --test 'server/tests/js/*.test.mjs'                   # 검색 문장 화�
 docker compose run --rm backup selftest                    # 백업 스크립트를 고쳤으면
 ```
 
-- push·PR 마다 GitHub Actions 가 같은 검사를 돌립니다(`.github/workflows/ci.yml`): 테스트·린트(개발 이미지), 백업 자체 시험, 화면 모듈 시험, 에이전트·수집기 설정 `fluent-bit --dry-run`(리눅스·윈도), 운영 이미지 취약점 점검(Trivy). 모두 통과해야 `main` 에 합칠 수 있습니다.
+- push·PR 마다 GitHub Actions 가 같은 검사를 돌립니다(`.github/workflows/ci.yml`): 테스트·린트(개발 이미지), 백업 자체 시험, 화면 모듈 시험, 에이전트·수집기 설정 `fluent-bit --dry-run`(리눅스·윈도), 운영 이미지 취약점 점검(Trivy). 모두 통과해야 `main` 에 합칩니다(브랜치 보호로 막는 설정은 아직 — BACKLOG B-15).
+  - 에이전트는 실제로도 돌려 봅니다: 설치 스크립트(`install.sh`·`install.ps1`)와 윈도 서비스 설치, SQL Server ERRORLOG 여러 줄 묶기, 서버 장애 중 메모리(`tools/ci/agent_memory.py`), 실제 Windows 이벤트의 레코드 모양(`tools/ci/capture_winlog.ps1`). 윈도 공급자 매니페스트 비교(`tools/ci/dump_templates.ps1`)는 달라도 경고만 합니다.
 
 - 관련 화면을 브라우저에서 직접 열어 확인하고, 콘솔 오류가 없는지 봅니다.
 - 동작이 바뀌면 `docs/PROJECT.md`, 설계 결정은 `docs/DECISIONS.md`, 사용자에게 보이는 변경은 `CHANGELOG.md` 의 다음 버전 절에 적습니다.
+- 로그로 판단하는 기본 알림 규칙을 더하거나 조건을 바꾸면 맞음·아님 표본(`server/tests/fixtures/rules/<sid>.yaml`, 형식은 그 폴더 README)도 함께 고칩니다. 표본이 없거나 규칙의 판단이 표본과 다르면 테스트가 실패합니다.
 - 성능에 영향이 있으면 `tools/bench/bench.py --skip-seed` 로 전후를 재고 `docs/PERFORMANCE.md` 에 기록합니다.
 - 컨테이너 이미지·포트·볼륨이 바뀌면 `deploy/airgap/` 스크립트와 `docs/AIRGAP.md` 를 확인합니다.
 

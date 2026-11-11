@@ -6,9 +6,12 @@
 # can become the fixture as they are (BACKLOG B-45).
 #
 # Two modes:
-#   -ThrowawayRunner  CI only. Raises the events by changing the machine: throwaway local admin account, audit and
-#                     lockout policy (left at 0), a service and a scheduled task, kills the print spooler, crashes a
-#                     process and clears the System and Security logs (1102, 104). Refused unless this is a
+#   -ThrowawayRunner  CI only. Raises the events by changing the machine: throwaway local admin account (its password
+#                     changed and reset, disabled and enabled, locked out and unlocked, an SMB session to this machine
+#                     with its credentials), audit and lockout policy (left at 0), a service and a scheduled task
+#                     (created, changed, deleted), kills the print spooler twice (the second time after deleting its
+#                     recovery actions), crashes a process and clears the System and Security logs (1102, 104).
+#                     Refused unless this is a
 #                     GitHub-hosted runner (GITHUB_ACTIONS=true and RUNNER_ENVIRONMENT=github-hosted, not act), and
 #                     always refused on a domain member or a domain controller. Self-hosted runners are refused too:
 #                     they are not thrown away after the job.
@@ -56,15 +59,25 @@ function Invoke-Native([scriptblock] $Block) {
     try { & $Block 2>&1 | Out-Null } catch { }
 }
 
+# Best-effort step for an optional event: never stops the capture, but says how it went - the event then shows up in
+# WLMOPTIONAL and this line tells why. Never prints the command line (it may hold the throwaway password).
+function Invoke-Step([string] $Name, [scriptblock] $Block) {
+    try {
+        $global:LASTEXITCODE = 0
+        $text = (& $Block 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE) { Write-Host "WLMSTEP $Name exit $LASTEXITCODE $text" } else { Write-Host "WLMSTEP $Name ok" }
+    } catch { Write-Host "WLMSTEP $Name failed: $($_.Exception.Message)" }
+}
+
 if ($ThrowawayRunner) {
-    # Audit policy by subcategory GUID (names are localised): Logon, Logoff, User Account Mgmt, Security Group Mgmt,
-    # Process Creation, Security System Extension, Other Object Access (scheduled tasks), Audit Policy Change,
-    # Credential Validation (4776)
+    # Audit policy by subcategory GUID (names are localised): Logon (+4648), Logoff, User Account Mgmt,
+    # Security Group Mgmt, Process Creation, Security System Extension, Other Object Access (scheduled tasks),
+    # Audit Policy Change, Credential Validation (4776), Special Logon (4672)
     $audit = "{0CCE9215-69AE-11D9-BED3-505054503030}", "{0CCE9216-69AE-11D9-BED3-505054503030}",
              "{0CCE9235-69AE-11D9-BED3-505054503030}", "{0CCE9237-69AE-11D9-BED3-505054503030}",
              "{0CCE922B-69AE-11D9-BED3-505054503030}", "{0CCE9211-69AE-11D9-BED3-505054503030}",
              "{0CCE9227-69AE-11D9-BED3-505054503030}", "{0CCE922F-69AE-11D9-BED3-505054503030}",
-             "{0CCE923F-69AE-11D9-BED3-505054503030}"
+             "{0CCE923F-69AE-11D9-BED3-505054503030}", "{0CCE921B-69AE-11D9-BED3-505054503030}"
     foreach ($g in $audit) {
         & auditpol /set /subcategory:$g /success:enable /failure:enable | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "auditpol failed for $g" }
@@ -99,6 +112,10 @@ public static class WlmLogon {
     $user = "wlmci"
     # 14 characters at most: net user asks "longer than 14 characters ... continue? (Y/N)" and fails without a console
     $pass = "Wl!" + [guid]::NewGuid().ToString("N").Substring(0, 9) + "a9"
+    $pass2 = "Wl!" + [guid]::NewGuid().ToString("N").Substring(0, 9) + "b8"
+    $pass3 = "Wl!" + [guid]::NewGuid().ToString("N").Substring(0, 9) + "c7"
+    $account = "$env:COMPUTERNAME\$user"
+    $share = '\\127.0.0.1\IPC$'
     $task = "wlmci-task"
     $subcat = "{0CCE9227-69AE-11D9-BED3-505054503030}"
     try {
@@ -107,24 +124,73 @@ public static class WlmLogon {
         & net localgroup administrators $user /add | Out-Null         # 4732 TargetSid S-1-5-32-544
         if ($LASTEXITCODE -ne 0) { throw "net localgroup /add failed ($LASTEXITCODE)" }
         foreach ($type in 2, 3) { Invoke-Logon $user "wrong-password" $type }   # 4625 interactive, network (+4776)
-        Invoke-Logon $user $pass 3                                    # 4624 type 3 (+4776, 4634)
-        Invoke-Logon $user $pass 2                                    # 4624 type 2 (+4634)
+        Invoke-Logon $user $pass 3                                    # 4624 type 3 (+4776, 4634, 4672 - an administrator)
+        Invoke-Logon $user $pass 2                                    # 4624 type 2 (+4634, 4672)
+        # 4648: logons with explicitly given credentials - an SMB session to this machine as the throwaway account, and a
+        # process started with its credentials (secondary logon) in case the SMB client does not log one
+        Invoke-Step "4648 net use" { net use $share "/user:$account" $pass }
+        Invoke-Native { net use $share /delete /y }
+        Invoke-Step "4648 secondary logon" {
+            $cred = New-Object System.Management.Automation.PSCredential ($account, (ConvertTo-SecureString $pass -AsPlainText -Force))
+            Start-Process cmd.exe -ArgumentList "/c", "exit" -Credential $cred -WorkingDirectory $env:SystemRoot -WindowStyle Hidden -PassThru |
+                Wait-Process -Timeout 30
+        }
+        # 4723: the account's own password changed (old one given); 4724: an administrator resets it
+        Invoke-Step "4723 change password" { ([ADSI]"WinNT://$env:COMPUTERNAME/$user,user").ChangePassword($pass, $pass2) }
+        Invoke-Step "4724 reset password" { net user $user $pass3 }
+        # 4725 / 4722: disable and enable again (the lockout below needs an enabled account)
+        Invoke-Step "4725 disable" { net user $user /active:no }
+        Invoke-Step "4722 enable" { net user $user /active:yes }
         & sc.exe create wlmcisvc binPath= "C:\Windows\System32\cmd.exe /c exit" | Out-Null   # 7045 (System), 4697
         & powershell -NoProfile -Command "Write-Output 'wlm-scriptblock-check'" | Out-Null  # 4104 (script block logging), 4688
         Invoke-Native { schtasks /create /tn $task /tr "C:\Windows\System32\cmd.exe /c exit" /sc once /st 23:59 /f }   # 4698
+        # 4702: change the task's definition (its command). Disabling it would log 4701 instead (review). Through the
+        # Task Scheduler COM API: no run-as password prompt, same in both PowerShell versions
+        Invoke-Step "4702 change task" {
+            $ts = New-Object -ComObject Schedule.Service
+            $ts.Connect()
+            $folder = $ts.GetFolder("\")
+            $definition = $folder.GetTask($task).Definition
+            $definition.Actions.Item(1).Arguments = "/c exit 1"
+            [void]$folder.RegisterTaskDefinition($task, $definition, 4, $null, $null, 3)   # TASK_UPDATE, interactive token
+        }
         Invoke-Native { schtasks /delete /tn $task /f }               # 4699
         Invoke-Native { auditpol /set /subcategory:$subcat /failure:disable }   # 4719 (and back below)
         Invoke-Native { auditpol /set /subcategory:$subcat /failure:enable }
         # 4740: lock the throwaway account out (the policy goes back to 0 = never lock in finally; the runner is thrown away)
         Invoke-Native { net accounts /lockoutthreshold:3 }
         foreach ($i in 1..4) { Invoke-Logon $user "wrong-password" 3 }
+        # 4767: unlock it - clearing UF_LOCKOUT (0x10) in the user flags is what Local Users and Groups does
+        Invoke-Step "4767 unlock" {
+            $u = [ADSI]"WinNT://$env:COMPUTERNAME/$user,user"
+            $u.UserFlags.Value = $u.UserFlags.Value -band (-bnot 0x10)
+            $u.SetInfo()
+        }
         # 7031 / 7036: kill the print spooler; SCM restarts it (recovery action) - skipped where it is not running
-        $spooler = Get-Service Spooler -ErrorAction SilentlyContinue
-        if ($spooler -and $spooler.Status -eq "Running") { Stop-Process -Name spoolsv -Force -ErrorAction SilentlyContinue }
+        $spooler = Get-CimInstance Win32_Service -Filter "Name='Spooler'" -ErrorAction SilentlyContinue
+        if ($spooler -and $spooler.State -eq "Running" -and $spooler.ProcessId) {
+            Stop-Process -Id $spooler.ProcessId -Force -ErrorAction SilentlyContinue
+            # 7034: the same crash without a recovery action. Wait for the restarted process (a new PID - right after the
+            # kill SCM may still say Running, review), delete the recovery actions and kill it again - it stays stopped.
+            # One argument string: Windows PowerShell 5.1 drops an empty argument ("")
+            Invoke-Step "7034 spooler without recovery" {
+                $deadline = (Get-Date).AddSeconds(90)
+                do {
+                    Start-Sleep -Seconds 2
+                    $now = Get-CimInstance Win32_Service -Filter "Name='Spooler'"
+                    $back = $now.State -eq "Running" -and $now.ProcessId -and $now.ProcessId -ne $spooler.ProcessId
+                } until ($back -or (Get-Date) -gt $deadline)
+                if (-not $back) { throw "the spooler did not come back after the first kill ($($now.State))" }
+                $sc = Start-Process sc.exe -ArgumentList 'failure Spooler reset= 0 actions= ""' -Wait -PassThru -NoNewWindow
+                if ($sc.ExitCode -ne 0) { throw "sc failure exit $($sc.ExitCode)" }
+                Stop-Process -Id $now.ProcessId -Force
+            }
+        }
         # Application Error 1000 (+ Windows Error Reporting 1001): a process that fails fast
         $crash = Start-Process powershell -ArgumentList "-NoProfile", "-Command", "[Environment]::FailFast('wlmci')" -PassThru -WindowStyle Hidden
         $crash | Wait-Process -Timeout 60 -ErrorAction SilentlyContinue
     } finally {
+        Invoke-Native { net use $share /delete /y }
         Invoke-Native { net accounts /lockoutthreshold:0 }
         Invoke-Native { schtasks /delete /tn $task /f }
         Invoke-Native { sc.exe delete wlmcisvc }
@@ -147,8 +213,8 @@ import json, os, re, sys
 SEC, SCM, EVENTLOG = "Microsoft-Windows-Security-Auditing", "Service Control Manager", "Microsoft-Windows-Eventlog"
 DEFENDER = "Microsoft-Windows-Windows Defender"
 # (provider, EventID) to keep, at most 2 records each. A low event ID means different things per provider.
-want = {(SEC, i) for i in (4624, 4625, 4634, 4647, 4688, 4697, 4698, 4699, 4719, 4720, 4722, 4726, 4732, 4733, 4738,
-                           4740, 4767, 4768, 4769, 4771, 4776)}
+want = {(SEC, i) for i in (4624, 4625, 4634, 4647, 4648, 4672, 4688, 4697, 4698, 4699, 4702, 4719, 4720, 4722, 4723,
+                           4724, 4725, 4726, 4732, 4733, 4738, 4740, 4767, 4768, 4769, 4771, 4776)}
 want |= {(SCM, 7031), (SCM, 7034), (SCM, 7036), (SCM, 7045), ("Microsoft-Windows-PowerShell", 4104),
          ("Application Error", 1000), ("Windows Error Reporting", 1001), (EVENTLOG, 104), (EVENTLOG, 1100), (EVENTLOG, 1102),
          ("Microsoft-Windows-Kernel-Power", 41), (DEFENDER, 1001), (DEFENDER, 1116), (DEFENDER, 1117),

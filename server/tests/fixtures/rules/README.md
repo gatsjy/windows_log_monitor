@@ -45,7 +45,7 @@ no_match:                # 세면 안 되는 로그 (왜 안 되는지가 규칙
 - 기준 건수·서로 다른 값 수의 경계(같은 계정 반복, min−1개)는 표본이 아니라 `test_api_windows_real.py` 가 기본 규칙으로 본다. 새 distinct 기본 규칙을 더하면 거기에도 경계 줄을.
 - 실측 레코드에서 만들지 않은 표본은 `ref` 에 형식의 근거(문서 주소)를 적습니다. 윈도 CI 캡처(`tools/ci/capture_winlog.ps1`)로
   실측이 생기면 빌더가 '실측으로 바꾸라'며 실패합니다 — `envelope` 표본을 실측 표본으로 바꾸고 `test_rule_samples.DOCS_BASED` 에서 지웁니다.
-- 모르는 키(`insert:` 같은 오타)는 거부합니다.
+- 모르는 키(`insert:` 같은 오타)는 거부합니다. `file:` 은 `iis`·`mssql` 표본에만 — 레코드의 파일 경로를 바꿉니다(기본: W3SVC1 로그·기본 인스턴스 ERRORLOG).
 - PC 이름(`agent_host`, syslog 는 `host`)은 시험이 표본마다 다르게 붙입니다. 서로 다른 값 수 규칙(distinct)은 시험이 그 값(Windows `TargetUserName`·
   `IpAddress`, 또는 PC 이름)만 바꾼 사본을 기준 수만큼 보냅니다.
 - 값은 시험용 주소(198.51.100.0/24·203.0.113.0/24·10.x)와 가짜 SID 만 씁니다. 실제 사내 이름·IP 를 넣지 않습니다.

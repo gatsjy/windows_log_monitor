@@ -78,7 +78,7 @@ server/app/
   cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원, 감사로그 verify-chain, 인증서 tls-init·tls-renew·tls-status — DB 없이)
   routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음) · searches(저장한 검색) · compliance(심사 대응) · entities(개체 페이지)
 server/migrations/   번호순 SQL
-server/tests/        pytest (DB 없이 도는 단위 테스트)
+server/tests/        pytest (단위 + 통합 test_api_* 등 — 통합은 <DB>_test 를 만들어 씀)
 web/js/
   main.js            해시 라우터 (#/화면/하위?파라미터)
   views/             화면: dashboard, live, events, alerts, agents, fields, reports(점검 보고서), compliance(심사 대응), entity(개체 페이지 — 메뉴 없음, 링크로), users·audit·settings·readiness(관리자)
@@ -243,9 +243,9 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 수집 요청 하나에 들어온 값 때문에 SQL 이 실패하면 그 요청의 다른 이벤트까지 거절되고 에이전트가 끝없이 다시 보냅니다. 표에 넣는 값은 NUL·길이를 먼저 거릅니다(`iis._storable`).
 - MSSQL `Error:` 머리줄 짝(`_pending`)만 프로세스 메모리입니다(워커 1개 전제, 키는 PC·파일·프로세스). 테스트에서 순서에 의존하는 경우 같은 `host`·파일을 씁니다. 여러 줄 레코드는 첫 줄로 해석합니다.
 - **에이전트 multiline (ADR-037):** `multiline.parser` 이름 오타는 `--dry-run` 을 통과하고 기동 때 엔진 전체(윈도 이벤트 포함)가 멈춘다 → `render_agent_configs.check_multiline` 이 막는다. multiline tail 은 `storage.type: filesystem` 필수(서버가 꺼진 채 멈추면 묶던 것·못 보낸 것을 잃는다 — `tools/ci/test_fluentbit_mssql.sh` 가 재현).
-- **에이전트 출력은 둘 (ADR-039):** 로그(`match_regex: '^(?!heartbeat$).*'`, 무한 재시도·디스크 버퍼)와 하트비트(`retry_limit: 2`, 메모리). 하트비트를 로그 출력에 다시 합치면 서버 장애 동안 256KB 조각이 쌓여 PC 메모리가 하루 약 720MB 씩 는다. 서버 주소·TLS 등 출력 키는 **두 출력 모두** 고친다 — `render_agent_configs.check_heartbeat_route`·`check_tls` 가 막고, 윈도 CI `tools/ci/agent_memory.py` 가 실제 Fluent Bit 로 메모리·라우팅을 잰다.
   - 틀의 `mssql_errorlog` 시작 정규식과 서버 `mssql._LINE` 은 같은 줄을 시각 줄로 봐야 한다(`tests/test_agent_sync.py`). 고정 자료 `tests/fixtures/mssql/fb-*.jsonl` 은 Fluent Bit 실제 출력 — Fluent Bit 을 올리면 `test_fluentbit_mssql.sh … --update` 후 서버 시험.
-  - 에이전트 설정 버전 0.4.0 은 서버보다 먼저 배포하지 않는다(옛 서버는 묶인 레코드를 잘못 읽음).
+  - Windows 에이전트 설정 0.4.0 이상은 서버보다 먼저 배포하지 않는다(옛 서버는 묶인 레코드를 잘못 읽음).
+- **에이전트 출력은 둘 (ADR-039):** 로그(`match_regex: '^(?!heartbeat$).*'`, 무한 재시도·디스크 버퍼)와 하트비트(`retry_limit: 2`, 메모리). 하트비트를 로그 출력에 다시 합치면 서버 장애 동안 256KB 조각이 쌓여 PC 메모리가 하루 약 720MB 씩 는다. 서버 주소·TLS 등 출력 키는 **두 출력 모두** 고친다 — `render_agent_configs.check_heartbeat_route`·`check_tls` 가 막고, 윈도 CI `tools/ci/agent_memory.py` 가 실제 Fluent Bit 로 메모리·라우팅을 잰다.
 - **Windows EventData 이름 (ADR-038):** 에이전트(Fluent Bit 4.0)는 EventData 를 보내지 않고 StringInserts 만 보낸다(LogonType 은 숫자). 서버가 `win_templates` 로 `raw.winevtlog.EventData` 를 붙이고, `f.EventData.X` 는 별칭(보낸 값 → 붙인 값)이다.
   - 별칭은 세 곳이 같아야 한다: `repository._raw_clause`(SQL COALESCE), `querylang.raw_field`, `web/js/querylang.js` 의 `rawField`(SYNC `raw_alias`). 케이스 표에 줄을 먼저.
   - Windows 시험 자료는 실제 에이전트 모양으로(`tests/fixtures/winevtlog/agent-fb4.0.14.jsonl`). EventData 맵을 넣은 레코드로만 시험하면 실제 PC 에서 안 맞는 규칙이 통과한다(실제로 그랬다). 시뮬레이터 기본값도 StringInserts 만.
@@ -256,6 +256,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
     클래식 원본은 `UNVERSIONED`(더 길 때만 불일치). 윈도 CI 는 러너와 달라지면 경고만 한다. 시뮬레이터(`tools/simulate.py`)의 Windows 이벤트도 실측과 같은 개수로.
   - 기본 규칙·대시보드의 `f.EventData.<이름>` 은 그 이벤트의 **실측으로 확인한** 템플릿에 있어야 한다(`test_rule_fields.py`). 이름 오타는 검사 없이 통과하고 실제 PC 에서 영영 맞지 않는다.
 - MSSQL ERRORLOG 의 `Error:` 머리줄은 번호 없이 '상세'(5)로 저장됩니다. 오류 번호로 세는 규칙·위젯은 본문 줄 기준입니다(이중 집계 방지).
+  - 로그인 실패(18456·잠김 18486 등)는 ERRORLOG 를 켠 서버에서 Application 로그와 ERRORLOG 둘로 온다 — 세는 규칙·위젯·보고서는 `source: winevtlog` 로만 센다(1000018·`mssql.json` 위젯 셋·`reports/builder.SECURITY_ITEMS`, B-45 — 둘 다 세면 기준이 절반). ERRORLOG 의 로그인 번호는 Application 로그와 같게 둔다(성공 18453·18454·18455, 실패는 짝지은 `Error:` 머리줄 번호 — `normalizers/mssql.py`).
 - **규칙 예외 (B-46, ADR-051):** 규칙의 결과를 세는 새 코드는 `rule.event_filter(await repository.active_rule_exceptions(rule.name, now))` 로 — 그냥 `event_filter()` 면
   예외가 빠져 화면과 엔진 결과가 달라진다(엔진·규칙 미리보기·알림 뒤 이벤트 수가 이렇게 한다). `rule_exceptions` 는 끝내기만(트리거).
   - 지금은 `await engine.rule_filter(rule, now)` 하나로 — 저장한 검색(`match.saved`, B-64·ADR-052)의 문장과 걸린 예외를 함께 합친다. 저장한 검색이 없으면 ValueError(그 규칙만 오류).
@@ -275,7 +276,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 - **기본 규칙 표본 (B-45, ADR-066):** 판단은 규칙 시험기와 같은 `app/alerts/ruletest.checks` 한 곳 — 시험기 판단을 바꾸면 표본 게이트도 같이 바뀐다. Windows 표본은 실측 레코드에서 값만 바꾸고(`where`·`inserts`), 실측이 없으면 `envelope` + 판단 값 전부 + `ref`. 윈도 CI 캡처에 실측이 생기면 빌더가 '실측으로 바꾸라'며 실패한다 — 바꾸고 `test_rule_samples.DOCS_BASED` 에서 지운다. 낮은 이벤트 ID(104·1000 등)는 공급자마다 뜻이 달라 규칙·표본 모두 공급자를 본다.
   - 안 맞음 표본은 떨어진 조건이 `fails_on` 과 **정확히 같은 집합**이어야 한다(되도록 하나) — '안 맞음'만 보면 IP 없음 같은 다른 조건으로 떨어져 정작 그 경계가 빠진 회귀를 놓쳤다(검토에서 재현). 규칙의 조건마다 그 조건으로 떨어지는 표본이 있어야 하고, 만들 수 없으면 `test_rule_samples.UNGUARDED` 에 이유를.
   - 규칙별 데이터 유무(`coverage`)의 재료(`agent_events`)에는 공급자가 없다 — 공급자로 좁힌 규칙은 채널도 적는다(안 적으면 판단 보류).
-  - `tools/ci/capture_winlog.ps1 -ThrowawayRunner` 는 PC 를 바꾼다(감사·잠금 정책, 임시 관리자, Security/System 로그 지움) — GitHub 호스트 러너 전용: `GITHUB_ACTIONS=true`·`RUNNER_ENVIRONMENT=github-hosted`·`ACT` 없음이 아니면, 그리고 도메인 가입 PC·DC 면 거부한다(self-hosted 러너도 `GITHUB_ACTIONS=true` 라 그것만 보면 못 막는다). 현장은 스위치 없는 듣기 모드(실행마다 새 폴더, 지우지 않음).
+  - `tools/ci/capture_winlog.ps1 -ThrowawayRunner` 는 PC 를 바꾼다(감사·잠금 정책, 임시 관리자와 그 암호 변경·끄기·잠금 풀기, 스풀러 복구 동작 지움, Security/System 로그 지움) — GitHub 호스트 러너 전용: `GITHUB_ACTIONS=true`·`RUNNER_ENVIRONMENT=github-hosted`·`ACT` 없음이 아니면, 그리고 도메인 가입 PC·DC 면 거부한다(self-hosted 러너도 `GITHUB_ACTIONS=true` 라 그것만 보면 못 막는다). 현장은 스위치 없는 듣기 모드(실행마다 새 폴더, 지우지 않음).
   - 표본·시험처럼 역슬래시(경로·`\r\n`)가 들어가는 파일은 셸 heredoc 으로 쓰지 않는다 — 윈도 Git Bash 를 거치면 `\\` 가 `\` 로 바뀌어 YAML·파이썬 문자열이 깨졌다(편집 도구로 쓴다).
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - **알림 설정 판본 (ADR-043):** 설정을 적용하면 `engine.reload()` 가 `_pending` 을 두고 `await engine.record()` 가 판본(`alert_config_versions`, 추가만)·감사로그·약화 알림을 남긴다. 설정을 바꾸는 새 API 는 `routers/alerts._store` 를 거친다(쓰기 전 파일 직접 수정부터 기록 → `reload(force=True, source="ui", actor=…)`).
