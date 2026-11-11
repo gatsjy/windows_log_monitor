@@ -1,14 +1,14 @@
 # 실제 에이전트 레코드 (Windows)
 
 `agent-fb4.0.14.jsonl` — GitHub 윈도 러너에서 실제 이벤트를 일으켜(`tools/ci/capture_winlog.ps1`) 에이전트 틀과 같은
-winevtlog 설정(Fluent Bit 4.0.14, `string_inserts: true`)으로 받은 레코드. CI 실행 42723626534(2026-11-09, Windows Server 2025 러너), 레코드 33개.
+winevtlog 설정(Fluent Bit 4.0.14, `string_inserts: true`)으로 받은 레코드. CI 실행 42964906651(2026-11-11, Windows Server 2025 러너), 레코드 46개.
 
 - 러너 이름은 `WIN-CI` 로 바꿨고, `Message` 는 200자로 잘랐다(그 밖에는 Fluent Bit 이 낸 그대로 — 값의 형도: LogonType 은 숫자).
 - `EventData` 키가 없다 — 이름은 서버가 `raw.winevtlog.EventData` 로 붙인다(`normalizers/win_templates.py`, ADR-038).
 - 윈도 CI 가 매번 새로 받아 같은 모양인지 본다. Fluent Bit·Windows 를 올려 모양이 바뀌면 이 파일을 다시 만든다.
-- 러너에서 생기지 않은 것(`WLMOPTIONAL`): 4767(잠금 풀기)·서비스 7034 — 이 실행 뒤에 캡처에 더했다(4648·4672·4702·4723·4724·4725 와 함께, 단계마다
-  `WLMSTEP` 줄). 4647(대화형 로그오프 — 캡처의 로그오프는 4634 만 남김, 일으키지 않음)·WER 1001(충돌은 일으켰으나 안 생김). 도메인 컨트롤러의
-  Kerberos 4768·4769·4771, 이벤트 로그 종료 1100, 비정상 재부팅 41, Defender, SQL Server — 현장(B-28)에서 받는다.
+- 러너에서 생기지 않은 것(`WLMOPTIONAL`): 4647(대화형 로그오프 — 캡처의 로그오프는 4634 만 남김, 일으키지 않음)·WER 1001(충돌은 일으켰으나 안 생김).
+  도메인 컨트롤러의 Kerberos 4768·4769·4771, 이벤트 로그 종료 1100, 비정상 재부팅 41, Defender, SQL Server — 현장(B-28)에서 받는다.
+  캡처 확대 2차(4648·4672·4702·4723·4724·4725·4767·7034)는 이 실행에서 모두 받았다(`WLMSTEP` 9개 모두 ok).
 
 ## 다시 만들기
 

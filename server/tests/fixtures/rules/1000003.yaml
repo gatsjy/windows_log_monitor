@@ -34,16 +34,6 @@ no_match:
       Task: 6
       Message: "BACKUP failed to complete the command BACKUP DATABASE emr. Check the backup application log for detailed messages."
     strings: [BACKUP DATABASE emr]
-  - why: System 채널의 오류는 분류가 '시스템' (1000002)
+  - why: System 채널의 오류는 분류가 '시스템' (1000002) — 서비스가 예기치 않게 끝남(7034 실측)
     fails_on: [category]
-    windows: {event: 7034, envelope: 7045}
-    ref: 'wevtutil gp "Service Control Manager" /ge /gm:true — 7034'
-    fields:
-      ProviderName: Service Control Manager
-      Channel: System
-      Level: 2
-      Keywords: "0x8080000000000000"
-      Version: 0
-      Qualifiers: 49152
-      Message: "The Print Spooler service terminated unexpectedly.  It has done this 1 time(s)."
-    strings: [Print Spooler, "1", "530070006F006F006C00650072000000"]
+    windows: {event: 7034}

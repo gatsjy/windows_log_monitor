@@ -108,6 +108,9 @@ VERIFIED: dict[tuple[str, int], int] = {
     (SECURITY, 4634): 0, (SECURITY, 4698): 1, (SECURITY, 4699): 1, (SECURITY, 4719): 1, (SECURITY, 4722): 0,
     (SECURITY, 4740): 0, (SECURITY, 4776): 0, ("Microsoft-Windows-Eventlog", 1102): 1, ("Microsoft-Windows-Eventlog", 104): 1,
     ("Application Error", 1000): 0,
+    # 캡처 확대 2차 (B-45, 실행 42964906651) — 도메인 컨트롤러 밖 템플릿은 4647(대화형 로그오프) 말고 모두 실측
+    (SECURITY, 4648): 0, (SECURITY, 4672): 0, (SECURITY, 4702): 1, (SECURITY, 4723): 0, (SECURITY, 4724): 0,
+    (SECURITY, 4725): 0, (SECURITY, 4767): 0,
 }
 # 클래식 이벤트 원본 — 필드를 더해도 Version 이 늘지 않는다(늘 0). 옛 Windows(7·2008 R2)의 응용 프로그램 충돌은 앞 13개만 온다 →
 # 버전으로 옛 모양을 가를 수 없으니 실측했어도 템플릿보다 길 때만 '템플릿 불일치'(검토)

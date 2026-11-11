@@ -129,7 +129,7 @@
 | 규칙 예외 | Elastic exceptions·공유 목록(작성자·만료), Security Onion 튜닝·운영 메모, Sigma `filter_optional_*` | △ 규칙 문장에 `-user:` 를 직접 씀. 무음은 (규칙, 대상) 30일 이내 | B-46 |
 | 값 목록·자산 | Wazuh CDB 목록, Sentinel watchlist(퇴직자·중요 자산·내부 대역), Splunk ES asset & identity 우선순위 | ❌ 검색 문장의 인라인 OR(`ip:a,b`)뿐 | B-53, B-55 |
 | 계정 표기 통일 | Splunk ES identity(한 사람의 여러 계정), Sentinel Identity Correlation | ❌ `clean_user` 는 원문 그대로(`kim`, `HOSP\kim`, UPN 이 섞일 수 있음) | B-54 |
-| 기본 규칙 표본 시험 | SigmaHQ `regression_data`(규칙마다 표본·기대 건수), Hayabusa sample-evtx, wazuh-logtest | △ 로그로 판단하는 기본 규칙 23개 모두 맞음·아님 표본 게이트(규칙 시험기·엔진 SQL, Windows 표본 76건 중 53건 실측 레코드). 템플릿 36개의 이름·순서는 버전마다 윈도 공급자 매니페스트로, 레코드 실측은 21개(윈도 CI) — 도메인 컨트롤러 이벤트(4771 등)·Defender·SQL Server 표본은 아직 문서 기반 | B-45, B-28 |
+| 기본 규칙 표본 시험 | SigmaHQ `regression_data`(규칙마다 표본·기대 건수), Hayabusa sample-evtx, wazuh-logtest | △ 로그로 판단하는 기본 규칙 23개 모두 맞음·아님 표본 게이트(규칙 시험기·엔진 SQL, Windows 표본 76건 중 57건 실측 레코드). 템플릿 36개의 이름·순서는 버전마다 윈도 공급자 매니페스트로, 레코드 실측은 28개(윈도 CI — 남은 것은 DC 전용 7개와 4647) — 도메인 컨트롤러 이벤트(4771 등)·Defender·SQL Server 표본은 아직 문서 기반 | B-45, B-28 |
 | 규칙 시험기·관찰 모드 | wazuh-logtest 단계별 출력, Hayabusa proven/noisy, SigmaHQ 패키지 단계 | ○ 로그 하나로 조건별 시험(이벤트·원본 붙여넣기), 관찰 모드·일괄 승격 (팩 규칙 기본 관찰은 남음) | B-52 |
 | 기본 팩과 현장 수정 | Wazuh `ruleset/` 와 `local_rules.xml`+overwrite, Elastic 사전 규칙 3-way 비교 | △ 한 파일(`alerts.yaml`). 업그레이드 때 `alerts.yaml.new` 를 손으로 합침 | B-51 |
 | 탐지 내용 | SigmaHQ windows builtin(Kerberoasting·DCSync·4719 하위 범주·xp_cmdshell), Microsoft Appendix L, Hayabusa 의 Defender 등급 분할 | △ 규칙 23개. Kerberoasting·DCSync 같은 DC 공격·AD 객체 변경(5136) 탐지 없음, Defender 1116/1117 모두 critical, 4719 전체에 울림, Linux 는 SSH 하나 | B-48, B-49, B-50 |

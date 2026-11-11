@@ -9,16 +9,6 @@ no_match:
   - why: 프로세스 만듦(4688)은 서비스 설치가 아니다
     fails_on: [event_id]
     windows: {event: 4688}
-  - why: 서비스가 예기치 않게 끝남(7034)은 다른 규칙(1000002)
+  - why: 서비스가 예기치 않게 끝남(7034 실측)은 다른 규칙(1000002)
     fails_on: [event_id]
-    windows: {event: 7034, envelope: 7045}
-    ref: 'wevtutil gp "Service Control Manager" /ge /gm:true — 7034'
-    fields:
-      ProviderName: Service Control Manager
-      Channel: System
-      Level: 2
-      Keywords: "0x8080000000000000"
-      Version: 0
-      Qualifiers: 49152
-      Message: "The Print Spooler service terminated unexpectedly.  It has done this 1 time(s)."
-    strings: [Print Spooler, "1", "530070006F006F006C00650072000000"]
+    windows: {event: 7034}

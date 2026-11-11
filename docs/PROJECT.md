@@ -167,7 +167,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 - 의미 없는 값은 버립니다: `-`, `N/A`, `S-1-0-0`, `$` 로 끝나는 컴퓨터 계정, `::1`·`127.0.0.1`·`0.0.0.0`.
   - `src_ip` 는 IP 인 값만(호스트 이름·`LOCAL` 등은 버림, B-23). `::ffff:` 접두사·포트(`10.0.0.5:51234`, `[v6]:443`)·IPv6 영역 표시(`%12`)는 떼고 표준 표기로 저장합니다.
 - Windows 에이전트(Fluent Bit 4.0)는 EventData 를 이름 없이 `StringInserts` 배열로만 보냅니다. 서버가 알려진 이벤트(`normalizers/win_templates.py` — 로그온·계정·그룹·서비스·예약 작업·Kerberos·PowerShell 4104·로그 지움·응용 프로그램 충돌 등 36종)에 이름을 붙여 `raw.winevtlog.EventData` 에 덧붙입니다(ADR-038).
-  이름·순서는 이벤트 버전마다 윈도 공급자 매니페스트로(36종 모두), 필드 수는 윈도 CI 가 받은 실제 레코드로(36종 중 21종) 확인합니다(ADR-066).
+  이름·순서는 이벤트 버전마다 윈도 공급자 매니페스트로(36종 모두), 필드 수는 윈도 CI 가 받은 실제 레코드로(36종 중 28종 — 남은 것은 도메인 컨트롤러 전용 7종과 대화형 로그오프 4647) 확인합니다(ADR-066).
   매니페스트 고정 자료(`server/tests/fixtures/winevtlog/manifest-templates.json`)는 윈도 PC 에서 `tools/ci/dump_templates.ps1`(읽기만 함)로 만들고, 윈도 CI 는 러너의 매니페스트에 새 버전·다른 이름이 보이면 경고만 합니다 — 템플릿을 고칠 때까지 필드가 더 붙은 새 버전은 수집 품질의 '템플릿 불일치'로 셉니다.
   - **해석 (B-68):** 목록·상세·실시간에 서버가 만든 **한 줄 요약**(예: 'kim 로그온 실패 — 비밀번호가 틀림, 원격 데스크톱, 접속지 10.0.0.5')을 보이고, 상세에는 코드 풀이
     (LogonType·Status/SubStatus·Kerberos 실패 코드·`%%2313` 같은 실패 이유·토큰 승격). 사전은 `server/app/catalog/windows.json`(요약 틀은 EventData 이름, 문구는 Microsoft

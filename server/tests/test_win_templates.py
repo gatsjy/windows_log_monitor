@@ -34,7 +34,7 @@ def test_real_agent_records_have_no_event_data_names():
 
 
 # 템플릿 없이 받는 클래식 이벤트 — 값이 param1… 순서뿐이고 마지막 값은 Binary 의 16진 글자라 이름을 붙이지 않는다(실측, B-45)
-NO_TEMPLATE = {("Service Control Manager", 7031), ("Service Control Manager", 7036)}
+NO_TEMPLATE = {("Service Control Manager", 7031), ("Service Control Manager", 7034), ("Service Control Manager", 7036)}
 
 
 @pytest.mark.parametrize("record", REAL, ids=[f'{r["EventID"]}v{r.get("Version")}' for r in REAL])
