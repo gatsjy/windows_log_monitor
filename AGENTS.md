@@ -50,7 +50,7 @@ server/app/
   healthcheck.py     상태 확인(HEALTHCHECK·install.sh): config 만 읽고 TLS 면 https
   config.py          환경변수(WLM_*) 설정
   db.py              연결 풀, 마이그레이션 실행기, audit()
-  partitions.py      events 월별 파티션 생성 / 보관기간 만료 삭제
+  partitions.py      events 월별 파티션 생성 / 보관기간 만료 삭제 / 다 찬 달의 색인 다시 만들기(밤에 한 번, ADR-067)
   repository.py      ★ 이벤트 저장·조회 SQL 전부 (식 색인을 쓰는 쿼리는 그 식을 글자 그대로 — 예: LOGON_ID_SQL, 마이그레이션 028)
   filters.py         검색 조건 파싱 + 실시간 매칭 (백엔드 무관)
   querylang.py       ★ 검색 문장 파서·정규형 (표준 라이브러리만, web/js/querylang.js 와 한 줄씩 같은 알고리즘, ADR-033) · account_key(계정 표기 통일, B-54 — SQL wlm_user_key·JS accountKey 와 같게)
@@ -173,6 +173,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - `user:` 는 정확히(그대로). SQL 은 `(username IS NOT NULL AND wlm_user_key(username) = ANY(열쇠) AND username = ANY(표기))` — 계정 색인 하나로 둘 다 찾는다(예전 `events_user_ts_idx` 는 다 붙으면 `partitions.build_account_indexes` 가 지움). `username IS NOT NULL` 을 빼면 부분 색인을 못 쓴다.
   - 알림 규칙·규칙이 쓰는 저장한 검색·예외에서 `-account:` 는 거부(`rules.ACCOUNT_EXCLUDE_ERROR`) — 공격자가 정하는 이름으로 비켜 갈 수 있다. 사용자 이름에서 나온 새 필드는 `routers/query.PERSONAL_FIELDS` 에(접속기록).
   - 월 파티션 색인은 서버가 뒤에서(`account_index_loop`, 시험에서는 `WLM_PARTITION_INDEX_BUILD=off` — `build_account_indexes` 를 직접 부른다). 파티션마다 식 통계(`account_statistics`)도 — 부분 색인 통계는 플래너가 쓰지 않는다.
+  - 같은 고리가 밤(표시 시간대 01~05시)에 다 찬 달의 색인을 한 번 다시 만든다(`compact_closed_partitions`, ADR-067 — 시험은 `now` 를 밤으로 주고 직접 부른다). `events` 에 새 색인을 더할 때 `(값, ts DESC)` 가 받는 순서로는 반만 찬다는 것을 전제로 크기를 어림한다. 파티션에 `REINDEX` 를 `CONCURRENTLY` 없이 걸지 않는다(수집이 멈춘다).
 - **처음 보는 값 (B-47, ADR-063):** 엔진이 `received_at` 구간을 `new_terms_state.cursor_at` 부터 이어서 훑는다(`repository.scan_new_terms` 한 문장 — 모으기·맞추기·쓰기·상태). 수집 경로(`_write`)에 넣지 않는다.
   - 조합의 열쇠 `wlm_terms_hash`(마이그레이션 039)는 **고치지 않는다**(바꾸면 모든 조합이 새 값). 값은 `_field_expr` — 검색·묶음과 같은 식.
   - 알림은 `engine.fire_rule(rule, message, claim=…)` — `insert_alert` 가 같은 트랜잭션에서 pending → alerted·aggregated 로 바꾸지 못하면 알림을 넣지 않는다. 다른 경로로 '처음 보는 값' 알림을 넣지 않는다.
