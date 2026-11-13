@@ -1,6 +1,6 @@
 # 폐쇄망 배포 가이드
 
-> 최종 갱신: 2026-10-16 · 버전 0.5.0 + 미출시(HTTPS·에이전트 TLS §7.5)
+> 최종 갱신: 2026-11-04 · 버전 0.6.0
 > 인터넷이 되지 않는 사내망 서버에 Log Monitor 를 설치·업그레이드하는 절차입니다.
 > 스크립트: `deploy/airgap/make-bundle.sh`(묶음 만들기), `deploy/airgap/install.sh`(설치·업그레이드). 리허설 기록은 §13.
 
@@ -88,8 +88,8 @@
 - 결과물 (`dist/`):
 
 ```
-log-monitor-0.5.0-amd64.tar.gz          반입 파일
-log-monitor-0.5.0-amd64.tar.gz.sha256   반입 신청서에 적을 해시
+log-monitor-0.6.0-amd64.tar.gz          반입 파일
+log-monitor-0.6.0-amd64.tar.gz.sha256   반입 신청서에 적을 해시
   └ 안에: images/images.tar.gz         컨테이너 이미지 3개 (api, postgres:17-alpine, fluent-bit:4.0)
           images/IMAGES.txt            이미지 ID
           images/PACKAGES.txt          이미지 안의 파이썬 패키지 버전 (소프트웨어 목록 증적)
@@ -192,7 +192,7 @@ docker run --rm -v "$PWD/docker-debs:/out" ubuntu:24.04 bash -c '
 
 | 반입 일시 | 반입자 | 승인자 | 파일명 | SHA-256 | 버전 | 용도 |
 |---|---|---|---|---|---|---|
-| 2026-10-__ | | | log-monitor-0.5.0-amd64.tar.gz | (`.sha256` 내용) | 0.5.0 | 신규 설치 / 업그레이드 |
+| 2026-11-__ | | | log-monitor-0.6.0-amd64.tar.gz | (`.sha256` 내용) | 0.6.0 | 신규 설치 / 업그레이드 |
 
 - 묶음 안의 `images/PACKAGES.txt`, `images/IMAGES.txt` 를 기록에 첨부하면 '어떤 소프트웨어가 들어갔는가' 를 증명할 수 있습니다.
 
@@ -207,9 +207,9 @@ docker version && docker compose version && uname -m      # x86_64 이면 amd64 
 ### 7.2 묶음 풀고 설치
 
 ```bash
-sha256sum -c log-monitor-0.5.0-amd64.tar.gz.sha256
-tar -xzf log-monitor-0.5.0-amd64.tar.gz
-cd log-monitor-0.5.0-amd64
+sha256sum -c log-monitor-0.6.0-amd64.tar.gz.sha256
+tar -xzf log-monitor-0.6.0-amd64.tar.gz
+cd log-monitor-0.6.0-amd64
 sudo ./deploy/airgap/install.sh --public-url https://logmon.corp.local:8080 --syslog
 # 사용자가 IP 로 접속: --public-url https://10.0.0.10:8080 (인증서 이름 logmon.internal + IP 로 자동)
 # 사내 PKI 인증서: ... --tls-cert server.crt --tls-key server.key --tls-ca root-ca.crt
@@ -384,12 +384,13 @@ sudo ./deploy/airgap/install.sh --upgrade --syslog        # 처음 설치와 같
   022 이전 이미지로 1)만 되돌리면 체인은 DB 트리거라 계속 이어지지만, **옛 이미지의 감사로그 만료 삭제는 시각 기준이라** 다시 올린 뒤 '체인의 시작이 맞지 않습니다'가
   날 수 있습니다 — 되돌린 동안은 `.env` 의 `WLM_AUDIT_RETENTION_DAYS` 를 크게(예: 3650) 두고 다시 올린 뒤 원래대로 합니다.
 - **에이전트는 서버 다음에:** 새 서버로 올린 뒤에 PC 에 새 설치 묶음을 배포합니다. 설치 묶음은 서버의 에이전트 틀로 만들어지므로 화면에서 받으면 자연히 이 순서가 됩니다.
-  - 설정 버전 **0.4.0**(SQL Server ERRORLOG 여러 줄 묶기, ADR-037)을 옛 서버에 보내면 묶인 레코드의 시각·오류 번호를 읽지 못합니다. 저장소 파일로 직접 설치할 때 주의합니다.
+  - 설정 버전 **0.4.0** 이상(SQL Server ERRORLOG 여러 줄 묶기, ADR-037 — 지금 틀은 0.4.1)을 옛 서버에 보내면 묶인 레코드의 시각·오류 번호를 읽지 못합니다. 저장소 파일로 직접 설치할 때 주의합니다.
   - 다시 설치해도 읽은 위치(`tail-*.sqlite`)와 버퍼가 남아 유실·중복이 없습니다. 바꿀 PC 찾기: 수집 PC 화면의 설정 버전이 0.3.0 이하이면서 ERRORLOG 를 수집하는 DB 서버.
-  - 서버를 되돌려야 하는데 0.4.0 PC 가 있으면, 되돌리기 **전에** 그 PC 들의 ERRORLOG 묶기를 끕니다. 새 서버는 0.4.0 묶음만 만들므로 둘 중 하나로 합니다.
+  - 서버를 되돌려야 하는데 0.4.0 이상 PC 가 있으면, 되돌리기 **전에** 그 PC 들의 ERRORLOG 묶기를 끕니다. 새 서버는 0.4.0 이상 묶음만 만들므로 둘 중 하나로 합니다.
     - 업그레이드 전에 받아 둔 옛 설치 묶음(DB 서버용)으로 다시 설치.
     - 또는 PC 에서 `C:\ProgramData\wlm-agent\fluent-bit.yaml` 의 `multiline.parser: mssql_errorlog` 줄을 지우고 `Restart-Service knuh-agent` (다음 설치 때 원래대로 돌아옵니다).
   - IIS 열 순서 표 `iis_layouts` 는 옛 서버가 무시하므로 그대로 둬도 됩니다.
+  - 설정 **0.4.1**(Linux 0.2.1, ADR-039)부터는 서버에 보내지 못하는 동안 하트비트가 PC 메모리에 쌓이지 않습니다(0.4.0 까지는 장애 하루에 약 720MB 씩 늘었음). 수집 PC 화면의 설정 버전이 그보다 낮은 PC 는 새 묶음으로 다시 설치합니다. Windows PC 에서 메모리를 재려면 묶음의 `check-memory.ps1` 을 씁니다(agent/windows/README.md).
 - **IIS 사용자 지정 열 순서 사이트:** 이 버전으로 올린 직후에는 저장된 열 순서가 없어, 다음 로그 파일(하루 단위면 09:00 KST)까지 원문으로 남습니다(IIS 대시보드·규칙에 안 잡힘). 09:00 KST 직전에 올리면 공백이 짧습니다(ADR-037).
 
 **되돌리기:**

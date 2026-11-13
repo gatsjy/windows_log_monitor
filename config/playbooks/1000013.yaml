@@ -3,7 +3,7 @@ title: 보안 감사 로그 삭제
 steps:
   - question: 누가 로그를 지웠나?
     why: 감사 로그 삭제는 침입 흔적을 지우는 전형적인 행동입니다 — 지운 계정을 먼저 봅니다 (아래 최근 로그의 메시지)
-    query: 'event_id:1102,104 host:{host}'
+    query: 'event_id:1102,104 provider:Microsoft-Windows-Eventlog host:{host}'
     window: 1h
     after: 10m
   - question: 지우기 전 이 서버에 원격으로 로그온한 계정은?

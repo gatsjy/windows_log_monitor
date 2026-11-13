@@ -33,13 +33,61 @@ def test_real_agent_records_have_no_event_data_names():
     assert REAL and all("EventData" not in r and isinstance(r["StringInserts"], list) for r in REAL)
 
 
+# 템플릿 없이 받는 클래식 이벤트 — 값이 param1… 순서뿐이고 마지막 값은 Binary 의 16진 글자라 이름을 붙이지 않는다(실측, B-45)
+NO_TEMPLATE = {("Service Control Manager", 7031), ("Service Control Manager", 7034), ("Service Control Manager", 7036)}
+
+
 @pytest.mark.parametrize("record", REAL, ids=[f'{r["EventID"]}v{r.get("Version")}' for r in REAL])
 def test_template_length_matches_the_real_version(record):
     # 템플릿이 그 버전의 필드 수와 정확히 같다 — 4624 v3 처럼 중간에 끼운 필드를 놓치면 뒤 이름이 밀린다
     key = (record["ProviderName"], record["EventID"])
     names = wt.VERSIONED.get((*key, int(record.get("Version") or 0))) or wt.TEMPLATES.get(key)
+    if key in NO_TEMPLATE:
+        assert names is None, f"{key} 템플릿이 생겼으면 NO_TEMPLATE 에서 지웁니다"
+        return
     assert names is not None, f"{key} 템플릿이 없습니다"
     assert len(names) == len(record["StringInserts"])
+
+
+# 윈도 공급자 매니페스트의 템플릿 — 버전마다 이름·순서 (tools/ci/dump_templates.ps1 로 만든 고정 자료, 윈도 CI 가 러너와 비교해 경고)
+MANIFEST = json.loads((FIXTURE.parent / "manifest-templates.json").read_text(encoding="utf-8"))["events"]
+
+
+def test_manifest_fixture_covers_every_template():
+    # 템플릿을 더하거나 빼면 고정 자료도 다시 만든다(README) — 이름·순서를 문서가 아니라 윈도에서 확인한다
+    assert {(e["provider"], e["id"]) for e in MANIFEST} == set(wt.TEMPLATES)
+    assert set(wt.VERSIONED) <= {(e["provider"], e["id"], e["version"]) for e in MANIFEST}
+
+
+@pytest.mark.parametrize("event", MANIFEST, ids=[f'{e["id"]}v{e["version"]}' for e in MANIFEST])
+def test_names_follow_the_provider_manifest(event):
+    # 그 버전 레코드(필드 수 그대로)에 붙는 이름이 매니페스트와 같고, 수집 품질이 '템플릿 불일치'로 세지 않는다 —
+    # 러너에서 일으킬 수 없는 도메인 컨트롤러 이벤트(4768·4769·4771)와 새 버전(4768 v2 등)도 이것으로 본다
+    key, version, names = (event["provider"], event["id"]), event["version"], event["names"]
+    inserts = [f"v{i}" for i in range(len(names))]
+    assert list(wt.named(*key, inserts, version)) == names
+    assert not wt.mismatch(*key, inserts, version)
+
+
+def test_wrong_length_at_a_known_version_is_flagged():
+    # 버전을 아는(실측·VERSIONED) 레코드인데 필드 수가 다르면 '템플릿 불일치' — 그 버전에서 이름이 밀렸을 수 있다.
+    # 클래식 원본(UNVERSIONED)은 옛 Windows 가 같은 버전으로 짧게 보내므로 길 때만
+    known = {(*key, v): wt.VERSIONED.get((*key, v)) or wt.TEMPLATES[key] for key, v in wt.VERIFIED.items()} | wt.VERSIONED
+    for (provider, event_id, version), names in known.items():
+        assert wt.mismatch(provider, event_id, ["x"] * (len(names) + 1), version), (event_id, version)
+        shorter = wt.mismatch(provider, event_id, ["x"] * (len(names) - 1), version)
+        assert shorter is ((provider, event_id) not in wt.UNVERSIONED), (event_id, version)
+
+
+def test_version_newer_than_the_manifest_is_flagged():
+    # 매니페스트가 모르는 새 버전이 필드를 더 보내면 '템플릿 불일치'로 센다 — 그때 고정 자료와 VERSIONED 를 갱신한다
+    latest: dict[tuple[str, int], tuple[int, list[str]]] = {}
+    for e in MANIFEST:
+        key = (e["provider"], e["id"])
+        if e["version"] >= latest.get(key, (-1, []))[0]:
+            latest[key] = (e["version"], e["names"])
+    for key, (version, names) in latest.items():
+        assert wt.mismatch(*key, ["x"] * (len(names) + 1), version + 1), key
 
 
 def test_names_land_on_the_right_values():

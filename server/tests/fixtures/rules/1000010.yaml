@@ -1,0 +1,12 @@
+# 새 사용자 계정 생성 — 4720
+rule: 1000010
+match:
+  - why: 로컬 계정 만듦 (net user … /add)
+    windows: {event: 4720}
+no_match:
+  - why: 계정 바뀜(4738) — 만들 때 함께 남지만 따로 세지 않는다
+    fails_on: [event_id]
+    windows: {event: 4738}
+  - why: 계정 삭제(4726)
+    fails_on: [event_id]
+    windows: {event: 4726}

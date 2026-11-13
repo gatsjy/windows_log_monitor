@@ -37,7 +37,9 @@ SECURITY_ITEMS: list[dict[str, Any]] = [
     {"key": "audit_policy_changed", "label": "감사 정책 변경", "ids": [4719], "attention": "warn"},
     {"key": "service_installed", "label": "서비스 설치", "ids": [7045, 4697]},
     {"key": "task_created", "label": "예약 작업 생성", "ids": [4698]},
-    {"key": "sql_login_failed", "label": "SQL Server 로그인 실패", "ids": [18456]},
+    # 규칙 1000018 과 같게 — Application 로그로만(ERRORLOG 사본까지 세면 두 배), 잠김 18486 등 다른 'Login failed' 번호도 (B-45 검토)
+    {"key": "sql_login_failed", "label": "SQL Server 로그인 실패", "ids": [18456, 18470, 18486, 18487, 18488],
+     "sources": ["winevtlog"]},
 ]
 
 
@@ -117,7 +119,7 @@ async def _security(start: datetime, end: datetime) -> dict[str, Any]:
     base = EventFilter(since=start, until=end)
     items = []
     for item in SECURITY_ITEMS:
-        f = replace(base, event_ids=item["ids"], providers=item.get("providers", []))
+        f = replace(base, event_ids=item["ids"], providers=item.get("providers", []), sources=item.get("sources", []))
         n = (await repository.count(f))["current"]
         items.append({"key": item["key"], "label": item["label"], "event_ids": item["ids"], "n": n,
                       "attention": item.get("attention") if n else None})

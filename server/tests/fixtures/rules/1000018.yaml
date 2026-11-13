@@ -1,0 +1,84 @@
+# SQL Server 로그인 실패 급증 — Application 로그(공급자 MSSQLSERVER·MSSQL$인스턴스)의 로그인 실패를 출발지 IP 로 묶는다.
+# 같은 실패가 ERRORLOG 로도 오지만(-MssqlErrorlog) 그 길은 세지 않는다 — 둘 다 세면 기준 10건이 실제 5번에 울렸다(B-45 검토)
+rule: 1000018
+match:
+  - why: 로그인 실패가 Application 이벤트 로그로 온 것 — 에이전트 기본 채널이라 ERRORLOG 를 받지 않는 PC 도 이 길로 온다
+    windows: {event: 18456, envelope: 7045}
+    ref: https://learn.microsoft.com/sql/relational-databases/errors-events/mssqlserver-18456-database-engine-error
+    fields:
+      ProviderName: MSSQLSERVER
+      ProviderGuid: ""
+      Channel: Application
+      Level: 0
+      Keywords: "0x90000000000000"
+      Version: 0
+      Qualifiers: 49152
+      Task: 4
+      Message: "Login failed for user 'sa'. Reason: Password did not match that for the login provided. [CLIENT: 10.20.30.42]"
+    strings: [sa, " Reason: Password did not match that for the login provided.", " [CLIENT: 10.20.30.42]"]
+  - why: 잠긴 계정에 계속 시도(18486) — 잠긴 뒤의 대입은 18456 이 아니라 이 번호로 남는다(이름 있는 인스턴스 MSSQL$EMR)
+    windows: {event: 18486, envelope: 7045}
+    ref: https://learn.microsoft.com/sql/relational-databases/errors-events/database-engine-events-and-errors-18000-to-18999
+    fields:
+      ProviderName: MSSQL$EMR
+      ProviderGuid: ""
+      Channel: Application
+      Level: 0
+      Keywords: "0x90000000000000"
+      Version: 0
+      Qualifiers: 49152
+      Task: 4
+      Message: "Login failed for user 'sa' because the account is currently locked out. The system administrator can unlock it.  [CLIENT: 10.20.30.43]"
+    strings: [sa, "", " [CLIENT: 10.20.30.43]"]
+no_match:
+  - why: 업무 프로그램이 Application 로그에 같은 번호·문구로 남긴 DB 접속 실패 — SQL Server 가 쓴 것이 아니다 (분류가 응용 프로그램)
+    fails_on: [category]
+    windows: {event: 18456, envelope: 7045}
+    ref: https://learn.microsoft.com/dotnet/api/system.diagnostics.eventlog.writeentry
+    fields:
+      ProviderName: EMRService
+      ProviderGuid: ""
+      Channel: Application
+      Level: 4
+      Keywords: "0x80000000000000"
+      Version: 0
+      Qualifiers: 0
+      Task: 0
+      Message: "Database connection failed: Login failed for user 'emr_app'. Reason: Password did not match that for the login provided. [CLIENT: 10.20.30.44]"
+    strings: ["Database connection failed: Login failed for user 'emr_app'. Reason: Password did not match that for the login provided. [CLIENT: 10.20.30.44]"]
+  - why: 같은 실패가 ERRORLOG 로도 온 것 — Application 로그 한 길만 센다(둘 다 세면 실패 한 번이 두 건)
+    mssql:
+      - "2026-11-09 10:15:22.53 Logon       Error: 18456, Severity: 14, State: 8."
+      - "2026-11-09 10:15:22.53 Logon       Login failed for user 'sa'. Reason: Password did not match that for the login provided. [CLIENT: 10.20.30.41]"
+    ref: https://learn.microsoft.com/sql/relational-databases/errors-events/mssqlserver-18456-database-engine-error
+    fails_on: [source]
+  - why: SQL Server 인증 로그인 성공(18454) — 로그인 감사를 '성공과 실패 모두'로 둔 서버
+    windows: {event: 18454, envelope: 7045}
+    ref: https://learn.microsoft.com/sql/relational-databases/errors-events/database-engine-events-and-errors-18000-to-18999
+    fields:
+      ProviderName: MSSQLSERVER
+      ProviderGuid: ""
+      Channel: Application
+      Level: 4
+      Keywords: "0xa0000000000000"
+      Version: 0
+      Qualifiers: 16384
+      Task: 4
+      Message: "Login succeeded for user 'emr_app'. Connection made using SQL Server authentication. [CLIENT: 10.20.30.42]"
+    strings: [emr_app, " [CLIENT: 10.20.30.42]"]
+    fails_on: [event_id]
+  - why: 같은 PC 안의 접속(<local machine>)은 출발지 IP 가 없어 IP 로 묶을 수 없다
+    windows: {event: 18456, envelope: 7045}
+    ref: https://learn.microsoft.com/sql/relational-databases/errors-events/mssqlserver-18456-database-engine-error
+    fields:
+      ProviderName: MSSQLSERVER
+      ProviderGuid: ""
+      Channel: Application
+      Level: 0
+      Keywords: "0x90000000000000"
+      Version: 0
+      Qualifiers: 49152
+      Task: 4
+      Message: "Login failed for user 'CORP\\svc_batch'. Reason: Could not find a login matching the name provided. [CLIENT: <local machine>]"
+    strings: ['CORP\svc_batch', " Reason: Could not find a login matching the name provided.", " [CLIENT: <local machine>]"]
+    fails_on: [group_key:ip]

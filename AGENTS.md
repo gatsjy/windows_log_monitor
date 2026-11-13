@@ -57,7 +57,7 @@ server/app/
   live.py            실시간 스트림(SSE) 브로드캐스터, 수집 속도
   normalizers/       ★ 소스별 정규화: windows / iis / mssql / syslog(+journald) / generic
                        categories.py = 분류(category) 규칙, base.py = Event·clean_ip/clean_user
-  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · newterms(처음 보는 값: 받은 시각 구간 훑기·배우기·조합마다 한 번, B-47) · correlation(상관 알림: 개체마다 여러 전술, B-67) · tactics(MITRE 기법 → 전술 표·짝짓기) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
+  alerts/            ★ 알림: rules(YAML 검증) · ruleedit(규칙 블록 편집) · ruletest(로그 하나 판단: 규칙 시험기·표본 게이트 공용) · message(문구) · notifiers(메일/웹훅/Oracle) · targets(DB의 수신자·그룹·연동) · engine(평가·무음·설정 판본·규칙 상태) · dispatcher(전송 대기열·재시도) · health(알림 기능 상태 판단) · watchdog(멈춘 작업 다시 시작·내장 시스템 알림) · adminwatch(받는 곳 약화·관리 권한 부여 알림) · coverage(규칙별 데이터 유무) · newterms(처음 보는 값: 받은 시각 구간 훑기·배우기·조합마다 한 번, B-47) · correlation(상관 알림: 개체마다 여러 전술, B-67) · tactics(MITRE 기법 → 전술 표·짝짓기) · builtin(내장 알림 이름) · configdiff(판본 차이·탐지 약화 판단) · visibility(조회 범위) · messenger(웹훅 형식: Slack·Teams·두레이·잔디)
   auth/              ★ 인증: passwords(scrypt·정책) · service(로그인·세션·사용자) · groups(사용자 그룹·권한·조회 범위) · deps(require_user/require_admin/require_permission/CSRF) · review(권한 검토 스냅샷·결재, B-72)
   reports/           ★ 점검 보고서: config(일정·받는 곳) · builder(내용 모으기) · render(메일·화면·인쇄 공용 HTML, 메신저 공지) · scheduler(정기 실행·보내기)
   clock.py           PC·서버 시계 차이 판단(B-57) — 하트비트 시각의 창 두 개 최솟값(repository.CLOCK_OFFSET_SQL)으로 1분·5분·서버 시계 의심
@@ -78,7 +78,7 @@ server/app/
   cli.py             관리 명령 (사용자 복구, 로그 보관 상태·무결성·복원, 감사로그 verify-chain, 인증서 tls-init·tls-renew·tls-status — DB 없이)
   routers/           ingest · query · dashboards · alerts · auth · users(+사용자 그룹) · audit · settings · agentpkg(에이전트 설치 묶음) · searches(저장한 검색) · compliance(심사 대응) · entities(개체 페이지)
 server/migrations/   번호순 SQL
-server/tests/        pytest (DB 없이 도는 단위 테스트)
+server/tests/        pytest (단위 + 통합 test_api_* 등 — 통합은 <DB>_test 를 만들어 씀)
 web/js/
   main.js            해시 라우터 (#/화면/하위?파라미터)
   views/             화면: dashboard, live, events, alerts, agents, fields, reports(점검 보고서), compliance(심사 대응), entity(개체 페이지 — 메뉴 없음, 링크로), users·audit·settings·readiness(관리자)
@@ -140,7 +140,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
 |---|---|
 | 새 로그 소스 | `normalizers/새소스.py` 작성 → `normalizers/__init__.py` 의 `BY_SOURCE` 등록 → 에이전트에서 `log_source: 새소스` 부착 → 테스트 추가 |
 | 새 위젯 | `web/js/widgets/이름.js` (`render(body, cfg, ctx)`, 실시간이면 `live(body, cfg, ctx, events)` 도) → `widgets/index.js` 등록 → `server/app/routers/dashboards.py` 의 `WIDGET_TYPES` 추가 → `views/dashboard.js` 의 REFERENCE 설명 추가 |
-| 알림 규칙 추가 | `config/alerts.yaml` 의 `rules` (형식: docs/PROJECT.md §6.1). `tests/test_alerts.py::test_shipped_config_is_valid` 가 검증 |
+| 알림 규칙 추가 | `config/alerts.yaml` 의 `rules` (형식: docs/PROJECT.md §6.1). `tests/test_alerts.py::test_shipped_config_is_valid` 가 검증. 기본 규칙이면 `server/tests/fixtures/rules/<sid>.yaml` 에 맞음·아님 표본(B-45, 형식은 그 폴더 README) — 없으면 `test_rule_samples` 실패. 기존 규칙의 조건을 바꿔도 표본부터 |
 | 새 메신저(웹훅 형식) | `alerts/messenger.py` 에 `build_<이름>` + `FORMATS` 한 줄(호스트·필수 헤더·https·전송 간격) → `tests/test_messenger.py` 스냅샷 생성(`WLM_UPDATE_SNAPSHOTS=1`) → PROJECT.md §6.2 표. 형식은 공식 문서로 확인한 것만 |
 | 새 알림 대상 종류 | `app/alerts/notifiers.py` (Notifier 상속, `send()` 실패 시 예외) → `channels.type` CHECK 마이그레이션 → `targets.py` 의 `build_channel`/`_clean_channel_config` → `views/settings.js` → 테스트 |
 | 새 API | 라우터를 `main.py` 에 등록할 때 `dependencies=[Depends(require_user)]` 로 로그인 필수, 변경 작업은 엔드포인트에 `Depends(require_admin)` + `db.audit(...)` |
@@ -183,6 +183,8 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - PC 무음은 그 PC 를 **본 때**로 판단한다(`engine.fire(hosts=[(PC, 본 때)])` → `repository.pc_silence` — PC 무음만, 규칙·대상·전체 무음은 지금 `active_silence`). PC 와 본 때는 **로그에서**(`term_sightings`·`hosts_last_seen`) — seen_terms 의 first_host·last_seen(한 시간 단위)으로 대신하지 않는다. 끝난 무음으로 기록된 알림이 생기므로 무음 뒤 다시 열기는 `last_seen > max(무음 끝, 알림 시각)` — 이 조건을 빼면 매 주기 다시 연다. 여럿을 차례로 보는 작업은 커서로 돌린다(늘 최근 N개만 보면 오래된 것은 차례가 안 온다).
   - 그 규칙을 모든 PC 에서 보는 범위가 없는 사용자가 건 무음은 `host_only`(마이그레이션 041, `routers/alerts._silence_host_only(user, rule)` — 사용자·규칙마다, PC 가 아닌 대상은 `_check_host_only_target` 이 422) — `active_silence(..., pc=, key_is_pc=)` 의 PC 와, 대상 이름이 PC 에서 나온 알림(PC 별 묶음·끊김·채널 끊김)이면 대상 이름과도 맞는다. 새로 무음을 확인하는 코드는 알림의 PC 와 `key_is_pc` 를 넘긴다. 무음 행을 읽어 `silence_visible` 에 넘기는 쿼리는 `host_only` 도 뽑는다.
   - 시험은 `engine.evaluate` 를 직접 부르고 받은 시각을 앞당긴 로그를 넣는다(`test_api_new_terms.logon`) — 며칠 전 로그는 지난달 파티션이 필요하다(픽스처가 만든다).
+    앱의 엔진 루프도 시험 중에 같은 규칙을 평가한다 — 끼어들어 알림을 먼저 가져가면 시험의 평가가 0건이라, 규칙을 직접 평가하는 모듈은 엔진 잠금(`engine._LOCK_ID`)을
+    쥐어 루프를 대기로 둔다(CI 에서만 가끔 실패했다). `newterms` 메모리는 상태 번호 열쇠라 conftest 가 모듈마다 `newterms.forget()`.
   - 배우는 기간 맞추기(`repository.fit_first_learning`, `fit_pending` 마이그레이션 043)는 소스·채널·PC 의 처음 받은 때를 agent_streams 로 본다 — 그 표는 35일만 두니 표가 아는 가장 이른 날과 같으면 '예전부터'. 시험에서 새 소스를 흉내 내면 더 오래된 다른 소스 줄도 넣는다(`test_api_new_terms.stream_since`).
   - 한 평가의 시간은 `newterms._budget()` 하나를 이어서 훑기·거슬러 배우기·번짐 확인이 나눠 쓴다(새 단계를 더하면 같은 예산 안에서). 규칙 저장으로 열쇠가 바뀌면 `routers/alerts.save_rule` 이 상태를 옮기거나(번호 없던 규칙) 지운다(새 규칙이 받은 번호).
 - 알림 규칙이 감시하는 분류는 `Rule.categories`(match.category + match.query 의 `category:`)입니다. 조회 범위 판단(`alerts/visibility.py`)은 이것만 봅니다.
@@ -243,15 +245,20 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - 수집 요청 하나에 들어온 값 때문에 SQL 이 실패하면 그 요청의 다른 이벤트까지 거절되고 에이전트가 끝없이 다시 보냅니다. 표에 넣는 값은 NUL·길이를 먼저 거릅니다(`iis._storable`).
 - MSSQL `Error:` 머리줄 짝(`_pending`)만 프로세스 메모리입니다(워커 1개 전제, 키는 PC·파일·프로세스). 테스트에서 순서에 의존하는 경우 같은 `host`·파일을 씁니다. 여러 줄 레코드는 첫 줄로 해석합니다.
 - **에이전트 multiline (ADR-037):** `multiline.parser` 이름 오타는 `--dry-run` 을 통과하고 기동 때 엔진 전체(윈도 이벤트 포함)가 멈춘다 → `render_agent_configs.check_multiline` 이 막는다. multiline tail 은 `storage.type: filesystem` 필수(서버가 꺼진 채 멈추면 묶던 것·못 보낸 것을 잃는다 — `tools/ci/test_fluentbit_mssql.sh` 가 재현).
-- **에이전트 출력은 둘 (ADR-039):** 로그(`match_regex: '^(?!heartbeat$).*'`, 무한 재시도·디스크 버퍼)와 하트비트(`retry_limit: 2`, 메모리). 하트비트를 로그 출력에 다시 합치면 서버 장애 동안 256KB 조각이 쌓여 PC 메모리가 하루 약 720MB 씩 는다. 서버 주소·TLS 등 출력 키는 **두 출력 모두** 고친다 — `render_agent_configs.check_heartbeat_route`·`check_tls` 가 막고, 윈도 CI `tools/ci/agent_memory.py` 가 실제 Fluent Bit 로 메모리·라우팅을 잰다.
   - 틀의 `mssql_errorlog` 시작 정규식과 서버 `mssql._LINE` 은 같은 줄을 시각 줄로 봐야 한다(`tests/test_agent_sync.py`). 고정 자료 `tests/fixtures/mssql/fb-*.jsonl` 은 Fluent Bit 실제 출력 — Fluent Bit 을 올리면 `test_fluentbit_mssql.sh … --update` 후 서버 시험.
-  - 에이전트 설정 버전 0.4.0 은 서버보다 먼저 배포하지 않는다(옛 서버는 묶인 레코드를 잘못 읽음).
+  - Windows 에이전트 설정 0.4.0 이상은 서버보다 먼저 배포하지 않는다(옛 서버는 묶인 레코드를 잘못 읽음).
+- **에이전트 출력은 둘 (ADR-039):** 로그(`match_regex: '^(?!heartbeat$).*'`, 무한 재시도·디스크 버퍼)와 하트비트(`retry_limit: 2`, 메모리). 하트비트를 로그 출력에 다시 합치면 서버 장애 동안 256KB 조각이 쌓여 PC 메모리가 하루 약 720MB 씩 는다. 서버 주소·TLS 등 출력 키는 **두 출력 모두** 고친다 — `render_agent_configs.check_heartbeat_route`·`check_tls` 가 막고, 윈도 CI `tools/ci/agent_memory.py` 가 실제 Fluent Bit 로 메모리·라우팅을 잰다.
 - **Windows EventData 이름 (ADR-038):** 에이전트(Fluent Bit 4.0)는 EventData 를 보내지 않고 StringInserts 만 보낸다(LogonType 은 숫자). 서버가 `win_templates` 로 `raw.winevtlog.EventData` 를 붙이고, `f.EventData.X` 는 별칭(보낸 값 → 붙인 값)이다.
   - 별칭은 세 곳이 같아야 한다: `repository._raw_clause`(SQL COALESCE), `querylang.raw_field`, `web/js/querylang.js` 의 `rawField`(SYNC `raw_alias`). 케이스 표에 줄을 먼저.
   - Windows 시험 자료는 실제 에이전트 모양으로(`tests/fixtures/winevtlog/agent-fb4.0.14.jsonl`). EventData 맵을 넣은 레코드로만 시험하면 실제 PC 에서 안 맞는 규칙이 통과한다(실제로 그랬다). 시뮬레이터 기본값도 StringInserts 만.
   - 템플릿을 더하면 윈도 CI 의 실측 레코드로 길이를 확인한다(`test_win_templates.py`). 버전마다 필드가 중간에 끼기도 한다(4624 v3) — `VERSIONED`.
+  - 이름·순서는 손으로 옮기지 말고 공급자 매니페스트로(비슷한 이벤트의 틀을 재사용해 틀렸다 — 4702 는 `TaskContentNew`): 템플릿을 더하거나 바꾸면 윈도 PC 에서
+    `tools/ci/dump_templates.ps1 -Fixture server/tests/fixtures/winevtlog/manifest-templates.json -Update [-Add 공급자:ID,…]`(읽기만 함) — `test_win_templates` 가 버전마다 대조한다.
+    실측한 버전(`VERIFIED`)보다 새 버전이 뒤에 더 붙이면 `TEMPLATES` 를 늘리지 말고 `VERSIONED` 에(늘리면 실측한 옛 버전이 '템플릿 불일치'). 버전이 늘지 않는
+    클래식 원본은 `UNVERSIONED`(더 길 때만 불일치). 윈도 CI 는 러너와 달라지면 경고만 한다. 시뮬레이터(`tools/simulate.py`)의 Windows 이벤트도 실측과 같은 개수로.
   - 기본 규칙·대시보드의 `f.EventData.<이름>` 은 그 이벤트의 **실측으로 확인한** 템플릿에 있어야 한다(`test_rule_fields.py`). 이름 오타는 검사 없이 통과하고 실제 PC 에서 영영 맞지 않는다.
 - MSSQL ERRORLOG 의 `Error:` 머리줄은 번호 없이 '상세'(5)로 저장됩니다. 오류 번호로 세는 규칙·위젯은 본문 줄 기준입니다(이중 집계 방지).
+  - 로그인 실패(18456·잠김 18486 등)는 ERRORLOG 를 켠 서버에서 Application 로그와 ERRORLOG 둘로 온다 — 세는 규칙·위젯·보고서는 `source: winevtlog` 로만 센다(1000018·`mssql.json` 위젯 셋·`reports/builder.SECURITY_ITEMS`, B-45 — 둘 다 세면 기준이 절반). ERRORLOG 의 로그인 번호는 Application 로그와 같게 둔다(성공 18453·18454·18455, 실패는 짝지은 `Error:` 머리줄 번호 — `normalizers/mssql.py`).
 - **규칙 예외 (B-46, ADR-051):** 규칙의 결과를 세는 새 코드는 `rule.event_filter(await repository.active_rule_exceptions(rule.name, now))` 로 — 그냥 `event_filter()` 면
   예외가 빠져 화면과 엔진 결과가 달라진다(엔진·규칙 미리보기·알림 뒤 이벤트 수가 이렇게 한다). `rule_exceptions` 는 끝내기만(트리거).
   - 지금은 `await engine.rule_filter(rule, now)` 하나로 — 저장한 검색(`match.saved`, B-64·ADR-052)의 문장과 걸린 예외를 함께 합친다. 저장한 검색이 없으면 ValueError(그 규칙만 오류).
@@ -268,6 +275,11 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   전술 수는 `tactics.assign`(규칙·전술 최대 짝짓기) — 전술 합집합으로 세지 않는다(T1078 하나가 3개가 됨). 새 MITRE 기법 태그를 기본 규칙에 쓰면 `tactics.TECHNIQUES` 에도(`test_shipped_rules_have_only_known_mitre_tags`).
   상관 알림은 범위가 없는 사용자만 본다(`visibility.alert_visible` — `alerts.kind`, 마이그레이션 047). `alert_visible` 에 행을 넘기는 새 쿼리는 `kind` 도 뽑는다(지운 상관 규칙의 알림이 PC 패턴에 맞아 보였다).
   다시 알리지 않을지는 `payload.correlation.ids`(전부) — 보이는 `alerts`(30개)로 판단하지 않는다. 다른 규칙의 태그·켜기·관찰 변경은 `configdiff._feeder_changes` 가 상관 규칙의 약화로 본다.
+- **기본 규칙 표본 (B-45, ADR-066):** 판단은 규칙 시험기와 같은 `app/alerts/ruletest.checks` 한 곳 — 시험기 판단을 바꾸면 표본 게이트도 같이 바뀐다. Windows 표본은 실측 레코드에서 값만 바꾸고(`where`·`inserts`), 실측이 없으면 `envelope` + 판단 값 전부 + `ref`. 윈도 CI 캡처에 실측이 생기면 빌더가 '실측으로 바꾸라'며 실패한다 — 바꾸고 `test_rule_samples.DOCS_BASED` 에서 지운다. 낮은 이벤트 ID(104·1000 등)는 공급자마다 뜻이 달라 규칙·표본 모두 공급자를 본다.
+  - 안 맞음 표본은 떨어진 조건이 `fails_on` 과 **정확히 같은 집합**이어야 한다(되도록 하나) — '안 맞음'만 보면 IP 없음 같은 다른 조건으로 떨어져 정작 그 경계가 빠진 회귀를 놓쳤다(검토에서 재현). 규칙의 조건마다 그 조건으로 떨어지는 표본이 있어야 하고, 만들 수 없으면 `test_rule_samples.UNGUARDED` 에 이유를.
+  - 규칙별 데이터 유무(`coverage`)의 재료(`agent_events`)에는 공급자가 없다 — 공급자로 좁힌 규칙은 채널도 적는다(안 적으면 판단 보류).
+  - `tools/ci/capture_winlog.ps1 -ThrowawayRunner` 는 PC 를 바꾼다(감사·잠금 정책, 임시 관리자와 그 암호 변경·끄기·잠금 풀기, 스풀러 복구 동작 지움, Security/System 로그 지움) — GitHub 호스트 러너 전용: `GITHUB_ACTIONS=true`·`RUNNER_ENVIRONMENT=github-hosted`·`ACT` 없음이 아니면, 그리고 도메인 가입 PC·DC 면 거부한다(self-hosted 러너도 `GITHUB_ACTIONS=true` 라 그것만 보면 못 막는다). 현장은 스위치 없는 듣기 모드(실행마다 새 폴더, 지우지 않음).
+  - 표본·시험처럼 역슬래시(경로·`\r\n`)가 들어가는 파일은 셸 heredoc 으로 쓰지 않는다 — 윈도 Git Bash 를 거치면 `\\` 가 `\` 로 바뀌어 YAML·파이썬 문자열이 깨졌다(편집 도구로 쓴다).
 - 알림 규칙의 `name` 이 쿨다운 키입니다. 이름을 바꾸면 이전 발생 기록과 연결이 끊깁니다.
 - **알림 설정 판본 (ADR-043):** 설정을 적용하면 `engine.reload()` 가 `_pending` 을 두고 `await engine.record()` 가 판본(`alert_config_versions`, 추가만)·감사로그·약화 알림을 남긴다. 설정을 바꾸는 새 API 는 `routers/alerts._store` 를 거친다(쓰기 전 파일 직접 수정부터 기록 → `reload(force=True, source="ui", actor=…)`).
   - 내장 규칙 이름 `engine.CONFIG_RULE`('알림 설정 변경', kind `config`)은 무음을 건너뛴다. 받는 곳은 바뀌기 전 설정의 규칙들 — 새 약화 판단은 `configdiff._rule_changes` 와 `test_configdiff.py` 의 표에 함께.

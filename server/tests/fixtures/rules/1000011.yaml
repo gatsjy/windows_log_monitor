@@ -1,0 +1,14 @@
+# 새 서비스 설치 — System 7045(서비스 제어 관리자)·Security 4697
+rule: 1000011
+match:
+  - why: 서비스 설치(System 채널 7045)
+    windows: {event: 7045}
+  - why: 서비스 설치(Security 채널 4697, '보안 시스템 확장' 감사)
+    windows: {event: 4697}
+no_match:
+  - why: 프로세스 만듦(4688)은 서비스 설치가 아니다
+    fails_on: [event_id]
+    windows: {event: 4688}
+  - why: 서비스가 예기치 않게 끝남(7034 실측)은 다른 규칙(1000002)
+    fails_on: [event_id]
+    windows: {event: 7034}

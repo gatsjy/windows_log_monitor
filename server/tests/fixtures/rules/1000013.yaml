@@ -1,0 +1,52 @@
+# 보안 감사 로그 삭제 — 이벤트 로그 서비스(Microsoft-Windows-Eventlog)의 1102(Security 지움)·104(다른 로그 지움)
+rule: 1000013
+match:
+  - why: 보안 로그 지움(1102, wevtutil cl Security 실측) — UserData(LogFileCleared)의 지운 사람·프로세스가 StringInserts 로 온다(v1)
+    windows: {event: 1102}
+  - why: System 로그 지움(104, wevtutil cl System 실측) — 지운 로그 이름(Channel)이 온다
+    windows: {event: 104}
+no_match:
+  - why: 이벤트 로그 서비스 종료(1100)는 지운 것이 아니다 (재부팅 때마다 남는다)
+    fails_on: [event_id]
+    windows: {event: 1100, envelope: 4720}
+    ref: https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-1100
+    fields:
+      ProviderName: Microsoft-Windows-Eventlog
+      ProviderGuid: "{fc65ddd8-d6ef-4962-83d5-6e5cfe9ce148}"
+      Channel: Security
+      Level: 4
+      Keywords: "0x4020000000000000"
+      Version: 0
+      Task: 103
+      Message: "The event logging service has shut down."
+    strings: []
+  - why: 업무 프로그램이 Application 로그에 쓴 104 — 이벤트 ID 는 공급자마다 뜻이 다르다(클래식 이벤트 원본은 아무 번호나 쓴다)
+    fails_on: [channel, provider]
+    windows: {event: 104, envelope: 7045}
+    ref: https://learn.microsoft.com/dotnet/api/system.diagnostics.eventlog.writeentry
+    fields:
+      ProviderName: EMRService
+      ProviderGuid: ""
+      Channel: Application
+      Level: 4
+      Keywords: "0x80000000000000"
+      Version: 0
+      Qualifiers: 0
+      Task: 0
+      Message: "Order queue drained (104 items)."
+    strings: ["104"]
+  - why: 다른 공급자가 System 로그에 쓴 104 (서비스·드라이버의 클래식 이벤트 원본) — 채널이 같아도 공급자로 가른다
+    windows: {event: 104, envelope: 7045}
+    ref: https://learn.microsoft.com/dotnet/api/system.diagnostics.eventlog.writeentry
+    fields:
+      ProviderName: EMRAgent
+      ProviderGuid: ""
+      Channel: System
+      Level: 4
+      Keywords: "0x80000000000000"
+      Version: 0
+      Qualifiers: 0
+      Task: 0
+      Message: "Sync job 104 finished."
+    strings: ["104"]
+    fails_on: [provider]

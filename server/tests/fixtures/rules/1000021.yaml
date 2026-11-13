@@ -1,0 +1,14 @@
+# 패스워드 스프레이 — 한 IP 에서 서로 다른 계정 10개 이상 (시험이 TargetUserName 만 바꾼 사본을 보낸다)
+rule: 1000021
+match:
+  - why: 출발지 IP 가 있는 로그온 실패 — 계정마다 한두 번씩
+    windows: {event: 4625, where: {LogonType: 3}}
+    inserts: {IpAddress: 198.51.100.30, IpPort: "51240"}
+no_match:
+  - why: 출발지 IP 가 없는 실패는 IP 로 묶이지 않는다 (병원 전체의 오타를 '서로 다른 계정 n개'로 세지 않게, ADR-041)
+    fails_on: [group_key:ip]
+    windows: {event: 4625, where: {LogonType: 2}}
+  - why: 로그온 성공(4624)
+    fails_on: [event_id]
+    windows: {event: 4624}
+    inserts: {IpAddress: 198.51.100.30, IpPort: "51240"}

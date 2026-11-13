@@ -1,0 +1,12 @@
+# 계정 잠금 — 4740, 잠긴 계정으로 묶는다
+rule: 1000008
+match:
+  - why: 계정 잠금(4740) — 잠긴 계정은 TargetUserName, TargetDomainName 은 '호출한 PC'(도메인이 아님). 잠금 정책 + 틀린 암호 실측
+    windows: {event: 4740}
+no_match:
+  - why: 로그온 실패(4625)는 잠금이 아니다 — 잠금은 실패가 기준을 넘었을 때 따로 남는다
+    fails_on: [event_id]
+    windows: {event: 4625, where: {LogonType: 3}}
+  - why: 계정 삭제(4726)
+    fails_on: [event_id]
+    windows: {event: 4726}

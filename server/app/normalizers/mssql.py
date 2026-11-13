@@ -104,7 +104,17 @@ def normalize(record: dict, now: datetime) -> Event | None:
     if login := _LOGIN.search(message):
         result, user, ip = login.group(1), clean_user(login.group(2)), clean_ip(login.group(3))
         parsed.update(login=result, user=login.group(2), client=login.group(3))
-        event_id = 18456 if result == "failed" else 18453
+        # 성공 번호는 인증 방식마다 다르다(Microsoft 오류표 18453·18454·18455) — Application 로그로 온 같은 로그인과 같은 번호가
+        # 되게(모두 18453 이면 SQL 인증 성공이 응용 프로그램 로그에서는 18454, ERRORLOG 에서는 18453 으로 갈렸다, B-45 검토)
+        if result == "failed":
+            # 짝지은 머리줄 번호(18486 잠김·18470 꺼진 계정 …)가 있으면 그대로 — Application 로그의 같은 실패도 그 번호다(B-45 검토)
+            event_id = event_id or 18456
+        elif "SQL Server authentication" in message:
+            event_id = 18454
+        elif "Windows authentication" in message or "Integrated authentication" in message:
+            event_id = 18453
+        else:
+            event_id = 18455
         level = WARNING if result == "failed" else INFO
     return Event(
         ts=ts,

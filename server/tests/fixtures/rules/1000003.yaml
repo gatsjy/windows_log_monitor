@@ -1,0 +1,39 @@
+# 응용 프로그램 오류 다발 — 분류 '응용 프로그램'(Application 채널)의 오류(수준 2)
+rule: 1000003
+match:
+  - why: 응용 프로그램 충돌(Application Error 1000)은 Application 채널의 오류 — 업무 프로그램(emr.exe)이 죽은 경우
+    windows: {event: 1000}
+    inserts: {AppName: emr.exe, AppVersion: 2.4.0.1, AppPath: 'C:\EMR\emr.exe'}
+no_match:
+  - why: 같은 채널의 정보(수준 4) — 오류 보고(Windows Error Reporting 1001)
+    fails_on: [level]
+    windows: {event: 1001, envelope: 7045}
+    ref: "https://learn.microsoft.com/troubleshoot/windows-server/performance/troubleshoot-application-service-crashing-behavior — 1000 과 함께 Application 로그에 남는다는 것만 확인, 수준·필드는 윈도 CI 실측 전 추정"
+    fields:
+      ProviderName: Windows Error Reporting
+      ProviderGuid: ""
+      Channel: Application
+      Level: 4
+      Keywords: "0x80000000000000"
+      Version: 0
+      Qualifiers: 0
+      Message: "Fault bucket 1234567890123456789, type 4\r\nEvent Name: APPCRASH\r\nResponse: Not available\r\nCab Id: 0\r\n\r\nProblem signature:\r\nP1: emr.exe\r\nP2: 2.4.0.1"
+    strings: ["1234567890123456789", "4", APPCRASH, Not available, "0", emr.exe, 2.4.0.1, "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
+  - why: SQL Server 가 Application 채널에 쓴 오류는 분류가 'DB (MSSQL)' — 응용 프로그램 오류로 세지 않는다 (1000019)
+    fails_on: [category]
+    windows: {event: 3041, envelope: 7045}
+    ref: https://learn.microsoft.com/sql/relational-databases/errors-events/database-engine-events-and-errors-3000-to-3999
+    fields:
+      ProviderName: MSSQLSERVER
+      ProviderGuid: ""
+      Channel: Application
+      Level: 2
+      Keywords: "0x80000000000000"
+      Version: 0
+      Qualifiers: 16384
+      Task: 6
+      Message: "BACKUP failed to complete the command BACKUP DATABASE emr. Check the backup application log for detailed messages."
+    strings: [BACKUP DATABASE emr]
+  - why: System 채널의 오류는 분류가 '시스템' (1000002) — 서비스가 예기치 않게 끝남(7034 실측)
+    fails_on: [category]
+    windows: {event: 7034}

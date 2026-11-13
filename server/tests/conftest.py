@@ -62,10 +62,12 @@ os.environ["WLM_MFA_REQUIRED"] = "off"
 def _fresh_alert_engine():
     """통합 시험 모듈마다 시험 DB 를 새로 만든다 → 알림 엔진도 처음 설치한 서버처럼 시작한다.
     엔진은 프로세스에 하나라, 앞 모듈이 적용한 설정이 다음 모듈의 새 DB 에 '설정 변경'으로 기록·알림되지 않게 (ADR-043)."""
+    from app.alerts import newterms
     from app.alerts.dispatcher import dispatcher
     from app.alerts.engine import engine
 
     engine.forget()
+    newterms.forget()   # 처음 보는 값의 메모리도 상태 번호 열쇠라 새 DB 의 같은 번호가 앞 모듈 값을 이어받았다
     # 받는 곳 상태(실패 시작 시각 등)도 프로세스 메모리 — 앞 모듈이 실패로 남긴 받는 곳이 전체 실행이 느려 15분을 넘기면
     # 다음 모듈의 감시가 '알림 전송 실패'를 하나 더 냈다(부하가 있을 때만 실패하던 시험)
     dispatcher.targets.clear()

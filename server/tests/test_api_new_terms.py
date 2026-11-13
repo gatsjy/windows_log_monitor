@@ -54,11 +54,16 @@ def client():
         pytest.skip(f"테스트 DB 를 만들 수 없음: {exc}")
     from fastapi.testclient import TestClient
 
+    from app.alerts.engine import _LOCK_ID
     from app.main import app
 
     rules_file = Path(os.environ["WLM_ALERTS_FILE"])
     saved = rules_file.read_text(encoding="utf-8") if rules_file.exists() else None
-    with TestClient(app) as c:
+    # 앱의 엔진 루프도 같은 규칙을 주기마다 평가한다 — 시험이 넣은 로그를 시험의 evaluate 보다 먼저 훑어 알림을 가져가면 그 평가는 0건이고
+    # 뒤 시험들이 어긋난 상태를 이어받았다(CI 에서만 가끔, 2026-11-11). 다른 서버가 평가 중인 것처럼 잠금을 쥐어 루프를 대기로 둔다
+    holder = psycopg.connect(os.environ["WLM_DATABASE_URL"], autocommit=True)
+    holder.execute("SELECT pg_advisory_lock(%s)", (_LOCK_ID,))
+    with holder, TestClient(app) as c:
         now = datetime.now(UTC)   # 지난달 파티션 — 거슬러 배우기·만료 시험이 며칠 전 로그를 넣는다 (달 초에 돌아도)
         start = (now.replace(day=1) - timedelta(days=1)).replace(day=1)
         sql(f"CREATE TABLE IF NOT EXISTS events_{start:%Y_%m} PARTITION OF events FOR VALUES FROM ('{start:%Y-%m-%d}')"

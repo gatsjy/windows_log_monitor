@@ -1,0 +1,22 @@
+# 웹 서버 오류 급증 — IIS 접속 로그 중 5xx(수준 2)
+rule: 1000017
+match:
+  - why: 서버 오류 응답(500) — IIS 기본 필드 순서(#Fields 줄 없이)
+    iis: "2026-11-09 01:02:03 10.0.0.10 POST /emr/api/orders - 443 - 10.20.30.40 Mozilla/5.0+(Windows+NT+10.0;+Win64;+x64) https://emr.corp.local/emr/ 500 0 0 1532"
+    ref: https://learn.microsoft.com/windows/win32/http/w3c-logging
+  - why: 서비스 사용 불가(503.2 — 동시 요청 한도 초과). 응용 프로그램 풀이 멈춘 503 은 HTTP.sys 의 httperr 로그에만 남아 에이전트가 받지 않는다
+    iis: "2026-11-09 01:02:04 10.0.0.10 GET /emr/ - 443 - 10.20.30.41 Mozilla/5.0+(Windows+NT+10.0;+Win64;+x64) - 503 2 0 3"
+    ref: https://learn.microsoft.com/troubleshoot/developer/webapps/iis/health-diagnostic-performance/http-status-code
+no_match:
+  - why: 없는 파일(404)은 서버 오류가 아니다
+    fails_on: [level]
+    iis: "2026-11-09 01:02:05 10.0.0.10 GET /favicon.ico - 443 - 10.20.30.40 Mozilla/5.0+(Windows+NT+10.0;+Win64;+x64) - 404 0 2 12"
+    ref: https://learn.microsoft.com/windows/win32/http/w3c-logging
+  - why: 인증 필요(401)는 경고(수준 3) — 오류가 아니다
+    fails_on: [level]
+    iis: "2026-11-09 01:02:06 10.0.0.10 GET /emr/ - 443 - 10.20.30.40 Mozilla/5.0+(Windows+NT+10.0;+Win64;+x64) - 401 2 5 3"
+    ref: https://learn.microsoft.com/windows/win32/http/w3c-logging
+  - why: 웹 서버가 아닌 소스의 오류(수준 2) — 응용 프로그램 충돌은 1000003 이 센다
+    fails_on: [source]
+    windows: {event: 1000}
+    inserts: {AppName: w3wp.exe, AppPath: 'C:\Windows\System32\inetsrv\w3wp.exe'}

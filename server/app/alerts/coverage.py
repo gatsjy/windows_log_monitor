@@ -46,6 +46,10 @@ def need(rule: Rule) -> Need | None:
     f = rule.event_filter()
     if f.never or not (f.sources or f.channels or f.event_ids):
         return None
+    # 판단 재료(agent_events)에는 공급자가 없다 — 공급자로 좁힌 규칙이 채널을 정하지 않았으면 다른 공급자의 같은 이벤트 ID
+    # (업무 프로그램이 Application 로그에 쓴 104 등)로 채널·PC 를 짐작해 '데이터 있음'으로 보인다(B-45 검토에서 재현)
+    if f.providers and not f.channels:
+        return None
     return Need(sources=frozenset(f.sources), channels=frozenset(f.channels), event_ids=frozenset(f.event_ids),
                 categories=frozenset(f.categories), hosts=frozenset(f.hosts),
                 excluded_hosts=frozenset(str(h) for h in f.excludes.get("host", [])))

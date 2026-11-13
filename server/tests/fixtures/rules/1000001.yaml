@@ -1,0 +1,26 @@
+# 시스템 심각 오류 — Windows 수준 1(심각) 이벤트면 무엇이든
+rule: 1000001
+match:
+  - why: 비정상 재부팅(Kernel-Power 41)은 수준 1(심각)로 온다
+    windows: {event: 41, envelope: 7045}
+    ref: https://learn.microsoft.com/troubleshoot/windows-client/performance/event-id-41-restart
+    fields:
+      ProviderName: Microsoft-Windows-Kernel-Power
+      ProviderGuid: "{331C3B3A-2005-44C2-AC5E-77220C37D6B4}"
+      Channel: System
+      Level: 1
+      Keywords: "0x8000400000000002"
+      Version: 9
+      Task: 63
+      Qualifiers: ""
+      Message: "The system has rebooted without cleanly shutting down first. This error could be caused if the system stopped responding, crashed, or lost power unexpectedly."
+    # BugcheckCode·BugcheckParameter1~4·SleepInProgress·PowerButtonTimestamp·BootAppStatus·Checkpoint·ConnectedStandbyInProgress·
+    # SystemSleepTransitionsToOn·CsEntryScenarioInstanceId·BugcheckInfoFromEFI·CheckpointStatus·CsEntryScenarioInstanceIdV2·LongPowerButtonPressDetected
+    strings: [0, "0x0", "0x0", "0x0", "0x0", 0, 0, 0, 0, false, 0, 0, false, 0, 0, false]
+no_match:
+  - why: 오류(수준 2)는 심각이 아니다 — 서비스가 예기치 않게 끝남(7034, 복구 동작을 지운 스풀러를 강제로 끝낸 실측)
+    fails_on: [level]
+    windows: {event: 7034}
+  - why: 정보(수준 4) — 서비스 설치(7045)
+    fails_on: [level]
+    windows: {event: 7045}

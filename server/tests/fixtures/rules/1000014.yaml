@@ -1,0 +1,12 @@
+# 감사 정책 변경 — 4719 (시스템 감사 정책이 바뀜)
+rule: 1000014
+match:
+  - why: 감사 정책 하위 범주의 감사를 바꿈(4719, auditpol 실측) — 흔적을 남기지 않으려는 공격 단계. v1 은 바꾼 프로세스가 뒤에 붙는다
+    windows: {event: 4719}
+  - why: 실패 감사를 끔 — 실측 레코드에서 바뀐 내용만 'Success removed, Failure removed'(%%8448, %%8450)로
+    windows: {event: 4719}
+    inserts: {AuditPolicyChanges: "%%8448, %%8450"}
+no_match:
+  - why: 계정 바뀜(4738)은 감사 정책이 아니다
+    fails_on: [event_id]
+    windows: {event: 4738}

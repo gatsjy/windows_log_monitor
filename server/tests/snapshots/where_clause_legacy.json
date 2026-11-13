@@ -389,11 +389,15 @@
  {
   "name": "rule: 보안 감사 로그 삭제",
   "params": {
-   "event_id": "1102,104"
+   "event_id": "1102,104",
+   "provider": "Microsoft-Windows-Eventlog",
+   "channel": "Security,System"
   },
-  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), Composed([Identifier('channel'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), Composed([Identifier('provider'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
   "args": [
    "2026-10-02 05:00:00+00:00",
+   "['Security', 'System']",
+   "['Microsoft-Windows-Eventlog']",
    "[1102, 104]"
   ]
  },
@@ -457,14 +461,16 @@
  {
   "name": "rule: SQL Server 로그인 실패 급증",
   "params": {
+   "source": "winevtlog",
    "category": "mssql",
-   "event_id": "18456"
+   "event_id": "18456,18470,18486,18487,18488"
   },
-  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), Composed([Identifier('category'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), Composed([Identifier('source'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), Composed([Identifier('category'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
   "args": [
    "2026-10-02 05:00:00+00:00",
+   "['winevtlog']",
    "['mssql']",
-   "[18456]"
+   "[18456, 18470, 18486, 18487, 18488]"
   ]
  },
  {
@@ -619,16 +625,18 @@
   ]
  },
  {
-  "name": "dashboard: mssql[0] 로그인 실패 (18456)",
+  "name": "dashboard: mssql[0] 로그인 실패 (18456 등)",
   "params": {
+   "source": "winevtlog",
    "category": "mssql",
-   "event_id": "18456"
+   "event_id": "18456,18470,18486,18487,18488"
   },
-  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), Composed([Identifier('category'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), Composed([Identifier('source'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), Composed([Identifier('category'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
   "args": [
    "2026-10-02 05:00:00+00:00",
+   "['winevtlog']",
    "['mssql']",
-   "[18456]"
+   "[18456, 18470, 18486, 18487, 18488]"
   ]
  },
  {
@@ -684,27 +692,31 @@
  {
   "name": "dashboard: mssql[5] 로그인 실패 계정",
   "params": {
+   "source": "winevtlog",
    "category": "mssql",
-   "event_id": "18456"
+   "event_id": "18456,18470,18486,18487,18488"
   },
-  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), Composed([Identifier('category'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), Composed([Identifier('source'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), Composed([Identifier('category'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
   "args": [
    "2026-10-02 05:00:00+00:00",
+   "['winevtlog']",
    "['mssql']",
-   "[18456]"
+   "[18456, 18470, 18486, 18487, 18488]"
   ]
  },
  {
   "name": "dashboard: mssql[6] 로그인 실패 출발지 IP",
   "params": {
+   "source": "winevtlog",
    "category": "mssql",
-   "event_id": "18456"
+   "event_id": "18456,18470,18486,18487,18488"
   },
-  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), Composed([Identifier('category'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
+  "sql": "Composed([SQL('ts >= %s'), SQL(' AND '), Composed([Identifier('source'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), Composed([Identifier('category'), SQL(' = ANY(%s::text[])')]), SQL(' AND '), SQL('event_id = ANY(%s::int[])')])",
   "args": [
    "2026-10-02 05:00:00+00:00",
+   "['winevtlog']",
    "['mssql']",
-   "[18456]"
+   "[18456, 18470, 18486, 18487, 18488]"
   ]
  },
  {

@@ -51,6 +51,14 @@ _fit_checked: dict[int, datetime] = {}
 _ceiling: dict[int, int] = {}           # 시간 초과가 난 구간 크기 — 다시 그만큼 키우지 않는다 (다시 시작하면 한 번 더 겪을 뿐)
 
 
+def forget() -> None:
+    """시험용: 서버를 다시 시작한 것처럼 메모리를 비운다 (engine.forget 과 같은 뜻). 열쇠가 상태 번호(new_terms_state.id)라 모듈마다
+    새로 만든 시험 DB 에서 같은 번호가 다시 나와 앞 모듈의 값(배우는 기간 맞추기 간격·정리 시각·번짐 차례)을 이어받았다."""
+    for memory in (_spread, _spread_top, _spread_cursor, _spread_checked, _spread_timeouts, _spread_deferred, _purged,
+                   _fit_checked, _ceiling):
+        memory.clear()
+
+
 class CappedError(RuntimeError):
     """상한을 넘어 새 조합을 두지 못했다 — 규칙 오류로 보인다(감시가 '알림 규칙 동작 안 함'으로 알림)."""
 

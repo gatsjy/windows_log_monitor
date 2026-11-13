@@ -126,6 +126,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ServerHost 10.0.0.10 -Ap
   - HTTP 상태 코드(5xx 오류, 401/403/429 경고 등), URI, 클라이언트 IP, 응답 시간이 파싱되어 대시보드의 **[웹 서버 (IIS)]** 화면에 실시간 표시됩니다.
 - **SQL Server ERRORLOG:**
   - **참고:** SQL Server는 중요한 로그인 실패(18456) 및 심각한 시스템 오류를 Windows **응용 프로그램(Application)** 이벤트 로그에도 기본 기록합니다. 따라서 `-MssqlErrorlog`를 켜지 않아도 기본 설치만으로 대시보드의 **[DB (MSSQL)]** 화면에 로그인 실패가 집계됩니다.
+  - 로그인 실패(18456, 잠긴 계정 18486 등)의 수·계정·IP, 알림 'SQL Server 로그인 실패 급증', 점검 보고서는 응용 프로그램 로그로만 셉니다 — ERRORLOG 에도 같은 실패가 남아 둘 다 세면 두 배가 됩니다. `-Channels` 에서 Application 을 빼거나 SQL Server 를 `-n`(응용 프로그램 로그에 쓰지 않음)으로 띄운 서버는 `-MssqlErrorlog` 를 켜도 잡히지 않습니다.
   - `-MssqlErrorlog`는 서버 시작/정지, 체크포인트, DB 백업 완료 등 전체 파일 로그까지 상세하게 모니터링할 때 활성화합니다.
   - 설정 버전 0.4.0 부터 시각으로 시작하지 않는 줄(시작 배너, 시작 인자, 여러 줄 메시지)을 앞 줄과 한 레코드로 묶어 보냅니다(`multiline_parsers` 의 `mssql_errorlog`). **서버를 먼저 올립니다** — 옛 서버는 묶인 레코드의 시각·오류 번호를 읽지 못합니다.
   - 설정 파일을 직접 고칠 때: `multiline.parser` 이름이 틀리면 `--dry-run` 은 통과하지만 서비스가 뜨지 않습니다(윈도 이벤트 수집까지 멈춤). 그 tail 의 `storage.type: filesystem` 은 지우지 않습니다(멈출 때 묶던 레코드를 잃음).
