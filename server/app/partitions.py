@@ -17,7 +17,7 @@ from typing import Any
 from psycopg import errors, sql
 
 from . import db, retention
-from .config import settings
+from .config import display_zone, settings
 
 log = logging.getLogger(__name__)
 
@@ -404,14 +404,97 @@ async def _drop_old_user_index(conn) -> None:
         await conn.execute("SET lock_timeout = 0")
 
 
+# 다 찬 월 파티션 색인 다시 만들기 (ADR-067). (값, ts DESC) 색인은 받는 순서(시각이 느는 순서)로 넣으면 잎 페이지가 반씩 쪼개져
+# 채움이 50% 에 머문다(실측) — 수집이 끝난 달을 한 번 REINDEX 하면 색인이 약 40% 준다(문장 검색 GIN 도). 읽는 쿼리는 그대로.
+COMPACT_HOURS = range(1, 6)                 # 표시 시간대 01~05시 — 파티션 하나를 읽고 쓰는 일이라 낮의 검색·수집과 겹치지 않게
+COMPACT_AFTER = timedelta(hours=6)          # 달이 바뀐 뒤 — 파티션 키가 받은 시각이라 그 뒤로는 행이 들어오지 않는다
+COMPACT_SKIP_BEFORE_DROP = timedelta(days=7)  # 곧 보관 파일로 옮겨 지울 달은 다시 만들어 봐야 헛일
+_LEFTOVER_RE = re.compile(r"_cc(new|old)\d*$")   # REINDEX CONCURRENTLY 가 중간에 멈추면 남기는 조각 이름
+
+
+async def _compact_candidates(conn, now: datetime) -> list[dict]:
+    """수집이 끝났고, 아직 다시 만들지 않았고, 곧 지우지 않고, 복원해 잠시 두는 달(hold)이 아닌 파티션 — 최신 달부터."""
+    cur = await conn.execute("SELECT relid FROM partition_compactions")
+    done = {r["relid"] for r in await cur.fetchall()}
+    keep = settings.db_retention_days
+    out = []
+    for part in await list_partitions(conn):
+        if part["to"] + COMPACT_AFTER > now or (part["hold_until"] and part["hold_until"] > now):
+            continue
+        if keep and part["to"] <= now - timedelta(days=keep) + COMPACT_SKIP_BEFORE_DROP:
+            continue
+        cur = await conn.execute("SELECT %s::regclass::oid AS relid", (part["name"],))
+        relid = (await cur.fetchone())["relid"]
+        if relid not in done:
+            out.append({**part, "relid": relid})
+    return sorted(out, key=lambda p: p["name"], reverse=True)
+
+
+async def _drop_leftovers(conn, partition: str) -> None:
+    """지난번에 중간에 멈춘 REINDEX CONCURRENTLY 의 INVALID 조각(…_ccnew)을 지운다 — 두면 수집 때마다 그 조각에도 쓴다."""
+    cur = await conn.execute(
+        "SELECT c.relname AS name FROM pg_index x JOIN pg_class c ON c.oid = x.indexrelid"
+        " WHERE x.indrelid = %s::regclass AND NOT x.indisvalid", (partition,))
+    for row in await cur.fetchall():
+        if _LEFTOVER_RE.search(row["name"]):
+            await conn.execute(sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {}").format(sql.Identifier(row["name"])))
+
+
+async def compact_closed_partitions(now: datetime | None = None, *, any_hour: bool = False) -> list[str]:
+    """다 찬 월 파티션마다 한 번: REINDEX CONCURRENTLY(수집·검색을 막지 않음) + VACUUM FREEZE·ANALYZE.
+    FREEZE 는 값이 바뀌지 않는 옛 달에 나중에 몰려오는 wraparound 방지 VACUUM(전체 읽기)을 미리 끝내 둔다.
+    밤에 한 번에 한 달만 — 남은 달은 다음 주기(1시간 뒤)에. 다시 만든 파티션 이름을 돌려준다."""
+    now = now or datetime.now(UTC)
+    if not any_hour and now.astimezone(display_zone()).hour not in COMPACT_HOURS:
+        return []
+    async with await db.connect_autocommit() as conn:
+        cur = await conn.execute("SELECT pg_try_advisory_lock(%s) AS ok", (_INDEX_LOCK_ID,))   # 계정 색인 만들기와 차례로
+        if not (await cur.fetchone())["ok"]:
+            return []
+        try:
+            await conn.execute("SET statement_timeout = 0")
+            for part in await _compact_candidates(conn, now):
+                name = part["name"]
+                try:
+                    await _drop_leftovers(conn, name)
+                    cur = await conn.execute("SELECT pg_indexes_size(%s::regclass) AS n", (name,))
+                    before = (await cur.fetchone())["n"]
+                    started = datetime.now(UTC)
+                    await conn.execute(sql.SQL("REINDEX TABLE CONCURRENTLY {}").format(sql.Identifier(name)))
+                    await conn.execute(sql.SQL("VACUUM (FREEZE, ANALYZE) {}").format(sql.Identifier(name)))
+                    seconds = (datetime.now(UTC) - started).total_seconds()
+                    cur = await conn.execute("SELECT pg_indexes_size(%s::regclass) AS n", (name,))
+                    after = (await cur.fetchone())["n"]
+                    await conn.execute(
+                        "INSERT INTO partition_compactions (relid, name, index_bytes_before, index_bytes_after, seconds)"
+                        " VALUES (%s, %s, %s, %s, %s) ON CONFLICT (relid) DO NOTHING",
+                        (part["relid"], name, before, after, seconds))
+                    log.info("파티션 색인 다시 만듦: %s %.1fMB → %.1fMB (%.0f초)", name, before / 2**20, after / 2**20, seconds)
+                    return [name]
+                except errors.UndefinedTable:
+                    continue   # 그 사이 로테이션이 지운 파티션
+                except Exception:
+                    # 디스크가 모자라거나(색인 크기만큼 잠시 더 씀) 취소됨 — 남은 조각은 다음 번에 지우고 다시
+                    log.exception("파티션 색인 다시 만들기 실패: %s — 다음 주기에 다시", name)
+                    return []
+            await conn.execute("DELETE FROM partition_compactions p WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = p.relid)")
+            return []
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock(%s)", (_INDEX_LOCK_ID,))
+
+
 async def account_index_loop() -> None:
-    """기동 1분 뒤부터 한 시간마다 — 다 붙어 있으면 카탈로그만 보고 끝난다."""
+    """기동 1분 뒤부터 한 시간마다 — 다 붙어 있으면 카탈로그만 보고 끝난다. 밤에는 다 찬 파티션 색인도 다시 만든다(ADR-067)."""
     await asyncio.sleep(60)
     while True:
         try:
             await build_account_indexes()
         except Exception:
             log.exception("계정 표기 색인 점검 실패")
+        try:
+            await compact_closed_partitions()
+        except Exception:
+            log.exception("파티션 색인 다시 만들기 실패")
         await asyncio.sleep(INDEX_BUILD_EVERY_SEC)
 
 
