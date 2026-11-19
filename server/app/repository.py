@@ -225,18 +225,32 @@ def _flatten(obj: dict, out: dict[str, Any], prefix: str = "", depth: int = 0) -
             out[path] = value
 
 
-def _field_stats(events: list[Event]) -> list[tuple]:
+def field_stats_rows(events: list[Event]) -> list[tuple]:
+    """필드 카탈로그에 더할 (소스, 경로, json 형, 수, 예시) — 수집이 fieldstats.note 로 넘긴다 (ADR-068)."""
+    # 형·예시는 경로마다 마지막 값 하나로만 만든다 — 값마다 만들면(숫자·목록은 JSON 직렬화) 수집 CPU 의 큰 몫이었다 (ADR-068)
     stats: dict[tuple[str, str], list] = {}
     for event in events:
         flat: dict[str, Any] = {}
         _flatten(event.raw, flat)
+        source = event.source
         for path, value in flat.items():
-            # 원본 키·값의 NUL 은 TEXT 에 넣을 수 없다 — 경로·예시에서 지운다 (raw 자체는 _json 이 뺀다)
-            entry = stats.setdefault((event.source, path.replace("\x00", "")), [None, 0, None])
-            entry[0] = _json_type(value)
-            entry[1] += 1
-            entry[2] = (value if isinstance(value, str) else _json(value)).replace("\x00", "")[:200]
-    return [(src, path, t, n, sample) for (src, path), (t, n, sample) in sorted(stats.items())]
+            entry = stats.get((source, path))
+            if entry is None:
+                stats[(source, path)] = [1, value]
+            else:
+                entry[0] += 1
+                entry[1] = value
+    merged: dict[tuple[str, str], list] = {}
+    for (src, path), (n, value) in stats.items():
+        # 원본 키·값의 NUL 은 TEXT 에 넣을 수 없다 — 경로·예시에서 지운다 (raw 자체는 _json 이 뺀다)
+        sample = (value if isinstance(value, str) else _json(value)).replace("\x00", "")[:200]
+        key = (src, path.replace("\x00", ""))
+        if key in merged:   # NUL 만 다른 경로 — 하나로 센다 (예전과 같게)
+            merged[key][1] += n
+            merged[key][0], merged[key][2] = _json_type(value), sample
+        else:
+            merged[key] = [_json_type(value), n, sample]
+    return [(src, path, t, n, sample) for (src, path), (t, n, sample) in sorted(merged.items())]
 
 
 LATE_SEC, FUTURE_SEC = 3600, 300   # 수집 품질 (B-56): 1시간 넘게 늦은 발생 시각·5분 넘게 미래
@@ -315,13 +329,9 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
                 " events_total = a.events_total + EXCLUDED.events_total",
                 [(host, host_ip[host], n) for host, n in sorted(per_host.items())],
             )
-            await cur.executemany(
-                "INSERT INTO field_stats AS f (source, path, json_type, seen, sample) VALUES (%s, %s, %s, %s, %s)"
-                " ON CONFLICT (source, path) DO UPDATE SET seen = f.seen + EXCLUDED.seen, last_seen = now(),"
-                " json_type = EXCLUDED.json_type, sample = EXCLUDED.sample",
-                _field_stats(events),
-            )
-            # 채널별 수신 (B-37) — 같은 트랜잭션. 잠금 순서는 agents → field_stats → agent_streams → agent_events → iis_layouts
+            # 필드 카탈로그(field_stats)는 여기서 쓰지 않는다 — 모든 요청이 같은 줄을 고쳐 커밋까지 줄을 섰다.
+            # 저장한 뒤 fieldstats 가 메모리에 모았다가 10초마다 한 번에 (ADR-068)
+            # 채널별 수신 (B-37) — 같은 트랜잭션. 잠금 순서는 agents → agent_streams → agent_events → iis_layouts
             # 문장 하나로 (unnest) — 줄마다 upsert 하면 PC 가 많은 묶음(수집기)에서 수집이 13% 느려졌다 (PERFORMANCE.md §2.5)
             # 수집 품질(B-56)도 같은 줄의 칸으로 — 쓰기를 늘리지 않는다 (PERFORMANCE.md §2.8)
             now = datetime.now(UTC)
@@ -379,7 +389,7 @@ async def _write(conn, events: list[Event], heartbeats: list[Heartbeat], client_
 
         if layouts:
             # 이벤트와 같은 트랜잭션 — 이벤트가 거절되면 머리줄도 남지 않고, 에이전트가 청크째 다시 보낼 때 다시 배운다.
-            # 잠금 순서는 agents → field_stats → agent_streams → agent_events → iis_layouts, 같은 표 안에서는 정렬 순서 (동시 요청끼리 교착 방지)
+            # 잠금 순서는 agents → agent_streams → agent_events → iis_layouts, 같은 표 안에서는 정렬 순서 (동시 요청끼리 교착 방지)
             await cur.executemany(
                 "INSERT INTO iis_layouts (host, file, dir, fields) VALUES (%s, %s, %s, %s)"
                 " ON CONFLICT (host, file) DO UPDATE SET fields = EXCLUDED.fields, dir = EXCLUDED.dir, seen_at = now()",
@@ -478,6 +488,23 @@ async def add_ingest_rejections(rows: list[tuple[str, int, str, datetime, int, d
             " last_at = GREATEST(r.last_at, EXCLUDED.last_at)",
             [(_printable(ip, 64), status, _printable(reason, 200), hour, n, first, last)
              for ip, status, reason, hour, n, first, last in sorted(rows)])
+
+
+async def add_field_stats(rows: list[tuple[str, str, str, int, str | None, datetime, datetime]]) -> None:
+    """필드 카탈로그에 더한다 (fieldstats.flush, ADR-068). rows = (소스, 경로, json 형, 수, 예시, 처음, 마지막).
+    문장 하나(unnest)로, 정렬해서 — 수집과 따로라 줄 잠금은 이 문장만 잠깐 쥔다."""
+    rows = sorted(rows)
+    async with db.pool().connection() as conn:
+        await conn.execute(
+            "INSERT INTO field_stats AS f (source, path, json_type, seen, sample, first_seen, last_seen)"
+            " SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::bigint[], %s::text[],"
+            "                      %s::timestamptz[], %s::timestamptz[])"
+            " ON CONFLICT (source, path) DO UPDATE SET seen = f.seen + EXCLUDED.seen,"
+            " last_seen = GREATEST(f.last_seen, EXCLUDED.last_seen),"
+            " json_type = CASE WHEN EXCLUDED.last_seen >= f.last_seen THEN EXCLUDED.json_type ELSE f.json_type END,"
+            " sample = CASE WHEN EXCLUDED.last_seen >= f.last_seen THEN EXCLUDED.sample ELSE f.sample END",
+            [list(col) for col in zip(*rows, strict=True)] if rows else [[]] * 7,
+        )
 
 
 async def list_ingest_rejections(since: datetime, limit: int = 200) -> list[dict[str, Any]]:

@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Header, HTTPException, Request
 from starlette.requests import ClientDisconnect
 
-from .. import live, rejects, repository
+from .. import fieldstats, live, rejects, repository
 from ..config import settings
 from ..normalizers import Event, Heartbeat, layout_keys, normalize_safely
 
@@ -165,6 +165,9 @@ async def _ingest(request: Request, x_api_key: str | None, client_ip: str | None
         gone = {id(e) for e in bad}
         events = [e for e in events if id(e) not in gone]
 
+    # 필드 카탈로그는 저장한 것만, 커밋한 뒤 메모리에 — 수집 트랜잭션 밖 (ADR-068)
+    if events:
+        fieldstats.note(repository.field_stats_rows(events), now)
     live.ingest_rate.add(len(events))
     if live.broadcaster.subscriber_count:   # 볼 사람이 없으면 실시간 모양(요약·NUL 처리)을 만들지 않는다 — 수집 처리량
         live.broadcaster.publish([e.to_live(now) for e in events])

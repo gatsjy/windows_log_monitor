@@ -44,6 +44,7 @@ Fluent Bit 에이전트가 보낸 Windows 이벤트 로그, IIS·SQL Server 로�
 ```
 server/app/
   rejects.py         수집 거절 장부 (메모리에 모아 30초마다 ingest_rejections 에, B-40)
+  fieldstats.py      필드 카탈로그 (메모리에 모아 10초마다 field_stats 에 — 수집 트랜잭션 밖, ADR-068)
   main.py            앱 진입점, 시작 시 마이그레이션·파티션 준비, 정적 UI 제공, 수집 포트 제한(IngestPortGuard), 보안 헤더(HSTS 선택)
   serve.py           운영 실행: 한 프로세스에 리스너 넷 — 8000 화면·API(TLS 면 https), 8001 평문 수집(6976), 8002 TLS 수집(6977), 8003 수집기 전용 내부
   tlsutil.py         ★ TLS: uvicorn TLS 설정(1.2+, ECDHE+AEAD), 기동 전 점검, 인증서 상태(만료·이름·CA), 자체 CA·서버 인증서 발급 (ADR-036)
@@ -238,7 +239,7 @@ WLM_TLS=on WLM_PUBLIC_URL=https://localhost:8080 docker compose up -d api && cur
   - `_json` 은 홀수 개 역슬래시 뒤의 `\u0000` 만 지운다(글자 그대로의 `\u0000` 을 지우면 JSON 이 깨진다 — 재현). 짝 없는 서로게이트는 수집 본문에서 U+FFFD 로.
   - 수집 거절은 `rejects.note()` 로 메모리에 모았다가 30초마다 `ingest_rejections` 에(인증 전 요청을 요청마다 DB 에 쓰지 않는다). 시험은 `rejects.flush()` 를 직접 부른다.
 - **수집 품질 (B-56, ADR-059):** 정규화기가 해석을 못 했거나 어긋났으면 `Event.flags`(parse_error·unparsed·template_mismatch)를 단다 — 저장하지 않고 `_stream_counts` 가 `agent_streams` 칸으로 센다. 새 '해석 실패' 종류는 flags 이름 + 마이그레이션 칸 + `quality.PROBLEMS` 를 함께.
-- **수집 트랜잭션의 집계 (B-37, ADR-046):** `_write` 는 events COPY 뒤 agents → field_stats → agent_streams → agent_events → iis_layouts 순서로 쓴다(같은 표 안에서는 정렬). 새 집계를 더할 때 이 순서를 지키고, 줄마다 upsert 하지 말고 문장 하나(`unnest`)로 — 줄마다면 PC 가 많은 묶음에서 수집이 13% 느려졌다(PERFORMANCE.md §2.5).
+- **수집 트랜잭션의 집계 (B-37, ADR-046):** `_write` 는 events COPY 뒤 agents → agent_streams → agent_events → iis_layouts 순서로 쓴다(같은 표 안에서는 정렬). 모든 요청이 같은 줄을 고치는 집계(소스·경로마다 등)는 넣지 않는다 — `field_stats` 가 그래서 커밋까지 줄을 서 수집이 초당 약 300건에서 멈췄다. 그런 것은 커밋한 뒤 메모리에 모아 주기적으로(`fieldstats.note`·`flush`, ADR-068, PERFORMANCE.md §2.12). 시험은 `client.portal.call(fieldstats.flush)` 뒤에 본다. 새 집계를 더할 때 이 순서를 지키고, 줄마다 upsert 하지 말고 문장 하나(`unnest`)로 — 줄마다면 PC 가 많은 묶음에서 수집이 13% 느려졌다(PERFORMANCE.md §2.5).
 - IIS 열 순서는 DB `iis_layouts` 가 정본입니다(ADR-037). `repository._IIS_FILE`·`_IIS_SITE` 캐시는 커밋한 뒤에만 채우고(`remember_iis_layouts`), 시험에서 '서버 재시작'은 `forget_iis_layouts()` 로 흉내 냅니다.
   - 그 파일의 순서(머리줄)는 서버 필드 모양만 봅니다(`iis.plausible` — 요청자 값으로 해석이 깨지지 않게). 추정한 순서(같은 폴더·기본)는 `iis.plausible_guess` 로 더 엄격히 봅니다 — 칸이 밀리면 요청자 값('-'·IP 모양 UA)이 서버 칸을 통과해 공격자가 `src_ip` 를 정할 수 있었습니다(검토에서 재현).
   - 모양 규칙(`_SHAPES`·`_ALWAYS`·`_REQUEST_SHAPES`·`_REQUESTER_TEXT`)을 바꾸면 `tests/test_iis_context.py` 의 고정 목록(ALWAYS·SHAPES·REQUESTER_TEXT)도 고칩니다. 목록마다 항목 하나를 빼면 그것만으로 실패하는 동작 시험이 있습니다 — 시험 매개변수를 모듈의 목록에서 만들지 않습니다(항목을 빼면 시험도 같이 사라짐).
