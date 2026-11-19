@@ -23,7 +23,8 @@ import * as users from './views/users.js';
 
 const VIEWS = { dashboard, live, events, alerts, agents, fields, users, audit, reports, compliance, readiness, entity, settings: settingsView };
 // 메뉴에 없는 화면의 상단 바 제목 (개체 페이지는 알림·로그 상세의 링크로만 연다, B-67)
-const VIEW_TITLES = { entity: '개체' };
+// 메뉴에서 뺀 화면(메일·설정·준비도의 링크로만 연다)도 상단 제목은 보이게
+const VIEW_TITLES = { entity: '개체', reports: '점검 보고서', compliance: '심사 대응', readiness: '운영 준비도' };
 // 화면별 필요한 권한 ('admin' = 관리자만). 서버도 같은 권한으로 API 를 막는다
 const VIEW_PERMS = { users: 'admin', readiness: 'admin', audit: 'audit.view', reports: 'reports.view', compliance: 'reports.view', settings: 'settings.manage' };
 const allowedView = (name) => !VIEW_PERMS[name] || (VIEW_PERMS[name] === 'admin' ? auth.isAdmin() : auth.can(VIEW_PERMS[name]));
