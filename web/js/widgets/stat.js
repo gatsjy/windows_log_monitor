@@ -15,6 +15,8 @@ function deltaHtml(current, previous, upIsGood, since) {
   const diff = current - previous;
   let text;
   if (previous === 0) text = current === 0 ? '변화 없음' : '신규';
+  // 이전 값이 아주 작으면 '345560.0%' 처럼 읽을 수 없는 숫자가 나온다 — 10배가 넘으면 배수로, 100배가 넘으면 뭉뚱그린다
+  else if (current >= previous * 10) text = `▲ ${current >= previous * 100 ? '100배 넘게' : `${Math.round(current / previous)}배`}`;
   else text = `${diff >= 0 ? '▲' : '▼'} ${Math.abs((diff / previous) * 100).toFixed(diff === 0 ? 0 : 1)}%`;
   let tone = 'flat';
   if (diff !== 0 && upIsGood != null) tone = (diff > 0) === upIsGood ? 'good' : 'bad';
