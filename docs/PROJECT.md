@@ -181,7 +181,7 @@ Body:    JSON 배열 | JSON 객체 | NDJSON
 |---|---|---|
 | `events` | 로그 이벤트 | `received_at` 월별 RANGE 파티션 (`events_YYYY_MM`), PK `(id, received_at)` |
 | `agents` | 로그 보낸 PC 목록 | `last_seen` 으로 상태 판정, `meta` = 하트비트 내용 |
-| `field_stats` | 원본 필드 카탈로그 | `(source, path)` 별 타입·횟수·예시. 중첩은 점 경로(3단계까지) |
+| `field_stats` | 원본 필드 카탈로그 | `(source, path)` 별 타입·횟수·예시. 중첩은 점 경로(3단계까지). 수집 트랜잭션 밖에서 10초마다 더함(ADR-068) |
 | `iis_layouts` | IIS 열 순서 (014) | `(host, file)` 별 `#Fields:` 이름들, 폴더(`dir`)·마지막 머리줄 시각. 이벤트와 같은 트랜잭션에 저장, 35일 지난 것은 정리(폴더마다 최신 1개는 남김) |
 | `audit_log` | 시스템 감사 기록 | 대시보드·알림 설정 저장, 알림 테스트 발송, 보관기간 만료 삭제 |
 | `alerts` | 발생한 알림 (002) | 규칙, 심각도, 대상(group_key), 건수, `payload` = 보낸 메시지 전체. 처리 상태 `status`(open/acked/resolved)·처리자·처리 시각, 무음 중 발생이면 `silence_id` (009). 개체 `entity_hosts`·`entity_accounts`(계정 열쇠)·`entity_ips` (046, SQL 함수 `wlm_alert_entities` 가 채움 — ADR-064) |

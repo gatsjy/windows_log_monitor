@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import time
 from dataclasses import replace
@@ -14,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import __version__, accesslog, clock, db, live, repository, wincatalog
+from .. import __version__, accesslog, clock, db, fieldstats, live, repository, wincatalog
 from ..alerts.message import LEVEL_LABELS
 from ..alerts.visibility import count_by_status
 from ..auth import service as auth_service
@@ -52,6 +53,7 @@ async def search_time_limit(request: Request) -> None:
 
 
 # 이벤트를 읽는 화면 API 는 이 라우터에 모여 있다 → 라우터 전체에 (POST 로 읽는 규칙 미리보기는 read_time_limit 을 직접)
+log = logging.getLogger(__name__)
 router = APIRouter(tags=["query"], dependencies=[Depends(search_time_limit)])
 
 # 시계열 자동 간격 후보 (초)
@@ -584,6 +586,10 @@ async def quarantine_record(quarantine_id: int, request: Request, admin: User = 
 
 @router.get("/api/fields")
 async def list_fields(request: Request):
+    try:   # 모아 둔 것을 먼저 써서 화면이 최대 10초 늦지 않게 (ADR-068). 실패해도 화면은 지금 DB 값으로
+        await fieldstats.flush()
+    except Exception:
+        log.exception("필드 카탈로그 기록 실패 (다음에 다시)")
     items = await repository.fields()
     if request.state.user.scopes is not None:
         # 조회 범위가 있는 사용자에게는 다른 범위의 실제 값이 섞인 예시를 보여 주지 않는다

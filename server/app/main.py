@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 
-from . import __version__, db, partitions, rejects, tlsutil
+from . import __version__, db, fieldstats, partitions, rejects, tlsutil
 from .alerts import health as alert_health
 from .alerts.dispatcher import dispatcher as alert_dispatcher
 from .alerts.engine import engine as alert_engine
@@ -94,6 +94,7 @@ async def lifespan(_: FastAPI):
                              lambda: asyncio.create_task(alert_dispatcher.run_forever()))
         watchdog_task = asyncio.create_task(alert_watchdog.run_forever())
     rejects_task = asyncio.create_task(rejects.run_forever())
+    fieldstats_task = asyncio.create_task(fieldstats.run_forever())   # 필드 카탈로그 (ADR-068)
     report_task = asyncio.create_task(report_scheduler.run_forever()) if settings.report_scheduler else None
     index_task = asyncio.create_task(partitions.account_index_loop()) if settings.partition_index_build else None
     log.info("Log Monitor %s 시작 (보관기간: 로그 %s일 · 알림 %s일 · 감사로그 %s일 · 점검 보고서 %s일)", __version__,
@@ -117,6 +118,7 @@ async def lifespan(_: FastAPI):
             if running:
                 running.cancel()
         rejects_task.cancel()
+        fieldstats_task.cancel()
         if report_task:
             report_task.cancel()
         if index_task:
@@ -125,6 +127,10 @@ async def lifespan(_: FastAPI):
             await rejects.flush()
         except Exception:
             log.exception("수집 거절 장부 기록 실패")
+        try:   # 모아 둔 필드 카탈로그도
+            await fieldstats.flush()
+        except Exception:
+            log.exception("필드 카탈로그 기록 실패")
         await db.close_pool()
 
 
