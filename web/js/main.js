@@ -98,17 +98,20 @@ async function refreshStatus() {
 }
 
 function renderUser(me) {
+  // 로그아웃은 이름 옆 아이콘 하나로, 나머지 두 동작은 한 줄에 — 좁은 사이드바에서 버튼 셋이 두 줄로 흩어져 어수선했다
   document.getElementById('user-box').innerHTML = html`
-    <div class="user-name" title="마지막 로그인 ${me.last_login_ip || ''}">
-      <span class="avatar">${(me.display_name || me.username).slice(0, 1).toUpperCase()}</span>
-      <span><b>${me.display_name || me.username}</b><small>${me.username} · ${me.role_label}${me.groups?.length ? ` · ${me.groups.join(', ')}` : ''}</small></span>
+    <div class="user-row">
+      <div class="user-name" title="마지막 로그인 ${me.last_login_ip || ''}">
+        <span class="avatar">${(me.display_name || me.username).slice(0, 1).toUpperCase()}</span>
+        <span><b>${me.display_name || me.username}</b><small>${me.username} · ${me.role_label}${me.groups?.length ? ` · ${me.groups.join(', ')}` : ''}</small></span>
+      </div>
+      <button class="icon-btn sm" type="button" data-logout aria-label="로그아웃" title="로그아웃"><svg viewBox="0 0 24 24"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></svg></button>
     </div>
     ${me.scope ? html`<div class="scope-note" title="사용자 그룹으로 정해진 조회 범위">볼 수 있는 범위: ${me.scope.map((s) => [
       s.categories.map(categoryLabel).join('·'), s.hosts.join('·')].filter(Boolean).join(' / ')).join(' + ')}</div>` : ''}
     <div class="user-actions">
       <button class="btn ghost sm" type="button" data-pw>비밀번호 변경</button>
-      <button class="btn ghost sm" type="button" data-mfa title="${me.mfa?.enabled ? '사용 중' : '사용 안 함'}">2단계 인증</button>
-      <button class="btn ghost sm" type="button" data-logout>로그아웃</button>
+      <button class="btn ghost sm" type="button" data-mfa title="${me.mfa?.enabled ? '사용 중' : '사용 안 함'}">2단계 인증<span class="mfa-dot ${me.mfa?.enabled ? 'on' : ''}" aria-label="${me.mfa?.enabled ? '사용 중' : '사용 안 함'}"></span></button>
     </div>`;
   document.querySelector('#user-box [data-pw]').addEventListener('click', () => auth.showPasswordChange());
   document.querySelector('#user-box [data-mfa]').addEventListener('click', () => auth.showMfaPanel());
@@ -139,7 +142,11 @@ function applyTheme(theme) {
   if (theme) document.documentElement.dataset.theme = theme;
   else delete document.documentElement.dataset.theme;
   const dark = theme ? theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
-  document.getElementById('theme-toggle').textContent = dark ? '라이트 모드' : '다크 모드';
+  const btn = document.getElementById('theme-toggle');
+  btn.querySelector('span').textContent = dark ? '라이트 모드' : '다크 모드';
+  btn.querySelector('svg').innerHTML = dark
+    ? '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'
+    : '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>';
 }
 
 document.getElementById('theme-toggle').addEventListener('click', () => {
