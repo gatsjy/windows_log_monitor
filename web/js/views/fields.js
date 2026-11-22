@@ -27,7 +27,7 @@ export async function mount(root, params) {
         <div class="card-body flush" data-list><div class="skeleton"></div></div>
       </section>
       <section class="card sticky-card"><div class="card-body" data-detail>
-        <div class="empty">왼쪽에서 필드를 고르세요.</div></div></section>
+        <div class="empty">목록에서 필드를 고르면 실제 값의 분포가 여기에 보입니다.</div></div></section>
     </div>`;
 
   const listEl = root.querySelector('[data-list]');

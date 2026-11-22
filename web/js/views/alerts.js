@@ -90,8 +90,8 @@ export async function mount(root, params, sub) {
           ${config.grouping ? html`· <span title="메일·메신저는 같은 규칙 알림을 모아 한 통으로 보냅니다 (심각은 바로, 간격 1분). json 웹훅·Oracle 은 알림마다">${config.grouping.interval_sec
             ? `묶어 보내기 ${fmtDuration(config.grouping.wait_sec)} 모음·${fmtDuration(config.grouping.interval_sec)} 간격` : '묶지 않음'}</span>` : ''}</span>
         ${config.silences_active ? html`<a class="ast silenced" href="#/alerts/silences?since=${since}">무음 ${config.silences_active}개 적용 중</a>` : ''}
-      </div>
-      ${problems.map((p) => html`<div class="${p.level === 'bad' ? 'error-box' : 'hint-box'}" style="margin-top:8px">${p.text}</div>`)}`;
+        ${problems.length ? html`<ul class="status-problems">${problems.map((p) => html`<li class="${p.level === 'bad' ? 'bad' : 'warn'}">${p.text}</li>`)}</ul>` : ''}
+      </div>`;   // 문제는 상태 카드 안의 목록으로 — 따로 쌓인 파란 안내 상자들이 경고로 읽히지 않고 목록을 화면 밖으로 밀었다
     root.querySelector('[data-tabcount="rules"]').textContent = String(config.rules.length);
     root.querySelector('[data-tabcount="targets"]').textContent = String(config.notifiers.length);
     root.querySelector('[data-tabcount="silences"]').textContent = config.silences_active ? String(config.silences_active) : '';
