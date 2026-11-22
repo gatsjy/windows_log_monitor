@@ -93,7 +93,7 @@ export async function mount(root, params) {
               ? html`<select class="input" data-name>${tls.server_names.map((n) => html`<option value="${n}" ${n === opt.name ? 'selected' : ''}>${n}</option>`)}</select>`
               : html`<input class="input" data-name value="${opt.name}" placeholder="${tls.wildcards[0] ? `예: logmon.${tls.wildcards[0].slice(2)} (${tls.wildcards[0]} 에 맞는 이름)` : 'DNS 이름'}">`}</label>
           <p class="muted" style="margin:0;font-size:12.5px;visibility:${isIp(opt.server) ? 'visible' : 'hidden'}" data-ip-hint>서버 주소가 IP 라도 됩니다. 인증서 이름은 확인용이라 DNS 에 등록되어 있지 않아도 됩니다.</p>`
-        : html`<p class="hint-box" style="margin-top:4px" data-plain-note><b class="tag-bad">평문 전송</b>입니다 — 로그와 수집 키가 암호화되지 않습니다(ISMS 2.7.1).
+        : html`<p class="hint-box warn" style="margin-top:4px" data-plain-note><b class="tag-bad">평문 전송</b>입니다 — 로그와 수집 키가 암호화되지 않습니다(ISMS 2.7.1).
             서버에서 TLS 를 켜면 이 창이 TLS 묶음을 만듭니다 (docs/AIRGAP.md §7.5).</p>`;
       el.innerHTML = html`
         <div class="pkg">

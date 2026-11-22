@@ -343,6 +343,7 @@ export async function openAlert(id, { onChange } = {}) {
       <div data-msg></div>
 
       <div class="section-title">전송 상태</div>
+      ${!alert.deliveries.length ? html`<p class="muted" style="margin:0 0 8px;font-size:13px">보낸 곳이 없습니다 — 받는 곳이 없었거나 무음·관찰 중이었습니다.</p>` : html`
       <div class="table-wrap"><table class="table">
         <thead><tr><th>알림 대상</th><th>상태</th><th class="r">시도</th><th>전송 시각</th><th>마지막 오류</th></tr></thead>
         <tbody>${alert.deliveries.map((d) => html`<tr>
@@ -353,7 +354,7 @@ export async function openAlert(id, { onChange } = {}) {
           <td class="r num">${d.attempts}</td>
           <td class="nowrap muted">${d.sent_at ? fmtTime(d.sent_at) : '–'}${d.batch_size > 1 ? html` <span title="같은 규칙 알림을 한 통으로 (B-41)">· ${d.batch_size}건 묶음</span>` : ''}</td>
           <td class="ink-2" style="overflow-wrap:anywhere">${d.last_error || ''}</td>
-        </tr>`)}</tbody></table></div>
+        </tr>`)}</tbody></table></div>`}
       ${samples.length ? html`
         <div class="section-title">알림에 포함된 최근 이벤트</div>
         <div class="table-wrap"><table class="table ev-table"><thead>${EVENT_HEAD}</thead>
