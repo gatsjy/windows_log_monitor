@@ -105,8 +105,12 @@ def test_closed_month_is_rebuilt_once_and_stays_attached(client):
     rows = sql("SELECT name, index_bytes_before, index_bytes_after FROM partition_compactions")
     # 기록의 '전' 크기는 조각을 지운 뒤에 잰 것 (조각 크기만큼 시험의 '전'보다 작다)
     assert [(n, a) for n, _, a in rows] == [(LAST, after["bytes"])] and after["bytes"] < rows[0][1] < before["bytes"]
-    # 이번 달은 아직 받는 중이라 그대로, 같은 달은 두 번 하지 않는다
-    assert _indexes(CURRENT) == current
+    # 이번 달은 아직 받는 중이라 그대로, 같은 달은 두 번 하지 않는다.
+    # 크기는 같다고 보지 않는다 — 시험 중에도 앱의 백그라운드 작업이 이번 달에 써서 색인이 자란다(CI 에서 가끔 실패).
+    # 다시 만들었다면 줄었을 것이므로 '줄지 않음'으로 본다
+    now_current = _indexes(CURRENT)
+    assert {k: now_current[k] for k in ("n", "valid", "attached")} == {k: current[k] for k in ("n", "valid", "attached")}
+    assert now_current["bytes"] >= current["bytes"], (current, now_current)
     assert client.portal.call(partitions.compact_closed_partitions, NIGHT) == []
     # 다시 만든 뒤에도 검색은 같은 색인으로 같은 결과
     n = sql(f"SELECT count(*) FROM events WHERE category = 'auth' AND received_at < '{THIS_MONTH:%Y-%m-%d}'")[0][0]
