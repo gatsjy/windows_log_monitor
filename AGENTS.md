@@ -82,7 +82,7 @@ server/migrations/   번호순 SQL
 server/tests/        pytest (단위 + 통합 test_api_* 등 — 통합은 <DB>_test 를 만들어 씀)
 web/js/
   main.js            해시 라우터 (#/화면/하위?파라미터)
-  views/             화면: dashboard, live, events, alerts, agents, fields, reports(점검 보고서), compliance(심사 대응), entity(개체 페이지 — 메뉴 없음, 링크로), users·audit·settings·readiness(관리자)
+  views/             화면: dashboard, live, events, alerts, agents, fields, entity(개체 페이지), reports(점검 보고서), compliance(심사 대응), readiness(운영 준비도, 관리자) — 이 넷은 메뉴 없음, 링크로(메일·설정·준비도), users·audit·settings(관리자)
   auth.js            로그인·비밀번호 변경 화면, 현재 사용자 (main.js 가 init)
   widgets/           ★ 대시보드 위젯: stat, timeseries, top, events, hosts, text, alerts (live() = 실시간 갱신)
   querylang.js       ★ 검색 문장 파서·매처·옛 링크 접기·문장 편집 (import·DOM 없음 — node 로 시험)
